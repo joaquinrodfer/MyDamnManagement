@@ -1,11 +1,13 @@
 import uuid
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.database import get_db
+from app.serializers import serialize_page
+from app.wikilinks import sync_wikilinks
 
 router = APIRouter(prefix="/pages", tags=["pages"])
 
@@ -17,25 +19,10 @@ def _get_default_workspace(db: Session) -> models.Workspace:
     return ws
 
 
-def _serialize(page: models.Page, content: Optional[models.PageContent] = None) -> schemas.PageRead:
-    body = content.body_markdown if content else (page.content.body_markdown if page.content else None)
-    return schemas.PageRead(
-        id=page.id,
-        workspace_id=page.workspace_id,
-        title=page.title,
-        type=page.type,
-        parent_id=page.parent_id,
-        icon=page.icon,
-        created_at=page.created_at,
-        updated_at=page.updated_at,
-        body_markdown=body,
-    )
-
-
 @router.get("", response_model=List[schemas.PageRead])
 def list_pages(db: Session = Depends(get_db)):
     pages = db.query(models.Page).order_by(models.Page.created_at.desc()).all()
-    return [_serialize(p) for p in pages]
+    return [serialize_page(p) for p in pages]
 
 
 @router.post("", response_model=schemas.PageRead)
@@ -51,11 +38,32 @@ def create_page(payload: schemas.PageCreate, db: Session = Depends(get_db)):
     db.add(page)
     db.flush()  # asigna page.id sin cerrar la transacción
 
-    content = models.PageContent(page_id=page.id, body_markdown=payload.body_markdown or "")
+    body = payload.body_markdown or ""
+    content = models.PageContent(page_id=page.id, body_markdown=body)
     db.add(content)
+    sync_wikilinks(db, page, body)
+
     db.commit()
     db.refresh(page)
-    return _serialize(page, content)
+    return serialize_page(page, content)
+
+
+@router.get("/tree")
+def get_tree(db: Session = Depends(get_db)):
+    """Árbol de páginas según parent_id. Nodos ligeros (sin cuerpo)."""
+    pages = db.query(models.Page).order_by(models.Page.title).all()
+    nodes = {
+        p.id: {"id": p.id, "title": p.title, "type": p.type, "icon": p.icon, "children": []}
+        for p in pages
+    }
+    roots = []
+    for p in pages:
+        node = nodes[p.id]
+        if p.parent_id and p.parent_id in nodes:
+            nodes[p.parent_id]["children"].append(node)
+        else:
+            roots.append(node)
+    return roots
 
 
 @router.get("/{page_id}", response_model=schemas.PageRead)
@@ -63,7 +71,7 @@ def get_page(page_id: uuid.UUID, db: Session = Depends(get_db)):
     page = db.get(models.Page, page_id)
     if not page:
         raise HTTPException(404, "Página no encontrada")
-    return _serialize(page)
+    return serialize_page(page)
 
 
 @router.patch("/{page_id}", response_model=schemas.PageRead)
@@ -81,10 +89,11 @@ def update_page(page_id: uuid.UUID, payload: schemas.PageUpdate, db: Session = D
             page.content.body_markdown = payload.body_markdown
         else:
             db.add(models.PageContent(page_id=page.id, body_markdown=payload.body_markdown))
+        sync_wikilinks(db, page, payload.body_markdown)
 
     db.commit()
     db.refresh(page)
-    return _serialize(page)
+    return serialize_page(page)
 
 
 @router.delete("/{page_id}", status_code=204)
@@ -94,3 +103,22 @@ def delete_page(page_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(404, "Página no encontrada")
     db.delete(page)
     db.commit()
+
+
+@router.get("/{page_id}/backlinks", response_model=List[schemas.PageRead])
+def get_backlinks(page_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Páginas cuyo cuerpo contiene un [[wikilink]] hacia esta página."""
+    page = db.get(models.Page, page_id)
+    if not page:
+        raise HTTPException(404, "Página no encontrada")
+
+    source_ids = (
+        db.query(models.Link.source_page_id)
+        .filter(
+            models.Link.target_page_id == page_id,
+            models.Link.kind == models.LinkKind.wikilink,
+        )
+        .subquery()
+    )
+    pages = db.query(models.Page).filter(models.Page.id.in_(source_ids)).all()
+    return [serialize_page(p) for p in pages]

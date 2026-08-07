@@ -123,12 +123,35 @@ graph LR
     C1 -.->|"migración: pg_dump → pg_restore"| C2
 ```
 
+## 6. Wikilinks: de texto a backlink
+
+Los wikilinks se resuelven **al guardar**, no al leer — el cuerpo se escanea, se buscan páginas cuyo título coincida (sin distinguir mayúsculas) y se recalculan los `Link` salientes de esa página desde cero cada vez.
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant A as API (FastAPI)
+    participant P as Postgres
+
+    C->>A: PATCH /pages/{id} {body_markdown: "...[[Trámites EPSJ]]..."}
+    A->>A: extraer títulos referenciados (wikilinks.py)
+    A->>P: DELETE links salientes de {id}
+    A->>P: SELECT pages WHERE lower(title) IN (títulos)
+    A->>P: INSERT un Link por cada página encontrada
+    P-->>A: commit OK
+    A-->>C: 200 · PageRead
+```
+
+Limitación conocida: renombrar una página no repara los wikilinks que otras páginas ya guardaron apuntando al título antiguo — se corrigen la próxima vez que esa página de origen se vuelva a guardar.
+
 ## Decisiones y por qué
 
 | Decisión | Elegido | Por qué |
 | --- | --- | --- |
 | Storage de notas | Postgres, no archivos `.md` | Elimina el problema de sincronizar archivos entre dispositivos — un único servidor es la fuente de verdad |
 | Propiedades de `database` | JSONB flexible | Añadir un campo nuevo no requiere migración de esquema |
-| Migraciones | `create_all()` en Fase 0, Alembic desde Fase 1 | Iterar rápido mientras el modelo se mueve; Alembic entra en cuanto haya datos reales que preservar |
+| Migraciones | Alembic desde Fase 1 | `create_all()` sirvió para iterar rápido en Fase 0; Alembic entra ahora que el modelo tiene datos reales que preservar. La FK circular `pages` ↔ `databases` rompe el autogenerate por defecto — ver comentario en la migración inicial |
+| Resolución de wikilinks | Por título, al guardar (no al leer) | Guardar es poco frecuente, leer es constante — recalcular en cada lectura sería más caro sin necesidad |
+| Búsqueda | Postgres `tsvector`/`tsquery` (`spanish`) | A esta escala (1 usuario) no justifica una pieza aparte tipo Meilisearch; se puede migrar si hace falta |
 | Acceso remoto | Tailscale, sin auth propia (aún) | Uso personal en solitario; `user_id`/`workspace_id` ya están en el esquema para añadir auth real sin rediseñar |
 | API | REST | Un solo tipo de cliente, sin problema real de over/under-fetching a esta escala |

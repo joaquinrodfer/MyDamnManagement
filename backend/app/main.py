@@ -2,22 +2,22 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from app.database import Base, SessionLocal, engine
+from app.database import SessionLocal
 from app.models import Workspace
-from app.routers import pages, status
+from app.routers import pages, search, status
 
 app = FastAPI(title="MyDamnManagement API")
 
 app.include_router(pages.router)
 app.include_router(status.router)
+app.include_router(search.router)
 
 
 @app.on_event("startup")
 def on_startup() -> None:
-    # Fase 0: create_all en vez de Alembic para iterar rápido sobre el
-    # schema. Migramos a Alembic en cuanto el modelo de datos se estabilice
-    # (Fase 1), porque en ese punto ya habrá datos reales que preservar.
-    Base.metadata.create_all(bind=engine)
+    # Fase 1: el esquema ya lo crea/migra Alembic (alembic upgrade head,
+    # ver docker-compose.yml) antes de que arranque uvicorn. Aquí solo
+    # queda la siembra de datos de aplicación (workspace por defecto).
     _ensure_default_workspace()
 
 
