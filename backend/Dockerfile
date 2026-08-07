@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/attachments
+RUN mkdir -p /app/attachments /app/frontend
 
 EXPOSE 8000
 

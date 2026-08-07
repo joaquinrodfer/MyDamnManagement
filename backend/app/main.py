@@ -1,13 +1,15 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.database import Base, SessionLocal, engine
 from app.models import Workspace
-from app.routers import pages
+from app.routers import pages, status
 
 app = FastAPI(title="MyDamnManagement API")
 
 app.include_router(pages.router)
+app.include_router(status.router)
 
 
 @app.on_event("startup")
@@ -32,3 +34,8 @@ def _ensure_default_workspace() -> None:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Montado al final a propósito: así no tapa /health, /status, /pages ni /docs,
+# y sigue sirviendo cualquier otra ruta (incluida "/") como archivos estáticos.
+app.mount("/", StaticFiles(directory="/app/frontend", html=True), name="frontend")

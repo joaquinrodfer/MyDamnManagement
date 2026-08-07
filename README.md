@@ -28,13 +28,15 @@ docker compose up -d --build
 curl http://localhost:8000/health
 ```
 
-Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs).
+Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel de estado de los servicios en [http://localhost:8000/](http://localhost:8000/).
 
 ## Endpoints disponibles
 
 | Endpoint       | Método | Qué hace                                              |
 | -------------- | ------ | ------------------------------------------------------ |
+| `/`            | GET    | Panel de estado (frontend estático, sin build)           |
 | `/health`      | GET    | Comprobación de vida del servicio                       |
+| `/status`      | GET    | Estado agregado de `api` y `db` (usado por el panel)     |
 | `/pages`       | GET    | Lista todas las páginas del workspace                   |
 | `/pages`       | POST   | Crea página + `page_content` en una transacción         |
 | `/pages/{id}`  | GET    | Lee una página con su cuerpo                             |
