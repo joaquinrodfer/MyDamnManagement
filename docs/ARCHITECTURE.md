@@ -166,6 +166,19 @@ graph TD
 
 `properties.py` valida cada fila contra el `schema_def` de su database al guardar (claves conocidas, tipo básico, opciones de `select`) — sin eso, un CRM y un gestor de tareas comparten tabla sin ninguna garantía de forma, y los errores se descubrirían leyendo, no escribiendo.
 
+## 8. Panel visual: cliente puro sobre la misma API
+
+`frontend/` no es una app aparte con su propio backend — es HTML/CSS/JS servido como archivos estáticos por `api` (`StaticFiles`, montado al final de las rutas) que llama a los mismos endpoints que se probaron por `curl`. No hay build, no hay framework, no hay estado en el servidor propio del frontend.
+
+```mermaid
+graph LR
+    B["Navegador"] -->|"GET /"| S["StaticFiles<br/>frontend/index.html + app.js"]
+    B -->|"fetch /pages/tree, /pages/{id},<br/>/databases/{id}/rows, /search…"| API["Misma API FastAPI"]
+    API --> DB[(Postgres)]
+```
+
+Un matiz importante: la vista previa del editor resuelve `[[wikilinks]]` **en el cliente**, contra el árbol ya cargado (`state.pagesById`) — es puramente visual, para que el enlace se vea clicable al escribir. El backlink real (`Link` en Postgres) solo existe si la página de origen se ha *guardado* después de que la página destino existiera; son dos resoluciones independientes y pueden desincronizarse temporalmente (se vio al probarlo: el preview ya mostraba el enlace resuelto antes de que `Backlinks` en la página destino pasara de 0 a 1).
+
 ## Decisiones y por qué
 
 | Decisión | Elegido | Por qué |
@@ -179,3 +192,4 @@ graph TD
 | Filtro/orden de vistas | En Python sobre filas ya cargadas, no SQL dinámico sobre JSONB | A esta escala (una persona, cientos de filas como mucho) es más simple y igual de rápido que construir predicados SQL contra JSONB; se puede mover a SQL si el volumen lo justifica |
 | Acceso remoto | Tailscale, sin auth propia (aún) | Uso personal en solitario; `user_id`/`workspace_id` ya están en el esquema para añadir auth real sin rediseñar |
 | API | REST | Un solo tipo de cliente, sin problema real de over/under-fetching a esta escala |
+| Frontend | HTML/CSS/JS plano, sin build, servido por `api` | "Un pequeño panel" no justifica un segundo contenedor, un bundler ni un framework; cuando el proyecto lo pida (Fase 4), esto es lo primero que se reemplaza sin tocar la API |

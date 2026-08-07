@@ -4,6 +4,21 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.4.0] — Panel visual (adelanto de Fase 4)
+
+### Añadido
+
+- `frontend/index.html` + `frontend/app.js`: interfaz completa sobre las Fases 0–2, sin build ni dependencias (fetch directo a la API del propio origen).
+- Árbol de páginas y bases de datos en la barra lateral, con búsqueda (`/search`) con debounce.
+- Editor de notas: título, cuerpo Markdown, vista previa con `[[wikilinks]]` resueltos en vivo contra el árbol cargado en cliente, y lista de backlinks navegable.
+- Diálogo de creación de `database`: propiedades dinámicas (clave/nombre/tipo, opciones para `select`/`multiselect`).
+- Vista de `database`: pestañas por vista (`table`/`board`/`calendar`/`list`), tabla o tablero según el tipo activo, formulario de nueva fila que genera el input correcto por tipo de propiedad.
+- `GET /pages/tree` ahora excluye `type=database_row`: las filas se ven dentro de su database, no como nodos sueltos del árbol de navegación.
+
+### Verificado
+
+- De extremo a extremo en el navegador (no solo `curl`): nota con wikilink sin resolver → creación de la página destino → backlink real tras volver a guardar; CRM completo (3 filas, vista board agrupada por Fase con conteos correctos por columna).
+
 ## [0.3.0] — Fase 2: motor de `database` + `view`
 
 ### Añadido

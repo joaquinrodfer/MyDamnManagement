@@ -50,8 +50,17 @@ def create_page(payload: schemas.PageCreate, db: Session = Depends(get_db)):
 
 @router.get("/tree")
 def get_tree(db: Session = Depends(get_db)):
-    """Árbol de páginas según parent_id. Nodos ligeros (sin cuerpo)."""
-    pages = db.query(models.Page).order_by(models.Page.title).all()
+    """Árbol de navegación (notas + contenedores de database), sin cuerpo.
+
+    Las filas (type=database_row) se excluyen a propósito: viven dentro de
+    la tabla/tablero de su database, no como nodos sueltos del árbol.
+    """
+    pages = (
+        db.query(models.Page)
+        .filter(models.Page.type != models.PageType.database_row)
+        .order_by(models.Page.title)
+        .all()
+    )
     nodes = {
         p.id: {"id": p.id, "title": p.title, "type": p.type, "icon": p.icon, "children": []}
         for p in pages

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MyDamnManagement — Estado</title>
+<title>MyDamnManagement</title>
 <style>
   :root {
     --bg: #eff1f4;
@@ -13,10 +13,11 @@
     --ink-muted: #565d6b;
     --accent: #b8763a;
     --accent-ink: #7a4d22;
+    --accent-soft: rgba(184, 118, 58, 0.12);
     --ok: #2f9e5b;
-    --ok-bg: rgba(47, 158, 91, 0.12);
     --down: #c94c4c;
     --down-bg: rgba(201, 76, 76, 0.12);
+    --code-bg: #e7e9ee;
     --font-mono: "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     --font-body: -apple-system, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
   }
@@ -29,181 +30,404 @@
       --ink-muted: #9aa1af;
       --accent: #e0994f;
       --accent-ink: #f4c493;
+      --accent-soft: rgba(224, 153, 79, 0.15);
       --ok: #4fbf82;
-      --ok-bg: rgba(79, 191, 130, 0.14);
       --down: #e2726f;
       --down-bg: rgba(226, 114, 111, 0.14);
+      --code-bg: #22252d;
     }
   }
 
   * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
   body {
-    margin: 0;
-    min-height: 100vh;
     background: var(--bg);
     color: var(--ink);
     font-family: var(--font-body);
-  }
-  main {
-    max-width: 640px;
-    margin: 0 auto;
-    padding: 48px 24px 80px;
     display: flex;
     flex-direction: column;
-    gap: 24px;
   }
-  header { display: flex; flex-direction: column; gap: 6px; }
-  .eyebrow {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--accent-ink);
+  button {
+    font-family: inherit;
+    cursor: pointer;
   }
-  h1 { font-family: var(--font-mono); font-size: 24px; margin: 0; }
-  .updated {
-    font-family: var(--font-mono);
-    font-size: 12.5px;
-    color: var(--ink-muted);
-    font-variant-numeric: tabular-nums;
+  input, select, textarea, button {
+    font-family: inherit;
+    font-size: 13.5px;
+    color: var(--ink);
   }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  .grid { display: flex; flex-direction: column; gap: 12px; }
-
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--panel-border);
-    border-radius: 10px;
-    padding: 16px 18px;
+  /* ---------- cabecera ---------- */
+  header {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
   }
-  .card-left { display: flex; align-items: center; gap: 12px; }
-  .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--ink-muted);
-    flex-shrink: 0;
-    transition: background-color 0.2s ease;
+  header .brand {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
   }
+  .status-strip { display: flex; gap: 14px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+  .status-item { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
   .dot.ok { background: var(--ok); }
   .dot.down { background: var(--down); }
 
-  .card-name { font-family: var(--font-mono); font-size: 14.5px; font-weight: 600; }
-  .card-detail { font-size: 12.5px; color: var(--ink-muted); margin-top: 2px; }
+  /* ---------- layout ---------- */
+  .layout { flex: 1; display: flex; min-height: 0; }
 
-  .pill {
+  aside {
+    width: 280px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--panel-border);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  main {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 28px 32px 60px;
+  }
+
+  /* ---------- sidebar ---------- */
+  .sidebar-search { padding: 12px; border-bottom: 1px solid var(--panel-border); }
+  .sidebar-search input {
+    width: 100%;
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .sidebar-section { padding: 10px 8px; }
+  .sidebar-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
     font-family: var(--font-mono);
     font-size: 11px;
-    letter-spacing: 0.04em;
-    padding: 3px 10px;
-    border-radius: 999px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .icon-btn {
+    background: none;
     border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--ink-muted);
+    width: 20px;
+    height: 20px;
+    line-height: 1;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
-  .pill.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
-  .pill.down { color: var(--down); background: var(--down-bg); border-color: var(--down); }
-  .pill.pending { color: var(--ink-muted); background: transparent; border-color: var(--panel-border); }
+  .icon-btn:hover { background: var(--code-bg); color: var(--ink); }
 
-  .error-banner {
-    display: none;
+  .tree-node { user-select: none; }
+  .tree-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tree-row:hover { background: var(--code-bg); }
+  .tree-row.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+  .tree-row .type-icon { flex-shrink: 0; opacity: 0.75; font-size: 12px; }
+  .tree-children { margin-left: 16px; border-left: 1px solid var(--panel-border); padding-left: 4px; }
+
+  .search-results { padding: 6px; }
+  .search-hit {
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .search-hit:hover { background: var(--code-bg); }
+  .search-empty { padding: 8px; font-size: 12.5px; color: var(--ink-muted); }
+
+  /* ---------- botones ---------- */
+  .btn {
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent-ink); }
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .btn-primary:hover { opacity: 0.9; color: #fff; }
+  .btn-danger { color: var(--down); border-color: transparent; background: none; }
+  .btn-danger:hover { background: var(--down-bg); border-color: var(--down); }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* ---------- placeholder / vacío ---------- */
+  .empty-state {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-muted);
+    font-size: 14px;
+    text-align: center;
+  }
+
+  /* ---------- vista de nota ---------- */
+  .note-title {
     font-family: var(--font-mono);
-    font-size: 12.5px;
-    color: var(--down);
-    background: var(--down-bg);
-    border: 1px solid var(--down);
+    font-size: 24px;
+    font-weight: 600;
+    border: none;
+    background: none;
+    color: var(--ink);
+    width: 100%;
+    padding: 4px 0;
+    margin-bottom: 4px;
+  }
+  .note-meta { font-size: 12px; color: var(--ink-muted); margin-bottom: 18px; font-variant-numeric: tabular-nums; }
+  .note-body {
+    width: 100%;
+    min-height: 220px;
+    padding: 14px;
     border-radius: 8px;
-    padding: 10px 14px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.6;
+    resize: vertical;
   }
-  .error-banner.show { display: block; }
+  .panel-head {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin: 22px 0 8px;
+  }
+  .preview {
+    padding: 14px 16px;
+    border-radius: 8px;
+    background: var(--code-bg);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .preview h1, .preview h2, .preview h3 { margin: 0 0 8px; font-family: var(--font-mono); }
+  .wikilink { color: var(--accent-ink); text-decoration: underline; cursor: pointer; }
+  .wikilink-missing { color: var(--ink-muted); text-decoration: underline dotted; cursor: default; }
+  .backlinks-list { display: flex; flex-direction: column; gap: 4px; }
+  .backlink-item {
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .backlink-item:hover { border-color: var(--accent); }
 
-  @media (prefers-reduced-motion: reduce) {
-    * { transition: none !important; }
+  /* ---------- vista de database ---------- */
+  .db-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
+  .db-title { font-family: var(--font-mono); font-size: 22px; font-weight: 600; }
+  .db-schema-hint { font-size: 12px; color: var(--ink-muted); margin-bottom: 16px; }
+  .view-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .view-tab {
+    font-size: 12.5px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink-muted);
   }
+  .view-tab.active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+
+  table.rows-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .rows-table th, .rows-table td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--panel-border);
+    font-variant-numeric: tabular-nums;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rows-table th { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); }
+  .rows-table tr:hover td { background: var(--code-bg); }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--panel-border); border-radius: 8px; }
+  .table-wrap table { margin: 0; }
+
+  .board { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 8px; }
+  .board-col { flex: 0 0 240px; display: flex; flex-direction: column; gap: 8px; }
+  .board-col-head {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-muted);
+    padding: 4px 2px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .board-card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .board-card:hover { border-color: var(--accent); }
+  .board-card-title { font-weight: 600; margin-bottom: 4px; }
+  .board-card-prop { color: var(--ink-muted); font-size: 12px; }
+
+  .row-del, .cell-del { color: var(--down); background: none; border: none; cursor: pointer; font-size: 13px; }
+
+  /* ---------- formularios ---------- */
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .field label { font-size: 12px; color: var(--ink-muted); }
+  .field input, .field select, .field textarea {
+    padding: 6px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .inline-form {
+    margin-top: 12px;
+    padding: 14px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+
+  /* ---------- dialogs ---------- */
+  dialog {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 20px;
+    background: var(--panel);
+    color: var(--ink);
+    width: min(440px, 92vw);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+  dialog h3 { font-family: var(--font-mono); margin: 0 0 14px; font-size: 16px; }
+  .prop-row-wrap { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--panel-border); }
+  .prop-row-wrap:last-child { border-bottom: none; }
+  .prop-row { display: grid; grid-template-columns: 1fr 1fr 100px auto; gap: 6px; align-items: center; }
+  .prop-row input, .prop-row select { padding: 5px 7px; border-radius: 5px; border: 1px solid var(--panel-border); background: var(--bg); color: var(--ink); font-size: 12.5px; }
+  .prop-options-input { width: 100%; margin-top: 6px; padding: 5px 7px; border-radius: 5px; border: 1px solid var(--panel-border); background: var(--bg); color: var(--ink); font-size: 12.5px; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
-  <main>
-    <header>
-      <span class="eyebrow">MyDamnManagement</span>
-      <h1>Estado de los servicios</h1>
-      <span class="updated" id="updated">comprobando…</span>
-    </header>
-
-    <div class="error-banner" id="error-banner"></div>
-
-    <div class="grid" id="grid">
-      <div class="card" data-service="api">
-        <div class="card-left">
-          <span class="dot" id="dot-api"></span>
-          <div>
-            <div class="card-name">api</div>
-            <div class="card-detail">FastAPI + Uvicorn</div>
-          </div>
-        </div>
-        <span class="pill pending" id="pill-api">comprobando</span>
-      </div>
-
-      <div class="card" data-service="db">
-        <div class="card-left">
-          <span class="dot" id="dot-db"></span>
-          <div>
-            <div class="card-name">db</div>
-            <div class="card-detail">postgres:16-alpine</div>
-          </div>
-        </div>
-        <span class="pill pending" id="pill-db"></span>
-      </div>
+  <header>
+    <span class="brand">MyDamnManagement</span>
+    <div class="status-strip">
+      <span class="status-item"><span class="dot" id="dot-api"></span>api</span>
+      <span class="status-item"><span class="dot" id="dot-db"></span>db</span>
     </div>
-  </main>
+  </header>
 
-  <script>
-    const POLL_MS = 4000;
-    const updatedEl = document.getElementById("updated");
-    const errorBanner = document.getElementById("error-banner");
+  <div class="layout">
+    <aside>
+      <div class="sidebar-search">
+        <input type="search" id="search-input" placeholder="Buscar…" />
+      </div>
+      <div id="search-results" class="search-results" hidden></div>
 
-    function setService(name, ok, detail) {
-      const dot = document.getElementById(`dot-${name}`);
-      const pill = document.getElementById(`pill-${name}`);
-      dot.classList.toggle("ok", ok === true);
-      dot.classList.toggle("down", ok === false);
-      pill.classList.remove("pending", "ok", "down");
-      pill.classList.add(ok ? "ok" : "down");
-      pill.textContent = ok ? "activo" : "caído";
-      if (detail) pill.title = detail;
-    }
+      <div id="nav-sections">
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <span>Páginas</span>
+            <button class="icon-btn" id="btn-new-note" title="Nueva nota">+</button>
+          </div>
+          <div id="tree-container"></div>
+        </div>
 
-    function formatTime(iso) {
-      try {
-        return new Date(iso).toLocaleTimeString("es-ES", { hour12: false });
-      } catch {
-        return iso;
-      }
-    }
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <span>Bases de datos</span>
+            <button class="icon-btn" id="btn-new-database" title="Nueva base de datos">+</button>
+          </div>
+          <div id="db-tree-container"></div>
+        </div>
+      </div>
+    </aside>
 
-    async function poll() {
-      try {
-        const res = await fetch("/status", { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+    <main id="main">
+      <div class="empty-state">Elige una página o crea una nueva.</div>
+    </main>
+  </div>
 
-        setService("api", data.services?.api?.ok ?? true);
-        setService("db", data.services?.db?.ok ?? false, data.services?.db?.error);
+  <dialog id="dialog-database">
+    <h3>Nueva base de datos</h3>
+    <div class="field">
+      <label for="db-name">Nombre</label>
+      <input type="text" id="db-name" placeholder="Contactos" />
+    </div>
+    <div class="field">
+      <label>Propiedades</label>
+      <div id="prop-rows"></div>
+      <button type="button" class="btn" id="btn-add-prop" style="align-self: flex-start; margin-top: 4px;">+ Propiedad</button>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-cancel-database">Cancelar</button>
+      <button class="btn btn-primary" id="btn-create-database">Crear</button>
+    </div>
+  </dialog>
 
-        updatedEl.textContent = `última comprobación: ${formatTime(data.checked_at)}`;
-        errorBanner.classList.remove("show");
-      } catch (err) {
-        setService("api", false);
-        setService("db", false);
-        errorBanner.textContent = `No se puede alcanzar la API: ${err.message}`;
-        errorBanner.classList.add("show");
-      }
-    }
+  <dialog id="dialog-view">
+    <h3>Nueva vista</h3>
+    <div class="field">
+      <label for="view-name">Nombre</label>
+      <input type="text" id="view-name" placeholder="Ganados" />
+    </div>
+    <div class="field">
+      <label for="view-type">Tipo</label>
+      <select id="view-type">
+        <option value="table">Tabla</option>
+        <option value="board">Tablero (board)</option>
+        <option value="list">Lista</option>
+        <option value="calendar">Calendario</option>
+      </select>
+    </div>
+    <div class="field" id="view-groupby-field" hidden>
+      <label for="view-groupby">Agrupar por</label>
+      <select id="view-groupby"></select>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-cancel-view">Cancelar</button>
+      <button class="btn btn-primary" id="btn-create-view">Crear</button>
+    </div>
+  </dialog>
 
-    poll();
-    setInterval(poll, POLL_MS);
-  </script>
+  <script src="/app.js"></script>
 </body>
 </html>

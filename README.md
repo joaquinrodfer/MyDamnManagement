@@ -16,7 +16,7 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-**Fase 2** — motor de `database` + `view` genérico funcionando de extremo a extremo: se probó creando un CRM ("Contactos") y un gestor de tareas ("Tareas") con el mismo motor, sin código específico para ninguno de los dos — la diferencia entre ambos es solo su `schema_def`.
+Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas, editor de notas con vista previa de wikilinks y backlinks en vivo, y tablas/tableros para las bases de datos. Es HTML/CSS/JS plano (`frontend/index.html` + `frontend/app.js`), sin build ni dependencias, servido por la propia API. Adelanta la parte de interfaz de la Fase 4 porque hacía falta poder ver y tocar lo de las Fases 1–2 sin `curl`.
 
 ## Cómo arrancarlo (desarrollo)
 
@@ -37,7 +37,14 @@ docker compose run --rm api alembic upgrade head
 
 **Revisa siempre el archivo generado antes de aplicarlo.** `pages` y `databases` se referencian mutuamente, y autogenerate no resuelve bien ese ciclo (avisa con un `SAWarning` y puede ordenar las tablas de forma que la migración falle al aplicarse). Es exactamente lo que pasó en la migración inicial — se corrigió a mano separando la FK circular con `create_foreign_key`; usa esa migración como referencia si vuelve a pasar.
 
-Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel de estado de los servicios en [http://localhost:8000/](http://localhost:8000/).
+Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas y bases de datos a la izquierda).
+
+## Panel visual
+
+- **Páginas**: `+` crea una nota (`Sin título`, lista para renombrar). Editor con título, cuerpo Markdown, vista previa con `[[wikilinks]]` resueltos en vivo contra el árbol cargado, y lista de backlinks.
+- **Bases de datos**: `+` abre el diálogo de creación — nombre y propiedades (clave, nombre visible, tipo; `select`/`multiselect` piden opciones separadas por coma). El formulario de "+ Nueva fila" genera automáticamente el input correcto según el tipo declarado (texto, número, `select`, checkbox, fecha).
+- **Vistas**: `+ Vista` crea una vista `table`/`board`/`list`/`calendar`; para `board` se elige la propiedad de agrupación y las columnas salen de sus `options` (o de los valores encontrados si no las tiene).
+- **Buscar**: el cuadro de la barra lateral llama a `/search` con un pequeño debounce.
 
 ## Endpoints disponibles
 
@@ -77,8 +84,9 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Fase 0** — Compose + Postgres + API mínima
 - [x] **Fase 1** — Notas/wiki: árbol de páginas, wikilinks + backlinks, búsqueda full-text, Alembic
 - [x] **Fase 2** — Motor de `database` + `view` genéricos (tabla, board, calendario)
-- [ ] **Fase 3** — CRM y Tareas como plantillas del motor de la Fase 2
-- [ ] **Fase 4** — Frontend, despliegue en Proxmox + Tailscale, backups automatizados
+- [x] **Panel visual** (adelanto de Fase 4) — árbol, editor de notas, tablas/tableros, todo sin build
+- [ ] **Fase 3** — CRM y Tareas como plantillas preconfiguradas (crear ambas con un clic, no a mano cada vez)
+- [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados, editor más rico
 
 ## Despliegue objetivo
 
