@@ -144,6 +144,28 @@ sequenceDiagram
 
 Limitación conocida: renombrar una página no repara los wikilinks que otras páginas ya guardaron apuntando al título antiguo — se corrigen la próxima vez que esa página de origen se vuelva a guardar.
 
+## 7. El motor de `database` + `view`, probado con dos dominios reales
+
+Esto es lo que hace innecesario tener código de "CRM" o de "Tareas": el mismo endpoint genérico, con dos `schema_def` distintos, produce dos productos distintos.
+
+```mermaid
+graph TD
+    ENGINE["POST /databases<br/>{title, schema_def}"]
+    CRM_DEF["Contactos<br/>schema_def: empresa(text), fase(select), valor(number)"]
+    TASK_DEF["Tareas<br/>schema_def: estado(select), prioridad(select), hecha(checkbox)"]
+
+    ENGINE --> CRM_DEF
+    ENGINE --> TASK_DEF
+
+    CRM_DEF --> CRM_ROWS["filas: Acme, Beta, Gamma…<br/>POST /databases/{id}/rows"]
+    TASK_DEF --> TASK_ROWS["filas: Escribir memoria…<br/>POST /databases/{id}/rows"]
+
+    CRM_ROWS --> CRM_VIEW["vista board 'Ganados'<br/>filters: fase = ganado<br/>sort: valor desc"]
+    CRM_VIEW --> CRM_RESULT["GET /databases/{id}/rows?view={id}<br/>→ Beta (5000), Gamma (800)"]
+```
+
+`properties.py` valida cada fila contra el `schema_def` de su database al guardar (claves conocidas, tipo básico, opciones de `select`) — sin eso, un CRM y un gestor de tareas comparten tabla sin ninguna garantía de forma, y los errores se descubrirían leyendo, no escribiendo.
+
 ## Decisiones y por qué
 
 | Decisión | Elegido | Por qué |
@@ -153,5 +175,7 @@ Limitación conocida: renombrar una página no repara los wikilinks que otras p�
 | Migraciones | Alembic desde Fase 1 | `create_all()` sirvió para iterar rápido en Fase 0; Alembic entra ahora que el modelo tiene datos reales que preservar. La FK circular `pages` ↔ `databases` rompe el autogenerate por defecto — ver comentario en la migración inicial |
 | Resolución de wikilinks | Por título, al guardar (no al leer) | Guardar es poco frecuente, leer es constante — recalcular en cada lectura sería más caro sin necesidad |
 | Búsqueda | Postgres `tsvector`/`tsquery` (`spanish`) | A esta escala (1 usuario) no justifica una pieza aparte tipo Meilisearch; se puede migrar si hace falta |
+| Validación de `properties` | Ligera (claves + tipo básico), no estricta | Coherente con "JSONB flexible": atrapa errores obvios (typos, opciones inválidas) sin forzar campos obligatorios ni bloquear la iteración del schema |
+| Filtro/orden de vistas | En Python sobre filas ya cargadas, no SQL dinámico sobre JSONB | A esta escala (una persona, cientos de filas como mucho) es más simple y igual de rápido que construir predicados SQL contra JSONB; se puede mover a SQL si el volumen lo justifica |
 | Acceso remoto | Tailscale, sin auth propia (aún) | Uso personal en solitario; `user_id`/`workspace_id` ya están en el esquema para añadir auth real sin rediseñar |
 | API | REST | Un solo tipo de cliente, sin problema real de over/under-fetching a esta escala |

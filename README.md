@@ -16,7 +16,7 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-**Fase 1** — notas/wiki funcionando de extremo a extremo: CRUD de páginas, árbol por `parent_id`, wikilinks `[[Título]]` con backlinks reales, búsqueda full-text en español, y migraciones con Alembic.
+**Fase 2** — motor de `database` + `view` genérico funcionando de extremo a extremo: se probó creando un CRM ("Contactos") y un gestor de tareas ("Tareas") con el mismo motor, sin código específico para ninguno de los dos — la diferencia entre ambos es solo su `schema_def`.
 
 ## Cómo arrancarlo (desarrollo)
 
@@ -57,11 +57,26 @@ Documentación interactiva de la API en [http://localhost:8000/docs](http://loca
 
 Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]]`) en `body_markdown`; se resuelven por título exacto (sin distinguir mayúsculas) dentro del mismo workspace al guardar la página.
 
+### Motor de `database` + `view`
+
+| Endpoint | Método | Qué hace |
+| --- | --- | --- |
+| `/databases` | POST | Crea una `database` (página + `schema_def`) |
+| `/databases` | GET | Lista todas las databases |
+| `/databases/{id}` | GET / PATCH / DELETE | Leer, editar (título/icono/schema) o borrar (arrastra sus filas) |
+| `/databases/{id}/rows` | POST | Crea una fila; valida `properties` contra el `schema_def` |
+| `/databases/{id}/rows` | GET | Lista filas; con `?view={id}` aplica el filtro/orden de esa vista |
+| `/databases/{id}/rows/{id}` | GET / PATCH / DELETE | Leer, editar (merge parcial de `properties`) o borrar una fila |
+| `/databases/{id}/views` | POST / GET | Crear o listar vistas (`table`\|`board`\|`calendar`\|`list`) |
+| `/databases/{id}/views/{id}` | PATCH / DELETE | Editar o borrar una vista |
+
+Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": {"key":"valor","dir":"desc"}, "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend; `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
+
 ## Roadmap
 
 - [x] **Fase 0** — Compose + Postgres + API mínima
 - [x] **Fase 1** — Notas/wiki: árbol de páginas, wikilinks + backlinks, búsqueda full-text, Alembic
-- [ ] **Fase 2** — Motor de `database` + `view` genéricos (tabla, board, calendario)
+- [x] **Fase 2** — Motor de `database` + `view` genéricos (tabla, board, calendario)
 - [ ] **Fase 3** — CRM y Tareas como plantillas del motor de la Fase 2
 - [ ] **Fase 4** — Frontend, despliegue en Proxmox + Tailscale, backups automatizados
 

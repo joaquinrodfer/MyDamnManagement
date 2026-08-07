@@ -4,6 +4,20 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.3.0] — Fase 2: motor de `database` + `view`
+
+### Añadido
+
+- `POST/GET/PATCH/DELETE /databases`: una `database` es una página + `schema_def` (lista de propiedades tipadas: `text`, `number`, `select`, `multiselect`, `date`, `checkbox`, `relation`, `url`).
+- `properties.py`: valida `properties` de una fila contra el `schema_def` de su database (claves conocidas, tipo básico, opciones de `select`/`multiselect`) — 400 con mensaje claro si no cumple.
+- `POST/GET/PATCH/DELETE /databases/{id}/rows`: filas (`Page` con `type=database_row`). `PATCH` hace merge parcial de `properties`, no reemplazo completo.
+- `POST/GET/PATCH/DELETE /databases/{id}/views`: vistas (`table`/`board`/`calendar`/`list`) con `config` de filtros + orden, aplicados por el backend en `GET /rows?view={id}`; `group_by` y `visible_properties` quedan como metadato para el frontend.
+- Verificado creando dos dominios reales con el mismo motor y cero código específico: un CRM ("Contactos": empresa/fase/valor) y un gestor de tareas ("Tareas": estado/prioridad/hecha), incluida una vista board filtrada y ordenada.
+
+### Corregido
+
+- `DatabaseDef` no tenía la relación ORM hacia `Page` (`db_def.page` no existía) — provocaba un 500 en `POST /databases` después de haber confirmado la escritura en base de datos (el commit ya había ocurrido; solo fallaba el serializado de la respuesta), dejando páginas de database huérfanas sin que el cliente lo supiera. Al añadir la relación hubo que desambiguar con `foreign_keys=[page_id]` porque `pages` y `databases` se referencian mutuamente.
+
 ## [0.2.0] — Fase 1: notas/wiki
 
 ### Añadido

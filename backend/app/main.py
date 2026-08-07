@@ -4,11 +4,12 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Workspace
-from app.routers import pages, search, status
+from app.routers import databases, pages, search, status
 
 app = FastAPI(title="MyDamnManagement API")
 
 app.include_router(pages.router)
+app.include_router(databases.router)
 app.include_router(status.router)
 app.include_router(search.router)
 

@@ -99,6 +99,10 @@ class DatabaseDef(Base):
     page_id = Column(UUID(as_uuid=True), ForeignKey("pages.id", ondelete="CASCADE"), nullable=False, unique=True)
     schema_def = Column(JSONB, nullable=False, default=list)  # [{key, name, type, options?}]
 
+    # foreign_keys explícito: pages y databases se referencian mutuamente
+    # (databases.page_id -> pages.id, pages.database_id -> databases.id),
+    # así que SQLAlchemy no puede adivinar solo cuál de las dos usar aquí.
+    page = relationship("Page", foreign_keys=[page_id])
     views = relationship("View", back_populates="database", cascade="all, delete-orphan")
 
 
