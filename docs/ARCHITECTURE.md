@@ -181,7 +181,15 @@ graph LR
     API --> DB[(Postgres)]
 ```
 
-Un matiz importante: la vista previa del editor resuelve `[[wikilinks]]` **en el cliente**, contra el árbol ya cargado (`state.pagesById`) — es puramente visual, para que el enlace se vea clicable al escribir. El backlink real (`Link` en Postgres) solo existe si la página de origen se ha *guardado* después de que la página destino existiera; son dos resoluciones independientes y pueden desincronizarse temporalmente (se vio al probarlo: el preview ya mostraba el enlace resuelto antes de que `Backlinks` en la página destino pasara de 0 a 1).
+Un matiz importante: el editor resuelve `[[wikilinks]]` **en el cliente**, contra el árbol ya cargado (`state.pagesById`) — es puramente visual, para que el enlace se vea coloreado y navegable al escribir. El backlink real (`Link` en Postgres) solo existe si la página de origen se ha *guardado* después de que la página destino existiera; son dos resoluciones independientes y pueden desincronizarse temporalmente (se vio al probarlo: el editor ya mostraba el enlace resuelto antes de que `Backlinks` en la página destino pasara de 0 a 1).
+
+Dos IDs que no son el mismo, y un bug real que salió de ahí: una `page` de `type=database` tiene su propio `id` (fila `pages`) y, por separado, el `id` de la fila `databases` que la describe (`DatabaseDef.id`). `GET /pages/tree` construye sus nodos a partir de `pages`, así que devolvía el primero — pero `GET /databases/{id}` espera el segundo. El árbol y la búsqueda navegaban con el id equivocado y cada clic sobre una base de datos fallaba con 404 sin ningún aviso visible. Se corrigió incluyendo `database_id` en cada nodo del árbol; quedó documentado aquí porque es fácil reintroducir el mismo error en cualquier endpoint nuevo que mezcle ambos ids.
+
+### El editor: única pieza compilada del frontend
+
+`frontend/app.js` sigue siendo JS plano sin build, pero el editor de notas es CodeMirror 6 (`frontend/editor-src/entry.js`, compilado una vez con esbuild a `frontend/vendor/editor.bundle.js`, vendorizado y commiteado). La razón por la que esto no podía ser un `<textarea>` con un panel de vista previa aparte: un `<textarea>` es texto plano uniforme, no puede tener una línea con letra grande (un `# Encabezado`) y otra con letra normal a la vez — eso exige gestión real de cursor/selección sobre contenido con formato mixto, que es exactamente lo que resuelve un editor de verdad y no una caja de texto nativa del navegador.
+
+CodeMirror aplica clases CSS (`cm-mdm-h1`, `cm-mdm-mark`, `cm-mdm-wikilink`...) vía un `HighlightStyle` sobre el árbol de sintaxis de `@lezer/markdown`; los colores y tamaños concretos viven en el `<style>` de `index.html`, no en el bundle del editor — así el editor no sabe nada de temas claro/oscuro, solo de qué es cada cosa. Detalle no obvio: `HeaderMark`/`EmphasisMark` (los `#`/`**` en sí) llegan con **dos clases a la vez** (p. ej. `cm-mdm-h1 cm-mdm-mark`), porque heredan el tag del encabezado que los contiene Y tienen su propio tag de marcador — hace falta un selector combinado (`.cm-mdm-h1.cm-mdm-mark`) con más especificidad para que el marcador gane en tamaño sobre el encabezado.
 
 ## Decisiones y por qué
 
@@ -197,3 +205,5 @@ Un matiz importante: la vista previa del editor resuelve `[[wikilinks]]` **en el
 | Acceso remoto | Tailscale, sin auth propia (aún) | Uso personal en solitario; `user_id`/`workspace_id` ya están en el esquema para añadir auth real sin rediseñar |
 | API | REST | Un solo tipo de cliente, sin problema real de over/under-fetching a esta escala |
 | Frontend | HTML/CSS/JS plano, sin build, servido por `api` | "Un pequeño panel" no justifica un segundo contenedor, un bundler ni un framework; cuando el proyecto lo pida (Fase 4), esto es lo primero que se reemplaza sin tocar la API |
+| Editor de notas | CodeMirror 6, vendorizado (build único, no en cada edición) | Se planteó React+Vite para todo el frontend; el problema real (editor bueno) lo resuelve una librería de edición dedicada, no el framework — así que se compiló solo esa pieza y el resto sigue sin build |
+| Caché de estáticos | `Cache-Control: no-cache` (revalida por ETag) | Sin cabecera, el navegador puede servir una versión vieja de `app.js`/`index.html` sin avisar — pasó de verdad durante el desarrollo del editor |

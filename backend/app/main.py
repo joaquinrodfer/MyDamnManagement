@@ -37,6 +37,18 @@ def health():
     return {"status": "ok"}
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles normal, pero fuerza al navegador a revalidar (If-None-Match)
+    en vez de servir de caché sin preguntar. Sin esto, un cambio en app.js o
+    index.html puede quedarse "pegado" en el navegador de forma invisible —
+    el ETag sigue haciendo baratas las recargas que no cambiaron nada."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Montado al final a propósito: así no tapa /health, /status, /pages ni /docs,
 # y sigue sirviendo cualquier otra ruta (incluida "/") como archivos estáticos.
-app.mount("/", StaticFiles(directory="/app/frontend", html=True), name="frontend")
+app.mount("/", NoCacheStaticFiles(directory="/app/frontend", html=True), name="frontend")

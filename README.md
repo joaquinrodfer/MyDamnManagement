@@ -16,7 +16,9 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas, editor de notas con vista previa de wikilinks y backlinks en vivo, tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3). Es HTML/CSS/JS plano (`frontend/index.html` + `frontend/app.js`), sin build ni dependencias, servido por la propia API.
+Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas, editor de notas con formato en vivo (CodeMirror 6: `#`/`**`/`[[wikilinks]]` se ven pequeños y el texto que envuelven se estiliza al momento, en el mismo cuadro, sin panel de "vista previa" aparte), tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3).
+
+El resto del frontend sigue siendo HTML/CSS/JS plano sin build (`frontend/index.html` + `frontend/app.js`, servidos por la propia API); la única pieza compilada es el editor, vendorizado como un único archivo (`frontend/vendor/editor.bundle.js`, generado una vez con esbuild desde `frontend/editor-src/` — ver más abajo).
 
 ## Cómo arrancarlo (desarrollo)
 
@@ -41,10 +43,22 @@ Documentación interactiva de la API en [http://localhost:8000/docs](http://loca
 
 ## Panel visual
 
-- **Páginas**: `+` crea una nota (`Sin título`, lista para renombrar). Editor con título, cuerpo Markdown, vista previa con `[[wikilinks]]` resueltos en vivo contra el árbol cargado, y lista de backlinks.
+- **Páginas**: `+` crea una nota (`Sin título`, lista para renombrar). El editor es un único cuadro — no hay "modo edición" y "modo vista previa" separados: escribes Markdown y el propio formato aparece al momento (encabezados más grandes, negrita/cursiva reales, wikilinks coloreados), con el marcador de sintaxis (`#`, `**`, `[[`/`]]`) visible pero pequeño y discreto en el sitio donde lo escribiste. `Ctrl/Cmd + clic` sobre un wikilink resuelto navega a esa página; backlinks listados debajo. `Ctrl/Cmd + S` guarda sin pasar por el diálogo del navegador.
 - **Bases de datos**: los botones **CRM** / **Tareas** crean de un clic una database ya configurada (propiedades + vistas por defecto, plantillas en `backend/app/templates.py`) — el título es editable después haciendo clic en él. `+` abre el diálogo de creación en blanco: nombre y propiedades (clave, nombre visible, tipo; `select`/`multiselect` piden opciones separadas por coma). El formulario de "+ Nueva fila" genera automáticamente el input correcto según el tipo declarado (texto, número, `select`, checkbox, fecha).
 - **Vistas**: `+ Vista` crea una vista `table`/`board`/`list`/`calendar`; para `board` se elige la propiedad de agrupación y las columnas salen de sus `options` (o de los valores encontrados si no las tiene).
 - **Buscar**: el cuadro de la barra lateral llama a `/search` con un pequeño debounce.
+
+### El editor de notas (única pieza con build)
+
+Todo el resto del frontend es HTML/JS servido tal cual, sin compilar. El editor es la excepción deliberada: un editor con formato en vivo de verdad necesita gestión de cursor/selección que un `<textarea>` no puede dar (no soporta tamaños de fuente distintos por línea), así que usa [CodeMirror 6](https://codemirror.net/). CM6 se distribue como paquetes ES modules pensados para bundlers — en vez de tirar de un CDN en cada carga (dependencia de terceros en tiempo de ejecución, mala idea detrás de Tailscale) o de meter un bundler en el flujo de trabajo normal, se compila **una vez** a un único archivo:
+
+```bash
+cd frontend/editor-src
+npm install
+npm run build   # genera ../vendor/editor.bundle.js (se commitea)
+```
+
+Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de qué se resalta y cómo). El resto del tiempo, `frontend/vendor/editor.bundle.js` es un archivo estático más, y `frontend/app.js` lo importa como cualquier módulo ES (`import { createNoteEditor } from "/vendor/editor.bundle.js"`).
 
 ## Endpoints disponibles
 
@@ -88,11 +102,14 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Fase 2** — Motor de `database` + `view` genéricos (tabla, board, calendario)
 - [x] **Panel visual** (adelanto de Fase 4) — árbol, editor de notas, tablas/tableros, todo sin build
 - [x] **Fase 3** — CRM y Tareas como plantillas preconfiguradas (`backend/app/templates.py`; un clic en el panel)
-- [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados, editor más rico
+- [x] **Editor de notas con formato en vivo** (CodeMirror 6) — mismo cuadro para escribir y ver el resultado
+- [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue objetivo
 
 Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El stack de contenedores no cambia entre ambos entornos.
+
+**Pendiente antes de ese despliegue:** `backend/Dockerfile` solo copia `backend/`; hoy `frontend/` llega al contenedor por el bind-mount de desarrollo (`./frontend:/app/frontend:ro` en `docker-compose.yml`), que no existirá en Proxmox si se despliega sin bind-mounts. Hay que decidir cómo empaquetar `frontend/` (incluido `vendor/editor.bundle.js`) dentro de la imagen antes de la Fase 4 — anotado aquí para no perderlo de vista, se resuelve cuando toque el despliegue.
 
 ## Licencia
 

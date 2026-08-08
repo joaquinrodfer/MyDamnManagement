@@ -61,8 +61,24 @@ def get_tree(db: Session = Depends(get_db)):
         .order_by(models.Page.title)
         .all()
     )
+
+    # El id de una `page` de type=database (Page.id) y el id de la fila
+    # `databases` que la describe (DatabaseDef.id) son dos UUID distintos
+    # -- el frontend necesita este segundo para pedir /databases/{id}.
+    db_defs = db.query(models.DatabaseDef).filter(
+        models.DatabaseDef.page_id.in_([p.id for p in pages if p.type == models.PageType.database])
+    )
+    database_id_by_page_id = {d.page_id: d.id for d in db_defs}
+
     nodes = {
-        p.id: {"id": p.id, "title": p.title, "type": p.type, "icon": p.icon, "children": []}
+        p.id: {
+            "id": p.id,
+            "title": p.title,
+            "type": p.type,
+            "icon": p.icon,
+            "database_id": database_id_by_page_id.get(p.id),
+            "children": [],
+        }
         for p in pages
     }
     roots = []

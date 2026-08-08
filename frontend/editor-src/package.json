@@ -1,0 +1,19 @@
+{
+  "name": "mdm-editor-build",
+  "private": true,
+  "description": "No es parte de la app en sí: aquí solo se genera frontend/vendor/editor.bundle.js una vez, con esbuild. La app en producción/desarrollo lo carga como archivo estático plano; esto nunca corre en el servidor ni en cada edición.",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --minify --format=esm --outfile=../vendor/editor.bundle.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.7.1",
+    "@codemirror/lang-markdown": "^6.3.1",
+    "@codemirror/language": "^6.10.8",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.36.1",
+    "@lezer/highlight": "^1.2.1"
+  }
+}

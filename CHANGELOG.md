@@ -4,6 +4,23 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.6.0] — Editor con formato en vivo + correcciones de navegación
+
+### Corregido
+
+- **Bug real:** el árbol (`GET /pages/tree`) devolvía el id de la `page` para los nodos de tipo `database`, pero el frontend necesitaba el id de la fila `databases` (son dos UUID distintos) para pedir `/databases/{id}`. Cada clic en una base de datos desde la barra lateral o desde resultados de búsqueda fallaba con un 404 silencioso — causa probable de "no consigo ver las bases de datos". `GET /pages/tree` ahora incluye `database_id` en cada nodo de tipo `database`; el frontend lo usa para navegar.
+- Los archivos estáticos (`app.js`, `index.html`, ahora también el editor) no llevaban cabecera de caché, así que el navegador podía servir una versión vieja sin avisar. `NoCacheStaticFiles` (en `main.py`) añade `Cache-Control: no-cache` — sigue siendo barato (revalida por ETag) pero nunca sirve una copia obsoleta sin preguntar.
+
+### Añadido
+
+- **Editor de notas con formato en vivo** (CodeMirror 6): un único cuadro para escribir y ver el resultado, no cuadro de texto + panel de vista previa separados. `#`/`##`/`###`, `**negrita**`, `*cursiva*` y `[[wikilinks]]` se renderizan al momento; los marcadores de sintaxis quedan visibles pero pequeños y discretos justo donde se escribieron. `Ctrl/Cmd+clic` en un wikilink resuelto navega; `Ctrl/Cmd+S` guarda.
+- `frontend/editor-src/`: fuente del editor (paquetes `@codemirror/*` + `@lezer/highlight`), compilado una vez con esbuild a `frontend/vendor/editor.bundle.js` (vendorizado, commiteado, no depende de ningún CDN en tiempo de ejecución). Única pieza del frontend con build — el resto sigue siendo HTML/JS plano.
+- `frontend/app.js` pasa a cargarse como módulo ES (`<script type="module">`) para poder importar el bundle del editor.
+
+### Decisión
+
+- Se planteó migrar todo el frontend a React + Vite. Se descartó por ahora: el problema real (que el editor fuera bueno) lo resuelve una librería de edición dedicada, no el framework — React no habría simplificado la gestión de cursor/selección del editor. Se optó por el punto intermedio: vanilla JS sin build para el resto de la app, CodeMirror vendorizado solo para el editor. Revisable si el resto de la interfaz (diálogos, listas, formularios) empieza a pesar demasiado para mantenerse a mano.
+
 ## [0.5.0] — Fase 3: plantillas de CRM y Tareas
 
 ### Añadido

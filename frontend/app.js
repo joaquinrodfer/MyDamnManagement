@@ -1,9 +1,15 @@
-// MyDamnManagement — panel visual. Vanilla JS, sin build, sin dependencias.
-// Habla directamente con la API del propio origen (/pages, /databases, /search, /status).
+// MyDamnManagement — panel visual. Vanilla JS, sin build, sin dependencias
+// propias -- la única excepción es el editor de notas (CodeMirror 6), que
+// vendorizamos ya compilado en /vendor/editor.bundle.js (ver
+// frontend/editor-src/). Habla directamente con la API del propio origen
+// (/pages, /databases, /search, /status).
+
+import { createNoteEditor } from "/vendor/editor.bundle.js";
 
 const state = {
   pagesById: new Map(), // id -> {id,title,type,icon,children} (del árbol; para resolver [[wikilinks]])
   current: null, // {kind: 'note'|'database', id}
+  editor: null, // instancia activa del editor de notas (createNoteEditor), o null
 };
 
 // ---------------------------------------------------------------- helpers
@@ -29,9 +35,22 @@ function typeIcon(type) {
   return type === "database" ? "🗄" : "📄";
 }
 
+/** Limpia #main y destruye la instancia del editor si había una nota abierta
+ * -- si no, CodeMirror sigue vivo (listeners, memoria) aunque su DOM ya no
+ * exista, porque quitarle el nodo padre no lo destruye por sí solo. */
+function clearMain() {
+  if (state.editor) {
+    state.editor.destroy();
+    state.editor = null;
+  }
+  const main = document.getElementById("main");
+  main.innerHTML = "";
+  return main;
+}
+
 function showEmpty() {
   state.current = null;
-  document.getElementById("main").innerHTML = '<div class="empty-state">Elige una página o crea una nueva.</div>';
+  clearMain().innerHTML = '<div class="empty-state">Elige una página o crea una nueva.</div>';
 }
 
 // ---------------------------------------------------------------- estado
@@ -90,7 +109,10 @@ function renderTreeNode(node) {
 
   const row = document.createElement("div");
   row.className = "tree-row";
-  row.dataset.id = node.id;
+  // El id de la `page` y el id de la fila `databases` que la describe son
+  // dos UUID distintos -- para navegar hace falta el segundo.
+  const navId = node.type === "database" ? node.database_id : node.id;
+  row.dataset.id = navId;
 
   const icon = document.createElement("span");
   icon.className = "type-icon";
@@ -102,7 +124,7 @@ function renderTreeNode(node) {
 
   row.append(icon, label);
   row.addEventListener("click", () => {
-    if (node.type === "database") selectDatabase(node.id);
+    if (node.type === "database") selectDatabase(node.database_id);
     else selectNote(node.id);
   });
 
@@ -134,8 +156,7 @@ async function selectNote(id) {
 }
 
 function renderNote(page, backlinks) {
-  const main = document.getElementById("main");
-  main.innerHTML = "";
+  const main = clearMain();
 
   const titleInput = document.createElement("input");
   titleInput.className = "note-title";
@@ -145,34 +166,48 @@ function renderNote(page, backlinks) {
   meta.className = "note-meta";
   meta.textContent = `Actualizado ${new Date(page.updated_at).toLocaleString("es-ES")}`;
 
-  const body = document.createElement("textarea");
-  body.className = "note-body";
-  body.value = page.body_markdown || "";
+  // El cuadro de texto y la vista previa son el mismo sitio: CodeMirror
+  // aplica el formato en vivo sobre el propio Markdown (frontend/editor-src),
+  // no hay un panel de "preview" aparte que mantener sincronizado.
+  const bodyMount = document.createElement("div");
+  bodyMount.id = "note-body";
+
+  let dirty = false;
 
   const actions = document.createElement("div");
   actions.className = "btn-row";
   actions.style.marginTop = "10px";
+  actions.style.alignItems = "center";
 
   const saveBtn = document.createElement("button");
   saveBtn.className = "btn btn-primary";
   saveBtn.textContent = "Guardar";
-  saveBtn.addEventListener("click", async () => {
+
+  const dirtyFlag = document.createElement("span");
+  dirtyFlag.className = "note-meta";
+  dirtyFlag.textContent = "cambios sin guardar";
+  dirtyFlag.hidden = true;
+
+  async function save() {
     saveBtn.disabled = true;
     saveBtn.textContent = "Guardando…";
     try {
       await api(`/pages/${page.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ title: titleInput.value, body_markdown: body.value }),
+        body: JSON.stringify({ title: titleInput.value, body_markdown: state.editor.getValue() }),
       });
+      dirty = false;
+      dirtyFlag.hidden = true;
       await loadTree();
-      await selectNote(page.id);
+      markActive(page.id);
     } catch (e) {
       alert("Error al guardar: " + e.message);
     } finally {
       saveBtn.disabled = false;
       saveBtn.textContent = "Guardar";
     }
-  });
+  }
+  saveBtn.addEventListener("click", save);
 
   const deleteBtn = document.createElement("button");
   deleteBtn.className = "btn btn-danger";
@@ -184,23 +219,7 @@ function renderNote(page, backlinks) {
     showEmpty();
   });
 
-  actions.append(saveBtn, deleteBtn);
-
-  const previewHead = document.createElement("div");
-  previewHead.className = "panel-head";
-  previewHead.textContent = "Vista previa";
-
-  const preview = document.createElement("div");
-  preview.className = "preview";
-  preview.innerHTML = renderMarkdownPreview(body.value);
-  preview.addEventListener("click", (e) => {
-    const link = e.target.closest(".wikilink[data-page-id]");
-    if (link) selectNote(link.dataset.pageId);
-  });
-
-  body.addEventListener("input", () => {
-    preview.innerHTML = renderMarkdownPreview(body.value);
-  });
+  actions.append(saveBtn, deleteBtn, dirtyFlag);
 
   const backHead = document.createElement("div");
   backHead.className = "panel-head";
@@ -220,23 +239,33 @@ function renderNote(page, backlinks) {
     });
   }
 
-  main.append(titleInput, meta, body, actions, previewHead, preview, backHead, backList);
-}
+  main.append(titleInput, meta, bodyMount, actions, backHead, backList);
 
-function renderMarkdownPreview(md) {
-  let html = escapeHtml(md || "");
-  html = html.replace(/^### (.*)$/gm, "<h3>$1</h3>");
-  html = html.replace(/^## (.*)$/gm, "<h2>$1</h2>");
-  html = html.replace(/^# (.*)$/gm, "<h1>$1</h1>");
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
-  html = html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, title, alias) => {
-    const label = escapeHtml((alias || title).trim());
-    const target = findPageByTitle(title.trim());
-    if (target) return `<a href="#" class="wikilink" data-page-id="${target.id}">${label}</a>`;
-    return `<span class="wikilink-missing" title="Página no encontrada">${label}</span>`;
+  // Ctrl/Cmd+S guarda sin pasar por el navegador (evita el diálogo de "Guardar página")
+  titleInput.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      e.preventDefault();
+      save();
+    }
   });
-  return html.replace(/\n/g, "<br>");
+
+  state.editor = createNoteEditor({
+    parent: bodyMount,
+    doc: page.body_markdown || "",
+    resolvePage: (title) => findPageByTitle(title),
+    onNavigate: (pageId) => selectNote(pageId),
+    onChange: () => {
+      dirty = true;
+      dirtyFlag.hidden = false;
+    },
+  });
+
+  bodyMount.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      e.preventDefault();
+      save();
+    }
+  });
 }
 
 function findPageByTitle(title) {
@@ -257,8 +286,7 @@ async function selectDatabase(id) {
 }
 
 async function renderDatabase(database, views, activeViewId) {
-  const main = document.getElementById("main");
-  main.innerHTML = "";
+  const main = clearMain();
 
   const header = document.createElement("div");
   header.className = "db-header";
@@ -751,8 +779,14 @@ async function runSearch(q) {
       searchInput.value = "";
       searchResults.hidden = true;
       navSections.hidden = false;
-      if (r.type === "database") selectDatabase(r.id);
-      else selectNote(r.id);
+      if (r.type === "database") {
+        // /search devuelve el id de página (mismo motivo que en el árbol);
+        // resolvemos el id real de la database contra el árbol ya cargado.
+        const node = state.pagesById.get(r.id);
+        selectDatabase(node?.database_id || r.id);
+      } else {
+        selectNote(r.id);
+      }
     });
     searchResults.appendChild(el);
   });
