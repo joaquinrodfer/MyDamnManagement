@@ -4,6 +4,25 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.7.0] — Metadatos de página, autoguardado, caret visible
+
+### Añadido
+
+- `page` gana tres columnas: `created_by` (se fija solo al crear, pensado para cuando haya espacios grupales/multiusuario), `description` y `header_image_path` — todas opcionales a nivel de base de datos; la API siempre rellena `icon`/`created_by` al crear una página, así que a nivel de producto son "obligatorias" sin forzar una migración de backfill sobre datos existentes.
+- `POST/DELETE /pages/{id}/header-image`: sube (`multipart/form-data`) o quita la imagen de cabecera de una página; valida tipo de contenido y tamaño (8 MB máx.), sustituye cualquier cabecera anterior en vez de acumular archivos.
+- `/files/...`: monta `/app/attachments` como estáticos para servir lo subido.
+- Panel: icono editable (clic sobre el emoji), campo de descripción, imagen de cabecera con subida/borrado, línea "Creado por X" en la nota.
+- **Autoguardado**: sin botón "Guardar" — cualquier cambio (título, icono, descripción, cuerpo) programa un guardado 2s después de la última pulsación; si llegan más cambios antes, se reinicia el plazo. Al navegar a otra página o cerrar la pestaña, cualquier guardado pendiente se fuerza antes (no se pierden los últimos <2s de cambios). `Ctrl/Cmd+S` sigue disponible para forzarlo al momento.
+- El árbol de páginas ahora muestra el icono real de cada página (antes siempre el genérico 📄/🗄, ignorando `icon`).
+
+### Corregido
+
+- El caret del editor de notas se veía negro en tema oscuro: CodeMirror no dibuja un cursor propio a menos que se incluya la extensión `drawSelection()` (no la teníamos), así que el cursor real era el nativo del navegador — y ese sigue `caret-color`, no las reglas `.cm-cursor` que habíamos escrito. Añadido `caret-color: var(--ink)` en `#note-body .cm-content`.
+
+### Config
+
+- `DEFAULT_USER_NAME` (`.env`): nombre que se asigna como creador de cada página nueva mientras no haya login. Hay que recrear el contenedor `api` (`docker compose up -d api`) tras cambiarlo — las variables de entorno no se recogen con el hot-reload de `--reload`, solo al crear el contenedor.
+
 ## [0.6.0] — Editor con formato en vivo + correcciones de navegación
 
 ### Corregido

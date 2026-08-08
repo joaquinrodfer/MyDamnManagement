@@ -11,6 +11,12 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg2://mdm:mdm@localhost:5432/mydamnmanagement"
 
+    # Sin autenticación todavía (uso personal en solitario) -- "creador" de
+    # una página se rellena con esto. El día que haya login de verdad, se
+    # sustituye por el usuario autenticado sin tocar el resto del modelo.
+    default_user_name: str = "Tú"
+    default_icon: str = "📄"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

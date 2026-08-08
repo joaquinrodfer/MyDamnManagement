@@ -1,15 +1,20 @@
 import uuid
+from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.config import settings
 from app.database import get_db
 from app.serializers import serialize_page
 from app.wikilinks import sync_wikilinks
 
 router = APIRouter(prefix="/pages", tags=["pages"])
+
+ATTACHMENTS_DIR = Path("/app/attachments")
+MAX_HEADER_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB, generoso para una imagen de cabecera
 
 
 def _get_default_workspace(db: Session) -> models.Workspace:
@@ -33,7 +38,9 @@ def create_page(payload: schemas.PageCreate, db: Session = Depends(get_db)):
         title=payload.title,
         type=payload.type,
         parent_id=payload.parent_id,
-        icon=payload.icon,
+        icon=payload.icon or settings.default_icon,
+        description=payload.description,
+        created_by=settings.default_user_name,  # "obligatorio": la API siempre lo rellena
     )
     db.add(page)
     db.flush()  # asigna page.id sin cerrar la transacción
@@ -109,6 +116,8 @@ def update_page(page_id: uuid.UUID, payload: schemas.PageUpdate, db: Session = D
         page.title = payload.title
     if payload.icon is not None:
         page.icon = payload.icon
+    if payload.description is not None:
+        page.description = payload.description
     if payload.body_markdown is not None:
         if page.content:
             page.content.body_markdown = payload.body_markdown
@@ -147,3 +156,49 @@ def get_backlinks(page_id: uuid.UUID, db: Session = Depends(get_db)):
     )
     pages = db.query(models.Page).filter(models.Page.id.in_(source_ids)).all()
     return [serialize_page(p) for p in pages]
+
+
+@router.post("/{page_id}/header-image", response_model=schemas.PageRead)
+async def upload_header_image(page_id: uuid.UUID, file: UploadFile, db: Session = Depends(get_db)):
+    page = db.get(models.Page, page_id)
+    if not page:
+        raise HTTPException(404, "Página no encontrada")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(400, "El archivo debe ser una imagen")
+
+    data = await file.read()
+    if len(data) > MAX_HEADER_IMAGE_BYTES:
+        raise HTTPException(400, f"Máximo {MAX_HEADER_IMAGE_BYTES // (1024 * 1024)} MB")
+
+    page_dir = ATTACHMENTS_DIR / "pages" / str(page_id)
+    page_dir.mkdir(parents=True, exist_ok=True)
+
+    # Nombre fijo ("header.<ext>"): reemplaza cualquier cabecera anterior de
+    # esta página en vez de ir acumulando archivos huérfanos.
+    for old in page_dir.glob("header.*"):
+        old.unlink(missing_ok=True)
+
+    ext = Path(file.filename or "").suffix or ".jpg"
+    dest = page_dir / f"header{ext}"
+    dest.write_bytes(data)
+
+    page.header_image_path = f"/files/pages/{page_id}/{dest.name}"
+    db.commit()
+    db.refresh(page)
+    return serialize_page(page)
+
+
+@router.delete("/{page_id}/header-image", response_model=schemas.PageRead)
+def delete_header_image(page_id: uuid.UUID, db: Session = Depends(get_db)):
+    page = db.get(models.Page, page_id)
+    if not page:
+        raise HTTPException(404, "Página no encontrada")
+
+    page_dir = ATTACHMENTS_DIR / "pages" / str(page_id)
+    for old in page_dir.glob("header.*"):
+        old.unlink(missing_ok=True)
+
+    page.header_image_path = None
+    db.commit()
+    db.refresh(page)
+    return serialize_page(page)

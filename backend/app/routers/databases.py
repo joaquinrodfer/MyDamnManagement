@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.config import settings
 from app.database import get_db
 from app.properties import validate_properties
 from app.templates import TEMPLATES
@@ -78,7 +79,8 @@ def create_database(payload: schemas.DatabaseCreate, db: Session = Depends(get_d
         title=payload.title,
         type=models.PageType.database,
         parent_id=payload.parent_id,
-        icon=payload.icon,
+        icon=payload.icon or settings.default_icon,
+        created_by=settings.default_user_name,
     )
     db.add(page)
     db.flush()
@@ -119,7 +121,13 @@ def create_from_template(payload: schemas.DatabaseFromTemplate, db: Session = De
         raise HTTPException(404, f"Plantilla '{payload.template}' no existe")
 
     ws = _get_default_workspace(db)
-    page = models.Page(workspace_id=ws.id, title=payload.title or template["title"], type=models.PageType.database)
+    page = models.Page(
+        workspace_id=ws.id,
+        title=payload.title or template["title"],
+        type=models.PageType.database,
+        icon=settings.default_icon,
+        created_by=settings.default_user_name,
+    )
     db.add(page)
     db.flush()
 

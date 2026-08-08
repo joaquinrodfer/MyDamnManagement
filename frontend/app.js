@@ -10,6 +10,7 @@ const state = {
   pagesById: new Map(), // id -> {id,title,type,icon,children} (del árbol; para resolver [[wikilinks]])
   current: null, // {kind: 'note'|'database', id}
   editor: null, // instancia activa del editor de notas (createNoteEditor), o null
+  flushPendingSave: null, // fuerza el autoguardado en curso antes de navegar a otra página
 };
 
 // ---------------------------------------------------------------- helpers
@@ -35,10 +36,16 @@ function typeIcon(type) {
   return type === "database" ? "🗄" : "📄";
 }
 
-/** Limpia #main y destruye la instancia del editor si había una nota abierta
- * -- si no, CodeMirror sigue vivo (listeners, memoria) aunque su DOM ya no
- * exista, porque quitarle el nodo padre no lo destruye por sí solo. */
+/** Limpia #main: fuerza cualquier autoguardado pendiente (para no perder los
+ * últimos <2s de cambios al navegar), y destruye la instancia del editor si
+ * había una nota abierta -- si no, CodeMirror sigue vivo (listeners,
+ * memoria) aunque su DOM ya no exista, porque quitarle el nodo padre no lo
+ * destruye por sí solo. */
 function clearMain() {
+  if (state.flushPendingSave) {
+    state.flushPendingSave();
+    state.flushPendingSave = null;
+  }
   if (state.editor) {
     state.editor.destroy();
     state.editor = null;
@@ -116,7 +123,7 @@ function renderTreeNode(node) {
 
   const icon = document.createElement("span");
   icon.className = "type-icon";
-  icon.textContent = typeIcon(node.type);
+  icon.textContent = node.icon || typeIcon(node.type);
 
   const label = document.createElement("span");
   label.className = "tree-label";
@@ -155,71 +162,191 @@ async function selectNote(id) {
   renderNote(page, backlinks);
 }
 
+const AUTOSAVE_DELAY_MS = 2000;
+
 function renderNote(page, backlinks) {
   const main = clearMain();
+
+  // ---- imagen de cabecera (opcional) ----
+  const headerWrap = document.createElement("div");
+  headerWrap.className = "note-header-image-wrap";
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/*";
+  fileInput.hidden = true;
+
+  function renderHeaderImage() {
+    headerWrap.innerHTML = "";
+    if (page.header_image_path) {
+      const img = document.createElement("img");
+      img.className = "note-header-image";
+      img.src = page.header_image_path;
+      img.alt = "";
+
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "note-header-remove";
+      removeBtn.textContent = "× Quitar cabecera";
+      removeBtn.addEventListener("click", async () => {
+        const updated = await api(`/pages/${page.id}/header-image`, { method: "DELETE" });
+        page.header_image_path = updated.header_image_path;
+        renderHeaderImage();
+      });
+
+      headerWrap.append(img, removeBtn);
+    } else {
+      const addBtn = document.createElement("button");
+      addBtn.className = "btn";
+      addBtn.textContent = "+ Imagen de cabecera";
+      addBtn.addEventListener("click", () => fileInput.click());
+      headerWrap.appendChild(addBtn);
+    }
+  }
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    fileInput.value = "";
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch(`/pages/${page.id}/header-image`, { method: "POST", body: formData });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+      page.header_image_path = data.header_image_path;
+      renderHeaderImage();
+    } catch (e) {
+      alert("Error al subir la imagen: " + e.message);
+    }
+  });
+
+  renderHeaderImage();
+
+  // ---- icono + título ----
+  const titleRow = document.createElement("div");
+  titleRow.className = "note-title-row";
+
+  const iconInput = document.createElement("input");
+  iconInput.className = "note-icon-input";
+  iconInput.value = page.icon || "";
+  iconInput.title = "Icono (emoji)";
 
   const titleInput = document.createElement("input");
   titleInput.className = "note-title";
   titleInput.value = page.title;
 
+  titleRow.append(iconInput, titleInput);
+
+  // ---- meta (creador, obligatorio y de solo lectura -- se fija al crear) ----
   const meta = document.createElement("div");
   meta.className = "note-meta";
-  meta.textContent = `Actualizado ${new Date(page.updated_at).toLocaleString("es-ES")}`;
+  function renderMeta() {
+    meta.textContent = `Creado por ${page.created_by || "—"} · Actualizado ${new Date(page.updated_at).toLocaleString("es-ES")}`;
+  }
+  renderMeta();
 
-  // El cuadro de texto y la vista previa son el mismo sitio: CodeMirror
-  // aplica el formato en vivo sobre el propio Markdown (frontend/editor-src),
-  // no hay un panel de "preview" aparte que mantener sincronizado.
+  // ---- descripción (opcional) ----
+  const descInput = document.createElement("textarea");
+  descInput.className = "note-description";
+  descInput.placeholder = "Añade una descripción…";
+  descInput.value = page.description || "";
+  descInput.rows = 1;
+  function autoResizeDesc() {
+    descInput.style.height = "auto";
+    descInput.style.height = descInput.scrollHeight + "px";
+  }
+
+  // ---- cuerpo: el cuadro de texto y el formato son el mismo sitio, no hay
+  // panel de "vista previa" aparte que mantener sincronizado (ver editor-src) ----
   const bodyMount = document.createElement("div");
   bodyMount.id = "note-body";
 
-  let dirty = false;
+  // ---- autoguardado (2s tras el último cambio; sin botón "Guardar") ----
+  const saveStatus = document.createElement("span");
+  saveStatus.className = "note-meta";
+  saveStatus.textContent = "Guardado";
+
+  let saveTimer = null;
+  let saving = false;
+  let saveAgain = false;
+
+  function scheduleSave() {
+    saveStatus.textContent = "Cambios sin guardar…";
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, AUTOSAVE_DELAY_MS);
+    state.flushPendingSave = () => {
+      clearTimeout(saveTimer);
+      doSave();
+    };
+  }
+
+  async function doSave() {
+    clearTimeout(saveTimer);
+    if (saving) {
+      saveAgain = true;
+      return;
+    }
+    saving = true;
+    saveStatus.textContent = "Guardando…";
+
+    // El icono es "obligatorio": si lo han vaciado, se restaura un valor por
+    // defecto en vez de guardar un icono vacío.
+    if (iconInput.value.trim() === "") iconInput.value = "📄";
+
+    try {
+      const updated = await api(`/pages/${page.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: titleInput.value,
+          icon: iconInput.value.trim(),
+          description: descInput.value,
+          body_markdown: state.editor.getValue(),
+        }),
+      });
+      page.updated_at = updated.updated_at;
+      page.title = updated.title;
+      renderMeta();
+      saveStatus.textContent = "Guardado";
+      state.flushPendingSave = null;
+      await loadTree();
+      markActive(page.id);
+    } catch (e) {
+      saveStatus.textContent = "Error al guardar";
+      console.error(e);
+    } finally {
+      saving = false;
+      if (saveAgain) {
+        saveAgain = false;
+        doSave();
+      }
+    }
+  }
+
+  iconInput.addEventListener("input", scheduleSave);
+  titleInput.addEventListener("input", scheduleSave);
+  descInput.addEventListener("input", () => {
+    autoResizeDesc();
+    scheduleSave();
+  });
 
   const actions = document.createElement("div");
   actions.className = "btn-row";
   actions.style.marginTop = "10px";
   actions.style.alignItems = "center";
 
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "btn btn-primary";
-  saveBtn.textContent = "Guardar";
-
-  const dirtyFlag = document.createElement("span");
-  dirtyFlag.className = "note-meta";
-  dirtyFlag.textContent = "cambios sin guardar";
-  dirtyFlag.hidden = true;
-
-  async function save() {
-    saveBtn.disabled = true;
-    saveBtn.textContent = "Guardando…";
-    try {
-      await api(`/pages/${page.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ title: titleInput.value, body_markdown: state.editor.getValue() }),
-      });
-      dirty = false;
-      dirtyFlag.hidden = true;
-      await loadTree();
-      markActive(page.id);
-    } catch (e) {
-      alert("Error al guardar: " + e.message);
-    } finally {
-      saveBtn.disabled = false;
-      saveBtn.textContent = "Guardar";
-    }
-  }
-  saveBtn.addEventListener("click", save);
-
   const deleteBtn = document.createElement("button");
   deleteBtn.className = "btn btn-danger";
   deleteBtn.textContent = "Borrar página";
   deleteBtn.addEventListener("click", async () => {
     if (!confirm(`¿Borrar "${page.title}"? Esto no se puede deshacer.`)) return;
+    clearTimeout(saveTimer);
+    state.flushPendingSave = null;
     await api(`/pages/${page.id}`, { method: "DELETE" });
     await loadTree();
     showEmpty();
   });
 
-  actions.append(saveBtn, deleteBtn, dirtyFlag);
+  actions.append(saveStatus, deleteBtn);
 
   const backHead = document.createElement("div");
   backHead.className = "panel-head";
@@ -239,13 +366,16 @@ function renderNote(page, backlinks) {
     });
   }
 
-  main.append(titleInput, meta, bodyMount, actions, backHead, backList);
+  main.append(headerWrap, fileInput, titleRow, meta, descInput, bodyMount, actions, backHead, backList);
+  autoResizeDesc();
 
-  // Ctrl/Cmd+S guarda sin pasar por el navegador (evita el diálogo de "Guardar página")
-  titleInput.addEventListener("keydown", (e) => {
+  // Ctrl/Cmd+S fuerza el guardado ya, sin esperar el debounce (y sin pasar
+  // por el diálogo del navegador). Delegado en #main: pulsarlo desde
+  // cualquier campo de la nota funciona.
+  main.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
       e.preventDefault();
-      save();
+      doSave();
     }
   });
 
@@ -254,17 +384,7 @@ function renderNote(page, backlinks) {
     doc: page.body_markdown || "",
     resolvePage: (title) => findPageByTitle(title),
     onNavigate: (pageId) => selectNote(pageId),
-    onChange: () => {
-      dirty = true;
-      dirtyFlag.hidden = false;
-    },
-  });
-
-  bodyMount.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-      e.preventDefault();
-      save();
-    }
+    onChange: scheduleSave,
   });
 }
 
@@ -797,3 +917,9 @@ async function runSearch(q) {
 loadTree();
 pollStatus();
 setInterval(pollStatus, 4000);
+
+// Red de seguridad: si cierras/recargas la pestaña con cambios pendientes
+// del autoguardado (< 2s desde la última pulsación), los manda ya.
+window.addEventListener("beforeunload", () => {
+  state.flushPendingSave?.();
+});

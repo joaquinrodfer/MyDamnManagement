@@ -13,7 +13,8 @@ class PageBase(BaseModel):
     title: str = "Sin título"
     type: PageType = PageType.note
     parent_id: Optional[uuid.UUID] = None
-    icon: Optional[str] = None
+    icon: Optional[str] = None  # si no se manda, la API asigna settings.default_icon
+    description: Optional[str] = None
 
 
 class PageCreate(PageBase):
@@ -23,6 +24,7 @@ class PageCreate(PageBase):
 class PageUpdate(BaseModel):
     title: Optional[str] = None
     icon: Optional[str] = None
+    description: Optional[str] = None
     body_markdown: Optional[str] = None
 
 
@@ -31,6 +33,8 @@ class PageRead(PageBase):
 
     id: uuid.UUID
     workspace_id: uuid.UUID
+    created_by: Optional[str] = None
+    header_image_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     body_markdown: Optional[str] = None

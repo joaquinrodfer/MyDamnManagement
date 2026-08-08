@@ -23,6 +23,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
     volumes:
       - ./backend/app:/app/app # hot-reload en desarrollo (Windows y Linux por igual)
       - ./backend/alembic:/app/alembic # migraciones; bind-mount para que autogenerate escriba en el host

@@ -49,6 +49,12 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
-# Montado al final a propósito: así no tapa /health, /status, /pages ni /docs,
-# y sigue sirviendo cualquier otra ruta (incluida "/") como archivos estáticos.
+# Adjuntos (imágenes de cabecera, etc.) subidos por la propia app -- ver
+# POST /pages/{id}/header-image. Antes del mount de "/" por la misma razón
+# de siempre: el catch-all no debe taparlo.
+app.mount("/files", StaticFiles(directory="/app/attachments"), name="files")
+
+# Montado al final a propósito: así no tapa /health, /status, /pages, /files
+# ni /docs, y sigue sirviendo cualquier otra ruta (incluida "/") como
+# archivos estáticos.
 app.mount("/", NoCacheStaticFiles(directory="/app/frontend", html=True), name="frontend")

@@ -67,7 +67,12 @@ class Page(Base):
 
     type = Column(Enum(PageType), nullable=False, default=PageType.note)
     title = Column(String, nullable=False, default="Sin título")
-    icon = Column(String, nullable=True)
+    icon = Column(String, nullable=True)  # "obligatorio" a nivel de producto: la API
+    # siempre asigna uno por defecto al crear; la columna es nullable para no
+    # forzar un backfill de las páginas ya existentes.
+    created_by = Column(String, nullable=True)  # idem: la API lo rellena siempre al crear
+    description = Column(String, nullable=True)
+    header_image_path = Column(String, nullable=True)
     properties = Column(JSONB, nullable=True)  # solo si type == database_row
 
     created_at = Column(DateTime, default=datetime.utcnow)

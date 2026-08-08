@@ -20,6 +20,8 @@ Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/)
 
 El resto del frontend sigue siendo HTML/CSS/JS plano sin build (`frontend/index.html` + `frontend/app.js`, servidos por la propia API); la única pieza compilada es el editor, vendorizado como un único archivo (`frontend/vendor/editor.bundle.js`, generado una vez con esbuild desde `frontend/editor-src/` — ver más abajo).
 
+Las páginas tienen metadatos propios: icono (emoji, editable haciendo clic), creador (se fija solo al crear, pensado para cuando haya espacios grupales), descripción y una imagen de cabecera opcionales. Todo se autoguarda 2 segundos después del último cambio — no hay botón "Guardar".
+
 ## Cómo arrancarlo (desarrollo)
 
 Requiere Docker Desktop (Windows, backend WSL2 recomendado).
@@ -43,7 +45,7 @@ Documentación interactiva de la API en [http://localhost:8000/docs](http://loca
 
 ## Panel visual
 
-- **Páginas**: `+` crea una nota (`Sin título`, lista para renombrar). El editor es un único cuadro — no hay "modo edición" y "modo vista previa" separados: escribes Markdown y el propio formato aparece al momento (encabezados más grandes, negrita/cursiva reales, wikilinks coloreados), con el marcador de sintaxis (`#`, `**`, `[[`/`]]`) visible pero pequeño y discreto en el sitio donde lo escribiste. `Ctrl/Cmd + clic` sobre un wikilink resuelto navega a esa página; backlinks listados debajo. `Ctrl/Cmd + S` guarda sin pasar por el diálogo del navegador.
+- **Páginas**: `+` crea una nota (`Sin título`, lista para renombrar). Icono (emoji, clic para cambiarlo), título, descripción opcional e imagen de cabecera opcional, todo en la propia cabecera de la nota; "Creado por" se fija solo una vez, al crearla. El editor es un único cuadro — no hay "modo edición" y "modo vista previa" separados: escribes Markdown y el propio formato aparece al momento (encabezados más grandes, negrita/cursiva reales, wikilinks coloreados), con el marcador de sintaxis (`#`, `**`, `[[`/`]]`) visible pero pequeño y discreto en el sitio donde lo escribiste. `Ctrl/Cmd + clic` sobre un wikilink resuelto navega a esa página; backlinks listados debajo. Todo se **autoguarda** 2s después del último cambio (el estado "Guardado"/"Guardando…"/"Cambios sin guardar…" aparece junto a "Borrar página"); `Ctrl/Cmd + S` fuerza el guardado ya.
 - **Bases de datos**: los botones **CRM** / **Tareas** crean de un clic una database ya configurada (propiedades + vistas por defecto, plantillas en `backend/app/templates.py`) — el título es editable después haciendo clic en él. `+` abre el diálogo de creación en blanco: nombre y propiedades (clave, nombre visible, tipo; `select`/`multiselect` piden opciones separadas por coma). El formulario de "+ Nueva fila" genera automáticamente el input correcto según el tipo declarado (texto, número, `select`, checkbox, fecha).
 - **Vistas**: `+ Vista` crea una vista `table`/`board`/`list`/`calendar`; para `board` se elige la propiedad de agrupación y las columnas salen de sus `options` (o de los valores encontrados si no las tiene).
 - **Buscar**: el cuadro de la barra lateral llama a `/search` con un pequeño debounce.
@@ -70,10 +72,13 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/pages`       | GET    | Lista todas las páginas del workspace                   |
 | `/pages`       | POST   | Crea página + `page_content` en una transacción         |
 | `/pages/{id}`  | GET    | Lee una página con su cuerpo                             |
-| `/pages/{id}`  | PATCH  | Actualiza título, icono o cuerpo                         |
+| `/pages/{id}`  | PATCH  | Actualiza título, icono, descripción o cuerpo             |
 | `/pages/{id}`  | DELETE | Borra la página (cascada a contenido/adjuntos/etiquetas) |
 | `/pages/tree`  | GET    | Árbol de páginas por `parent_id`                        |
 | `/pages/{id}/backlinks` | GET | Páginas que enlazan a esta vía `[[wikilink]]`     |
+| `/pages/{id}/header-image` | POST | Sube/reemplaza la imagen de cabecera (`multipart/form-data`, campo `file`) |
+| `/pages/{id}/header-image` | DELETE | Quita la imagen de cabecera                       |
+| `/files/...`   | GET    | Sirve los archivos subidos (imágenes de cabecera, etc.)  |
 | `/search?q=`   | GET    | Búsqueda full-text (título + cuerpo) en español          |
 
 Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]]`) en `body_markdown`; se resuelven por título exacto (sin distinguir mayúsculas) dentro del mismo workspace al guardar la página.
@@ -103,6 +108,8 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Panel visual** (adelanto de Fase 4) — árbol, editor de notas, tablas/tableros, todo sin build
 - [x] **Fase 3** — CRM y Tareas como plantillas preconfiguradas (`backend/app/templates.py`; un clic en el panel)
 - [x] **Editor de notas con formato en vivo** (CodeMirror 6) — mismo cuadro para escribir y ver el resultado
+- [x] **Metadatos de página + autoguardado** — icono/creador/descripción/imagen de cabecera, autoguardado a los 2s
+- [ ] **Edición por bloques + selección múltiple** — en diseño, ver `docs/ARCHITECTURE.md`
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue objetivo
