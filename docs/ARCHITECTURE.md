@@ -195,14 +195,36 @@ CodeMirror aplica clases CSS (`cm-mdm-h1`, `cm-mdm-mark`, `cm-mdm-wikilink`...) 
 
 El editor no manda cada pulsación al servidor — programa un `PATCH` 2s después del último cambio (`setTimeout` que se reinicia con cada pulsación nueva). El único punto delicado es no perder ese margen de <2s cuando el usuario navega antes de que salte el temporizador: `clearMain()` (llamada al entrar en cualquier otra vista) fuerza el guardado pendiente primero, y `beforeunload` hace lo mismo al cerrar la pestaña. No hay resolución de conflictos ni bloqueo optimista — con un único usuario escribiendo, no hace falta; si esto pasa a ser multiusuario de verdad, este es el punto exacto que necesitaría revisarse.
 
-## Edición por bloques + selección múltiple (en diseño, no construido aún)
+## Edición por bloques + selección múltiple
 
-Se pidió edición por bloques al estilo Notion (párrafo, H1–H4, listas, código, convertibles entre sí) con selección múltiple de bloques y de páginas, y menú contextual con acciones en lote. Es, con diferencia, la pieza más grande pedida hasta ahora — más que todo lo anterior junto — así que antes de construirla merece dejar por escrito la disyuntiva real:
+Se pidió edición por bloques al estilo Notion (párrafo, H1–H4, listas, código, convertibles entre sí) con selección múltiple de bloques y de páginas, y menú contextual con acciones en lote. Antes de construirla se pesaron dos enfoques:
 
-- **Bloques de verdad**: `body_markdown` deja de ser un string y pasa a ser una lista de objetos `{id, type, content}` (tabla `block` o JSONB). Es como funciona Notion por dentro. Coste: reescribir wikilinks/backlinks/búsqueda/vista previa para operar sobre una lista de bloques en vez de un string, más un editor por bloque con su propia gestión de cursor (Enter crea bloque, Backspace al principio fusiona con el anterior...) — el mismo problema de cursor que ya se evitó al elegir CodeMirror en vez de `contenteditable` a pelo, multiplicado por cada bloque.
-- **Bloques "vistos", no "de verdad"**: `body_markdown` sigue siendo un único string (nada de lo ya construido — wikilinks, backlinks, búsqueda — cambia). CodeMirror ya parsea el documento en un árbol de sintaxis que distingue párrafo/encabezado/lista/código; con eso basta para calcular, en cada momento, qué rango de texto es "un bloque". Seleccionar un bloque = seleccionar ese rango (CodeMirror admite selecciones múltiples de forma nativa). Convertir un bloque = reescribir el texto de ese rango (quitar `## ` y poner `- `, etc.). Borrar en lote = borrar esos rangos. Todo el motor de backend sigue intacto.
+- **Bloques de verdad**: `body_markdown` deja de ser un string y pasa a ser una lista de objetos `{id, type, content}`. Es como funciona Notion por dentro. Coste: reescribir wikilinks/backlinks/búsqueda para operar sobre una lista de bloques en vez de un string, más un editor por bloque con su propia gestión de cursor.
+- **Bloques calculados (el elegido)**: `body_markdown` sigue siendo un único string — nada de lo ya construido (wikilinks, backlinks, búsqueda) cambia. CodeMirror ya parsea el documento en un árbol de sintaxis que distingue párrafo/encabezado/lista/código; con eso basta para calcular, en cada momento, qué rango de texto es "un bloque".
 
-La segunda opción es sustancialmente menos trabajo y no toca nada que ya funcione, a cambio de que "bloque" sea una vista calculada sobre el texto en vez de un objeto con identidad propia (sin reordenar por arrastre "gratis", por ejemplo — habría que construirlo aparte si se quiere). Para lo que se ha pedido (seleccionar, convertir tipo, borrar en lote) cubre el 100% sin ese coste. Pendiente de confirmar con el usuario antes de empezar.
+Se implementó la segunda. `computeBlocks(state)` (`frontend/editor-src/entry.js`) recorre los hijos directos del nodo `Document` del árbol de `@lezer/markdown` y produce `{from, to, type}` por bloque — cada `ListItem` de una `BulletList`/`OrderedList` es su propio bloque (para poder seleccionarlos/convertirlos uno a uno, como en Notion), el resto de nodos de nivel superior (párrafo, encabezados, código) son un bloque cada uno.
+
+```mermaid
+graph LR
+    DOC["body_markdown<br/>(el mismo string de siempre)"] --> TREE["árbol de sintaxis<br/>@lezer/markdown (ya existía)"]
+    TREE --> BLOCKS["computeBlocks()<br/>{from, to, type} por bloque"]
+    BLOCKS --> SEL["selección (StateField)<br/>Set&lt;índice de bloque&gt;"]
+    SEL --> UI["asas ⋮⋮ + resaltado<br/>(Decoration.widget / .mark)"]
+    SEL --> ACTIONS["convertir / eliminar<br/>reescriben el texto de esos rangos"]
+    ACTIONS --> DOC
+```
+
+- **Seleccionar** un bloque = seleccionar su rango de texto (CodeMirror admite selecciones múltiples no contiguas de forma nativa — `EditorSelection.create([...rangos])`).
+- **Convertir** = quitar el prefijo de sintaxis actual (`stripBlockPrefix`: `## `, `- `, ```` ``` ````...) y poner el del tipo destino (`applyBlockType`), en una única transacción con un `change` por bloque.
+- **Eliminar en lote** = una transacción con un `change` de borrado por bloque (más su salto de línea final, para no dejar líneas en blanco sueltas).
+
+El coste real de este enfoque frente a "bloques de verdad": no hay reordenar por arrastre gratis (habría que construirlo aparte), y un bloque no tiene identidad propia entre una edición y la siguiente (la selección se limpia en cualquier cambio del documento — ver `blockField.update()`). Para lo pedido (seleccionar, convertir tipo, borrar en lote) cubre el 100% sin tocar nada del backend.
+
+### El asa de cada bloque no es un gutter (lección de una vuelta atrás)
+
+La primera versión usaba un `gutter()` de CodeMirror (como `lineNumbers()`) para mostrar el `⋮⋮` de cada bloque. No se alineaba con el contenido, y al medir de verdad (`getBoundingClientRect`, no solo mirar la pantalla) se confirmó que ni el propio `lineNumbers()` nativo alineaba bien contra un documento con encabezados: los gutters de CM6 asumen altura de línea uniforme, y un `H1` (font-size mayor) es más alto que un párrafo normal — el desfase acumulado llegaba a más de 60px en un documento con varios bloques.
+
+La solución fue no usar un gutter en absoluto: el asa es un `Decoration.widget` colocado en la posición donde empieza el bloque, con `side: -1`, dentro de la propia línea — y sacado visualmente al margen con `position: absolute; left: -22px` sobre una línea con `position: relative`. Al ser un hijo real de esa línea concreta, hereda su altura exacta sin ningún cálculo de por medio. Con este cambio la alineación quedó exacta (0px de diferencia) en el mismo documento de prueba.
 
 ## Decisiones y por qué
 
@@ -223,3 +245,5 @@ La segunda opción es sustancialmente menos trabajo y no toca nada que ya funcio
 | Guardado | Autoguardado con debounce de 2s + flush al navegar/cerrar | Un botón "Guardar" explícito no encaja con un editor con formato en vivo; a un solo usuario no hace falta resolución de conflictos, solo no perder el margen del debounce |
 | Imagen de cabecera | Un campo `header_image_path` en `page` + `/files` estático | Más simple que enrutar por el modelo `Attachment` genérico (que sigue sin usarse); si attachments arbitrarios se vuelven necesarios, se generaliza entonces |
 | "Obligatorio" en icono/creador | Aplicado por la API al crear, no por `NOT NULL` en la columna | Garantiza el invariante para páginas nuevas sin forzar una migración de backfill sobre las que ya existen |
+| Bloques del editor | Calculados sobre el árbol de sintaxis, no un modelo de datos nuevo | Cubre seleccionar/convertir/borrar en lote (lo pedido) sin reescribir wikilinks/backlinks/búsqueda; el coste es no tener reordenar por arrastre gratis |
+| Asa de bloque (`⋮⋮`) | Widget dentro de la línea (`position: absolute`), no un `gutter()` | Los gutters de CM6 asumen altura de línea uniforme; con encabezados más altos que un párrafo, hasta `lineNumbers()` nativo queda desalineado. Un widget hijo de la línea hereda su altura real sin cálculo aparte |

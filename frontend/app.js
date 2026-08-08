@@ -11,6 +11,8 @@ const state = {
   current: null, // {kind: 'note'|'database', id}
   editor: null, // instancia activa del editor de notas (createNoteEditor), o null
   flushPendingSave: null, // fuerza el autoguardado en curso antes de navegar a otra página
+  selectedPages: new Map(), // id de página (nodo del árbol) -> node; selección múltiple en la barra lateral
+  lastClickedRowId: null, // para el rango de Mayús+clic
 };
 
 // ---------------------------------------------------------------- helpers
@@ -101,6 +103,7 @@ async function loadTree() {
   dbs.forEach((n) => dbContainer.appendChild(renderTreeNode(n)));
 
   if (state.current) markActive(state.current.id);
+  applyPageSelectionClasses();
 }
 
 function indexTree(nodes) {
@@ -117,9 +120,13 @@ function renderTreeNode(node) {
   const row = document.createElement("div");
   row.className = "tree-row";
   // El id de la `page` y el id de la fila `databases` que la describe son
-  // dos UUID distintos -- para navegar hace falta el segundo.
+  // dos UUID distintos -- para navegar hace falta el segundo. data-node-id
+  // es siempre el id de página de verdad, el que se usa para selección
+  // múltiple y borrado (con databases, DELETE va por database_id, no por
+  // este -- ver bulkDeletePages).
   const navId = node.type === "database" ? node.database_id : node.id;
   row.dataset.id = navId;
+  row.dataset.nodeId = node.id;
 
   const icon = document.createElement("span");
   icon.className = "type-icon";
@@ -130,9 +137,47 @@ function renderTreeNode(node) {
   label.textContent = node.title || "Sin título";
 
   row.append(icon, label);
-  row.addEventListener("click", () => {
+
+  row.addEventListener("click", (e) => {
+    if (e.shiftKey) {
+      e.preventDefault();
+      selectPageRangeTo(node);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      togglePageSelection(node);
+      state.lastClickedRowId = node.id;
+      return;
+    }
+    clearPageSelection();
+    state.lastClickedRowId = node.id;
     if (node.type === "database") selectDatabase(node.database_id);
     else selectNote(node.id);
+  });
+
+  row.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    let items;
+    if (state.selectedPages.has(node.id)) {
+      items = [...state.selectedPages.values()];
+    } else {
+      items = [node];
+      state.selectedPages = new Map([[node.id, node]]);
+      applyPageSelectionClasses();
+    }
+    showContextMenu(e.clientX, e.clientY, [
+      { label: `${items.length} página${items.length > 1 ? "s" : ""}`, items: [] },
+      {
+        items: [
+          {
+            label: `Eliminar ${items.length > 1 ? "páginas" : "página"}`,
+            danger: true,
+            onClick: () => bulkDeletePages(items),
+          },
+        ],
+      },
+    ]);
   });
 
   wrap.appendChild(row);
@@ -151,6 +196,70 @@ function markActive(id) {
   document.querySelectorAll(".tree-row").forEach((el) => {
     el.classList.toggle("active", el.dataset.id === id);
   });
+}
+
+// -------------------------------------------------- selección múltiple de páginas
+
+function togglePageSelection(node) {
+  if (state.selectedPages.has(node.id)) state.selectedPages.delete(node.id);
+  else state.selectedPages.set(node.id, node);
+  applyPageSelectionClasses();
+}
+
+function clearPageSelection() {
+  if (state.selectedPages.size === 0) return;
+  state.selectedPages.clear();
+  applyPageSelectionClasses();
+}
+
+function applyPageSelectionClasses() {
+  document.querySelectorAll(".tree-row").forEach((el) => {
+    el.classList.toggle("tree-row-selected", state.selectedPages.has(el.dataset.nodeId));
+  });
+}
+
+function selectPageRangeTo(node) {
+  const rows = [...document.querySelectorAll(".tree-row")];
+  const ids = rows.map((r) => r.dataset.nodeId);
+  const lastIdx = state.lastClickedRowId ? ids.indexOf(state.lastClickedRowId) : -1;
+  const curIdx = ids.indexOf(node.id);
+
+  if (lastIdx === -1 || curIdx === -1) {
+    togglePageSelection(node);
+    return;
+  }
+  const [lo, hi] = lastIdx < curIdx ? [lastIdx, curIdx] : [curIdx, lastIdx];
+  for (let i = lo; i <= hi; i++) {
+    const n = state.pagesById.get(ids[i]);
+    if (n) state.selectedPages.set(ids[i], n);
+  }
+  applyPageSelectionClasses();
+}
+
+async function bulkDeletePages(items) {
+  const label = items.length > 1 ? `estas ${items.length} páginas` : `"${items[0].title}"`;
+  if (!confirm(`¿Eliminar ${label}? Esto no se puede deshacer.`)) return;
+
+  const currentId = state.current?.id;
+  let currentWasDeleted = false;
+
+  for (const item of items) {
+    try {
+      if (item.type === "database") {
+        await api(`/databases/${item.database_id}`, { method: "DELETE" });
+        if (item.database_id === currentId) currentWasDeleted = true;
+      } else {
+        await api(`/pages/${item.id}`, { method: "DELETE" });
+        if (item.id === currentId) currentWasDeleted = true;
+      }
+    } catch (e) {
+      console.error(`Error al borrar "${item.title}":`, e);
+    }
+  }
+
+  clearPageSelection();
+  await loadTree();
+  if (currentWasDeleted) showEmpty();
 }
 
 // ------------------------------------------------------------------ notas
@@ -385,6 +494,34 @@ function renderNote(page, backlinks) {
     resolvePage: (title) => findPageByTitle(title),
     onNavigate: (pageId) => selectNote(pageId),
     onChange: scheduleSave,
+    onBlockContextMenu: (payload) => {
+      const n = payload.count;
+      showContextMenu(payload.x, payload.y, [
+        { label: `${n} bloque${n > 1 ? "s" : ""} seleccionado${n > 1 ? "s" : ""}`, items: [] },
+        {
+          label: "Convertir a",
+          items: payload.types.map((t) => ({
+            label: t.label,
+            onClick: () => {
+              payload.convertTo(t.type);
+              scheduleSave();
+            },
+          })),
+        },
+        {
+          items: [
+            {
+              label: `Eliminar ${n > 1 ? "bloques" : "bloque"}`,
+              danger: true,
+              onClick: () => {
+                payload.deleteBlocks();
+                scheduleSave();
+              },
+            },
+          ],
+        },
+      ]);
+    },
   });
 }
 
@@ -394,6 +531,66 @@ function findPageByTitle(title) {
     if ((p.title || "").toLowerCase() === lower) return p;
   }
   return null;
+}
+
+// ------------------------------------------------------------- menú contextual
+// Genérico: lo usan tanto los bloques del editor como la selección múltiple
+// de páginas en el árbol (ver más abajo).
+
+let currentContextMenu = null;
+
+function closeContextMenu() {
+  if (currentContextMenu) {
+    currentContextMenu.remove();
+    currentContextMenu = null;
+  }
+  document.removeEventListener("keydown", onContextMenuKeydown);
+}
+
+function onContextMenuKeydown(e) {
+  if (e.key === "Escape") closeContextMenu();
+}
+
+/** sections: [{ label?: string, items: [{ label, danger?, onClick }] }] */
+function showContextMenu(x, y, sections) {
+  closeContextMenu();
+
+  const menu = document.createElement("div");
+  menu.className = "mdm-context-menu";
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  sections.forEach((section, i) => {
+    if (i > 0) menu.appendChild(document.createElement("div")).className = "mdm-context-menu-sep";
+    if (section.label) {
+      const label = document.createElement("div");
+      label.className = "mdm-context-menu-label";
+      label.textContent = section.label;
+      menu.appendChild(label);
+    }
+    section.items.forEach((item) => {
+      const btn = document.createElement("button");
+      btn.className = "mdm-context-menu-item" + (item.danger ? " danger" : "");
+      btn.textContent = item.label;
+      btn.addEventListener("click", () => {
+        closeContextMenu();
+        item.onClick();
+      });
+      menu.appendChild(btn);
+    });
+  });
+
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - rect.width - 4)}px`;
+  if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
+
+  currentContextMenu = menu;
+  setTimeout(() => {
+    document.addEventListener("click", closeContextMenu, { once: true });
+    document.addEventListener("keydown", onContextMenuKeydown);
+  }, 0);
 }
 
 // -------------------------------------------------------------- databases
@@ -911,6 +1108,12 @@ async function runSearch(q) {
     searchResults.appendChild(el);
   });
 }
+
+// Clic en zona vacía de la barra lateral (no sobre una fila) -> limpia la
+// selección múltiple de páginas.
+document.getElementById("nav-sections").addEventListener("click", (e) => {
+  if (!e.target.closest(".tree-row")) clearPageSelection();
+});
 
 // -------------------------------------------------------------------- arranque
 

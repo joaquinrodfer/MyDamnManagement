@@ -4,6 +4,25 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.8.0] — Edición por bloques + selección múltiple
+
+### Añadido
+
+- **Bloques en el editor**: cada párrafo/`H1`-`H4`/ítem de lista/bloque de código se calcula a partir del árbol de sintaxis de `@lezer/markdown` (`computeBlocks()` en `entry.js`) — no es un modelo de datos nuevo, `body_markdown` sigue siendo el mismo string de siempre. Cada bloque tiene un asa `⋮⋮` (widget posicionado en el margen izquierdo de su línea, no un gutter — ver la nota técnica más abajo).
+  - Clic: selecciona el bloque. `Mayús`+clic: selecciona un rango. `Ctrl`/`Cmd`+clic: añade/quita uno suelto.
+  - Clic derecho: menú con **Convertir a** (párrafo, H1-H4, lista, lista numerada, código) y **Eliminar**, aplicado a todos los bloques seleccionados a la vez.
+- **Selección múltiple de páginas** en el árbol de la barra lateral: mismos atajos (`Ctrl`/`Mayús`+clic), clic derecho para eliminar varias de una vez. Distingue página `note` (`DELETE /pages/{id}`) de página `database` (`DELETE /databases/{database_id}`) automáticamente.
+- Menú contextual genérico (`showContextMenu()` en `app.js`) compartido entre bloques y páginas.
+
+### Corregido / aprendido
+
+- La primera implementación de las asas de bloque usaba un `gutter()` de CodeMirror, igual que `lineNumbers()`. No se alineaba con el contenido: se comprobó que ni siquiera el propio `lineNumbers()` nativo alineaba bien contra líneas de altura variable (los encabezados son más altos que un párrafo normal) — los gutters de CM6 asumen altura de línea uniforme. Solución: el asa es un `Decoration.widget` colocado dentro de la propia línea y sacado al margen con `position: absolute` — al ser hijo real de esa línea, hereda su altura exacta sin cálculo aparte.
+- Verificado con medidas reales (`getBoundingClientRect`), no solo inspección visual: con el gutter, el desfase entre el asa y su línea llegaba a acumular >60px en documentos con encabezados; con el widget, alineación exacta (diferencia 0px) en los 6 bloques de un documento de prueba con encabezado, párrafo, lista y código.
+
+### Documentado
+
+- `docs/ARCHITECTURE.md`: comparación completa entre "bloques de verdad" (modelo de datos nuevo) y "bloques calculados" (el enfoque elegido), y por qué.
+
 ## [0.7.0] — Metadatos de página, autoguardado, caret visible
 
 ### Añadido

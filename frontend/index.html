@@ -162,6 +162,9 @@
   }
   .tree-row:hover { background: var(--code-bg); }
   .tree-row.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+  /* Selección múltiple (Ctrl/Mayús+clic) -- distinta de "active" (la página
+     abierta ahora mismo): ambas pueden darse a la vez en la misma fila. */
+  .tree-row-selected { outline: 1.5px solid var(--accent); outline-offset: -1.5px; background: var(--code-bg); }
   .tree-row .type-icon { flex-shrink: 0; opacity: 0.75; font-size: 12px; }
   .tree-children { margin-left: 16px; border-left: 1px solid var(--panel-border); padding-left: 4px; }
 
@@ -284,11 +287,23 @@
     overflow: hidden;
   }
   #note-body .cm-editor { outline: none; }
-  #note-body .cm-content { padding: 14px; font-family: var(--font-mono); font-size: 14px; line-height: 1.7; color: var(--ink); caret-color: var(--ink); }
+  #note-body .cm-content {
+    padding: 14px 14px 14px 34px; /* el hueco de la izquierda es donde "flota" el handle de bloque */
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--ink);
+    caret-color: var(--ink);
+  }
   #note-body .cm-scroller { min-height: 260px; }
   #note-body .cm-cursor { border-left-color: var(--ink); }
   #note-body .cm-selectionBackground { background: var(--accent-soft) !important; }
   #note-body .cm-activeLine { background: transparent; }
+  /* El handle de bloque es un widget dentro de la línea, no un gutter (ver
+     el porqué en frontend/editor-src/entry.js) -- por eso la línea necesita
+     position:relative, para que el handle se posicione contra ELLA y no
+     contra todo el editor. */
+  #note-body .cm-line { position: relative; }
 
   /* marcadores de sintaxis (#, **, *): visibles pero discretos. El propio
      parser de Markdown etiqueta "HeaderMark"/"EmphasisMark" con el mismo
@@ -299,15 +314,80 @@
   .cm-mdm-h1 { font-size: 1.7em; font-weight: 700; line-height: 1.3; }
   .cm-mdm-h2 { font-size: 1.4em; font-weight: 700; line-height: 1.3; }
   .cm-mdm-h3 { font-size: 1.15em; font-weight: 700; line-height: 1.3; }
-  .cm-mdm-h1.cm-mdm-mark, .cm-mdm-h2.cm-mdm-mark, .cm-mdm-h3.cm-mdm-mark {
+  .cm-mdm-h4 { font-size: 1em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
+  .cm-mdm-h1.cm-mdm-mark, .cm-mdm-h2.cm-mdm-mark, .cm-mdm-h3.cm-mdm-mark, .cm-mdm-h4.cm-mdm-mark {
     font-size: 0.7em;
     font-weight: 400;
+    text-transform: none;
   }
   .cm-mdm-strong { font-weight: 700; }
   .cm-mdm-em { font-style: italic; }
   .cm-mdm-code { font-family: var(--font-mono); background: var(--code-bg); border-radius: 3px; padding: 0 3px; }
   .cm-mdm-wikilink { color: var(--accent-ink); text-decoration: underline; }
   .cm-mdm-wikilink-missing { color: var(--ink-muted); text-decoration: underline dotted; }
+
+  /* fondo de línea para bloques de código/lista (calculado por bloques, ver
+     frontend/editor-src/entry.js -- blockLineDecorations) */
+  #note-body .cm-mdm-line-code { background: var(--code-bg); }
+  #note-body .cm-mdm-line-list { padding-left: 4px; }
+
+  /* ---------- handle de bloque (seleccionar/convertir/borrar) ----------
+     Widget dentro de la línea (no gutter), posicionado en el hueco que deja
+     el padding-left de .cm-content. top:0 + la propia línea como referencia
+     (position:relative arriba) es lo que garantiza que quede a la altura
+     exacta de la línea que le corresponde, sea un párrafo o un H1 más alto. */
+  .cm-mdm-block-handle {
+    position: absolute;
+    left: -22px;
+    top: 0;
+    width: 18px;
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--ink-muted);
+    opacity: 0.28;
+    cursor: pointer;
+    user-select: none;
+  }
+  .cm-mdm-block-handle:hover { opacity: 0.75; }
+  .cm-mdm-block-handle-selected { opacity: 1; color: var(--accent-ink); }
+
+  /* ---------- menú contextual de bloques/páginas ---------- */
+  .mdm-context-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 190px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    padding: 6px;
+    font-size: 13px;
+  }
+  .mdm-context-menu-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding: 6px 10px 4px;
+  }
+  .mdm-context-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--ink);
+    padding: 7px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .mdm-context-menu-item:hover { background: var(--code-bg); }
+  .mdm-context-menu-item.danger { color: var(--down); }
+  .mdm-context-menu-item.danger:hover { background: var(--down-bg); }
+  .mdm-context-menu-sep { height: 1px; background: var(--panel-border); margin: 5px 4px; }
 
   .backlinks-list { display: flex; flex-direction: column; gap: 4px; }
   .backlink-item {

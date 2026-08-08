@@ -16,7 +16,7 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas, editor de notas con formato en vivo (CodeMirror 6: `#`/`**`/`[[wikilinks]]` se ven pequeños y el texto que envuelven se estiliza al momento, en el mismo cuadro, sin panel de "vista previa" aparte), tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3).
+Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas (con selección múltiple y borrado en lote), editor de notas con formato en vivo y **edición por bloques** al estilo Notion (párrafo/H1-H4/listas/código, seleccionables, convertibles entre sí, borrables en lote), tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3).
 
 El resto del frontend sigue siendo HTML/CSS/JS plano sin build (`frontend/index.html` + `frontend/app.js`, servidos por la propia API); la única pieza compilada es el editor, vendorizado como un único archivo (`frontend/vendor/editor.bundle.js`, generado una vez con esbuild desde `frontend/editor-src/` — ver más abajo).
 
@@ -46,6 +46,8 @@ Documentación interactiva de la API en [http://localhost:8000/docs](http://loca
 ## Panel visual
 
 - **Páginas**: `+` crea una nota (`Sin título`, lista para renombrar). Icono (emoji, clic para cambiarlo), título, descripción opcional e imagen de cabecera opcional, todo en la propia cabecera de la nota; "Creado por" se fija solo una vez, al crearla. El editor es un único cuadro — no hay "modo edición" y "modo vista previa" separados: escribes Markdown y el propio formato aparece al momento (encabezados más grandes, negrita/cursiva reales, wikilinks coloreados), con el marcador de sintaxis (`#`, `**`, `[[`/`]]`) visible pero pequeño y discreto en el sitio donde lo escribiste. `Ctrl/Cmd + clic` sobre un wikilink resuelto navega a esa página; backlinks listados debajo. Todo se **autoguarda** 2s después del último cambio (el estado "Guardado"/"Guardando…"/"Cambios sin guardar…" aparece junto a "Borrar página"); `Ctrl/Cmd + S` fuerza el guardado ya.
+- **Bloques**: cada párrafo/encabezado/ítem de lista/bloque de código tiene un asa `⋮⋮` a la izquierda (aparece al pasar el ratón por esa línea). Clic para seleccionar el bloque; `Mayús`/`Ctrl`+clic para seleccionar varios; clic derecho abre un menú para **convertir** el/los bloque(s) seleccionado(s) a otro tipo o **eliminarlos**. Sigue siendo el mismo `body_markdown` de siempre — un bloque es un rango de texto calculado sobre el árbol de sintaxis, no un objeto nuevo (ver `docs/ARCHITECTURE.md`).
+- **Selección múltiple de páginas**: `Ctrl`/`Mayús`+clic sobre filas del árbol (barra lateral) para seleccionar varias; clic derecho abre un menú para eliminarlas todas de una vez. Clic en zona vacía de la barra lateral limpia la selección.
 - **Bases de datos**: los botones **CRM** / **Tareas** crean de un clic una database ya configurada (propiedades + vistas por defecto, plantillas en `backend/app/templates.py`) — el título es editable después haciendo clic en él. `+` abre el diálogo de creación en blanco: nombre y propiedades (clave, nombre visible, tipo; `select`/`multiselect` piden opciones separadas por coma). El formulario de "+ Nueva fila" genera automáticamente el input correcto según el tipo declarado (texto, número, `select`, checkbox, fecha).
 - **Vistas**: `+ Vista` crea una vista `table`/`board`/`list`/`calendar`; para `board` se elige la propiedad de agrupación y las columnas salen de sus `options` (o de los valores encontrados si no las tiene).
 - **Buscar**: el cuadro de la barra lateral llama a `/search` con un pequeño debounce.
@@ -109,7 +111,7 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Fase 3** — CRM y Tareas como plantillas preconfiguradas (`backend/app/templates.py`; un clic en el panel)
 - [x] **Editor de notas con formato en vivo** (CodeMirror 6) — mismo cuadro para escribir y ver el resultado
 - [x] **Metadatos de página + autoguardado** — icono/creador/descripción/imagen de cabecera, autoguardado a los 2s
-- [ ] **Edición por bloques + selección múltiple** — en diseño, ver `docs/ARCHITECTURE.md`
+- [x] **Edición por bloques + selección múltiple** — bloques calculados sobre el árbol de sintaxis (sin nuevo modelo de datos), selección múltiple de bloques y de páginas, menú contextual con convertir/eliminar
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue objetivo
