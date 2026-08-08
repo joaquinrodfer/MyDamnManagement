@@ -226,6 +226,20 @@ La primera versión usaba un `gutter()` de CodeMirror (como `lineNumbers()`) par
 
 La solución fue no usar un gutter en absoluto: el asa es un `Decoration.widget` colocado en la posición donde empieza el bloque, con `side: -1`, dentro de la propia línea — y sacado visualmente al margen con `position: absolute; left: -22px` sobre una línea con `position: relative`. Al ser un hijo real de esa línea concreta, hereda su altura exacta sin ningún cálculo de por medio. Con este cambio la alineación quedó exacta (0px de diferencia) en el mismo documento de prueba.
 
+## Editor al estilo Notion: comando `/`, línea horizontal, autoformato
+
+Tres piezas nuevas comparten un mismo patrón: **decoración consciente del cursor** (`selectionIntersects(state, from, to)` en `entry.js`). Un rango de texto se reemplaza por un widget "bonito" cuando el cursor no está dentro de él, y vuelve a mostrarse como markdown editable en crudo en cuanto el cursor entra — así el usuario nunca edita a ciegas un texto que no ve. Se usa para:
+
+- Los wikilinks resueltos (`[[Página]]` → enlace sin corchetes, con vista previa al pasar el ratón).
+- Las flechas tipográficas (`->`/`<-`/`<->` → `→`/`←`/`↔`, saltándose los bloques de código vía `isInsideCodeBlock()`).
+- La línea horizontal (`---` → una regla visual).
+
+La línea horizontal tuvo una complicación aparte: su decoración es `Decoration.replace({..., block: true})` (reemplaza la línea entera, no un tramo dentro de ella), y **CodeMirror no permite decoraciones de bloque desde un `ViewPlugin`** — solo desde un `StateField` ("Block decorations may not be specified via plugins"). El resto de decoraciones de esta sección son inline y sí pueden vivir en un `ViewPlugin`; la de la línea horizontal (`hrField`) es la excepción y por eso es un `StateField` aparte.
+
+### El menú `/`: por qué `setTimeout(fn, 0)` y no `requestAnimationFrame`
+
+El menú de comando necesita `view.coordsAtPos()` para posicionarse junto al cursor, pero CodeMirror prohíbe leer el layout del DOM de forma síncrona dentro de `ViewPlugin.update()` ("Reading the editor layout isn't allowed during an update") — hay que salir de esa pila primero. La solución obvia es `requestAnimationFrame`, y funciona en un navegador normal. Pero un frame de composición es más de lo que hace falta: solo hay que llegar al siguiente turno del event loop, no esperar a que el navegador pinte — y `requestAnimationFrame` nunca se dispara si la pestaña no está siendo compuesta (una pestaña en segundo plano, o el propio entorno de pruebas usado durante el desarrollo, que no compone frames a menos que algo pida explícitamente un `screenshot`). Se cambió a `setTimeout(fn, 0)`: sale de la pila igual de bien, no depende de compositing, y la app no necesita ese nivel de sincronía con el pintado — es un menú, no una animación.
+
 ## Decisiones y por qué
 
 | Decisión | Elegido | Por qué |
@@ -247,3 +261,5 @@ La solución fue no usar un gutter en absoluto: el asa es un `Decoration.widget`
 | "Obligatorio" en icono/creador | Aplicado por la API al crear, no por `NOT NULL` en la columna | Garantiza el invariante para páginas nuevas sin forzar una migración de backfill sobre las que ya existen |
 | Bloques del editor | Calculados sobre el árbol de sintaxis, no un modelo de datos nuevo | Cubre seleccionar/convertir/borrar en lote (lo pedido) sin reescribir wikilinks/backlinks/búsqueda; el coste es no tener reordenar por arrastre gratis |
 | Asa de bloque (`⋮⋮`) | Widget dentro de la línea (`position: absolute`), no un `gutter()` | Los gutters de CM6 asumen altura de línea uniforme; con encabezados más altos que un párrafo, hasta `lineNumbers()` nativo queda desalineado. Un widget hijo de la línea hereda su altura real sin cálculo aparte |
+| Ocultar sintaxis (wikilinks/flechas/línea horizontal) | Decoración consciente del cursor (`selectionIntersects`), no un modo edición/vista separado | Se ve "bonito" cuando no se está editando ese tramo, y en markdown editable en cuanto el cursor entra — sin un segundo modo de la app ni un segundo estado que sincronizar |
+| Diferir `coordsAtPos()` fuera de `update()` | `setTimeout(fn, 0)`, no `requestAnimationFrame` | Solo hace falta salir de la pila de la transacción en curso, no esperar a un frame de composición real; `requestAnimationFrame` no se dispara en pestañas en segundo plano (ni en el entorno de pruebas usado en desarrollo) |

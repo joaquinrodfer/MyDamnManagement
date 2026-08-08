@@ -4,6 +4,36 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.9.0] — Editor al estilo Notion: comandos, iconos reales, autoformato
+
+### Añadido
+
+- **Menú `/` (comando de bloque)**: escribir `/` al principio de un bloque vacío abre un menú flotante con los tipos de bloque disponibles (párrafo `p`, títulos `h1`-`h5`, lista `list`, lista numerada `num`, código `code`, línea horizontal `horizontal`). Se filtra en vivo por lo que se escribe después de la `/` (prefijo de la abreviatura o substring de la etiqueta), se navega con `↑`/`↓`, se confirma con `Enter` o clic, se cancela con `Escape` dejando el texto tal cual.
+- **Línea horizontal** (`---`) como bloque nuevo: seleccionable/convertible igual que el resto, se renderiza como una regla visual cuando el cursor no está en esa línea y vuelve a mostrarse como markdown editable al entrar en ella (mismo patrón cursor-aware que wikilinks y flechas).
+- **`Mayús+Enter` crea un bloque nuevo**; `Enter` a solas sigue bajando de línea dentro del mismo bloque (comportamiento sin cambios, ahora explícitamente distinto del anterior).
+- **Selector de emoji real** para el icono de página (`openEmojiPicker()` en `app.js`): rejilla con buscador por palabra clave, sustituye al campo de texto que había antes.
+- **Autoformato tipográfico**: `->`, `<-`, `<->` se muestran como `→`, `←`, `↔` (igual que Obsidian/Notion) salvo dentro de un bloque de código o mientras el cursor está sobre ellos, momento en que vuelven a su forma editable en texto plano.
+- **Wikilinks con aspecto de enlace normal**: un `[[Página]]` resuelto oculta los corchetes y se ve como un enlace de verdad, con una tarjeta de vista previa al pasar el ratón (contenido real de la página destino, con debounce de 350ms). Sigue siendo editable en markdown en cuanto el cursor entra en él.
+- Logo de la app (`public/MDMLogo.png`, copiado a `frontend/logo.png`) como favicon y en la cabecera del panel.
+- Indicador de guardado con icono de progreso (girando mientras `Guardando…`, marca al terminar) movido a la parte superior de la nota, junto con los backlinks ahora colapsados en un desplegable arriba (antes listados al final de la página).
+- El cuerpo del editor ocupa todo el ancho de la nota, sin caja/borde propio — se siente como la propia página, no como un widget dentro de ella.
+
+### Quitado
+
+- Botón "Borrar página": redundante con el borrado por clic derecho ya disponible en el árbol de la barra lateral.
+
+### Corregido
+
+- Quitar la imagen de cabecera y subir otra inmediatamente después seguía mostrando la antigua hasta recargar: el mount `/files` no llevaba `Cache-Control: no-cache` (solo lo llevaban `app.js`/`index.html` desde la 0.6.0) — mismo nombre de archivo fijo por página (`header.<ext>`), así que el navegador la servía de caché sin revalidar. Añadido el mismo header ahí, más un `?t=timestamp` en el cliente para invalidar de raíz.
+- La tarjeta de vista previa de un wikilink se quedaba en pantalla si se navegaba a otra página justo después de que apareciera (el hover no se limpiaba al cambiar de vista). `clearMain()` ahora también cierra cualquier preview y cualquier menú `/` abierto.
+- Un wikilink a una página de tipo `database` (p. ej. `[[Tareas]]`) navegaba a una página inexistente: la navegación siempre llamaba a "abrir nota", nunca a "abrir database" — mismo tipo de bug que el de la 0.6.0 (dos UUID distintos para lo mismo, `Page.id` vs `DatabaseDef.id`). Nuevo `navigateToPage()` en `app.js` decide cuál de las dos según el tipo de nodo antes de navegar.
+- Menú contextual de bloque: al abrirlo sobre un único bloque, ahora muestra su tipo actual (p. ej. "Título 1") como cabecera, antes del listado "Convertir a" — antes no había forma de saber qué tipo era el bloque seleccionado sin probar a convertirlo.
+
+### Corregido / aprendido (CodeMirror)
+
+- `Decoration.replace({..., block: true})` (necesaria para la línea horizontal) solo puede venir de un `StateField`, nunca de un `ViewPlugin` — CodeMirror lo rechaza con "Block decorations may not be specified via plugins". El plugin de la línea horizontal se reescribió como `StateField` (`hrField`).
+- El menú `/` necesita `view.coordsAtPos()` para posicionarse junto al cursor, pero leer el layout del DOM de forma síncrona dentro de `ViewPlugin.update()` está prohibido ("Reading the editor layout isn't allowed during an update"). Probado primero con `requestAnimationFrame`: funciona en un navegador normal, pero no es la mejor opción — un frame de composición es más de lo que hace falta (solo hay que salir de la pila de la transacción en curso, no esperar a pintar). Cambiado a `setTimeout(fn, 0)`, que además es más robusto en pestañas en segundo plano.
+
 ## [0.8.0] — Edición por bloques + selección múltiple
 
 ### Añadido

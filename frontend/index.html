@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MyDamnManagement</title>
+<link rel="icon" href="/logo.png" />
 <style>
   :root {
     --bg: #eff1f4;
@@ -69,10 +70,14 @@
     background: var(--panel);
   }
   header .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-family: var(--font-mono);
     font-size: 14px;
     font-weight: 600;
   }
+  .brand-logo { width: 22px; height: 22px; border-radius: 50%; display: block; }
   .status-strip { display: flex; gap: 14px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
   .status-item { display: flex; align-items: center; gap: 5px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
@@ -211,6 +216,48 @@
   }
 
   /* ---------- vista de nota ---------- */
+  .note-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+    min-height: 22px;
+  }
+  .note-savestatus {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--ink-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .note-savestatus.is-error { color: var(--down); }
+  .note-savestatus-icon { display: inline-flex; width: 12px; height: 12px; align-items: center; justify-content: center; font-size: 11px; }
+  .spinner {
+    width: 11px;
+    height: 11px;
+    border: 1.6px solid var(--panel-border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: mdm-spin 0.7s linear infinite;
+  }
+  @keyframes mdm-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; border-top-color: var(--accent); }
+  }
+
+  .note-backlinks-dropdown { font-size: 12px; color: var(--ink-muted); }
+  .note-backlinks-dropdown summary {
+    cursor: pointer;
+    list-style: none;
+    font-family: var(--font-mono);
+    user-select: none;
+  }
+  .note-backlinks-dropdown summary::-webkit-details-marker { display: none; }
+  .note-backlinks-dropdown summary::before { content: "▸ "; }
+  .note-backlinks-dropdown[open] summary::before { content: "▾ "; }
+  .note-backlinks-dropdown .backlinks-list { margin-top: 8px; }
+
   .note-header-image-wrap { margin-bottom: 16px; }
   .note-header-image {
     display: block;
@@ -231,18 +278,20 @@
   .note-header-remove:hover { color: var(--down); }
 
   .note-title-row { display: flex; align-items: baseline; gap: 8px; }
-  .note-icon-input {
+  .note-icon-btn {
     font-size: 24px;
     width: 1.6em;
+    height: 1.6em;
     flex-shrink: 0;
     border: none;
     background: none;
-    color: var(--ink);
-    padding: 4px 0;
+    padding: 0;
     text-align: center;
     border-radius: 6px;
+    cursor: pointer;
+    line-height: 1;
   }
-  .note-icon-input:hover, .note-icon-input:focus { background: var(--code-bg); }
+  .note-icon-btn:hover, .note-icon-btn:focus-visible { background: var(--code-bg); }
   .note-title {
     font-family: var(--font-mono);
     font-size: 24px;
@@ -279,23 +328,20 @@
 
   /* ---------- editor de notas (CodeMirror) ---------- */
   /* El editor se monta directamente en #note-body; las clases .cm-* son
-     de CodeMirror, .cm-mdm-* son las que le asigna frontend/editor-src. */
-  #note-body {
-    border-radius: 8px;
-    border: 1px solid var(--panel-border);
-    background: var(--panel);
-    overflow: hidden;
-  }
-  #note-body .cm-editor { outline: none; }
+     de CodeMirror, .cm-mdm-* son las que le asigna frontend/editor-src.
+     Deliberadamente sin caja/borde propios: es el cuerpo de la página, no
+     una sección aparte (estilo Notion) -- incluso ocupa todo el ancho de
+     #main, igual que el título. */
+  #note-body .cm-editor { outline: none; background: transparent; }
   #note-body .cm-content {
-    padding: 14px 14px 14px 34px; /* el hueco de la izquierda es donde "flota" el handle de bloque */
+    padding: 4px 4px 220px 34px; /* la izquierda es donde "flota" el handle de bloque; el hueco de
+       abajo es a propósito -- clicar ahí (como en Notion) coloca el cursor al final del documento */
     font-family: var(--font-mono);
     font-size: 14px;
     line-height: 1.7;
     color: var(--ink);
     caret-color: var(--ink);
   }
-  #note-body .cm-scroller { min-height: 260px; }
   #note-body .cm-cursor { border-left-color: var(--ink); }
   #note-body .cm-selectionBackground { background: var(--accent-soft) !important; }
   #note-body .cm-activeLine { background: transparent; }
@@ -315,9 +361,11 @@
   .cm-mdm-h2 { font-size: 1.4em; font-weight: 700; line-height: 1.3; }
   .cm-mdm-h3 { font-size: 1.15em; font-weight: 700; line-height: 1.3; }
   .cm-mdm-h4 { font-size: 1em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
-  .cm-mdm-h1.cm-mdm-mark, .cm-mdm-h2.cm-mdm-mark, .cm-mdm-h3.cm-mdm-mark, .cm-mdm-h4.cm-mdm-mark {
+  .cm-mdm-h5 { font-size: 0.9em; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
+  .cm-mdm-h1.cm-mdm-mark, .cm-mdm-h2.cm-mdm-mark, .cm-mdm-h3.cm-mdm-mark, .cm-mdm-h4.cm-mdm-mark, .cm-mdm-h5.cm-mdm-mark {
     font-size: 0.7em;
     font-weight: 400;
+    color: var(--ink-muted);
     text-transform: none;
   }
   .cm-mdm-strong { font-weight: 700; }
@@ -325,6 +373,20 @@
   .cm-mdm-code { font-family: var(--font-mono); background: var(--code-bg); border-radius: 3px; padding: 0 3px; }
   .cm-mdm-wikilink { color: var(--accent-ink); text-decoration: underline; }
   .cm-mdm-wikilink-missing { color: var(--ink-muted); text-decoration: underline dotted; }
+  /* Wikilink resuelto y sin editar ahora mismo: sustituye "[[...]]" entero,
+     se ve como un enlace normal -- ver WikilinkWidget en entry.js. */
+  .cm-mdm-wikilink-rendered {
+    color: var(--accent-ink);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent-ink) 40%, transparent);
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .cm-mdm-wikilink-rendered:hover { text-decoration-color: var(--accent-ink); }
+  /* "->" / "<-" / "<->" sin editar: se ven como →/←/↔ (ver arrowPlugin). */
+  .cm-mdm-glyph { color: var(--ink); }
+  /* Línea horizontal ("---"): widget de bloque cuando no se edita (ver HRWidget) */
+  .cm-mdm-hr { border: none; border-top: 1px solid var(--panel-border); margin: 12px 0; height: 0; }
 
   /* fondo de línea para bloques de código/lista (calculado por bloques, ver
      frontend/editor-src/entry.js -- blockLineDecorations) */
@@ -388,6 +450,104 @@
   .mdm-context-menu-item.danger { color: var(--down); }
   .mdm-context-menu-item.danger:hover { background: var(--down-bg); }
   .mdm-context-menu-sep { height: 1px; background: var(--panel-border); margin: 5px 4px; }
+
+  /* ---------- selector de emojis ---------- */
+  .mdm-emoji-picker {
+    position: fixed;
+    z-index: 1000;
+    width: 280px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    padding: 10px;
+  }
+  .mdm-emoji-search {
+    width: 100%;
+    padding: 6px 9px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .mdm-emoji-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .mdm-emoji-option {
+    font-size: 19px;
+    line-height: 1;
+    padding: 6px 0;
+    background: none;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .mdm-emoji-option:hover { background: var(--code-bg); }
+
+  /* ---------- menú "/" (tipos de bloque) ---------- */
+  .mdm-slash-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 200px;
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    padding: 6px;
+  }
+  .mdm-slash-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .mdm-slash-menu-item.active { background: var(--accent-soft); color: var(--accent-ink); }
+  .mdm-slash-menu-abbrev { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
+  .mdm-slash-menu-item.active .mdm-slash-menu-abbrev { color: var(--accent-ink); opacity: 0.75; }
+
+  /* ---------- vista previa de página al pasar el ratón por un wikilink ---------- */
+  .mdm-link-preview {
+    position: fixed;
+    z-index: 1000;
+    width: 260px;
+    max-height: 150px;
+    overflow: hidden;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    padding: 12px 14px;
+    pointer-events: none; /* que no compita con el hover del propio enlace */
+  }
+  .mdm-link-preview-title {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mdm-link-preview-body {
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 
   .backlinks-list { display: flex; flex-direction: column; gap: 4px; }
   .backlink-item {
@@ -506,7 +666,7 @@
 </head>
 <body>
   <header>
-    <span class="brand">MyDamnManagement</span>
+    <span class="brand"><img src="/logo.png" alt="" class="brand-logo" />MyDamnManagement</span>
     <div class="status-strip">
       <span class="status-item"><span class="dot" id="dot-api"></span>api</span>
       <span class="status-item"><span class="dot" id="dot-db"></span>db</span>

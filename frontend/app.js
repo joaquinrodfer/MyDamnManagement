@@ -52,6 +52,11 @@ function clearMain() {
     state.editor.destroy();
     state.editor = null;
   }
+  // La tarjeta de vista previa al hover (si había una abierta) cuelga de
+  // document.body, no de #main -- sin esto, navegar mientras estaba visible
+  // la dejaba pegada en pantalla apuntando a la página anterior.
+  stopLinkPreview();
+  closeSlashMenu();
   const main = document.getElementById("main");
   main.innerHTML = "";
   return main;
@@ -262,6 +267,133 @@ async function bulkDeletePages(items) {
   if (currentWasDeleted) showEmpty();
 }
 
+// -------------------------------------------------------------- selector de emojis
+// Sin dependencias: no existe un <input type="emoji">, así que es un panel
+// propio con búsqueda por palabra clave sobre una lista curada (no las ~3700
+// del estándar Unicode completo -- las de uso habitual son de sobra aquí).
+
+const EMOJI_DATA = [
+  ["😀", "cara sonrisa feliz happy"], ["😄", "cara sonrisa feliz happy"], ["😁", "cara sonrisa feliz"],
+  ["😂", "risa lagrimas llorar"], ["🙂", "sonrisa leve"], ["😉", "guiño wink"], ["😊", "sonrisa timida"],
+  ["😍", "corazones amor love"], ["🤩", "estrellas asombro"], ["😘", "beso kiss"], ["😎", "gafas cool guay"],
+  ["🤔", "pensando duda"], ["🤨", "ceja duda sospecha"], ["😐", "neutral serio"], ["😴", "dormir sueño"],
+  ["😭", "llorar triste"], ["😡", "enfado rabia"], ["🥳", "fiesta celebracion"], ["🤯", "explosion mente"],
+  ["😱", "susto grito"], ["🙃", "boca abajo"], ["😇", "angel santo"], ["🤗", "abrazo hug"], ["🥺", "suplica"],
+  ["👍", "bien like ok"], ["👎", "mal dislike"], ["👏", "aplauso bravo"], ["🙌", "manos arriba celebrar"],
+  ["🙏", "gracias por favor rezar"], ["💪", "fuerza musculo"], ["✌️", "paz victoria"], ["🤝", "trato acuerdo"],
+  ["👋", "hola saludo adios"], ["✍️", "escribir mano"], ["👀", "ojos mirar"], ["🧠", "cerebro mente idea"],
+  ["❤️", "corazon amor"], ["🔥", "fuego caliente tendencia"], ["✨", "brillo destello magia"],
+  ["⭐", "estrella favorito"], ["🌟", "estrella brillante"], ["💡", "idea bombilla"], ["💯", "cien perfecto"],
+  ["✅", "hecho correcto check"], ["❌", "no incorrecto x"], ["⚠️", "aviso alerta cuidado"],
+  ["❓", "pregunta duda"], ["❗", "importante exclamacion"], ["🔴", "rojo circulo"], ["🟢", "verde circulo"],
+  ["🟡", "amarillo circulo"], ["🔵", "azul circulo"], ["⚪", "blanco circulo"], ["⚫", "negro circulo"],
+  ["📄", "pagina documento nota"], ["📝", "nota apuntes escribir"], ["📋", "portapapeles lista tareas"],
+  ["📌", "chincheta fijado importante"], ["📍", "ubicacion pin"], ["📎", "clip adjunto"], ["🔖", "marcador"],
+  ["📁", "carpeta folder"], ["📂", "carpeta abierta"], ["🗂️", "archivador organizador"], ["🗃️", "archivo caja"],
+  ["📆", "calendario fecha"], ["📅", "calendario evento"], ["⏰", "alarma reloj"], ["⏳", "tiempo espera"],
+  ["⌛", "arena tiempo"], ["🕐", "reloj hora"], ["📈", "grafico subida progreso"], ["📉", "grafico bajada"],
+  ["📊", "grafico barras estadisticas"], ["💰", "dinero saco"], ["💵", "dinero billete"], ["💳", "tarjeta pago"],
+  ["🧾", "recibo factura"], ["🏦", "banco"], ["💼", "maletin trabajo negocio"], ["📦", "caja paquete envio"],
+  ["🚀", "cohete lanzamiento rapido"], ["🎯", "objetivo meta diana"], ["🏆", "trofeo logro"], ["🥇", "medalla oro"],
+  ["🎓", "graduacion estudios"], ["🏫", "escuela universidad"], ["📚", "libros lectura estudio"],
+  ["📖", "libro abierto leer"], ["✏️", "lapiz escribir"], ["🖊️", "boligrafo"], ["🖌️", "pincel arte"],
+  ["🎨", "arte pintura diseño"], ["🔬", "microscopio ciencia"], ["🔭", "telescopio astronomia"],
+  ["🧪", "tubo ensayo experimento"], ["🧬", "adn genetica"], ["⚙️", "engranaje ajustes configuracion"],
+  ["🛠️", "herramientas reparar"], ["🔧", "llave inglesa"], ["🔨", "martillo"], ["🪛", "destornillador"],
+  ["💻", "portatil ordenador"], ["🖥️", "ordenador escritorio"], ["⌨️", "teclado"], ["🖱️", "raton mouse"],
+  ["📱", "movil telefono"], ["☎️", "telefono llamada"], ["🔌", "enchufe electricidad"], ["🔋", "bateria"],
+  ["💾", "guardar disquete"], ["💿", "cd disco"], ["🌐", "internet web mundo"], ["🔗", "enlace link"],
+  ["🔒", "candado bloqueado seguro"], ["🔓", "candado abierto"], ["🔑", "llave acceso"], ["🛡️", "escudo proteccion"],
+  ["🐛", "bicho bug error"], ["🕷️", "araña"], ["🐍", "serpiente python"], ["🐙", "pulpo"], ["🦄", "unicornio"],
+  ["🐱", "gato cat"], ["🐶", "perro dog"], ["🦊", "zorro"], ["🐼", "panda"], ["🐨", "koala"], ["🐸", "rana"],
+  ["🦁", "leon"], ["🐯", "tigre"], ["🐮", "vaca"], ["🐷", "cerdo"], ["🐵", "mono"], ["🦉", "buho"], ["🐧", "pingüino"],
+  ["☕", "cafe"], ["🍵", "te"], ["🍺", "cerveza"], ["🍷", "vino"], ["🍕", "pizza"], ["🍔", "hamburguesa"],
+  ["🍎", "manzana fruta"], ["🍌", "platano"], ["🥑", "aguacate"], ["🍰", "tarta pastel"], ["🍪", "galleta"],
+  ["🌍", "mundo tierra global"], ["🗺️", "mapa"], ["🧭", "brujula direccion"], ["✈️", "avion viaje"],
+  ["🚗", "coche"], ["🚲", "bicicleta"], ["🏠", "casa hogar"], ["🏢", "edificio oficina"], ["🏥", "hospital"],
+  ["⛰️", "montaña"], ["🏖️", "playa"], ["🌳", "arbol naturaleza"], ["🌱", "planta semilla crecer"],
+  ["☀️", "sol dia"], ["🌙", "luna noche"], ["☁️", "nube"], ["🌧️", "lluvia"], ["⛈️", "tormenta"], ["❄️", "nieve frio"],
+  ["🎉", "confeti fiesta celebracion"], ["🎂", "cumpleaños tarta"], ["🎁", "regalo"], ["🎮", "videojuego mando"],
+  ["🎵", "musica nota"], ["🎧", "auriculares"], ["📷", "camara foto"], ["🎬", "cine pelicula"], ["🗓️", "calendario planificacion"],
+  ["👥", "personas grupo equipo"], ["🧑‍💻", "programador desarrollador"], ["🧑‍🎓", "estudiante"],
+  ["🤖", "robot ia bot"], ["👾", "alien juego"], ["🧩", "puzzle piezas encaje"], ["🎲", "dado azar"],
+  ["🧭", "brujula guia"], ["📣", "megafono anuncio"], ["🔔", "campana notificacion"], ["🔕", "silencio sin notificaciones"],
+];
+
+let emojiPickerEl = null;
+
+function closeEmojiPicker() {
+  if (emojiPickerEl) {
+    emojiPickerEl.remove();
+    emojiPickerEl = null;
+  }
+  document.removeEventListener("keydown", onEmojiPickerKeydown);
+}
+
+function onEmojiPickerKeydown(e) {
+  if (e.key === "Escape") closeEmojiPicker();
+}
+
+function openEmojiPicker(anchorEl, onSelect) {
+  closeEmojiPicker();
+  closeContextMenu();
+
+  const panel = document.createElement("div");
+  panel.className = "mdm-emoji-picker";
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Buscar emoji…";
+  search.className = "mdm-emoji-search";
+
+  const grid = document.createElement("div");
+  grid.className = "mdm-emoji-grid";
+
+  function renderGrid(filter) {
+    grid.innerHTML = "";
+    const q = filter.trim().toLowerCase();
+    const matches = q ? EMOJI_DATA.filter(([, kw]) => kw.includes(q)) : EMOJI_DATA;
+    if (matches.length === 0) {
+      grid.innerHTML = '<div class="search-empty">Sin resultados.</div>';
+      return;
+    }
+    matches.forEach(([emoji]) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mdm-emoji-option";
+      btn.textContent = emoji;
+      btn.addEventListener("click", () => {
+        onSelect(emoji);
+        closeEmojiPicker();
+      });
+      grid.appendChild(btn);
+    });
+  }
+  renderGrid("");
+  search.addEventListener("input", () => renderGrid(search.value));
+
+  panel.append(search, grid);
+  document.body.appendChild(panel);
+
+  const anchorRect = anchorEl.getBoundingClientRect();
+  panel.style.left = `${Math.min(anchorRect.left, window.innerWidth - 300)}px`;
+  panel.style.top = `${anchorRect.bottom + 6}px`;
+
+  emojiPickerEl = panel;
+  search.focus();
+
+  setTimeout(() => {
+    document.addEventListener(
+      "click",
+      (e) => {
+        if (!panel.contains(e.target)) closeEmojiPicker();
+      },
+      { once: true }
+    );
+    document.addEventListener("keydown", onEmojiPickerKeydown);
+  }, 0);
+}
+
 // ------------------------------------------------------------------ notas
 
 async function selectNote(id) {
@@ -275,6 +407,59 @@ const AUTOSAVE_DELAY_MS = 2000;
 
 function renderNote(page, backlinks) {
   const main = clearMain();
+
+  // ---- barra superior: estado de guardado + desplegable de backlinks ----
+  const topbar = document.createElement("div");
+  topbar.className = "note-topbar";
+
+  const saveStatus = document.createElement("div");
+  saveStatus.className = "note-savestatus";
+  const saveIcon = document.createElement("span");
+  saveIcon.className = "note-savestatus-icon";
+  const saveLabel = document.createElement("span");
+  saveStatus.append(saveIcon, saveLabel);
+
+  function setSaveState(s) {
+    saveIcon.innerHTML = "";
+    saveStatus.classList.toggle("is-error", s === "error");
+    if (s === "saving") {
+      const spinner = document.createElement("span");
+      spinner.className = "spinner";
+      saveIcon.appendChild(spinner);
+      saveLabel.textContent = "Guardando…";
+    } else if (s === "dirty") {
+      saveIcon.textContent = "•";
+      saveLabel.textContent = "Cambios sin guardar…";
+    } else if (s === "error") {
+      saveIcon.textContent = "!";
+      saveLabel.textContent = "Error al guardar";
+    } else {
+      saveIcon.textContent = "✓";
+      saveLabel.textContent = "Guardado";
+    }
+  }
+  setSaveState("saved");
+
+  const backDetails = document.createElement("details");
+  backDetails.className = "note-backlinks-dropdown";
+  const backSummary = document.createElement("summary");
+  backSummary.textContent = `Backlinks (${backlinks.length})`;
+  const backList = document.createElement("div");
+  backList.className = "backlinks-list";
+  if (backlinks.length === 0) {
+    backList.innerHTML = '<div class="search-empty">Ninguna página enlaza aquí todavía.</div>';
+  } else {
+    backlinks.forEach((b) => {
+      const item = document.createElement("div");
+      item.className = "backlink-item";
+      item.textContent = b.title;
+      item.addEventListener("click", () => selectNote(b.id));
+      backList.appendChild(item);
+    });
+  }
+  backDetails.append(backSummary, backList);
+
+  topbar.append(saveStatus, backDetails);
 
   // ---- imagen de cabecera (opcional) ----
   const headerWrap = document.createElement("div");
@@ -290,7 +475,11 @@ function renderNote(page, backlinks) {
     if (page.header_image_path) {
       const img = document.createElement("img");
       img.className = "note-header-image";
-      img.src = page.header_image_path;
+      // ?t= rompe caché aparte del Cache-Control: no-cache del backend --
+      // el nombre de archivo es fijo por página (header.<ext>), así que sin
+      // esto quitar una cabecera y subir otra en el momento podía seguir
+      // enseñando la vieja hasta recargar.
+      img.src = `${page.header_image_path}?t=${Date.now()}`;
       img.alt = "";
 
       const removeBtn = document.createElement("button");
@@ -335,24 +524,29 @@ function renderNote(page, backlinks) {
   const titleRow = document.createElement("div");
   titleRow.className = "note-title-row";
 
-  const iconInput = document.createElement("input");
-  iconInput.className = "note-icon-input";
-  iconInput.value = page.icon || "";
-  iconInput.title = "Icono (emoji)";
+  const iconBtn = document.createElement("button");
+  iconBtn.type = "button";
+  iconBtn.className = "note-icon-btn";
+  iconBtn.textContent = page.icon || "📄";
+  iconBtn.title = "Cambiar icono";
+  iconBtn.addEventListener("click", () => {
+    openEmojiPicker(iconBtn, (emoji) => {
+      page.icon = emoji;
+      iconBtn.textContent = emoji;
+      scheduleSave();
+    });
+  });
 
   const titleInput = document.createElement("input");
   titleInput.className = "note-title";
   titleInput.value = page.title;
 
-  titleRow.append(iconInput, titleInput);
+  titleRow.append(iconBtn, titleInput);
 
   // ---- meta (creador, obligatorio y de solo lectura -- se fija al crear) ----
   const meta = document.createElement("div");
   meta.className = "note-meta";
-  function renderMeta() {
-    meta.textContent = `Creado por ${page.created_by || "—"} · Actualizado ${new Date(page.updated_at).toLocaleString("es-ES")}`;
-  }
-  renderMeta();
+  meta.textContent = `Creado por ${page.created_by || "—"}`;
 
   // ---- descripción (opcional) ----
   const descInput = document.createElement("textarea");
@@ -365,22 +559,19 @@ function renderNote(page, backlinks) {
     descInput.style.height = descInput.scrollHeight + "px";
   }
 
-  // ---- cuerpo: el cuadro de texto y el formato son el mismo sitio, no hay
-  // panel de "vista previa" aparte que mantener sincronizado (ver editor-src) ----
+  // ---- cuerpo: el cuadro de texto ES el cuerpo de la página (estilo
+  // Notion) -- no hay panel de "vista previa" aparte, ni caja/borde propios
+  // que lo distingan del resto de la página ----
   const bodyMount = document.createElement("div");
   bodyMount.id = "note-body";
 
   // ---- autoguardado (2s tras el último cambio; sin botón "Guardar") ----
-  const saveStatus = document.createElement("span");
-  saveStatus.className = "note-meta";
-  saveStatus.textContent = "Guardado";
-
   let saveTimer = null;
   let saving = false;
   let saveAgain = false;
 
   function scheduleSave() {
-    saveStatus.textContent = "Cambios sin guardar…";
+    setSaveState("dirty");
     clearTimeout(saveTimer);
     saveTimer = setTimeout(doSave, AUTOSAVE_DELAY_MS);
     state.flushPendingSave = () => {
@@ -396,31 +587,30 @@ function renderNote(page, backlinks) {
       return;
     }
     saving = true;
-    saveStatus.textContent = "Guardando…";
+    setSaveState("saving");
 
     // El icono es "obligatorio": si lo han vaciado, se restaura un valor por
     // defecto en vez de guardar un icono vacío.
-    if (iconInput.value.trim() === "") iconInput.value = "📄";
+    if (!page.icon) page.icon = "📄";
 
     try {
       const updated = await api(`/pages/${page.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           title: titleInput.value,
-          icon: iconInput.value.trim(),
+          icon: page.icon,
           description: descInput.value,
           body_markdown: state.editor.getValue(),
         }),
       });
       page.updated_at = updated.updated_at;
       page.title = updated.title;
-      renderMeta();
-      saveStatus.textContent = "Guardado";
+      setSaveState("saved");
       state.flushPendingSave = null;
       await loadTree();
       markActive(page.id);
     } catch (e) {
-      saveStatus.textContent = "Error al guardar";
+      setSaveState("error");
       console.error(e);
     } finally {
       saving = false;
@@ -431,51 +621,13 @@ function renderNote(page, backlinks) {
     }
   }
 
-  iconInput.addEventListener("input", scheduleSave);
   titleInput.addEventListener("input", scheduleSave);
   descInput.addEventListener("input", () => {
     autoResizeDesc();
     scheduleSave();
   });
 
-  const actions = document.createElement("div");
-  actions.className = "btn-row";
-  actions.style.marginTop = "10px";
-  actions.style.alignItems = "center";
-
-  const deleteBtn = document.createElement("button");
-  deleteBtn.className = "btn btn-danger";
-  deleteBtn.textContent = "Borrar página";
-  deleteBtn.addEventListener("click", async () => {
-    if (!confirm(`¿Borrar "${page.title}"? Esto no se puede deshacer.`)) return;
-    clearTimeout(saveTimer);
-    state.flushPendingSave = null;
-    await api(`/pages/${page.id}`, { method: "DELETE" });
-    await loadTree();
-    showEmpty();
-  });
-
-  actions.append(saveStatus, deleteBtn);
-
-  const backHead = document.createElement("div");
-  backHead.className = "panel-head";
-  backHead.textContent = `Backlinks (${backlinks.length})`;
-
-  const backList = document.createElement("div");
-  backList.className = "backlinks-list";
-  if (backlinks.length === 0) {
-    backList.innerHTML = '<div class="search-empty">Ninguna página enlaza aquí todavía.</div>';
-  } else {
-    backlinks.forEach((b) => {
-      const item = document.createElement("div");
-      item.className = "backlink-item";
-      item.textContent = b.title;
-      item.addEventListener("click", () => selectNote(b.id));
-      backList.appendChild(item);
-    });
-  }
-
-  main.append(headerWrap, fileInput, titleRow, meta, descInput, bodyMount, actions, backHead, backList);
+  main.append(topbar, headerWrap, fileInput, titleRow, meta, descInput, bodyMount);
   autoResizeDesc();
 
   // Ctrl/Cmd+S fuerza el guardado ya, sin esperar el debounce (y sin pasar
@@ -492,12 +644,13 @@ function renderNote(page, backlinks) {
     parent: bodyMount,
     doc: page.body_markdown || "",
     resolvePage: (title) => findPageByTitle(title),
-    onNavigate: (pageId) => selectNote(pageId),
+    onNavigate: (pageId) => navigateToPage(pageId),
     onChange: scheduleSave,
     onBlockContextMenu: (payload) => {
       const n = payload.count;
+      const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
       showContextMenu(payload.x, payload.y, [
-        { label: `${n} bloque${n > 1 ? "s" : ""} seleccionado${n > 1 ? "s" : ""}`, items: [] },
+        { label: header, items: [] },
         {
           label: "Convertir a",
           items: payload.types.map((t) => ({
@@ -522,6 +675,9 @@ function renderNote(page, backlinks) {
         },
       ]);
     },
+    onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
+    onWikilinkHoverEnd: () => stopLinkPreview(),
+    onSlashMenu: (menuState) => renderSlashMenu(menuState),
   });
 }
 
@@ -531,6 +687,127 @@ function findPageByTitle(title) {
     if ((p.title || "").toLowerCase() === lower) return p;
   }
   return null;
+}
+
+/** Un wikilink puede resolver a una nota o a una database -- son la misma
+ * tabla `pages` pero navegan distinto (el id de página de una database no
+ * es el id que espera /databases/{id}; ver database_id en el árbol). */
+function navigateToPage(pageId) {
+  const node = state.pagesById.get(pageId);
+  if (node?.type === "database") selectDatabase(node.database_id);
+  else selectNote(pageId);
+}
+
+// -------------------------------------------------- vista previa al pasar el ratón
+
+const pagePreviewCache = new Map();
+let linkPreviewEl = null;
+let hoverToken = 0;
+
+function stopLinkPreview() {
+  hoverToken++; // invalida cualquier fetch en curso de un hover ya terminado
+  if (linkPreviewEl) {
+    linkPreviewEl.remove();
+    linkPreviewEl = null;
+  }
+}
+
+async function startLinkPreview(pageId, rect) {
+  const token = ++hoverToken;
+
+  let data = pagePreviewCache.get(pageId);
+  if (!data) {
+    try {
+      data = await api(`/pages/${pageId}`);
+      pagePreviewCache.set(pageId, data);
+    } catch {
+      return;
+    }
+  }
+  if (token !== hoverToken) return; // el ratón ya se fue de ahí mientras se cargaba
+
+  const card = document.createElement("div");
+  card.className = "mdm-link-preview";
+
+  const title = document.createElement("div");
+  title.className = "mdm-link-preview-title";
+  title.textContent = `${data.icon || "📄"} ${data.title}`;
+
+  const body = document.createElement("div");
+  body.className = "mdm-link-preview-body";
+  const snippet = (data.body_markdown || "").trim();
+  body.textContent = snippet ? snippet.slice(0, 220) : "Sin contenido.";
+
+  card.append(title, body);
+  document.body.appendChild(card);
+
+  let left = rect.left;
+  let top = rect.bottom + 6;
+  const cardRect = card.getBoundingClientRect();
+  if (left + cardRect.width > window.innerWidth) left = window.innerWidth - cardRect.width - 8;
+  if (top + cardRect.height > window.innerHeight) top = rect.top - cardRect.height - 6;
+  card.style.left = `${left}px`;
+  card.style.top = `${top}px`;
+
+  linkPreviewEl = card;
+}
+
+// -------------------------------------------------------------------- menú "/"
+// El estado (qué opciones, cuál va resaltada) lo decide entry.js -- aquí solo
+// se pinta. Cada opción trae su propio onClick (cierra sobre la posición del
+// "/" y el tipo elegido dentro del editor).
+
+let slashMenuEl = null;
+
+function closeSlashMenu() {
+  if (slashMenuEl) {
+    slashMenuEl.remove();
+    slashMenuEl = null;
+  }
+}
+
+function renderSlashMenu(menuState) {
+  closeSlashMenu();
+  if (!menuState) return;
+
+  const menu = document.createElement("div");
+  menu.className = "mdm-slash-menu";
+
+  if (menuState.options.length === 0) {
+    menu.innerHTML = '<div class="search-empty">Sin coincidencias.</div>';
+  } else {
+    menuState.options.forEach((opt, i) => {
+      const item = document.createElement("div");
+      item.className = "mdm-slash-menu-item" + (i === menuState.selectedIndex ? " active" : "");
+
+      const label = document.createElement("span");
+      label.textContent = opt.label;
+      const abbrev = document.createElement("span");
+      abbrev.className = "mdm-slash-menu-abbrev";
+      abbrev.textContent = `/${opt.abbrev}`;
+      item.append(label, abbrev);
+
+      // mousedown (no click) + preventDefault: que el editor no pierda el
+      // foco/selección antes de que onClick aplique el tipo elegido.
+      item.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        opt.onClick();
+      });
+      menu.appendChild(item);
+    });
+  }
+
+  document.body.appendChild(menu);
+
+  let left = menuState.x;
+  let top = menuState.y + 4;
+  const rect = menu.getBoundingClientRect();
+  if (left + rect.width > window.innerWidth) left = window.innerWidth - rect.width - 8;
+  if (top + rect.height > window.innerHeight) top = menuState.y - rect.height - 4;
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+
+  slashMenuEl = menu;
 }
 
 // ------------------------------------------------------------- menú contextual
@@ -1096,14 +1373,7 @@ async function runSearch(q) {
       searchInput.value = "";
       searchResults.hidden = true;
       navSections.hidden = false;
-      if (r.type === "database") {
-        // /search devuelve el id de página (mismo motivo que en el árbol);
-        // resolvemos el id real de la database contra el árbol ya cargado.
-        const node = state.pagesById.get(r.id);
-        selectDatabase(node?.database_id || r.id);
-      } else {
-        selectNote(r.id);
-      }
+      navigateToPage(r.id);
     });
     searchResults.appendChild(el);
   });

@@ -51,8 +51,11 @@ class NoCacheStaticFiles(StaticFiles):
 
 # Adjuntos (imágenes de cabecera, etc.) subidos por la propia app -- ver
 # POST /pages/{id}/header-image. Antes del mount de "/" por la misma razón
-# de siempre: el catch-all no debe taparlo.
-app.mount("/files", StaticFiles(directory="/app/attachments"), name="files")
+# de siempre: el catch-all no debe taparlo. NoCacheStaticFiles aquí también:
+# el nombre de archivo es fijo por página ("header.<ext>"), así que sin esto
+# quitar una cabecera y subir otra de inmediato podía seguir mostrando la
+# vieja (misma URL, navegador sirviendo de caché sin revalidar).
+app.mount("/files", NoCacheStaticFiles(directory="/app/attachments"), name="files")
 
 # Montado al final a propósito: así no tapa /health, /status, /pages, /files
 # ni /docs, y sigue sirviendo cualquier otra ruta (incluida "/") como

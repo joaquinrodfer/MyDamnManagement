@@ -19,6 +19,8 @@ const highlightStyle = HighlightStyle.define([
   { tag: tags.heading2, class: "cm-mdm-h2" },
   { tag: tags.heading3, class: "cm-mdm-h3" },
   { tag: tags.heading4, class: "cm-mdm-h4" },
+  { tag: tags.heading5, class: "cm-mdm-h5" },
+  { tag: tags.heading6, class: "cm-mdm-h5" }, // sin H6 en el menú "/"; se ve como H5
   { tag: tags.strong, class: "cm-mdm-strong" },
   { tag: tags.emphasis, class: "cm-mdm-em" },
   { tag: tags.monospace, class: "cm-mdm-code" },
@@ -27,6 +29,36 @@ const highlightStyle = HighlightStyle.define([
 ]);
 
 const WIKILINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+function selectionIntersects(state, from, to) {
+  return state.selection.ranges.some((r) => r.from <= to && r.to >= from);
+}
+
+// Un wikilink resuelto y que no se está editando ahora mismo (el cursor no
+// está dentro) se sustituye entero por este widget -- se ve como "un enlace
+// normal", sin corchetes. En cuanto el cursor entra en su rango (clic,
+// flechas...) selectionIntersects deja de ser true y buildWikilinkDecorations
+// vuelve a mostrar el texto crudo editable, con sus marcadores pequeños.
+class WikilinkWidget extends WidgetType {
+  constructor(label, pageId) {
+    super();
+    this.label = label;
+    this.pageId = pageId;
+  }
+  eq(other) {
+    return other.label === this.label && other.pageId === this.pageId;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cm-mdm-wikilink-rendered";
+    el.textContent = this.label;
+    el.dataset.pageId = this.pageId;
+    return el;
+  }
+  ignoreEvent() {
+    return false; // que clic/hover le lleguen a nuestros handlers
+  }
+}
 
 function buildWikilinkDecorations(view, resolvePage) {
   const ranges = [];
@@ -40,13 +72,23 @@ function buildWikilinkDecorations(view, resolvePage) {
       const innerStart = start + 2;
       const innerEnd = end - 2;
       const title = m[1].trim();
+      const alias = m[2] ? m[2].trim() : null;
       const resolved = resolvePage(title);
 
-      // Clase propia (cm-mdm-wikimark, no cm-mdm-mark): el resaltado de
-      // Markdown ya intenta leer "[[" como el inicio de un link normal y
-      // añade su propia decoración ahí -- si usáramos la misma clase que
-      // los marcadores nativos (#, **, *) quedarían dos <span> anidados
-      // pisándose. Visualmente es igual (mismo CSS), pero sin el choque.
+      if (resolved && !selectionIntersects(view.state, start, end)) {
+        ranges.push(
+          Decoration.replace({ widget: new WikilinkWidget(alias || title, resolved.id) }).range(start, end)
+        );
+        continue;
+      }
+
+      // Editando (cursor dentro) o sin resolver: texto crudo, editable, con
+      // los corchetes visibles (pequeños) para que se note que hace falta
+      // arreglarlo si no hay página con ese título. Clase propia
+      // (cm-mdm-wikimark, no cm-mdm-mark): el resaltado de Markdown ya
+      // intenta leer "[[" como el inicio de un link normal y añade su
+      // propia decoración ahí -- con la misma clase quedarían dos <span>
+      // anidados pisándose (mismo CSS de todos modos, pero sin el choque).
       ranges.push(Decoration.mark({ class: "cm-mdm-wikimark" }).range(start, innerStart));
       ranges.push(
         Decoration.mark({
@@ -67,7 +109,7 @@ function wikilinkPlugin(resolvePage) {
         this.decorations = buildWikilinkDecorations(view, resolvePage);
       }
       update(update) {
-        if (update.docChanged || update.viewportChanged) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet) {
           this.decorations = buildWikilinkDecorations(update.view, resolvePage);
         }
       }
@@ -82,15 +124,110 @@ function wikilinkClickHandler(onNavigate) {
       if (!(event.ctrlKey || event.metaKey)) return false;
       const target = event.target;
       if (!(target instanceof HTMLElement)) return false;
-      const link = target.closest(".cm-mdm-wikilink");
+      const link = target.closest("[data-page-id]");
       if (!link) return false;
-      const pageId = link.getAttribute("data-page-id");
+      const pageId = link.dataset.pageId;
       if (!pageId) return false;
       event.preventDefault();
       onNavigate(pageId);
       return true;
     },
   });
+}
+
+const HOVER_DELAY_MS = 350;
+
+function wikilinkHoverHandler(onHover, onHoverEnd) {
+  let timer = null;
+  return EditorView.domEventHandlers({
+    mouseover(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return false;
+      const link = target.closest("[data-page-id]");
+      if (!link) return false;
+      const pageId = link.dataset.pageId;
+      const rect = link.getBoundingClientRect();
+      clearTimeout(timer);
+      timer = setTimeout(() => onHover?.(pageId, rect), HOVER_DELAY_MS);
+      return false;
+    },
+    mouseout(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return false;
+      if (!target.closest("[data-page-id]")) return false;
+      // si el ratón se mueve a otro elemento CON data-page-id (p.ej. de la
+      // marca "[[" al texto), no cortar -- solo al salir del todo
+      const related = event.relatedTarget;
+      if (related instanceof HTMLElement && related.closest("[data-page-id]") === target.closest("[data-page-id]")) {
+        return false;
+      }
+      clearTimeout(timer);
+      onHoverEnd?.();
+      return false;
+    },
+  });
+}
+
+// --------------------------------------------------------- flechas tipográficas
+// "->" / "<-" / "<->" se ven como →/←/↔ cuando no se están editando (mismo
+// mecanismo cursor-aware que los wikilinks). No se tocan dentro de bloques
+// de código -- "ptr->campo" en una nota técnica no debería convertirse.
+
+const ARROW_RE = /(<->)|(->)|(<-)/g;
+const ARROW_GLYPHS = ["↔", "→", "←"];
+
+class GlyphWidget extends WidgetType {
+  constructor(glyph) {
+    super();
+    this.glyph = glyph;
+  }
+  eq(other) {
+    return other.glyph === this.glyph;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cm-mdm-glyph";
+    el.textContent = this.glyph;
+    return el;
+  }
+}
+
+function isInsideCodeBlock(state, pos) {
+  return state.field(blockField).blocks.some((b) => b.type === "code" && pos >= b.from && pos <= b.to);
+}
+
+function buildArrowDecorations(view) {
+  const ranges = [];
+  for (const { from, to } of view.visibleRanges) {
+    const text = view.state.doc.sliceString(from, to);
+    ARROW_RE.lastIndex = 0;
+    let m;
+    while ((m = ARROW_RE.exec(text))) {
+      const start = from + m.index;
+      const end = start + m[0].length;
+      if (selectionIntersects(view.state, start, end)) continue;
+      if (isInsideCodeBlock(view.state, start)) continue;
+      const glyphIdx = m[1] ? 0 : m[2] ? 1 : 2;
+      ranges.push(Decoration.replace({ widget: new GlyphWidget(ARROW_GLYPHS[glyphIdx]) }).range(start, end));
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function arrowPlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = buildArrowDecorations(view);
+      }
+      update(update) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+          this.decorations = buildArrowDecorations(update.view);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
 }
 
 // ------------------------------------------------------------------ bloques
@@ -104,15 +241,19 @@ function wikilinkClickHandler(onNavigate) {
 // bloques "de verdad".
 
 const BLOCK_TYPES = [
-  { type: "paragraph", label: "Párrafo" },
-  { type: "h1", label: "Título 1" },
-  { type: "h2", label: "Título 2" },
-  { type: "h3", label: "Título 3" },
-  { type: "h4", label: "Título 4" },
-  { type: "bullet_list_item", label: "Lista" },
-  { type: "ordered_list_item", label: "Lista numerada" },
-  { type: "code", label: "Código" },
+  { type: "paragraph", label: "Párrafo", abbrev: "p" },
+  { type: "h1", label: "Título 1", abbrev: "h1" },
+  { type: "h2", label: "Título 2", abbrev: "h2" },
+  { type: "h3", label: "Título 3", abbrev: "h3" },
+  { type: "h4", label: "Título 4", abbrev: "h4" },
+  { type: "h5", label: "Título 5", abbrev: "h5" },
+  { type: "bullet_list_item", label: "Lista", abbrev: "list" },
+  { type: "ordered_list_item", label: "Lista numerada", abbrev: "num" },
+  { type: "code", label: "Código", abbrev: "code" },
+  { type: "hr", label: "Línea horizontal", abbrev: "horizontal" },
 ];
+
+const BLOCK_TYPE_LABEL = Object.fromEntries(BLOCK_TYPES.map((t) => [t.type, t.label]));
 
 function computeBlocks(state) {
   const blocks = [];
@@ -140,9 +281,14 @@ function computeBlocks(state) {
         blocks.push({ from: node.from, to: node.to, type: "h3" });
         break;
       case "ATXHeading4":
+        blocks.push({ from: node.from, to: node.to, type: "h4" });
+        break;
       case "ATXHeading5":
       case "ATXHeading6":
-        blocks.push({ from: node.from, to: node.to, type: "h4" });
+        blocks.push({ from: node.from, to: node.to, type: "h5" });
+        break;
+      case "HorizontalRule":
+        blocks.push({ from: node.from, to: node.to, type: "hr" });
         break;
       case "FencedCode":
       case "CodeBlock":
@@ -152,8 +298,8 @@ function computeBlocks(state) {
         blocks.push({ from: node.from, to: node.to, type: "paragraph" });
         break;
       default:
-        // Blockquote, HorizontalRule, HTMLBlock, Table, LinkReference...
-        // siguen siendo seleccionables/borrables, solo no convertibles.
+        // Blockquote, HTMLBlock, Table, LinkReference... siguen siendo
+        // seleccionables/borrables, solo no convertibles.
         blocks.push({ from: node.from, to: node.to, type: "other" });
     }
   }
@@ -162,10 +308,13 @@ function computeBlocks(state) {
 }
 
 function stripBlockPrefix(text, type) {
-  if (type === "h1" || type === "h2" || type === "h3" || type === "h4") return text.replace(/^#{1,6}[ \t]+/, "");
+  if (type === "h1" || type === "h2" || type === "h3" || type === "h4" || type === "h5") {
+    return text.replace(/^#{1,6}[ \t]+/, "");
+  }
   if (type === "bullet_list_item") return text.replace(/^[-*+][ \t]+/, "");
   if (type === "ordered_list_item") return text.replace(/^\d+[.)][ \t]+/, "");
   if (type === "code") return text.replace(/^```[^\n]*\n?/, "").replace(/\n?```[ \t]*$/, "");
+  if (type === "hr") return ""; // "---" no tiene contenido que conservar
   return text;
 }
 
@@ -179,12 +328,16 @@ function applyBlockType(plain, targetType) {
       return "### " + plain;
     case "h4":
       return "#### " + plain;
+    case "h5":
+      return "##### " + plain;
     case "bullet_list_item":
       return "- " + plain;
     case "ordered_list_item":
       return "1. " + plain;
     case "code":
       return "```\n" + plain + "\n```";
+    case "hr":
+      return "---";
     default:
       return plain;
   }
@@ -307,15 +460,21 @@ function blockHandleEventHandlers(onBlockContextMenu) {
       event.preventDefault();
 
       const idx = Number(handle.dataset.blockIndex);
-      const { selected } = view.state.field(blockField);
+      const { blocks, selected } = view.state.field(blockField);
       let indices = selected.has(idx) ? selected : new Set([idx]);
       if (indices !== selected) selectBlocks(view, indices);
 
       if (onBlockContextMenu) {
+        // Si es un único bloque, se puede decir de qué tipo es ya mismo;
+        // con varios seleccionados (posiblemente de tipos distintos) no.
+        const currentTypeLabel =
+          indices.size === 1 ? BLOCK_TYPE_LABEL[blocks[[...indices][0]].type] ?? null : null;
+
         onBlockContextMenu({
           x: event.clientX,
           y: event.clientY,
           count: indices.size,
+          currentTypeLabel,
           types: BLOCK_TYPES,
           convertTo: (type) => convertBlocks(view, indices, type),
           deleteBlocks: () => deleteBlocks(view, indices),
@@ -396,6 +555,273 @@ function blockLinesPlugin() {
   );
 }
 
+// Línea horizontal ("---"): igual que wikilinks/flechas, se ve como una
+// línea de verdad (widget) salvo mientras se está editando ese bloque en
+// concreto -- si no, no habría forma de borrarla con Backspace con comodidad.
+class HRWidget extends WidgetType {
+  eq(other) {
+    return other instanceof HRWidget;
+  }
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "cm-mdm-hr";
+    return el;
+  }
+}
+
+function hrDecorations(state) {
+  const { blocks } = state.field(blockField);
+  const ranges = [];
+  for (const b of blocks) {
+    if (b.type !== "hr") continue;
+    if (selectionIntersects(state, b.from, b.to)) continue;
+    ranges.push(Decoration.replace({ widget: new HRWidget(), block: true }).range(b.from, b.to));
+  }
+  return Decoration.set(ranges, true);
+}
+
+// Nota: esto tiene que ser un StateField, no un ViewPlugin -- CodeMirror no
+// admite decoraciones de bloque (block: true) declaradas desde un plugin,
+// solo desde un campo de estado ("Block decorations may not be specified
+// via plugins"). blockField ya está definido arriba en el archivo, así que
+// puede leerse aquí sin problema (los StateField se resuelven por orden de
+// aparición en `extensions`, y éste va después).
+const hrField = StateField.define({
+  create(state) {
+    return hrDecorations(state);
+  },
+  update(deco, tr) {
+    if (
+      tr.docChanged ||
+      !tr.state.selection.eq(tr.startState.selection) ||
+      tr.state.field(blockField) !== tr.startState.field(blockField)
+    ) {
+      return hrDecorations(tr.state);
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+// --------------------------------------------------------- menú "/" (slash)
+//
+// Al escribir "/" en una línea vacía se activa un menú de tipos de bloque,
+// filtrable escribiendo a continuación (por abreviatura o por palabra),
+// navegable con flechas arriba/abajo, Enter para confirmar, Escape para
+// cancelar. Elegir una opción borra "/consulta" y pone el prefijo Markdown
+// del tipo elegido (o abre el bloque de código con el cursor dentro, o dos
+// bloques nuevos tras una línea horizontal).
+//
+// El estado del menú vive en la instancia del ViewPlugin, no en un
+// StateField -- es UI efímera, no algo que deba formar parte del documento
+// ni del historial de deshacer.
+
+function applySlashChoice(view, from, to, type) {
+  let insert;
+  let cursorOffset;
+  switch (type) {
+    case "h1":
+      insert = "# ";
+      cursorOffset = insert.length;
+      break;
+    case "h2":
+      insert = "## ";
+      cursorOffset = insert.length;
+      break;
+    case "h3":
+      insert = "### ";
+      cursorOffset = insert.length;
+      break;
+    case "h4":
+      insert = "#### ";
+      cursorOffset = insert.length;
+      break;
+    case "h5":
+      insert = "##### ";
+      cursorOffset = insert.length;
+      break;
+    case "bullet_list_item":
+      insert = "- ";
+      cursorOffset = insert.length;
+      break;
+    case "ordered_list_item":
+      insert = "1. ";
+      cursorOffset = insert.length;
+      break;
+    case "code":
+      insert = "```\n\n```";
+      cursorOffset = 4; // dentro de la valla, en la línea en blanco
+      break;
+    case "hr":
+      insert = "---\n\n";
+      cursorOffset = insert.length;
+      break;
+    case "paragraph":
+    default:
+      insert = "";
+      cursorOffset = 0;
+  }
+  view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + cursorOffset } });
+  view.focus();
+}
+
+function slashMenuExtension(onMenuUpdate) {
+  const plugin = ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.view = view;
+        this.active = false;
+        this.from = -1;
+        this.selectedIndex = 0;
+      }
+
+      get query() {
+        if (!this.active) return "";
+        const pos = this.view.state.selection.main.head;
+        if (pos < this.from) return "";
+        return this.view.state.doc.sliceString(this.from + 1, pos);
+      }
+
+      get filteredOptions() {
+        const q = this.query.trim().toLowerCase();
+        if (!q) return BLOCK_TYPES;
+        return BLOCK_TYPES.filter(
+          (t) => t.abbrev.startsWith(q) || t.label.toLowerCase().includes(q)
+        );
+      }
+
+      update(update) {
+        if (!update.docChanged && !update.selectionSet) return;
+
+        if (this.active) {
+          const sel = update.state.selection;
+          const pos = sel.main.head;
+          const line = update.state.doc.lineAt(Math.min(this.from, update.state.doc.length));
+          const slashStillThere =
+            this.from < update.state.doc.length &&
+            update.state.doc.sliceString(this.from, this.from + 1) === "/";
+
+          if (!slashStillThere || sel.ranges.length !== 1 || !sel.main.empty || pos < this.from || pos > line.to) {
+            this.close();
+            return;
+          }
+
+          this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredOptions.length - 1));
+          this.notify();
+          return;
+        }
+
+        if (!update.docChanged) return;
+        update.changes.iterChanges((_fromA, _toA, fromB, _toB, inserted) => {
+          if (this.active || inserted.toString() !== "/") return;
+          const line = update.state.doc.lineAt(fromB);
+          const beforeSlash = update.state.doc.sliceString(line.from, fromB);
+          if (beforeSlash.trim() !== "") return; // solo dispara al principio de un bloque vacío
+          this.active = true;
+          this.from = fromB;
+          this.selectedIndex = 0;
+          this.notify();
+        });
+      }
+
+      notify() {
+        if (!this.active) {
+          onMenuUpdate(null);
+          return;
+        }
+        const opts = this.filteredOptions;
+        const selectedIndex = Math.min(this.selectedIndex, Math.max(0, opts.length - 1));
+        const options = opts.map((o, i) => ({
+          ...o,
+          onClick: () => {
+            this.selectedIndex = i;
+            this.confirmSelection();
+          },
+        }));
+        // coordsAtPos() lee el layout del DOM -- CodeMirror no permite
+        // hacerlo dentro del propio ciclo de update() ("Reading the editor
+        // layout isn't allowed during an update"), así que se difiere fuera
+        // de la pila de la transacción actual. setTimeout(…, 0) en vez de
+        // requestAnimationFrame: solo necesitamos salir del update() en
+        // curso, no esperar a un frame de composición real (que además no
+        // se dispara si la pestaña no está pintando).
+        setTimeout(() => {
+          if (!this.active || this.from < 0) return; // pudo cerrarse mientras tanto
+          const coords = this.view.coordsAtPos(this.from);
+          onMenuUpdate({ x: coords?.left ?? 0, y: coords?.bottom ?? 0, selectedIndex, options });
+        });
+      }
+
+      close() {
+        if (!this.active) return;
+        this.active = false;
+        this.from = -1;
+        onMenuUpdate(null);
+      }
+
+      moveSelection(delta) {
+        if (!this.active) return false;
+        const n = this.filteredOptions.length;
+        if (n === 0) return true;
+        this.selectedIndex = (this.selectedIndex + delta + n) % n;
+        this.notify();
+        return true;
+      }
+
+      confirmSelection() {
+        if (!this.active) return false;
+        const opts = this.filteredOptions;
+        const from = this.from;
+        const to = this.view.state.selection.main.head;
+        if (opts.length === 0) {
+          this.close();
+          return true;
+        }
+        const chosen = opts[Math.min(this.selectedIndex, opts.length - 1)];
+        this.close();
+        applySlashChoice(this.view, from, to, chosen.type);
+        return true;
+      }
+
+      destroy() {
+        onMenuUpdate(null);
+      }
+    }
+  );
+
+  const menuKeymap = keymap.of([
+    { key: "ArrowDown", run: (view) => view.plugin(plugin)?.moveSelection(1) ?? false },
+    { key: "ArrowUp", run: (view) => view.plugin(plugin)?.moveSelection(-1) ?? false },
+    {
+      key: "Enter",
+      run: (view) => view.plugin(plugin)?.confirmSelection() ?? false,
+    },
+    {
+      key: "Escape",
+      run: (view) => {
+        const pv = view.plugin(plugin);
+        if (pv?.active) {
+          pv.close();
+          return true;
+        }
+        return false;
+      },
+    },
+  ]);
+
+  return [plugin, menuKeymap];
+}
+
+const shiftEnterKeymap = keymap.of([
+  {
+    key: "Shift-Enter",
+    run: (view) => {
+      view.dispatch(view.state.replaceSelection("\n\n"));
+      return true;
+    },
+  },
+]);
+
 /**
  * @param {Object} opts
  * @param {HTMLElement} opts.parent
@@ -404,13 +830,32 @@ function blockLinesPlugin() {
  * @param {(pageId: string) => void} opts.onNavigate
  * @param {(text: string) => void} opts.onChange
  * @param {(payload: object) => void} [opts.onBlockContextMenu]
+ * @param {(pageId: string, rect: DOMRect) => void} [opts.onWikilinkHover]
+ * @param {() => void} [opts.onWikilinkHoverEnd]
+ * @param {(state: object|null) => void} [opts.onSlashMenu]
  */
-export function createNoteEditor({ parent, doc, resolvePage, onNavigate, onChange, onBlockContextMenu }) {
+export function createNoteEditor({
+  parent,
+  doc,
+  resolvePage,
+  onNavigate,
+  onChange,
+  onBlockContextMenu,
+  onWikilinkHover,
+  onWikilinkHoverEnd,
+  onSlashMenu,
+}) {
   const view = new EditorView({
     parent,
     state: EditorState.create({
       doc: doc || "",
       extensions: [
+        // El menú "/" y Mayús+Enter van ANTES del keymap general: sus
+        // combinaciones (Enter/flechas/Escape mientras el menú está activo)
+        // deben ganar; cuando no hacen nada (devuelven false) caen al
+        // keymap normal sin más.
+        ...slashMenuExtension(onSlashMenu ?? (() => {})),
+        shiftEnterKeymap,
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         markdown(),
@@ -419,8 +864,11 @@ export function createNoteEditor({ parent, doc, resolvePage, onNavigate, onChang
         blockHandlesPlugin(),
         blockHandleEventHandlers(onBlockContextMenu),
         blockLinesPlugin(),
+        hrField,
         wikilinkPlugin(resolvePage),
         wikilinkClickHandler(onNavigate),
+        wikilinkHoverHandler(onWikilinkHover, onWikilinkHoverEnd),
+        arrowPlugin(),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChange(update.state.doc.toString());
