@@ -16,7 +16,7 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas, editor de notas con vista previa de wikilinks y backlinks en vivo, y tablas/tableros para las bases de datos. Es HTML/CSS/JS plano (`frontend/index.html` + `frontend/app.js`), sin build ni dependencias, servido por la propia API. Adelanta la parte de interfaz de la Fase 4 porque hacía falta poder ver y tocar lo de las Fases 1–2 sin `curl`.
+Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas, editor de notas con vista previa de wikilinks y backlinks en vivo, tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3). Es HTML/CSS/JS plano (`frontend/index.html` + `frontend/app.js`), sin build ni dependencias, servido por la propia API.
 
 ## Cómo arrancarlo (desarrollo)
 
@@ -42,7 +42,7 @@ Documentación interactiva de la API en [http://localhost:8000/docs](http://loca
 ## Panel visual
 
 - **Páginas**: `+` crea una nota (`Sin título`, lista para renombrar). Editor con título, cuerpo Markdown, vista previa con `[[wikilinks]]` resueltos en vivo contra el árbol cargado, y lista de backlinks.
-- **Bases de datos**: `+` abre el diálogo de creación — nombre y propiedades (clave, nombre visible, tipo; `select`/`multiselect` piden opciones separadas por coma). El formulario de "+ Nueva fila" genera automáticamente el input correcto según el tipo declarado (texto, número, `select`, checkbox, fecha).
+- **Bases de datos**: los botones **CRM** / **Tareas** crean de un clic una database ya configurada (propiedades + vistas por defecto, plantillas en `backend/app/templates.py`) — el título es editable después haciendo clic en él. `+` abre el diálogo de creación en blanco: nombre y propiedades (clave, nombre visible, tipo; `select`/`multiselect` piden opciones separadas por coma). El formulario de "+ Nueva fila" genera automáticamente el input correcto según el tipo declarado (texto, número, `select`, checkbox, fecha).
 - **Vistas**: `+ Vista` crea una vista `table`/`board`/`list`/`calendar`; para `board` se elige la propiedad de agrupación y las columnas salen de sus `options` (o de los valores encontrados si no las tiene).
 - **Buscar**: el cuadro de la barra lateral llama a `/search` con un pequeño debounce.
 
@@ -76,6 +76,8 @@ Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]
 | `/databases/{id}/rows/{id}` | GET / PATCH / DELETE | Leer, editar (merge parcial de `properties`) o borrar una fila |
 | `/databases/{id}/views` | POST / GET | Crear o listar vistas (`table`\|`board`\|`calendar`\|`list`) |
 | `/databases/{id}/views/{id}` | PATCH / DELETE | Editar o borrar una vista |
+| `/databases/templates` | GET | Lista las plantillas disponibles (`crm`, `tasks`) |
+| `/databases/from-template` | POST | Crea una `database` desde una plantilla: schema + vistas por defecto en una llamada |
 
 Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": {"key":"valor","dir":"desc"}, "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend; `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
 
@@ -85,7 +87,7 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Fase 1** — Notas/wiki: árbol de páginas, wikilinks + backlinks, búsqueda full-text, Alembic
 - [x] **Fase 2** — Motor de `database` + `view` genéricos (tabla, board, calendario)
 - [x] **Panel visual** (adelanto de Fase 4) — árbol, editor de notas, tablas/tableros, todo sin build
-- [ ] **Fase 3** — CRM y Tareas como plantillas preconfiguradas (crear ambas con un clic, no a mano cada vez)
+- [x] **Fase 3** — CRM y Tareas como plantillas preconfiguradas (`backend/app/templates.py`; un clic en el panel)
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados, editor más rico
 
 ## Despliegue objetivo

@@ -136,6 +136,17 @@
   }
   .icon-btn:hover { background: var(--code-bg); color: var(--ink); }
 
+  .template-btn {
+    background: none;
+    border: 1px solid var(--panel-border);
+    border-radius: 5px;
+    color: var(--ink-muted);
+    font-size: 11px;
+    padding: 2px 7px;
+    line-height: 1.6;
+  }
+  .template-btn:hover { border-color: var(--accent); color: var(--accent-ink); background: var(--code-bg); }
+
   .tree-node { user-select: none; }
   .tree-row {
     display: flex;
@@ -253,7 +264,16 @@
 
   /* ---------- vista de database ---------- */
   .db-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
-  .db-title { font-family: var(--font-mono); font-size: 22px; font-weight: 600; }
+  .db-title {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 600;
+    border: none;
+    background: none;
+    color: var(--ink);
+    padding: 2px 0;
+    min-width: 160px;
+  }
   .db-schema-hint { font-size: 12px; color: var(--ink-muted); margin-bottom: 16px; }
   .view-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
   .view-tab {
@@ -374,7 +394,11 @@
         <div class="sidebar-section">
           <div class="sidebar-section-head">
             <span>Bases de datos</span>
-            <button class="icon-btn" id="btn-new-database" title="Nueva base de datos">+</button>
+            <div class="btn-row" style="gap: 4px;">
+              <button class="template-btn" id="btn-template-crm" title="Nueva base de datos desde la plantilla CRM (Contactos)">CRM</button>
+              <button class="template-btn" id="btn-template-tasks" title="Nueva base de datos desde la plantilla de Tareas">Tareas</button>
+              <button class="icon-btn" id="btn-new-database" title="Nueva base de datos en blanco">+</button>
+            </div>
           </div>
           <div id="db-tree-container"></div>
         </div>

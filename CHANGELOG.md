@@ -4,6 +4,19 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.5.0] — Fase 3: plantillas de CRM y Tareas
+
+### Añadido
+
+- `backend/app/templates.py`: plantillas `crm` ("Contactos": empresa/fase/valor/próximo contacto) y `tasks` ("Tareas": estado/prioridad/fecha límite/proyecto), cada una con dos vistas por defecto (`board` agrupado + `table`). Son datos, no motor nuevo — pasan por las mismas operaciones de creación de la Fase 2.
+- `GET /databases/templates`: lista las plantillas disponibles.
+- `POST /databases/from-template`: crea database + schema + vistas en una sola llamada (`title` opcional, si no se pasa usa el de la plantilla).
+- Panel visual: botones **CRM** / **Tareas** de un clic junto a "Bases de datos". Título de la database ahora editable (antes solo se fijaba al crearla) — hacía falta para poder renombrar lo que sale de una plantilla.
+
+### Verificado
+
+- De extremo a extremo en el navegador: clic en **CRM** → database con 4 propiedades y 2 vistas ya creadas, tablero con las 5 columnas de `fase` a 0; clic en **Tareas** → mismo patrón con su propio schema. Renombrado de título probado (persiste y se refleja en el árbol). `POST /databases/from-template` con una plantilla inexistente devuelve 404.
+
 ## [0.4.0] — Panel visual (adelanto de Fase 4)
 
 ### Añadido

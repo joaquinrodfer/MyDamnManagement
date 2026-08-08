@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app import models, schemas
 from app.database import get_db
 from app.properties import validate_properties
+from app.templates import TEMPLATES
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
@@ -96,6 +97,42 @@ def create_database(payload: schemas.DatabaseCreate, db: Session = Depends(get_d
 @router.get("", response_model=List[schemas.DatabaseRead])
 def list_databases(db: Session = Depends(get_db)):
     return [_serialize_database(d) for d in db.query(models.DatabaseDef).all()]
+
+
+# Rutas literales de un segmento ("templates", "from-template") declaradas
+# ANTES de "/{database_id}": si fueran después, FastAPI intentaría parsear
+# "templates" como un UUID y fallaría con 422 en vez de llegar aquí — el
+# mismo problema que ya resolvimos con /pages/tree en la Fase 1.
+
+@router.get("/templates")
+def list_templates():
+    return [
+        {"key": key, "title": t["title"], "properties": [p["name"] for p in t["schema_def"]]}
+        for key, t in TEMPLATES.items()
+    ]
+
+
+@router.post("/from-template", response_model=schemas.DatabaseRead)
+def create_from_template(payload: schemas.DatabaseFromTemplate, db: Session = Depends(get_db)):
+    template = TEMPLATES.get(payload.template)
+    if not template:
+        raise HTTPException(404, f"Plantilla '{payload.template}' no existe")
+
+    ws = _get_default_workspace(db)
+    page = models.Page(workspace_id=ws.id, title=payload.title or template["title"], type=models.PageType.database)
+    db.add(page)
+    db.flush()
+
+    db_def = models.DatabaseDef(page_id=page.id, schema_def=template["schema_def"])
+    db.add(db_def)
+    db.flush()
+
+    for v in template["views"]:
+        db.add(models.View(database_id=db_def.id, name=v["name"], type=v["type"], config=v["config"]))
+
+    db.commit()
+    db.refresh(db_def)
+    return _serialize_database(db_def)
 
 
 @router.get("/{database_id}", response_model=schemas.DatabaseRead)

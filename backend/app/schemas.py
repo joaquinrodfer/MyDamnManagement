@@ -73,6 +73,11 @@ class DatabaseCreate(BaseModel):
     schema_def: list[PropertyDef] = []
 
 
+class DatabaseFromTemplate(BaseModel):
+    template: str
+    title: Optional[str] = None
+
+
 class DatabaseUpdate(BaseModel):
     title: Optional[str] = None
     icon: Optional[str] = None

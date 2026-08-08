@@ -263,9 +263,22 @@ async function renderDatabase(database, views, activeViewId) {
   const header = document.createElement("div");
   header.className = "db-header";
 
-  const title = document.createElement("div");
+  const title = document.createElement("input");
   title.className = "db-title";
-  title.textContent = database.title;
+  title.value = database.title;
+  title.addEventListener("blur", async () => {
+    const newTitle = title.value.trim() || "Sin título";
+    if (newTitle === database.title) return;
+    try {
+      await api(`/databases/${database.id}`, { method: "PATCH", body: JSON.stringify({ title: newTitle }) });
+      database.title = newTitle;
+      await loadTree();
+      markActive(database.id);
+    } catch (e) {
+      alert("Error al renombrar: " + e.message);
+      title.value = database.title;
+    }
+  });
 
   const headerActions = document.createElement("div");
   headerActions.className = "btn-row";
@@ -604,6 +617,23 @@ document.getElementById("btn-new-database").addEventListener("click", () => {
 });
 document.getElementById("btn-add-prop").addEventListener("click", addPropertyRow);
 document.getElementById("btn-cancel-database").addEventListener("click", () => dbDialog.close());
+
+// -------------------------------------------------- plantillas (Fase 3)
+// Un clic: crea la database ya con schema_def + vistas por defecto.
+// No hay diálogo — si el nombre no convence, el título es editable luego.
+
+document.getElementById("btn-template-crm").addEventListener("click", () => createFromTemplate("crm"));
+document.getElementById("btn-template-tasks").addEventListener("click", () => createFromTemplate("tasks"));
+
+async function createFromTemplate(templateKey) {
+  try {
+    const database = await api("/databases/from-template", { method: "POST", body: JSON.stringify({ template: templateKey }) });
+    await loadTree();
+    await selectDatabase(database.id);
+  } catch (e) {
+    alert("Error al crear desde plantilla: " + e.message);
+  }
+}
 
 document.getElementById("btn-create-database").addEventListener("click", async () => {
   const title = document.getElementById("db-name").value.trim() || "Sin título";

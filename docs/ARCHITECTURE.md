@@ -166,6 +166,10 @@ graph TD
 
 `properties.py` valida cada fila contra el `schema_def` de su database al guardar (claves conocidas, tipo básico, opciones de `select`) — sin eso, un CRM y un gestor de tareas comparten tabla sin ninguna garantía de forma, y los errores se descubrirían leyendo, no escribiendo.
 
+### Fase 3: las plantillas son datos, no motor nuevo
+
+`POST /databases/from-template` no añade capacidades al motor — llama exactamente a lo mismo que `POST /databases` + `POST /databases/{id}/views`, varias veces, con el `schema_def` y las `views` que trae `backend/app/templates.py` en vez de escritos a mano. Si en algún momento hiciera falta lógica propia para "crear un CRM" que no fuera reducible a datos sobre el motor genérico, sería la señal de que el motor no es tan genérico como parece.
+
 ## 8. Panel visual: cliente puro sobre la misma API
 
 `frontend/` no es una app aparte con su propio backend — es HTML/CSS/JS servido como archivos estáticos por `api` (`StaticFiles`, montado al final de las rutas) que llama a los mismos endpoints que se probaron por `curl`. No hay build, no hay framework, no hay estado en el servidor propio del frontend.
