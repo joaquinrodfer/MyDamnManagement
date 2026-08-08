@@ -1,5 +1,7 @@
 # MyDamnManagement
 
+![Logo MyDamnManagement](public/MDMLogo.png)
+
 Notas en Markdown + bases de datos tipo Notion + CRM + gestor de tareas — autoalojado, sin depender de terceros. Un único motor genérico de páginas/bases de datos/vistas del que salen los tres productos.
 
 ## Qué es
