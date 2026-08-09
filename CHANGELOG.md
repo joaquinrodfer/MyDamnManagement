@@ -4,6 +4,15 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+### Añadido
+
+- **Botón de inicio** (🏠, junto a atrás/adelante/subir) para volver a la landing de páginas recientes/fechas cercanas cuando se quiera, no solo al arrancar o al borrar la página abierta. Se integra con el historial: `atrás` después de ir al inicio vuelve a donde estabas.
+- **"Nueva subpágina" en el menú contextual del árbol**: clic derecho sobre cualquier página (una sola, no con selección múltiple -- sería ambiguo bajo cuál crearla) para crear una nota hija de ella directamente. El `+` de la barra lateral pasa a crear **siempre** en la raíz, sin importar qué página esté abierta -- antes creaba como hija de la nota abierta, ambiguo con esta opción nueva.
+
+### Corregido
+
+- `Page.updated_at` no se actualizaba al guardar solo el cuerpo de una nota (título/icono/descripción sin cambios): el cuerpo vive en `page_content`, una tabla aparte, así que la `Page` en sí no quedaba "sucia" para que su `onupdate` disparase. Afectaba al orden de "Páginas recientes" del panel -- una página editada hace un minuto podía aparecer como si no se hubiera tocado en días. Ahora se toca `updated_at` explícitamente también al guardar el cuerpo.
+
 ### Corregido (grave)
 
 - Un wikilink o enlace Markdown con un salto de línea en medio del texto (p. ej. `[[Título\ncon salto]]`, o un `[texto\n](url)` con un Enter sin querer entre corchetes) tiraba abajo el editor entero al abrir la página: `Decoration.replace()` que cruza un salto de línea no se admite desde un `ViewPlugin` (solo desde un `StateField`, como ya pasaba con la línea horizontal), y CodeMirror lo rechaza con una excepción sin capturar -- el editor nunca llegaba a montarse, así que la página se veía completamente vacía aunque el contenido siguiera intacto en la base de datos. Tanto `buildWikilinkDecorations` como `buildMarkdownLinkDecorations` ahora comprueban si el texto igualado tiene un `"\n"` y, si lo tiene, se quedan siempre en su forma cruda/editable en vez de intentar sustituirlo por el widget "bonito" -- más feo en ese caso concreto, pero no vuelve a romper nada.

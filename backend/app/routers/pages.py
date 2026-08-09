@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -125,6 +126,14 @@ def update_page(page_id: uuid.UUID, payload: schemas.PageUpdate, db: Session = D
         else:
             db.add(models.PageContent(page_id=page.id, body_markdown=payload.body_markdown))
         sync_wikilinks(db, page, payload.body_markdown)
+        # page.updated_at tiene onupdate=datetime.utcnow, pero eso solo
+        # dispara cuando SQLAlchemy considera "sucia" alguna columna de la
+        # propia Page -- el cuerpo vive en page_content (otra tabla), así
+        # que guardar solo el cuerpo no tocaba la Page en absoluto y
+        # updated_at se quedaba congelado en el último cambio de
+        # título/icono/descripción, por poco reciente que fuera de verdad
+        # el contenido (afectaba al orden de "Páginas recientes" del panel).
+        page.updated_at = datetime.utcnow()
 
     db.commit()
     db.refresh(page)
