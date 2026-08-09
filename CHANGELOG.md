@@ -4,6 +4,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+### Corregido
+
+- Vista previa de un wikilink al pasar el ratón, duplicada y una copia imposible de cerrar salvo recargando (issue [#1](../../issues/1)): un clic sin `Ctrl` sobre un wikilink resuelto lo sustituye por su marcado en crudo justo bajo el propio ratón, lo que el navegador interpreta como un `mouseover` nuevo sin que el hover anterior se haya cerrado -- `startLinkPreview()` creaba la tarjeta nueva sin quitar la que ya hubiera, dejándola huérfana en el DOM. Ahora cierra cualquier tarjeta previa antes de crear una.
+
 ## [0.9.2] — Imagen de `api` autocontenida (lista para Proxmox)
 
 ### Corregido

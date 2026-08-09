@@ -978,6 +978,14 @@ async function startLinkPreview(pageId, rect) {
   }
   if (token !== hoverToken) return; // el ratón ya se fue de ahí mientras se cargaba
 
+  // Nunca puede haber dos tarjetas vivas a la vez: un clic sin Ctrl sobre un
+  // wikilink resuelto lo sustituye por su marcado en crudo bajo el propio
+  // ratón (ver WikilinkWidget/buildWikilinkDecorations en entry.js), lo que
+  // dispara un mouseover nuevo del navegador sin que el hover anterior se
+  // haya cerrado -- sin este remove(), la tarjeta vieja queda huérfana en
+  // el DOM para siempre (issue #1 en GitHub).
+  linkPreviewEl?.remove();
+
   const card = document.createElement("div");
   card.className = "mdm-link-preview";
 
