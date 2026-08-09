@@ -18,7 +18,9 @@ services:
       retries: 5
 
   api:
-    build: ./backend
+    build:
+      context: . # raíz del repo, no ./backend -- así el Dockerfile puede copiar frontend/ también
+      dockerfile: backend/Dockerfile
     container_name: mdm_api
     restart: unless-stopped
     environment:

@@ -119,9 +119,9 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 
 ## Despliegue objetivo
 
-Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El stack de contenedores no cambia entre ambos entornos.
+Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El mismo `docker-compose.yml` sirve para los dos: la imagen de `api` es autocontenida (backend + `frontend/` ya copiados dentro, ver más abajo), así que mover el proyecto a Proxmox es copiar `docker-compose.yml` + `.env` y levantar los contenedores ahí — los datos migran con un `pg_dump`/`pg_restore` normal y corriente.
 
-**Pendiente antes de ese despliegue:** `backend/Dockerfile` solo copia `backend/`; hoy `frontend/` llega al contenedor por el bind-mount de desarrollo (`./frontend:/app/frontend:ro` en `docker-compose.yml`), que no existirá en Proxmox si se despliega sin bind-mounts. Hay que decidir cómo empaquetar `frontend/` (incluido `vendor/editor.bundle.js`) dentro de la imagen antes de la Fase 4 — anotado aquí para no perderlo de vista, se resuelve cuando toque el despliegue.
+La imagen de `api` se construye con el contexto en la raíz del repo (`context: .` en `docker-compose.yml`, no `./backend`) precisamente para poder copiar `frontend/` (incluido `vendor/editor.bundle.js`, ya compilado) dentro de la imagen — antes solo llegaba vía el bind-mount de desarrollo (`./frontend:/app/frontend:ro`), que no existe fuera de esta máquina; sin el bind-mount, `/app/frontend` se creaba vacío y el panel no se servía. En desarrollo el bind-mount sigue ahí y se superpone al contenido ya copiado (para hot-reload sin reconstruir la imagen); en un despliegue sin ese bind-mount, la imagen ya trae todo consigo.
 
 ## Licencia
 

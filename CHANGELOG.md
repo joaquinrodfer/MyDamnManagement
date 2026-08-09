@@ -4,6 +4,19 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+## [0.9.2] — Imagen de `api` autocontenida (lista para Proxmox)
+
+### Corregido
+
+- `backend/Dockerfile` solo copiaba `backend/`; `frontend/` llegaba al contenedor exclusivamente por el bind-mount de desarrollo (`./frontend:/app/frontend:ro` en `docker-compose.yml`), que no existe fuera de esta máquina. Fuera de un entorno con ese bind-mount puesto (p. ej. un despliegue en Proxmox sin bind-mounts), `/app/frontend` se creaba vacío y el panel no se servía. El contexto de build de `api` pasa a ser la raíz del repo (`context: .`, no `./backend`) para que el Dockerfile pueda copiar `frontend/` (incluido `vendor/editor.bundle.js`, ya compilado) dentro de la imagen. En desarrollo no cambia nada — los bind-mounts se superponen a lo ya copiado, para seguir con recarga en caliente sin reconstruir.
+- Añadido `.dockerignore` en la raíz (antes no hacía falta, el contexto era solo `backend/`): excluye `node_modules/` (incluido `frontend/editor-src/node_modules/`, ~15 MB que no pintan nada en la imagen), `__pycache__/`, `.venv/`, adjuntos/backups locales y `.env`.
+
+### Verificado
+
+- Build de la imagen con el contexto nuevo: `/app/frontend` dentro de la imagen trae `index.html`/`app.js`/`logo.png`/`vendor/editor.bundle.js` sin `node_modules`.
+- Contenedor de prueba levantado desde la imagen SIN ningún bind-mount (`docker run`, no `docker compose`), conectado solo por red al `db` ya existente: `/`, `/health` y `/vendor/editor.bundle.js` responden 200 con el contenido real — simula exactamente el caso de Proxmox.
+- Stack de desarrollo (`docker compose up -d --build`) reconstruido y probado de nuevo tras el cambio: panel, dashboard y hot-reload del frontend sin cambios de comportamiento.
+
 ## [0.9.0] — Editor al estilo Notion: comandos, iconos reales, autoformato
 
 ### Añadido

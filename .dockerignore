@@ -1,0 +1,27 @@
+# El contexto de build pasa a ser la raíz del repo (antes era solo backend/)
+# para poder copiar frontend/ dentro de la imagen -- ver backend/Dockerfile.
+# Sin esto, todo lo de aquí abajo viajaría al daemon de Docker en cada build
+# y/o acabaría dentro de la imagen sin necesidad.
+
+.git
+.github
+
+# Node (frontend/editor-src/) -- solo hace falta el resultado ya compilado
+# (frontend/vendor/editor.bundle.js, que SÍ se copia); node_modules y demás
+# no pintan nada dentro de la imagen que sirve la API.
+node_modules/
+frontend/editor-src/node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Datos/backups locales -- nunca deben acabar dentro de una imagen.
+backend/attachments/
+backups/
+.env
+
+# Documentación -- no hace falta en tiempo de ejecución.
+docs/
+*.md

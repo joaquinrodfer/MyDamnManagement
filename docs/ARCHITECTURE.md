@@ -77,7 +77,9 @@ erDiagram
 
 ## 3. Arquitectura de contenedores
 
-Dos servicios en `docker-compose.yml`: `api` (FastAPI + Uvicorn) y `db` (Postgres). El bind-mount de `./backend/app` solo existe en desarrollo, para recarga en caliente.
+Dos servicios en `docker-compose.yml`: `api` (FastAPI + Uvicorn) y `db` (Postgres). Los bind-mounts (`./backend/app`, `./frontend`...) solo existen en desarrollo, para recarga en caliente sin reconstruir la imagen.
+
+La imagen de `api` es autocontenida: su build usa como contexto la raíz del repo (no `./backend`) para poder copiar `frontend/` dentro además del propio backend. No siempre fue así -- al principio el Dockerfile solo copiaba `backend/`, y `frontend/` llegaba exclusivamente vía el bind-mount de desarrollo; fuera de esta máquina (sin ese bind-mount) `/app/frontend` se creaba vacío y el panel no se servía. Como los bind-mounts de desarrollo se superponen a lo que ya trae la imagen, arreglar esto no cambió nada del flujo de trabajo en Windows -- solo hizo que la misma imagen funcione también sin ellos.
 
 ```mermaid
 graph TD
@@ -263,3 +265,4 @@ El menú de comando necesita `view.coordsAtPos()` para posicionarse junto al cur
 | Asa de bloque (`⋮⋮`) | Widget dentro de la línea (`position: absolute`), no un `gutter()` | Los gutters de CM6 asumen altura de línea uniforme; con encabezados más altos que un párrafo, hasta `lineNumbers()` nativo queda desalineado. Un widget hijo de la línea hereda su altura real sin cálculo aparte |
 | Ocultar sintaxis (wikilinks/flechas/línea horizontal) | Decoración consciente del cursor (`selectionIntersects`), no un modo edición/vista separado | Se ve "bonito" cuando no se está editando ese tramo, y en markdown editable en cuanto el cursor entra — sin un segundo modo de la app ni un segundo estado que sincronizar |
 | Diferir `coordsAtPos()` fuera de `update()` | `setTimeout(fn, 0)`, no `requestAnimationFrame` | Solo hace falta salir de la pila de la transacción en curso, no esperar a un frame de composición real; `requestAnimationFrame` no se dispara en pestañas en segundo plano (ni en el entorno de pruebas usado en desarrollo) |
+| Contexto de build de `api` | Raíz del repo (`context: .`), no `./backend` | Así el Dockerfile puede copiar `frontend/` dentro de la imagen; antes solo llegaba por el bind-mount de desarrollo, y `/app/frontend` se creaba vacío fuera de esta máquina |
