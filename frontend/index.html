@@ -370,11 +370,11 @@
      #main, igual que el título. */
   #note-body .cm-editor { outline: none; background: transparent; }
   #note-body .cm-content {
-    padding: 4px 4px 220px 34px; /* la izquierda es donde "flota" el handle de bloque; el hueco de
+    padding: 4px 4px 220px 44px; /* la izquierda es donde "flota" el handle de bloque; el hueco de
        abajo es a propósito -- clicar ahí (como en Notion) coloca el cursor al final del documento */
-    font-family: var(--font-mono);
-    font-size: 14px;
-    line-height: 1.7;
+    font-family: var(--font-body); /* prosa con pinta de Notion; el código se fuerza aparte a --font-mono */
+    font-size: 15px;
+    line-height: 1.6;
     color: var(--ink);
     caret-color: var(--ink);
   }
@@ -393,11 +393,11 @@
      un H1 llega con las dos clases a la vez (cm-mdm-h1 Y cm-mdm-mark) --
      el selector combinado de abajo es más específico y gana el tamaño. */
   .cm-mdm-mark, .cm-mdm-wikimark { color: var(--ink-muted); opacity: 0.55; }
-  .cm-mdm-h1 { font-size: 1.7em; font-weight: 700; line-height: 1.3; }
-  .cm-mdm-h2 { font-size: 1.4em; font-weight: 700; line-height: 1.3; }
-  .cm-mdm-h3 { font-size: 1.15em; font-weight: 700; line-height: 1.3; }
-  .cm-mdm-h4 { font-size: 1em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
-  .cm-mdm-h5 { font-size: 0.9em; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
+  .cm-mdm-h1 { font-size: 1.9em; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; }
+  .cm-mdm-h2 { font-size: 1.5em; font-weight: 700; line-height: 1.3; letter-spacing: -0.005em; }
+  .cm-mdm-h3 { font-size: 1.25em; font-weight: 700; line-height: 1.3; }
+  .cm-mdm-h4 { font-size: 1.05em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
+  .cm-mdm-h5 { font-size: 0.95em; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
   .cm-mdm-h1.cm-mdm-mark, .cm-mdm-h2.cm-mdm-mark, .cm-mdm-h3.cm-mdm-mark, .cm-mdm-h4.cm-mdm-mark, .cm-mdm-h5.cm-mdm-mark {
     font-size: 0.7em;
     font-weight: 400;
@@ -440,46 +440,80 @@
   .cm-mdm-hr { border: none; border-top: 1px solid var(--panel-border); margin: 12px 0; height: 0; }
 
   /* fondo de línea para bloques de código/lista (calculado por bloques, ver
-     frontend/editor-src/entry.js -- blockLineDecorations) */
-  #note-body .cm-mdm-line-code { background: var(--code-bg); }
+     frontend/editor-src/entry.js -- blockLineDecorations). El código fuerza
+     --font-mono aquí -- .cm-content ya no es monoespaciada (ver más arriba),
+     así que sin esto el código se vería con la misma fuente que la prosa. */
+  #note-body .cm-mdm-line-code { background: var(--code-bg); font-family: var(--font-mono); }
   #note-body .cm-mdm-line-list { padding-left: 4px; }
 
   /* Líneas en blanco usadas solo para separar bloques en Markdown: se
      colapsan casi a 0 mientras no se está escribiendo ahí (cursor-aware,
-     ver blankLineDecorations en entry.js) -- así los bloques no se ven con
-     un hueco de más entre ellos, aunque el salto de línea real siga estando
-     en el markdown guardado. */
-  #note-body .cm-mdm-blank-collapsed { font-size: 1px; line-height: 5px; }
+     ver blankLineDecorations en entry.js) -- el espacio real entre bloques
+     ya no sale de aquí, sino de cm-mdm-space-* (ver más abajo); esto solo
+     evita que el salto de línea que exige Markdown se vea como un hueco. */
+  #note-body .cm-mdm-blank-collapsed { font-size: 1px; line-height: 3px; }
+
+  /* ---------- separación entre bloques (al estilo Notion) ----------
+     Padding-top en la PRIMERA línea de cada bloque, según su tipo -- ver
+     blockSpacingDecorations en entry.js. Un H1 deja mucho más aire por
+     encima que un párrafo suelto; los ítems de una misma lista no llevan
+     nada extra entre sí (deben quedar juntos). El asa de bloque se
+     reposiciona con el mismo valor (selector combinado más abajo) para
+     seguir alineada con el texto, que ahora empieza más abajo que la
+     propia línea. */
+  #note-body .cm-mdm-space-normal { padding-top: 6px; }
+  #note-body .cm-mdm-space-h1 { padding-top: 34px; }
+  #note-body .cm-mdm-space-h2 { padding-top: 26px; }
+  #note-body .cm-mdm-space-h3 { padding-top: 20px; }
+  #note-body .cm-mdm-space-h4 { padding-top: 14px; }
+  #note-body .cm-mdm-space-h5 { padding-top: 12px; }
 
   /* ---------- handle de bloque (seleccionar/convertir/borrar) + botón "+" ----------
      Widget dentro de la línea (no gutter), posicionado en el hueco que deja
      el padding-left de .cm-content. top:0 + la propia línea como referencia
      (position:relative arriba) es lo que garantiza que quede a la altura
-     exacta de la línea que le corresponde, sea un párrafo o un H1 más alto.
-     El "+" y el "⋮⋮" comparten el mismo wrapper para no necesitar dos
-     widgets (y por tanto dos cálculos de posición) por bloque. */
+     exacta de la línea que le corresponde, sea un párrafo o un H1 más alto
+     -- el selector combinado con cada cm-mdm-space-* reajusta ese "top"
+     cuando la línea además tiene padding-top propio (ver más arriba), para
+     que el asa siga a la altura del texto y no del borde superior de la
+     línea. El "+" y el "⋮⋮" comparten el mismo wrapper para no necesitar
+     dos widgets (y por tanto dos cálculos de posición) por bloque.
+     Invisible por defecto -- solo aparece al pasar el ratón por ESA línea
+     (o por el propio asa, que sigue contando como parte de ella). */
   .cm-mdm-block-handle-wrap {
     position: absolute;
-    left: -32px;
+    left: -40px;
     top: 0;
     display: flex;
     align-items: flex-start;
-    gap: 2px;
-    line-height: 1.7;
+    gap: 3px;
+    line-height: 1.6;
+    opacity: 0;
+    transition: opacity 0.12s ease;
   }
+  #note-body .cm-line:hover .cm-mdm-block-handle-wrap,
+  .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) {
+    opacity: 1;
+  }
+  #note-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: 34px; }
+  #note-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: 26px; }
+  #note-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: 20px; }
+  #note-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: 14px; }
+  #note-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: 12px; }
+  #note-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: 6px; }
   .cm-mdm-block-add,
   .cm-mdm-block-handle {
-    width: 14px;
+    width: 18px;
     text-align: center;
-    font-size: 11px;
-    line-height: 1.7;
+    font-size: 15px;
+    line-height: 1.6;
     color: var(--ink-muted);
-    opacity: 0.28;
+    opacity: 0.55;
     cursor: pointer;
     user-select: none;
   }
   .cm-mdm-block-add:hover,
-  .cm-mdm-block-handle:hover { opacity: 0.75; }
+  .cm-mdm-block-handle:hover { opacity: 1; }
   .cm-mdm-block-handle-selected { opacity: 1; color: var(--accent-ink); }
 
   /* ---------- menú contextual de bloques/páginas ---------- */

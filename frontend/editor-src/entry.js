@@ -724,6 +724,52 @@ function blockLinesPlugin() {
   );
 }
 
+// Separación visual real entre bloques (al estilo Notion: un H1 deja más
+// aire por encima que un párrafo suelto), no solo "que no se toquen". Se
+// aplica como padding-top a la PRIMERA línea de cada bloque (según su
+// tipo) -- nunca al primero de la nota (ya tiene el padding de
+// .cm-content) ni entre ítems consecutivos de una misma lista (deben
+// quedar juntos, es una lista). Es viable sin miedo a romper las flechas
+// arriba/abajo porque ya no dependen de la altura en píxeles de cada línea
+// (ver verticalMoveExtension) -- antes esto habría empeorado ese bug.
+const LIST_BLOCK_TYPES = new Set(["bullet_list_item", "ordered_list_item"]);
+const BLOCK_SPACING_CLASS = {
+  h1: "cm-mdm-space-h1",
+  h2: "cm-mdm-space-h2",
+  h3: "cm-mdm-space-h3",
+  h4: "cm-mdm-space-h4",
+  h5: "cm-mdm-space-h5",
+};
+
+function blockSpacingDecorations(state) {
+  const { blocks } = state.field(blockField);
+  const ranges = [];
+  blocks.forEach((b, i) => {
+    if (i === 0) return;
+    const prev = blocks[i - 1];
+    if (LIST_BLOCK_TYPES.has(b.type) && LIST_BLOCK_TYPES.has(prev.type)) return;
+    const cls = BLOCK_SPACING_CLASS[b.type] || "cm-mdm-space-normal";
+    ranges.push(Decoration.line({ class: cls }).range(b.from));
+  });
+  return Decoration.set(ranges, true);
+}
+
+function blockSpacingPlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = blockSpacingDecorations(view.state);
+      }
+      update(update) {
+        if (update.docChanged || update.state.field(blockField) !== update.startState.field(blockField)) {
+          this.decorations = blockSpacingDecorations(update.state);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
 // ------------------------------------------------ marcadores de sintaxis
 //
 // Al estilo Obsidian/Typora: el bloque que se está editando (el cursor está
@@ -1294,6 +1340,7 @@ export function createNoteEditor({
         blockHandlesPlugin(),
         blockHandleEventHandlers(onBlockContextMenu),
         blockLinesPlugin(),
+        blockSpacingPlugin(),
         blankLinePlugin(),
         syntaxMarkPlugin(),
         hrField,

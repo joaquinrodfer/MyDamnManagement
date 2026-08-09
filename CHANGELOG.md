@@ -4,6 +4,13 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+### Añadido
+
+- **Editor con más pinta de Notion**: la prosa del editor pasa de fuente monoespaciada a la misma familia sans-serif del resto del panel (`--font-body`, la fuente del sistema en cada SO) -- el código (en línea y de bloque) se queda explícitamente en `--font-mono`, para que siga leyéndose como código.
+- **Jerarquía de encabezados más marcada**: H1 pasa de 1.7em a 1.9em, H2 de 1.4em a 1.5em, H3 de 1.15em a 1.25em -- más diferencia real entre un título y un párrafo suelto, como en Notion.
+- **Separación real entre bloques**: cada bloque lleva ahora un hueco por encima según su tipo (un H1 deja mucho más aire que un párrafo suelto; los ítems de una misma lista quedan juntos, sin hueco extra entre ellos) -- antes el único "espacio" entre bloques era la línea en blanco colapsada a ~5px, sin distinguir tipos. Viable sin miedo a que las flechas ↑/↓ vuelvan a saltarse bloques porque ya no dependen de la altura en píxeles de cada línea (ver más abajo).
+- **Asa de bloque más grande y solo visible al pasar el ratón**: el `+`/`⋮⋮` de cada bloque pasa de 14px a 18px y de estar siempre visible (tenue) a invisible por defecto, apareciendo solo al pasar el ratón por esa línea -- salvo que el bloque esté seleccionado, que se queda visible igual (`:has()` sobre el propio asa).
+
 ### Corregido
 
 - Vista previa de un wikilink al pasar el ratón, duplicada y una copia imposible de cerrar salvo recargando (issue [#1](../../issues/1)): un clic sin `Ctrl` sobre un wikilink resuelto lo sustituye por su marcado en crudo justo bajo el propio ratón, lo que el navegador interpreta como un `mouseover` nuevo sin que el hover anterior se haya cerrado -- `startLinkPreview()` creaba la tarjeta nueva sin quitar la que ya hubiera, dejándola huérfana en el DOM. Ahora cierra cualquier tarjeta previa antes de crear una.
