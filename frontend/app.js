@@ -295,18 +295,24 @@ function renderTreeNode(node) {
       state.selectedPages = new Map([[node.id, node]]);
       applyPageSelectionClasses();
     }
-    showContextMenu(e.clientX, e.clientY, [
-      { label: `${items.length} página${items.length > 1 ? "s" : ""}`, items: [] },
-      {
-        items: [
-          {
-            label: `Eliminar ${items.length > 1 ? "páginas" : "página"}`,
-            danger: true,
-            onClick: () => bulkDeletePages(items),
-          },
-        ],
-      },
-    ]);
+    const sections = [{ label: `${items.length} página${items.length > 1 ? "s" : ""}`, items: [] }];
+    // "Nueva subpágina" solo tiene sentido con un único destino claro -- con
+    // varias páginas seleccionadas a la vez sería ambiguo bajo cuál crearla.
+    if (items.length === 1) {
+      sections.push({
+        items: [{ label: "Nueva subpágina", onClick: () => createSubpage(items[0]) }],
+      });
+    }
+    sections.push({
+      items: [
+        {
+          label: `Eliminar ${items.length > 1 ? "páginas" : "página"}`,
+          danger: true,
+          onClick: () => bulkDeletePages(items),
+        },
+      ],
+    });
+    showContextMenu(e.clientX, e.clientY, sections);
   });
 
   wrap.appendChild(row);
@@ -905,8 +911,13 @@ async function goTo(kind, id, { fromHistory = false } = {}) {
     state.historyPos = state.history.length - 1;
   }
   if (kind === "database") await selectDatabase(id);
+  else if (kind === "home") await showEmpty();
   else await selectNote(id);
   updateNavButtons();
+}
+
+function goHome() {
+  goTo("home");
 }
 
 function goBack() {
@@ -1610,15 +1621,26 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
 
 // ---------------------------------------------------------------- nueva nota
 
-document.getElementById("btn-new-note").addEventListener("click", async () => {
-  const parent_id = state.current?.kind === "note" ? state.current.id : null;
+/** Crea una nota y navega a ella, lista para renombrar. Compartida por el
+ * "+" de la barra lateral (siempre en la raíz) y "Nueva subpágina" del
+ * menú contextual (bajo la página sobre la que se hizo clic derecho). */
+async function createNote(parent_id) {
   const page = await api("/pages", { method: "POST", body: JSON.stringify({ title: "Sin título", parent_id, body_markdown: "" }) });
   await loadTree();
   await goTo("note", page.id);
   const titleEl = document.querySelector(".note-title");
   titleEl?.focus();
   titleEl?.select();
-});
+}
+
+/** "Nueva subpágina" del menú contextual del árbol -- a diferencia del "+"
+ * de la barra lateral (siempre en la raíz), esta sí fija un padre concreto:
+ * la página sobre la que se hizo clic derecho. */
+function createSubpage(node) {
+  return createNote(node.id);
+}
+
+document.getElementById("btn-new-note").addEventListener("click", () => createNote(null));
 
 // -------------------------------------------------------------------- buscar
 
@@ -1667,6 +1689,7 @@ document.getElementById("nav-sections").addEventListener("click", (e) => {
   if (!e.target.closest(".tree-row")) clearPageSelection();
 });
 
+document.getElementById("btn-nav-home").addEventListener("click", goHome);
 document.getElementById("btn-nav-back").addEventListener("click", goBack);
 document.getElementById("btn-nav-forward").addEventListener("click", goForward);
 document.getElementById("btn-nav-up").addEventListener("click", goUp);
