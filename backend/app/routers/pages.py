@@ -83,6 +83,7 @@ def get_tree(db: Session = Depends(get_db)):
             "title": p.title,
             "type": p.type,
             "icon": p.icon,
+            "parent_id": p.parent_id,  # para el botón "subir un nivel" del panel
             "database_id": database_id_by_page_id.get(p.id),
             "children": [],
         }

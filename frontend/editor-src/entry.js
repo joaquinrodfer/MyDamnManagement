@@ -255,6 +255,16 @@ const BLOCK_TYPES = [
 
 const BLOCK_TYPE_LABEL = Object.fromEntries(BLOCK_TYPES.map((t) => [t.type, t.label]));
 
+// Comandos del menú "/" que NO son un tipo de bloque convertible -- no
+// deben aparecer en el menú "Convertir a" del clic derecho (convertir un
+// párrafo ya escrito "a página" no tiene sentido: crear una página es una
+// acción con efecto secundario -- una llamada a la API -- no una
+// transformación de texto). Por eso viven en una lista aparte y solo se
+// añaden a las opciones del menú "/" (ver slashMenuExtension), nunca a
+// BLOCK_TYPES.
+const SLASH_EXTRA_COMMANDS = [{ type: "page", label: "Página", abbrev: "page" }];
+const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
+
 function computeBlocks(state) {
   const blocks = [];
   const root = syntaxTree(state).topNode;
@@ -389,12 +399,23 @@ class BlockHandleWidget extends WidgetType {
     return other.index === this.index && other.isSelected === this.isSelected;
   }
   toDOM() {
-    const el = document.createElement("span");
-    el.className = "cm-mdm-block-handle" + (this.isSelected ? " cm-mdm-block-handle-selected" : "");
-    el.textContent = "⋮⋮";
-    el.dataset.blockIndex = String(this.index);
-    el.title = "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones";
-    return el;
+    const wrap = document.createElement("span");
+    wrap.className = "cm-mdm-block-handle-wrap";
+
+    const addBtn = document.createElement("span");
+    addBtn.className = "cm-mdm-block-add";
+    addBtn.textContent = "+";
+    addBtn.dataset.blockIndex = String(this.index);
+    addBtn.title = "Añadir un bloque después de este";
+
+    const handle = document.createElement("span");
+    handle.className = "cm-mdm-block-handle" + (this.isSelected ? " cm-mdm-block-handle-selected" : "");
+    handle.textContent = "⋮⋮";
+    handle.dataset.blockIndex = String(this.index);
+    handle.title = "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones";
+
+    wrap.append(addBtn, handle);
+    return wrap;
   }
   ignoreEvent() {
     return false; // que el mousedown/contextmenu le lleguen a nuestros handlers
@@ -429,27 +450,60 @@ function blockHandleEventHandlers(onBlockContextMenu) {
   return EditorView.domEventHandlers({
     mousedown(event, view) {
       const target = event.target;
-      if (!(target instanceof HTMLElement)) return false;
-      const handle = target.closest(".cm-mdm-block-handle");
-      if (!handle) return false;
+      if (target instanceof HTMLElement) {
+        const addBtn = target.closest(".cm-mdm-block-add");
+        if (addBtn) {
+          event.preventDefault();
+          insertBlockAfter(view, Number(addBtn.dataset.blockIndex));
+          return true;
+        }
+
+        const handle = target.closest(".cm-mdm-block-handle");
+        if (handle) {
+          event.preventDefault();
+
+          const idx = Number(handle.dataset.blockIndex);
+          const { selected } = view.state.field(blockField);
+
+          let next;
+          if (event.shiftKey && selected.size > 0) {
+            const last = Math.max(...selected);
+            const [lo, hi] = idx < last ? [idx, last] : [last, idx];
+            next = new Set();
+            for (let i = lo; i <= hi; i++) next.add(i);
+          } else if (event.ctrlKey || event.metaKey) {
+            next = new Set(selected);
+            next.has(idx) ? next.delete(idx) : next.add(idx);
+          } else {
+            next = new Set([idx]);
+          }
+          selectBlocks(view, next);
+          return true;
+        }
+      }
+
+      // Clic en la zona vacía bajo el último bloque (el padding-bottom de
+      // .cm-content, puesto ahí a propósito -- ver el comentario en
+      // index.html) -- en vez de dejar el cursor "colgado" al final del
+      // último bloque existente, genera uno nuevo listo para escribir,
+      // como clicar debajo del contenido en Notion. Solo se activa si el
+      // clic resuelve al final del documento Y está claramente por debajo
+      // de la última línea (si no, sería un clic normal dentro del propio
+      // texto, que debe comportarse como siempre).
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos === null || pos !== view.state.doc.length) return false;
+      const coords = view.coordsAtPos(pos, -1);
+      if (!coords || event.clientY <= coords.bottom + 4) return false;
       event.preventDefault();
 
-      const idx = Number(handle.dataset.blockIndex);
-      const { selected } = view.state.field(blockField);
-
-      let next;
-      if (event.shiftKey && selected.size > 0) {
-        const last = Math.max(...selected);
-        const [lo, hi] = idx < last ? [idx, last] : [last, idx];
-        next = new Set();
-        for (let i = lo; i <= hi; i++) next.add(i);
-      } else if (event.ctrlKey || event.metaKey) {
-        next = new Set(selected);
-        next.has(idx) ? next.delete(idx) : next.add(idx);
+      const doc = view.state.doc;
+      const lastLine = doc.lineAt(pos);
+      if (lastLine.length === 0) {
+        view.dispatch({ selection: { anchor: pos } });
       } else {
-        next = new Set([idx]);
+        view.dispatch({ changes: { from: pos, to: pos, insert: "\n\n" }, selection: { anchor: pos + 2 } });
       }
-      selectBlocks(view, next);
+      view.focus();
       return true;
     },
     contextmenu(event, view) {
@@ -493,6 +547,24 @@ function selectBlocks(view, indices) {
     effects: setSelectedBlocks.of(indices),
     selection: ranges.length ? EditorSelection.create(ranges, ranges.length - 1) : undefined,
   });
+}
+
+// Botón "+" del asa: añade un bloque de párrafo vacío justo después del
+// bloque indicado (no necesariamente donde esté el cursor ahora mismo --
+// el usuario puede clicar el "+" de cualquier bloque). Mismo mecanismo que
+// Mayús+Enter (insertar "\n\n"): el hueco en blanco resultante se ve
+// colapsado por blankLinePlugin hasta que el cursor entra en él.
+function insertBlockAfter(view, index) {
+  const { blocks } = view.state.field(blockField);
+  const b = blocks[index];
+  if (!b) return;
+  const pos = b.to;
+  view.dispatch({
+    changes: { from: pos, to: pos, insert: "\n\n" },
+    selection: { anchor: pos + 2 },
+    effects: setSelectedBlocks.of(new Set()),
+  });
+  view.focus();
 }
 
 function deleteBlocks(view, indices) {
@@ -548,6 +620,51 @@ function blockLinesPlugin() {
       update(update) {
         if (update.docChanged || update.state.field(blockField) !== update.startState.field(blockField)) {
           this.decorations = blockLineDecorations(update.view);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
+// Un párrafo necesita una línea en blanco detrás para separarse del
+// siguiente en Markdown -- pero verla como un hueco real (una fila entera
+// vacía) hace que los bloques parezcan tener aire de más entre ellos, cosa
+// que no pasa en un editor de bloques al estilo Notion. Se colapsa su
+// altura a casi nada mientras el cursor no esté ahí (mismo patrón
+// cursor-aware que wikilinks/flechas/línea horizontal); en cuanto el
+// cursor entra -- tras Mayús+Enter, o al clicar ahí -- vuelve a su altura
+// normal para poder escribir con comodidad. Dentro de un bloque de código
+// no se toca: ahí una línea en blanco es contenido de verdad, no un
+// separador. Nota: es una decoración de línea (Decoration.line), no de
+// bloque -- a diferencia de hrField, esas sí puede darlas un ViewPlugin.
+function blankLineDecorations(view) {
+  const ranges = [];
+  const { state } = view;
+  const doc = state.doc;
+  for (const { from, to } of view.visibleRanges) {
+    const firstLine = doc.lineAt(from).number;
+    const lastLine = doc.lineAt(to).number;
+    for (let n = firstLine; n <= lastLine; n++) {
+      const line = doc.line(n);
+      if (line.length !== 0) continue;
+      if (selectionIntersects(state, line.from, line.to)) continue;
+      if (isInsideCodeBlock(state, line.from)) continue;
+      ranges.push(Decoration.line({ class: "cm-mdm-blank-collapsed" }).range(line.from));
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function blankLinePlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = blankLineDecorations(view);
+      }
+      update(update) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+          this.decorations = blankLineDecorations(update.view);
         }
       }
     },
@@ -665,35 +782,73 @@ function applySlashChoice(view, from, to, type) {
   view.focus();
 }
 
-function slashMenuExtension(onMenuUpdate) {
+// "Página" no aplica un prefijo de Markdown como el resto de opciones -- crea
+// una página de verdad (llamada a la API) y dejaría un título "Nueva página"
+// repetido cada vez que se usa, con el problema de que un wikilink resuelve
+// por título (ver ARCHITECTURE.md), así que dos "Nueva página" son
+// ambiguas. En vez de crearla al momento, elegir "Página" pasa el menú a un
+// segundo modo ("naming"): se borra "/page" y se deja el cursor listo para
+// que el usuario escriba el nombre de verdad ahí mismo, como texto normal;
+// Enter la crea con ese nombre y la sustituye por el wikilink, Escape
+// cancela y deja el nombre ya escrito como texto normal (no se pierde).
+async function createPageFromName(view, from, to, onCreatePage) {
+  const title = view.state.doc.sliceString(from, to).trim();
+  if (!title) {
+    view.focus();
+    return;
+  }
+  const created = await onCreatePage?.(title);
+  if (!created) {
+    view.focus();
+    return;
+  }
+  const insert = `[[${created.title}]]`;
+  view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length } });
+  view.focus();
+}
+
+function slashMenuExtension(onMenuUpdate, onCreatePage) {
   const plugin = ViewPlugin.fromClass(
     class {
       constructor(view) {
         this.view = view;
-        this.active = false;
+        this.mode = null; // null | "menu" | "naming"
         this.from = -1;
         this.selectedIndex = 0;
       }
 
       get query() {
-        if (!this.active) return "";
+        if (this.mode !== "menu") return "";
         const pos = this.view.state.selection.main.head;
         if (pos < this.from) return "";
         return this.view.state.doc.sliceString(this.from + 1, pos);
       }
 
       get filteredOptions() {
+        const all = SLASH_MENU_OPTIONS;
         const q = this.query.trim().toLowerCase();
-        if (!q) return BLOCK_TYPES;
-        return BLOCK_TYPES.filter(
-          (t) => t.abbrev.startsWith(q) || t.label.toLowerCase().includes(q)
-        );
+        if (!q) return all;
+        return all.filter((t) => t.abbrev.startsWith(q) || t.label.toLowerCase().includes(q));
       }
 
       update(update) {
         if (!update.docChanged && !update.selectionSet) return;
 
-        if (this.active) {
+        if (this.mode === "naming") {
+          const sel = update.state.selection;
+          const pos = sel.main.head;
+          const line = update.state.doc.lineAt(Math.min(this.from, update.state.doc.length));
+          if (sel.ranges.length !== 1 || !sel.main.empty || pos < this.from || pos > line.to) {
+            this.mode = null;
+            this.from = -1;
+            this.notify();
+            return;
+          }
+          this.notify();
+          return;
+        }
+
+        if (this.mode === "menu") {
           const sel = update.state.selection;
           const pos = sel.main.head;
           const line = update.state.doc.lineAt(Math.min(this.from, update.state.doc.length));
@@ -713,11 +868,11 @@ function slashMenuExtension(onMenuUpdate) {
 
         if (!update.docChanged) return;
         update.changes.iterChanges((_fromA, _toA, fromB, _toB, inserted) => {
-          if (this.active || inserted.toString() !== "/") return;
+          if (this.mode || inserted.toString() !== "/") return;
           const line = update.state.doc.lineAt(fromB);
           const beforeSlash = update.state.doc.sliceString(line.from, fromB);
           if (beforeSlash.trim() !== "") return; // solo dispara al principio de un bloque vacío
-          this.active = true;
+          this.mode = "menu";
           this.from = fromB;
           this.selectedIndex = 0;
           this.notify();
@@ -725,8 +880,17 @@ function slashMenuExtension(onMenuUpdate) {
       }
 
       notify() {
-        if (!this.active) {
+        if (!this.mode) {
           onMenuUpdate(null);
+          return;
+        }
+        if (this.mode === "naming") {
+          const from = this.from;
+          setTimeout(() => {
+            if (this.mode !== "naming" || this.from < 0) return; // pudo cerrarse mientras tanto
+            const coords = this.view.coordsAtPos(Math.min(from, this.view.state.doc.length));
+            onMenuUpdate({ kind: "naming", x: coords?.left ?? 0, y: coords?.bottom ?? 0 });
+          });
           return;
         }
         const opts = this.filteredOptions;
@@ -746,21 +910,21 @@ function slashMenuExtension(onMenuUpdate) {
         // curso, no esperar a un frame de composición real (que además no
         // se dispara si la pestaña no está pintando).
         setTimeout(() => {
-          if (!this.active || this.from < 0) return; // pudo cerrarse mientras tanto
+          if (this.mode !== "menu" || this.from < 0) return; // pudo cerrarse mientras tanto
           const coords = this.view.coordsAtPos(this.from);
-          onMenuUpdate({ x: coords?.left ?? 0, y: coords?.bottom ?? 0, selectedIndex, options });
+          onMenuUpdate({ kind: "menu", x: coords?.left ?? 0, y: coords?.bottom ?? 0, selectedIndex, options });
         });
       }
 
       close() {
-        if (!this.active) return;
-        this.active = false;
+        if (!this.mode) return;
+        this.mode = null;
         this.from = -1;
         onMenuUpdate(null);
       }
 
       moveSelection(delta) {
-        if (!this.active) return false;
+        if (this.mode !== "menu") return false;
         const n = this.filteredOptions.length;
         if (n === 0) return true;
         this.selectedIndex = (this.selectedIndex + delta + n) % n;
@@ -769,7 +933,7 @@ function slashMenuExtension(onMenuUpdate) {
       }
 
       confirmSelection() {
-        if (!this.active) return false;
+        if (this.mode !== "menu") return false;
         const opts = this.filteredOptions;
         const from = this.from;
         const to = this.view.state.selection.main.head;
@@ -778,8 +942,34 @@ function slashMenuExtension(onMenuUpdate) {
           return true;
         }
         const chosen = opts[Math.min(this.selectedIndex, opts.length - 1)];
+
+        if (chosen.type === "page") {
+          // Borra "/consulta" y pasa a modo "naming" -- no se cierra del
+          // todo (el usuario sigue escribiendo, ahora el nombre en vez del
+          // filtro), así que no se llama a this.close(). El estado se
+          // actualiza ANTES del dispatch a propósito: ese dispatch dispara
+          // el propio update() de este plugin de forma síncrona, y si
+          // this.mode siguiera siendo "menu" en ese momento, detectaría el
+          // "/page" ya borrado como si el menú debiera cerrarse.
+          this.mode = "naming";
+          this.from = from;
+          this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+          return true;
+        }
+
         this.close();
         applySlashChoice(this.view, from, to, chosen.type);
+        return true;
+      }
+
+      confirmNaming() {
+        if (this.mode !== "naming") return false;
+        const from = this.from;
+        const to = this.view.state.selection.main.head;
+        this.mode = null;
+        this.from = -1;
+        this.notify();
+        createPageFromName(this.view, from, to, onCreatePage);
         return true;
       }
 
@@ -794,13 +984,18 @@ function slashMenuExtension(onMenuUpdate) {
     { key: "ArrowUp", run: (view) => view.plugin(plugin)?.moveSelection(-1) ?? false },
     {
       key: "Enter",
-      run: (view) => view.plugin(plugin)?.confirmSelection() ?? false,
+      run: (view) => {
+        const pv = view.plugin(plugin);
+        if (!pv) return false;
+        if (pv.mode === "naming") return pv.confirmNaming();
+        return pv.confirmSelection();
+      },
     },
     {
       key: "Escape",
       run: (view) => {
         const pv = view.plugin(plugin);
-        if (pv?.active) {
+        if (pv?.mode) {
           pv.close();
           return true;
         }
@@ -833,6 +1028,7 @@ const shiftEnterKeymap = keymap.of([
  * @param {(pageId: string, rect: DOMRect) => void} [opts.onWikilinkHover]
  * @param {() => void} [opts.onWikilinkHoverEnd]
  * @param {(state: object|null) => void} [opts.onSlashMenu]
+ * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreatePage]
  */
 export function createNoteEditor({
   parent,
@@ -844,6 +1040,7 @@ export function createNoteEditor({
   onWikilinkHover,
   onWikilinkHoverEnd,
   onSlashMenu,
+  onCreatePage,
 }) {
   const view = new EditorView({
     parent,
@@ -854,7 +1051,7 @@ export function createNoteEditor({
         // combinaciones (Enter/flechas/Escape mientras el menú está activo)
         // deben ganar; cuando no hacen nada (devuelven false) caen al
         // keymap normal sin más.
-        ...slashMenuExtension(onSlashMenu ?? (() => {})),
+        ...slashMenuExtension(onSlashMenu ?? (() => {}), onCreatePage),
         shiftEnterKeymap,
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
@@ -864,6 +1061,7 @@ export function createNoteEditor({
         blockHandlesPlugin(),
         blockHandleEventHandlers(onBlockContextMenu),
         blockLinesPlugin(),
+        blankLinePlugin(),
         hrField,
         wikilinkPlugin(resolvePage),
         wikilinkClickHandler(onNavigate),

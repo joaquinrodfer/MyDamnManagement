@@ -96,6 +96,10 @@
     flex-direction: column;
     overflow-y: auto;
   }
+  /* Colapsar del todo (display:none) en vez de width:0 -- así no hay que
+     lidiar con que el contenido interno (búsqueda, árbol) se reajuste o se
+     desborde durante la transición; solo aparece/desaparece. */
+  .layout.sidebar-collapsed aside { display: none; }
 
   main {
     flex: 1;
@@ -140,6 +144,12 @@
     justify-content: center;
   }
   .icon-btn:hover { background: var(--code-bg); color: var(--ink); }
+  .icon-btn:disabled { opacity: 0.3; cursor: default; }
+  .icon-btn:disabled:hover { background: none; color: var(--ink-muted); }
+
+  /* ---------- navegación (atrás/adelante/subir), en la cabecera ---------- */
+  .header-left { display: flex; align-items: center; gap: 14px; }
+  .nav-history-controls { display: flex; gap: 2px; }
 
   .template-btn {
     background: none;
@@ -214,6 +224,31 @@
     font-size: 14px;
     text-align: center;
   }
+
+  /* ---------- landing / dashboard (nada abierto -- ver renderDashboard) ---------- */
+  .dashboard { max-width: 640px; display: flex; flex-direction: column; gap: 28px; }
+  .dashboard-section-head {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-bottom: 8px;
+  }
+  .dashboard-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .dashboard-item:hover { background: var(--code-bg); }
+  .dashboard-item-icon { font-size: 15px; flex-shrink: 0; }
+  .dashboard-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dashboard-item-sub { color: var(--ink-muted); font-size: 12.5px; }
+  .dashboard-item-meta { flex-shrink: 0; font-size: 12px; color: var(--ink-muted); font-family: var(--font-mono); }
+  .dashboard-item-meta.overdue { color: var(--down); }
 
   /* ---------- vista de nota ---------- */
   .note-topbar {
@@ -393,16 +428,32 @@
   #note-body .cm-mdm-line-code { background: var(--code-bg); }
   #note-body .cm-mdm-line-list { padding-left: 4px; }
 
-  /* ---------- handle de bloque (seleccionar/convertir/borrar) ----------
+  /* Líneas en blanco usadas solo para separar bloques en Markdown: se
+     colapsan casi a 0 mientras no se está escribiendo ahí (cursor-aware,
+     ver blankLineDecorations en entry.js) -- así los bloques no se ven con
+     un hueco de más entre ellos, aunque el salto de línea real siga estando
+     en el markdown guardado. */
+  #note-body .cm-mdm-blank-collapsed { font-size: 1px; line-height: 5px; }
+
+  /* ---------- handle de bloque (seleccionar/convertir/borrar) + botón "+" ----------
      Widget dentro de la línea (no gutter), posicionado en el hueco que deja
      el padding-left de .cm-content. top:0 + la propia línea como referencia
      (position:relative arriba) es lo que garantiza que quede a la altura
-     exacta de la línea que le corresponde, sea un párrafo o un H1 más alto. */
-  .cm-mdm-block-handle {
+     exacta de la línea que le corresponde, sea un párrafo o un H1 más alto.
+     El "+" y el "⋮⋮" comparten el mismo wrapper para no necesitar dos
+     widgets (y por tanto dos cálculos de posición) por bloque. */
+  .cm-mdm-block-handle-wrap {
     position: absolute;
-    left: -22px;
+    left: -32px;
     top: 0;
-    width: 18px;
+    display: flex;
+    align-items: flex-start;
+    gap: 2px;
+    line-height: 1.7;
+  }
+  .cm-mdm-block-add,
+  .cm-mdm-block-handle {
+    width: 14px;
     text-align: center;
     font-size: 11px;
     line-height: 1.7;
@@ -411,6 +462,7 @@
     cursor: pointer;
     user-select: none;
   }
+  .cm-mdm-block-add:hover,
   .cm-mdm-block-handle:hover { opacity: 0.75; }
   .cm-mdm-block-handle-selected { opacity: 1; color: var(--accent-ink); }
 
@@ -515,6 +567,20 @@
   .mdm-slash-menu-item.active { background: var(--accent-soft); color: var(--accent-ink); }
   .mdm-slash-menu-abbrev { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
   .mdm-slash-menu-item.active .mdm-slash-menu-abbrev { color: var(--accent-ink); opacity: 0.75; }
+  /* Aviso flotante del modo "naming" del comando /page (ver slashMenuExtension
+     en entry.js) -- solo texto, no hay nada que elegir aquí. */
+  .mdm-slash-naming {
+    position: fixed;
+    z-index: 1000;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--ink-muted);
+    white-space: nowrap;
+  }
 
   /* ---------- vista previa de página al pasar el ratón por un wikilink ---------- */
   .mdm-link-preview {
@@ -666,7 +732,15 @@
 </head>
 <body>
   <header>
-    <span class="brand"><img src="/logo.png" alt="" class="brand-logo" />MyDamnManagement</span>
+    <div class="header-left">
+      <button class="icon-btn" id="btn-toggle-sidebar" title="Mostrar/ocultar barra lateral">☰</button>
+      <span class="brand"><img src="/logo.png" alt="" class="brand-logo" />MyDamnManagement</span>
+      <div class="nav-history-controls">
+        <button class="icon-btn" id="btn-nav-back" title="Atrás" disabled>←</button>
+        <button class="icon-btn" id="btn-nav-forward" title="Adelante" disabled>→</button>
+        <button class="icon-btn" id="btn-nav-up" title="Subir un nivel" disabled>↑</button>
+      </div>
+    </div>
     <div class="status-strip">
       <span class="status-item"><span class="dot" id="dot-api"></span>api</span>
       <span class="status-item"><span class="dot" id="dot-db"></span>db</span>

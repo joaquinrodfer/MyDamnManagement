@@ -7,12 +7,14 @@
 import { createNoteEditor } from "/vendor/editor.bundle.js";
 
 const state = {
-  pagesById: new Map(), // id -> {id,title,type,icon,children} (del árbol; para resolver [[wikilinks]])
+  pagesById: new Map(), // id -> {id,title,type,icon,parent_id,children} (del árbol; para resolver [[wikilinks]])
   current: null, // {kind: 'note'|'database', id}
   editor: null, // instancia activa del editor de notas (createNoteEditor), o null
   flushPendingSave: null, // fuerza el autoguardado en curso antes de navegar a otra página
   selectedPages: new Map(), // id de página (nodo del árbol) -> node; selección múltiple en la barra lateral
   lastClickedRowId: null, // para el rango de Mayús+clic
+  history: [], // [{kind, id}, ...] -- pila de navegación para los botones atrás/adelante
+  historyPos: -1, // índice de "dónde estamos" dentro de state.history
 };
 
 // ---------------------------------------------------------------- helpers
@@ -62,9 +64,130 @@ function clearMain() {
   return main;
 }
 
-function showEmpty() {
+async function showEmpty() {
   state.current = null;
-  clearMain().innerHTML = '<div class="empty-state">Elige una página o crea una nueva.</div>';
+  const main = clearMain();
+  updateNavButtons();
+  await renderDashboard(main);
+}
+
+// ------------------------------------------------------------- landing/dashboard
+// Lo que se ve cuando no hay ninguna página abierta (al arrancar, o tras
+// borrar la que estaba abierta): páginas con cambios recientes, y filas de
+// cualquier database con una fecha cercana a hoy (si las hay). Una sola
+// llamada -- el cálculo (qué cuenta como "cercana", cruzar schema_def con
+// las filas de cada database) vive en el backend, ver GET /dashboard.
+
+function formatRelativeTime(isoString) {
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return "ahora mismo";
+  if (mins < 60) return `hace ${mins} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `hace ${days} d`;
+  const months = Math.round(days / 30);
+  return `hace ${months} mes${months > 1 ? "es" : ""}`;
+}
+
+function formatDueLabel(days) {
+  if (days === 0) return "hoy";
+  if (days === 1) return "mañana";
+  if (days === -1) return "ayer";
+  if (days > 0) return `en ${days} días`;
+  return `hace ${Math.abs(days)} días`;
+}
+
+function dashboardItem({ icon, title, sub, meta, metaClass, onClick }) {
+  const item = document.createElement("div");
+  item.className = "dashboard-item";
+
+  const iconEl = document.createElement("span");
+  iconEl.className = "dashboard-item-icon";
+  iconEl.textContent = icon;
+
+  const titleEl = document.createElement("span");
+  titleEl.className = "dashboard-item-title";
+  titleEl.textContent = title;
+  if (sub) {
+    const subEl = document.createElement("span");
+    subEl.className = "dashboard-item-sub";
+    subEl.textContent = ` · ${sub}`;
+    titleEl.appendChild(subEl);
+  }
+
+  const metaEl = document.createElement("span");
+  metaEl.className = "dashboard-item-meta" + (metaClass ? ` ${metaClass}` : "");
+  metaEl.textContent = meta;
+
+  item.append(iconEl, titleEl, metaEl);
+  item.addEventListener("click", onClick);
+  return item;
+}
+
+async function renderDashboard(main) {
+  let data;
+  try {
+    data = await api("/dashboard");
+  } catch (e) {
+    main.innerHTML = '<div class="empty-state">Elige una página o crea una nueva.</div>';
+    return;
+  }
+  // Si mientras cargaba el usuario ya navegó a otra página, no pisarla.
+  if (state.current) return;
+
+  main.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "dashboard";
+
+  const recentSection = document.createElement("div");
+  recentSection.className = "dashboard-section";
+  const recentHead = document.createElement("div");
+  recentHead.className = "dashboard-section-head";
+  recentHead.textContent = "Páginas recientes";
+  recentSection.appendChild(recentHead);
+
+  if (data.recent_pages.length === 0) {
+    recentSection.innerHTML += '<div class="search-empty">Elige una página o crea una nueva.</div>';
+  } else {
+    data.recent_pages.forEach((p) => {
+      recentSection.appendChild(
+        dashboardItem({
+          icon: p.icon || typeIcon(p.type),
+          title: p.title || "Sin título",
+          meta: formatRelativeTime(p.updated_at),
+          onClick: () => (p.type === "database" ? goTo("database", p.database_id) : goTo("note", p.id)),
+        })
+      );
+    });
+  }
+  wrap.appendChild(recentSection);
+
+  if (data.upcoming_dates.length > 0) {
+    const dueSection = document.createElement("div");
+    dueSection.className = "dashboard-section";
+    const dueHead = document.createElement("div");
+    dueHead.className = "dashboard-section-head";
+    dueHead.textContent = "Fechas cercanas";
+    dueSection.appendChild(dueHead);
+
+    data.upcoming_dates.forEach((u) => {
+      dueSection.appendChild(
+        dashboardItem({
+          icon: "📅",
+          title: u.row_title || "Sin título",
+          sub: `${u.database_title} · ${u.property_name}`,
+          meta: formatDueLabel(u.days_from_today),
+          metaClass: u.days_from_today < 0 ? "overdue" : "",
+          onClick: () => goTo("database", u.database_id),
+        })
+      );
+    });
+    wrap.appendChild(dueSection);
+  }
+
+  main.appendChild(wrap);
 }
 
 // ---------------------------------------------------------------- estado
@@ -109,6 +232,7 @@ async function loadTree() {
 
   if (state.current) markActive(state.current.id);
   applyPageSelectionClasses();
+  updateNavButtons(); // "subir un nivel" depende de parent_id, que solo se sabe tras recargar el árbol
 }
 
 function indexTree(nodes) {
@@ -157,8 +281,8 @@ function renderTreeNode(node) {
     }
     clearPageSelection();
     state.lastClickedRowId = node.id;
-    if (node.type === "database") selectDatabase(node.database_id);
-    else selectNote(node.id);
+    if (node.type === "database") goTo("database", node.database_id);
+    else goTo("note", node.id);
   });
 
   row.addEventListener("contextmenu", (e) => {
@@ -453,7 +577,7 @@ function renderNote(page, backlinks) {
       const item = document.createElement("div");
       item.className = "backlink-item";
       item.textContent = b.title;
-      item.addEventListener("click", () => selectNote(b.id));
+      item.addEventListener("click", () => goTo("note", b.id));
       backList.appendChild(item);
     });
   }
@@ -640,12 +764,33 @@ function renderNote(page, backlinks) {
     }
   });
 
+  // Comando "/page" del editor: crea una página hija de ÉSTA (page.id, la
+  // que está abierta ahora mismo) con el título que el usuario ya escribió
+  // en el propio editor (entry.js pide primero el nombre -- ver "naming" en
+  // slashMenuExtension -- así se evita crear siempre "Nueva página", que
+  // con varias iguales sería ambiguo para resolver el wikilink por título)
+  // y devuelve {id, title} para que entry.js inserte el enlace.
+  async function createChildPage(title) {
+    try {
+      const created = await api("/pages", {
+        method: "POST",
+        body: JSON.stringify({ title, parent_id: page.id, body_markdown: "" }),
+      });
+      await loadTree();
+      return { id: created.id, title: created.title };
+    } catch (e) {
+      alert("Error al crear la página: " + e.message);
+      return null;
+    }
+  }
+
   state.editor = createNoteEditor({
     parent: bodyMount,
     doc: page.body_markdown || "",
     resolvePage: (title) => findPageByTitle(title),
     onNavigate: (pageId) => navigateToPage(pageId),
     onChange: scheduleSave,
+    onCreatePage: createChildPage,
     onBlockContextMenu: (payload) => {
       const n = payload.count;
       const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
@@ -694,8 +839,69 @@ function findPageByTitle(title) {
  * es el id que espera /databases/{id}; ver database_id en el árbol). */
 function navigateToPage(pageId) {
   const node = state.pagesById.get(pageId);
-  if (node?.type === "database") selectDatabase(node.database_id);
-  else selectNote(pageId);
+  if (node?.type === "database") goTo("database", node.database_id);
+  else goTo("note", pageId);
+}
+
+// -------------------------------------------------- navegación (atrás/adelante/subir)
+// Historial propio, al estilo navegador -- state.current por sí solo no basta
+// para "atrás", porque no hay pila. Todo lo que sea "ir a otra página de
+// verdad" pasa por goTo(); lo que es solo refrescar la página ya abierta
+// (borrar una fila, crear una vista nueva...) sigue llamando a selectNote/
+// selectDatabase directamente, para no llenar el historial de duplicados.
+
+async function goTo(kind, id, { fromHistory = false } = {}) {
+  if (!fromHistory) {
+    // Si veníamos de "atrás", navegar a algo nuevo descarta el "adelante"
+    // pendiente -- mismo comportamiento que el historial de un navegador.
+    state.history = state.history.slice(0, state.historyPos + 1);
+    state.history.push({ kind, id });
+    state.historyPos = state.history.length - 1;
+  }
+  if (kind === "database") await selectDatabase(id);
+  else await selectNote(id);
+  updateNavButtons();
+}
+
+function goBack() {
+  if (state.historyPos <= 0) return;
+  state.historyPos -= 1;
+  const entry = state.history[state.historyPos];
+  goTo(entry.kind, entry.id, { fromHistory: true });
+}
+
+function goForward() {
+  if (state.historyPos >= state.history.length - 1) return;
+  state.historyPos += 1;
+  const entry = state.history[state.historyPos];
+  goTo(entry.kind, entry.id, { fromHistory: true });
+}
+
+/** El id de página de una database (Page.id) no es el id con el que se
+ * navega a ella (DatabaseDef.id, ver database_id) -- para "subir un nivel"
+ * desde una database hay que encontrar primero el nodo del árbol que la
+ * describe, buscando por database_id en vez de por id directo. */
+function getCurrentParentId() {
+  if (!state.current) return null;
+  if (state.current.kind === "database") {
+    const node = [...state.pagesById.values()].find((n) => n.database_id === state.current.id);
+    return node?.parent_id ?? null;
+  }
+  return state.pagesById.get(state.current.id)?.parent_id ?? null;
+}
+
+function goUp() {
+  const parentId = getCurrentParentId();
+  if (parentId) navigateToPage(parentId);
+}
+
+function updateNavButtons() {
+  const backBtn = document.getElementById("btn-nav-back");
+  const fwdBtn = document.getElementById("btn-nav-forward");
+  const upBtn = document.getElementById("btn-nav-up");
+  if (backBtn) backBtn.disabled = state.historyPos <= 0;
+  if (fwdBtn) fwdBtn.disabled = state.historyPos >= state.history.length - 1;
+  if (upBtn) upBtn.disabled = !getCurrentParentId();
 }
 
 // -------------------------------------------------- vista previa al pasar el ratón
@@ -766,9 +972,33 @@ function closeSlashMenu() {
   }
 }
 
+/** Posiciona un panel flotante junto a (x, y) sin salirse de la ventana. */
+function positionFloating(el, x, y) {
+  document.body.appendChild(el);
+  let left = x;
+  let top = y + 4;
+  const rect = el.getBoundingClientRect();
+  if (left + rect.width > window.innerWidth) left = window.innerWidth - rect.width - 8;
+  if (top + rect.height > window.innerHeight) top = y - rect.height - 4;
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+}
+
 function renderSlashMenu(menuState) {
   closeSlashMenu();
   if (!menuState) return;
+
+  // Modo "naming": el usuario eligió "Página" y ahora está escribiendo el
+  // nombre directamente en el documento -- aquí solo hace falta un aviso
+  // flotante, no una lista (no hay nada que elegir).
+  if (menuState.kind === "naming") {
+    const hint = document.createElement("div");
+    hint.className = "mdm-slash-naming";
+    hint.textContent = "Nombre de la página · Enter para crear · Esc para cancelar";
+    positionFloating(hint, menuState.x, menuState.y);
+    slashMenuEl = hint;
+    return;
+  }
 
   const menu = document.createElement("div");
   menu.className = "mdm-slash-menu";
@@ -797,15 +1027,13 @@ function renderSlashMenu(menuState) {
     });
   }
 
-  document.body.appendChild(menu);
+  positionFloating(menu, menuState.x, menuState.y);
 
-  let left = menuState.x;
-  let top = menuState.y + 4;
-  const rect = menu.getBoundingClientRect();
-  if (left + rect.width > window.innerWidth) left = window.innerWidth - rect.width - 8;
-  if (top + rect.height > window.innerHeight) top = menuState.y - rect.height - 4;
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
+  // Con la lista filtrada la opción resaltada por teclado (flechas) puede
+  // quedar fuera del área visible del menú (max-height + overflow-y: auto)
+  // -- sin esto, ArrowDown/ArrowUp seguían moviendo la selección pero no se
+  // veía moverse.
+  menu.querySelector(".mdm-slash-menu-item.active")?.scrollIntoView({ block: "nearest" });
 
   slashMenuEl = menu;
 }
@@ -1251,7 +1479,7 @@ async function createFromTemplate(templateKey) {
   try {
     const database = await api("/databases/from-template", { method: "POST", body: JSON.stringify({ template: templateKey }) });
     await loadTree();
-    await selectDatabase(database.id);
+    await goTo("database", database.id);
   } catch (e) {
     alert("Error al crear desde plantilla: " + e.message);
   }
@@ -1277,7 +1505,7 @@ document.getElementById("btn-create-database").addEventListener("click", async (
     const database = await api("/databases", { method: "POST", body: JSON.stringify({ title, schema_def }) });
     dbDialog.close();
     await loadTree();
-    await selectDatabase(database.id);
+    await goTo("database", database.id);
   } catch (e) {
     alert("Error al crear la base de datos: " + e.message);
   }
@@ -1332,7 +1560,7 @@ document.getElementById("btn-new-note").addEventListener("click", async () => {
   const parent_id = state.current?.kind === "note" ? state.current.id : null;
   const page = await api("/pages", { method: "POST", body: JSON.stringify({ title: "Sin título", parent_id, body_markdown: "" }) });
   await loadTree();
-  await selectNote(page.id);
+  await goTo("note", page.id);
   const titleEl = document.querySelector(".note-title");
   titleEl?.focus();
   titleEl?.select();
@@ -1385,9 +1613,32 @@ document.getElementById("nav-sections").addEventListener("click", (e) => {
   if (!e.target.closest(".tree-row")) clearPageSelection();
 });
 
+document.getElementById("btn-nav-back").addEventListener("click", goBack);
+document.getElementById("btn-nav-forward").addEventListener("click", goForward);
+document.getElementById("btn-nav-up").addEventListener("click", goUp);
+
+// -------------------------------------------------- colapsar la barra lateral
+// Se recuerda en localStorage (no en el servidor -- es preferencia de
+// pantalla, no dato del workspace) para que no vuelva a aparecer sola cada
+// vez que se recarga.
+const SIDEBAR_COLLAPSED_KEY = "mdm_sidebar_collapsed";
+const layoutEl = document.querySelector(".layout");
+
+function setSidebarCollapsed(collapsed) {
+  layoutEl.classList.toggle("sidebar-collapsed", collapsed);
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+}
+
+document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
+  setSidebarCollapsed(!layoutEl.classList.contains("sidebar-collapsed"));
+});
+
+setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+
 // -------------------------------------------------------------------- arranque
 
 loadTree();
+showEmpty(); // landing con páginas recientes + fechas cercanas, en vez del hueco estático de index.html
 pollStatus();
 setInterval(pollStatus, 4000);
 
