@@ -529,6 +529,42 @@ async function selectNote(id) {
 
 const AUTOSAVE_DELAY_MS = 2000;
 
+/** Frontmatter YAML + cuerpo, en un único .md descargable -- al ser todo
+ * Markdown de por sí (incluidos los metadatos, como frontmatter), exportar
+ * es solo juntar ambas cosas en un archivo y ofrecerlo para descargar; no
+ * hace falta convertir nada ni tocar el backend. */
+function yamlString(value) {
+  const clean = String(value ?? "").replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${clean}"`;
+}
+
+function exportPageAsMarkdown(page, bodyMarkdown) {
+  const frontmatter = [
+    "---",
+    `title: ${yamlString(page.title)}`,
+    `icon: ${yamlString(page.icon)}`,
+    `created_by: ${yamlString(page.created_by)}`,
+    `description: ${yamlString(page.description)}`,
+    `created_at: ${yamlString(page.created_at)}`,
+    `updated_at: ${yamlString(page.updated_at)}`,
+    "---",
+    "",
+    "",
+  ].join("\n");
+
+  const blob = new Blob([frontmatter + bodyMarkdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const filename = (page.title || "Sin título").replace(/[/\\?%*:|"<>]/g, "-") + ".md";
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function renderNote(page, backlinks) {
   const main = clearMain();
 
@@ -583,7 +619,17 @@ function renderNote(page, backlinks) {
   }
   backDetails.append(backSummary, backList);
 
-  topbar.append(saveStatus, backDetails);
+  const exportBtn = document.createElement("button");
+  exportBtn.className = "icon-btn";
+  exportBtn.textContent = "⇩";
+  exportBtn.title = "Exportar como Markdown (.md)";
+  exportBtn.addEventListener("click", () => exportPageAsMarkdown(page, state.editor.getValue()));
+
+  const topbarRight = document.createElement("div");
+  topbarRight.className = "note-topbar-right";
+  topbarRight.append(exportBtn, backDetails);
+
+  topbar.append(saveStatus, topbarRight);
 
   // ---- imagen de cabecera (opcional) ----
   const headerWrap = document.createElement("div");

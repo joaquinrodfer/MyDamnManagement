@@ -24,8 +24,11 @@ const highlightStyle = HighlightStyle.define([
   { tag: tags.strong, class: "cm-mdm-strong" },
   { tag: tags.emphasis, class: "cm-mdm-em" },
   { tag: tags.monospace, class: "cm-mdm-code" },
-  // HeaderMark / EmphasisMark / LinkMark / CodeMark / ListMark: el "#", "**", "*", "-"...
-  { tag: tags.processingInstruction, class: "cm-mdm-mark" },
+  // HeaderMark/EmphasisMark/CodeMark/ListMark ("#", "**", "`", "-"...) NO
+  // llevan aquí una regla fija -- su visibilidad depende de si el bloque que
+  // los contiene está siendo editado ahora mismo, así que las decide
+  // syntaxMarkPlugin() más abajo (StateField/ViewPlugin, no HighlightStyle
+  // estático) en vez de esta lista.
 ]);
 
 const WIKILINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
@@ -164,6 +167,100 @@ function wikilinkHoverHandler(onHover, onHoverEnd) {
       clearTimeout(timer);
       onHoverEnd?.();
       return false;
+    },
+  });
+}
+
+// ------------------------------------------------------ enlaces Markdown
+// "[texto](url)" -- mismo patrón cursor-aware que los wikilinks: resuelto y
+// sin editar ahora mismo, se sustituye entero por un widget que se ve como
+// un enlace normal (solo el texto, sin corchetes/paréntesis/URL); editando,
+// se ve el Markdown crudo con los marcadores tenues. Ctrl/Cmd+clic abre la
+// URL en una pestaña nueva. A diferencia de un wikilink no hace falta
+// resolver nada contra el árbol de páginas -- el destino ya es la URL.
+
+const MDLINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g;
+
+class MarkdownLinkWidget extends WidgetType {
+  constructor(label, url) {
+    super();
+    this.label = label;
+    this.url = url;
+  }
+  eq(other) {
+    return other.label === this.label && other.url === this.url;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cm-mdm-mdlink-rendered";
+    el.textContent = this.label;
+    el.dataset.href = this.url;
+    el.title = this.url;
+    return el;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+function buildMarkdownLinkDecorations(view) {
+  const ranges = [];
+  for (const { from, to } of view.visibleRanges) {
+    const text = view.state.doc.sliceString(from, to);
+    MDLINK_RE.lastIndex = 0;
+    let m;
+    while ((m = MDLINK_RE.exec(text))) {
+      const start = from + m.index;
+      const end = start + m[0].length;
+      const label = m[1];
+      const url = m[2];
+
+      if (!selectionIntersects(view.state, start, end)) {
+        ranges.push(Decoration.replace({ widget: new MarkdownLinkWidget(label, url) }).range(start, end));
+        continue;
+      }
+
+      // Editando: texto crudo, con "[", "](", ")" tenues (misma clase que
+      // los wikilinks en edición -- visualmente son lo mismo).
+      const textStart = start + 1; // tras "["
+      const textEnd = textStart + label.length;
+      ranges.push(Decoration.mark({ class: "cm-mdm-wikimark" }).range(start, textStart));
+      ranges.push(Decoration.mark({ class: "cm-mdm-mdlink-text" }).range(textStart, textEnd));
+      ranges.push(Decoration.mark({ class: "cm-mdm-wikimark" }).range(textEnd, end));
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function markdownLinkPlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = buildMarkdownLinkDecorations(view);
+      }
+      update(update) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+          this.decorations = buildMarkdownLinkDecorations(update.view);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
+function markdownLinkClickHandler() {
+  return EditorView.domEventHandlers({
+    mousedown(event) {
+      if (!(event.ctrlKey || event.metaKey)) return false;
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return false;
+      const link = target.closest("[data-href]");
+      if (!link) return false;
+      const href = link.dataset.href;
+      if (!href) return false;
+      event.preventDefault();
+      window.open(href, "_blank", "noopener,noreferrer");
+      return true;
     },
   });
 }
@@ -627,6 +724,74 @@ function blockLinesPlugin() {
   );
 }
 
+// ------------------------------------------------ marcadores de sintaxis
+//
+// Al estilo Obsidian/Typora: el bloque que se está editando (el cursor está
+// dentro de su rango, según blockField) muestra el Markdown crudo con sus
+// marcadores tenues -- "# ", "**", "`", "1. "... Cualquier otro bloque los
+// esconde del todo (no solo atenuados): "**Tests**" pasa a verse "Tests" en
+// negrita, sin asteriscos. La única excepción es ListMark ("1.", "-"): no
+// se esconde -- sin él no quedaría ninguna pista visual de que es una lista
+// -- pero pasa de tenue a color de texto normal en cuanto se deja de editar
+// ese bloque, para que no parezca "syntax" sino contenido real.
+//
+// Antes esto lo resolvía una regla fija en highlightStyle (todo marcador
+// siempre tenue); ahora depende de qué bloque está activo, así que hace
+// falta recorrer el árbol de sintaxis por bloque en cada actualización en
+// vez de una regla estática.
+
+const MUTED_MARK_TYPES = new Set(["HeaderMark", "EmphasisMark", "CodeMark", "ListMark"]);
+const HIDE_WHEN_INACTIVE = new Set(["HeaderMark", "EmphasisMark", "CodeMark"]);
+
+function syntaxMarkDecorations(state) {
+  const { blocks } = state.field(blockField);
+  const ranges = [];
+  const tree = syntaxTree(state);
+  for (const b of blocks) {
+    const active = selectionIntersects(state, b.from, b.to);
+    tree.iterate({
+      from: b.from,
+      to: b.to,
+      enter: (node) => {
+        if (!MUTED_MARK_TYPES.has(node.name)) return;
+        if (active) {
+          ranges.push(Decoration.mark({ class: "cm-mdm-mark" }).range(node.from, node.to));
+          return;
+        }
+        if (!HIDE_WHEN_INACTIVE.has(node.name)) return; // ListMark inactivo: sin decoración -> color normal
+        let end = node.to;
+        if (node.name === "HeaderMark") {
+          // consumir el espacio tras "#"/"##"... -- si no, queda un hueco
+          // donde estaban las almohadillas.
+          while (end < b.to && /[ \t]/.test(state.doc.sliceString(end, end + 1))) end++;
+        }
+        ranges.push(Decoration.replace({}).range(node.from, end));
+      },
+    });
+  }
+  return Decoration.set(ranges, true);
+}
+
+function syntaxMarkPlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = syntaxMarkDecorations(view.state);
+      }
+      update(update) {
+        if (
+          update.docChanged ||
+          update.selectionSet ||
+          update.state.field(blockField) !== update.startState.field(blockField)
+        ) {
+          this.decorations = syntaxMarkDecorations(update.state);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
 // Un párrafo necesita una línea en blanco detrás para separarse del
 // siguiente en Markdown -- pero verla como un hueco real (una fila entera
 // vacía) hace que los bloques parezcan tener aire de más entre ellos, cosa
@@ -1062,10 +1227,13 @@ export function createNoteEditor({
         blockHandleEventHandlers(onBlockContextMenu),
         blockLinesPlugin(),
         blankLinePlugin(),
+        syntaxMarkPlugin(),
         hrField,
         wikilinkPlugin(resolvePage),
         wikilinkClickHandler(onNavigate),
         wikilinkHoverHandler(onWikilinkHover, onWikilinkHoverEnd),
+        markdownLinkPlugin(),
+        markdownLinkClickHandler(),
         arrowPlugin(),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {

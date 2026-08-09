@@ -267,6 +267,7 @@
     font-variant-numeric: tabular-nums;
   }
   .note-savestatus.is-error { color: var(--down); }
+  .note-topbar-right { display: flex; align-items: center; gap: 10px; }
   .note-savestatus-icon { display: inline-flex; width: 12px; height: 12px; align-items: center; justify-content: center; font-size: 11px; }
   .spinner {
     width: 11px;
@@ -418,6 +419,21 @@
     cursor: pointer;
   }
   .cm-mdm-wikilink-rendered:hover { text-decoration-color: var(--accent-ink); }
+  /* Enlace Markdown "[texto](url)" resuelto y sin editar: sustituye todo el
+     "[texto](url)" por solo "texto" con pinta de enlace -- ver
+     MarkdownLinkWidget en entry.js. Mismo aspecto que un wikilink resuelto,
+     clase propia porque el destino es una URL, no una página del workspace. */
+  .cm-mdm-mdlink-rendered {
+    color: var(--accent-ink);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent-ink) 40%, transparent);
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .cm-mdm-mdlink-rendered:hover { text-decoration-color: var(--accent-ink); }
+  /* Enlace Markdown en edición (cursor dentro): el texto entre corchetes se
+     ve ya con pinta de enlace, aunque siga siendo Markdown crudo y editable. */
+  .cm-mdm-mdlink-text { color: var(--accent-ink); text-decoration: underline; }
   /* "->" / "<-" / "<->" sin editar: se ven como →/←/↔ (ver arrowPlugin). */
   .cm-mdm-glyph { color: var(--ink); }
   /* Línea horizontal ("---"): widget de bloque cuando no se edita (ver HRWidget) */
