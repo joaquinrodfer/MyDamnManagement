@@ -18,7 +18,7 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas (con selección múltiple y borrado en lote), editor de notas con formato en vivo y **edición por bloques** al estilo Notion (párrafo/H1-H4/listas/código, seleccionables, convertibles entre sí, borrables en lote), tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3).
+Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas (con selección múltiple y borrado en lote), editor de notas con formato en vivo y **edición por bloques** al estilo Notion (párrafo/H1-H5/listas/código/línea horizontal, seleccionables, convertibles entre sí —también con el comando `/`—, borrables en lote), tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3).
 
 El resto del frontend sigue siendo HTML/CSS/JS plano sin build (`frontend/index.html` + `frontend/app.js`, servidos por la propia API); la única pieza compilada es el editor, vendorizado como un único archivo (`frontend/vendor/editor.bundle.js`, generado una vez con esbuild desde `frontend/editor-src/` — ver más abajo).
 
