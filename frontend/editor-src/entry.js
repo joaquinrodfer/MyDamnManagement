@@ -1182,6 +1182,73 @@ const shiftEnterKeymap = keymap.of([
   },
 ]);
 
+// --------------------------------------------- flechas arriba/abajo por línea
+//
+// Las flechas arriba/abajo por defecto de CodeMirror (cursorLineUp/Down)
+// calculan a qué línea saltar por distancia en píxeles (una altura de línea
+// "típica" hacia arriba/abajo desde la posición actual), no contando líneas
+// del documento. Con varias líneas colapsadas a ~5px seguidas (separadores
+// entre bloques -- ver blankLinePlugin -- y la línea horizontal como widget
+// de bloque) esa distancia en píxeles abarca de sobra varias líneas
+// colapsadas de golpe, y el cursor podía aterrizar varios bloques más
+// arriba/abajo de lo esperado en una sola pulsación (issue #2 en GitHub).
+//
+// Sustituye el cálculo por líneas lógicas del documento (actual ± 1) en vez
+// de por píxeles -- inmune a cualquier cosa que colapse o esconda contenido,
+// ahora o en el futuro. Como la fuente del editor es monoespaciada, la
+// columna en caracteres coincide con la columna visual, así que no hace
+// falta convertir a/desde coordenadas de pantalla. La columna "objetivo" se
+// recuerda entre pulsaciones consecutivas de ↑/↓ (para no perder la columna
+// real al cruzar una línea más corta) y se olvida en cualquier otro cambio
+// -- escribir, hacer clic, mover con las flechas horizontales...
+function verticalMoveExtension() {
+  const plugin = ViewPlugin.fromClass(
+    class {
+      constructor() {
+        this.goalColumn = null;
+        this.ownMove = false;
+      }
+      update(update) {
+        if (this.ownMove) {
+          this.ownMove = false; // la transacción que acabamos de disparar nosotros mismos
+          return;
+        }
+        if (update.docChanged || update.selectionSet) {
+          this.goalColumn = null;
+        }
+      }
+      move(view, forward, extend) {
+        const state = view.state;
+        const range = state.selection.main;
+        const curLine = state.doc.lineAt(range.head);
+        const targetLineNo = curLine.number + (forward ? 1 : -1);
+        if (targetLineNo < 1 || targetLineNo > state.doc.lines) return false; // primera/última línea: que decida el keymap por defecto
+
+        const targetLine = state.doc.line(targetLineNo);
+        if (this.goalColumn === null) this.goalColumn = range.head - curLine.from;
+        const newPos = Math.min(targetLine.from + this.goalColumn, targetLine.to);
+
+        this.ownMove = true;
+        view.dispatch({
+          selection: extend ? EditorSelection.range(range.anchor, newPos) : EditorSelection.cursor(newPos),
+          scrollIntoView: true,
+          userEvent: "select",
+        });
+        return true;
+      }
+    }
+  );
+
+  const moveKeymap = keymap.of([
+    { key: "ArrowUp", run: (view) => view.plugin(plugin)?.move(view, false, false) ?? false },
+    { key: "ArrowDown", run: (view) => view.plugin(plugin)?.move(view, true, false) ?? false },
+    { key: "Shift-ArrowUp", run: (view) => view.plugin(plugin)?.move(view, false, true) ?? false },
+    { key: "Shift-ArrowDown", run: (view) => view.plugin(plugin)?.move(view, true, true) ?? false },
+  ]);
+
+  return [plugin, moveKeymap];
+}
+
 /**
  * @param {Object} opts
  * @param {HTMLElement} opts.parent
@@ -1218,6 +1285,7 @@ export function createNoteEditor({
         // keymap normal sin más.
         ...slashMenuExtension(onSlashMenu ?? (() => {}), onCreatePage),
         shiftEnterKeymap,
+        ...verticalMoveExtension(),
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         markdown(),

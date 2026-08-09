@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 ### Corregido
 
 - Vista previa de un wikilink al pasar el ratón, duplicada y una copia imposible de cerrar salvo recargando (issue [#1](../../issues/1)): un clic sin `Ctrl` sobre un wikilink resuelto lo sustituye por su marcado en crudo justo bajo el propio ratón, lo que el navegador interpreta como un `mouseover` nuevo sin que el hover anterior se haya cerrado -- `startLinkPreview()` creaba la tarjeta nueva sin quitar la que ya hubiera, dejándola huérfana en el DOM. Ahora cierra cualquier tarjeta previa antes de crear una.
+- Las flechas `↑`/`↓` podían saltarse varios bloques de golpe -- en un caso llegaba a comerse casi toda una nota corta de un solo toque (issue [#2](../../issues/2)): CodeMirror calcula a qué línea saltar por distancia en píxeles, y con varias líneas colapsadas a ~5px seguidas (separadores entre bloques, línea horizontal) esa distancia abarcaba de sobra varias líneas colapsadas a la vez. Sustituidas por una navegación propia que se mueve por líneas *lógicas* del documento (actual ± 1) en vez de por píxeles, con memoria de la columna "objetivo" entre pulsaciones consecutivas (como cualquier editor de texto normal) -- inmune a cualquier cosa que colapse o esconda contenido, ahora o en el futuro.
 
 ## [0.9.2] — Imagen de `api` autocontenida (lista para Proxmox)
 
