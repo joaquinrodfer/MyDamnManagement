@@ -446,6 +446,22 @@
   #note-body .cm-mdm-line-code { background: var(--code-bg); font-family: var(--font-mono); }
   #note-body .cm-mdm-line-list { padding-left: 4px; }
 
+  /* ---------- citas ("> texto", anidables con "> > texto") ----------
+     Fondo gris clarito (el mismo --code-bg que el código) con bordes
+     redondeados arriba/abajo -- ver quoteDecorations en entry.js, que
+     marca la primera/última línea de cada cita para poder redondear solo
+     esas esquinas y que las líneas de en medio se vean como un bloque
+     continuo, no una fila de rectángulos sueltos. Una barra de color de
+     acento por nivel de anidación, calculada línea a línea contando los
+     ">" -- solo aparece mientras la cita no se está editando (mismo
+     patrón cursor-aware que el resto: en edición se ve el Markdown crudo,
+     con el ">" tenue). */
+  #note-body .cm-mdm-line-quote { background: var(--code-bg); padding: 3px 12px; }
+  #note-body .cm-mdm-line-quote-first { border-radius: 8px 8px 0 0; padding-top: 8px; }
+  #note-body .cm-mdm-line-quote-last { border-radius: 0 0 8px 8px; padding-bottom: 8px; }
+  .cm-mdm-quote-bars { display: inline-flex; gap: 4px; margin-right: 10px; vertical-align: middle; }
+  .cm-mdm-quote-bar { display: inline-block; width: 3px; height: 1.1em; border-radius: 2px; background: var(--accent); vertical-align: middle; }
+
   /* Líneas en blanco usadas solo para separar bloques en Markdown: se
      colapsan casi a 0 mientras no se está escribiendo ahí (cursor-aware,
      ver blankLineDecorations en entry.js) -- el espacio real entre bloques

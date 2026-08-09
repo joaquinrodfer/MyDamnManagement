@@ -360,6 +360,7 @@ const BLOCK_TYPES = [
   { type: "ordered_list_item", label: "Lista numerada", abbrev: "num" },
   { type: "code", label: "Código", abbrev: "code" },
   { type: "hr", label: "Línea horizontal", abbrev: "horizontal" },
+  { type: "quote", label: "Cita", abbrev: "quote" },
 ];
 
 const BLOCK_TYPE_LABEL = Object.fromEntries(BLOCK_TYPES.map((t) => [t.type, t.label]));
@@ -416,8 +417,17 @@ function computeBlocks(state) {
       case "Paragraph":
         blocks.push({ from: node.from, to: node.to, type: "paragraph" });
         break;
+      case "Blockquote":
+        // Un solo bloque para toda la cita, con independencia de cuántos
+        // niveles anidados (">", ">>"...) tenga dentro -- solo se recorren
+        // los hijos DIRECTOS del documento aquí, así que una cita anidada
+        // (Blockquote dentro de otro Blockquote) nunca se cuenta aparte.
+        // La profundidad de cada línea se calcula al pintarla (ver
+        // quoteDecorations), no aquí.
+        blocks.push({ from: node.from, to: node.to, type: "quote" });
+        break;
       default:
-        // Blockquote, HTMLBlock, Table, LinkReference... siguen siendo
+        // HTMLBlock, Table, LinkReference... siguen siendo
         // seleccionables/borrables, solo no convertibles.
         blocks.push({ from: node.from, to: node.to, type: "other" });
     }
@@ -434,6 +444,15 @@ function stripBlockPrefix(text, type) {
   if (type === "ordered_list_item") return text.replace(/^\d+[.)][ \t]+/, "");
   if (type === "code") return text.replace(/^```[^\n]*\n?/, "").replace(/\n?```[ \t]*$/, "");
   if (type === "hr") return ""; // "---" no tiene contenido que conservar
+  if (type === "quote") {
+    // Quita TODOS los niveles de ">" de cada línea (una cita anidada tiene
+    // ">" repetidos, p. ej. "> > texto") -- convertir "a otra cosa" aplana
+    // la cita del todo, no baja un solo nivel.
+    return text
+      .split("\n")
+      .map((line) => line.replace(/^(?:[ \t]*>[ \t]?)+/, ""))
+      .join("\n");
+  }
   return text;
 }
 
@@ -457,6 +476,11 @@ function applyBlockType(plain, targetType) {
       return "```\n" + plain + "\n```";
     case "hr":
       return "---";
+    case "quote":
+      return plain
+        .split("\n")
+        .map((line) => "> " + line)
+        .join("\n");
     default:
       return plain;
   }
@@ -736,6 +760,91 @@ function blockLinesPlugin() {
   );
 }
 
+// ------------------------------------------------------------------ citas
+//
+// Una cita ("> texto", con niveles anidados vía "> > texto") es UN bloque
+// (ver computeBlocks) con independencia de su profundidad interna -- la
+// profundidad se calcula aquí, línea a línea, contando los "> " de cada
+// una. Mismo patrón cursor-aware que headers/listas/hr: mientras se edita
+// el bloque, el Markdown va en crudo (el ">" se ve tenue, vía
+// syntaxMarkDecorations); en cuanto se deja de editar, aparece la barra
+// (color de acento) y el fondo gris con bordes redondeados -- una barra
+// por nivel de anidación, así que una cita dentro de otra se nota.
+class QuoteBarsWidget extends WidgetType {
+  constructor(depth) {
+    super();
+    this.depth = depth;
+  }
+  eq(other) {
+    return other.depth === this.depth;
+  }
+  toDOM() {
+    const wrap = document.createElement("span");
+    wrap.className = "cm-mdm-quote-bars";
+    for (let i = 0; i < this.depth; i++) {
+      const bar = document.createElement("span");
+      bar.className = "cm-mdm-quote-bar";
+      wrap.appendChild(bar);
+    }
+    return wrap;
+  }
+  ignoreEvent() {
+    return true; // puramente decorativo -- que los clics le lleguen al texto/línea, no al widget
+  }
+}
+
+function quoteDepthOf(lineText) {
+  const m = lineText.match(/^(?:[ \t]*>)+/);
+  if (!m) return 0;
+  return (m[0].match(/>/g) || []).length;
+}
+
+function quoteDecorations(state) {
+  const { blocks } = state.field(blockField);
+  const ranges = [];
+  const doc = state.doc;
+  for (const b of blocks) {
+    if (b.type !== "quote") continue;
+    if (selectionIntersects(state, b.from, b.to)) continue; // editando: Markdown crudo, sin barras ni fondo
+
+    let pos = b.from;
+    while (pos <= b.to) {
+      const line = doc.lineAt(pos);
+      const depth = Math.max(1, quoteDepthOf(line.text));
+      const isFirst = line.from <= b.from;
+      const isLast = line.to >= b.to;
+      let cls = "cm-mdm-line-quote";
+      if (isFirst) cls += " cm-mdm-line-quote-first";
+      if (isLast) cls += " cm-mdm-line-quote-last";
+      ranges.push(Decoration.line({ class: cls }).range(line.from));
+      ranges.push(Decoration.widget({ widget: new QuoteBarsWidget(depth), side: -1 }).range(line.from));
+      if (line.to >= b.to) break;
+      pos = line.to + 1;
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function quotePlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = quoteDecorations(view.state);
+      }
+      update(update) {
+        if (
+          update.docChanged ||
+          update.selectionSet ||
+          update.state.field(blockField) !== update.startState.field(blockField)
+        ) {
+          this.decorations = quoteDecorations(update.state);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
 // Separación visual real entre bloques (al estilo Notion: un H1 deja más
 // aire por encima que un párrafo suelto), no solo "que no se toquen". Se
 // aplica como padding-top a la PRIMERA línea de cada bloque (según su
@@ -798,8 +907,8 @@ function blockSpacingPlugin() {
 // falta recorrer el árbol de sintaxis por bloque en cada actualización en
 // vez de una regla estática.
 
-const MUTED_MARK_TYPES = new Set(["HeaderMark", "EmphasisMark", "CodeMark", "ListMark"]);
-const HIDE_WHEN_INACTIVE = new Set(["HeaderMark", "EmphasisMark", "CodeMark"]);
+const MUTED_MARK_TYPES = new Set(["HeaderMark", "EmphasisMark", "CodeMark", "ListMark", "QuoteMark"]);
+const HIDE_WHEN_INACTIVE = new Set(["HeaderMark", "EmphasisMark", "CodeMark", "QuoteMark"]);
 
 function syntaxMarkDecorations(state) {
   const { blocks } = state.field(blockField);
@@ -818,9 +927,11 @@ function syntaxMarkDecorations(state) {
         }
         if (!HIDE_WHEN_INACTIVE.has(node.name)) return; // ListMark inactivo: sin decoración -> color normal
         let end = node.to;
-        if (node.name === "HeaderMark") {
-          // consumir el espacio tras "#"/"##"... -- si no, queda un hueco
-          // donde estaban las almohadillas.
+        if (node.name === "HeaderMark" || node.name === "QuoteMark") {
+          // consumir el espacio tras "#"/"##"... o ">"/">>"... -- si no,
+          // queda un hueco donde estaban. Un QuoteMark nunca cruza una
+          // línea (Lezer da uno por nivel de anidación en cada línea), así
+          // que este Decoration.replace() nunca se topa con un "\n".
           while (end < b.to && /[ \t]/.test(state.doc.sliceString(end, end + 1))) end++;
         }
         ranges.push(Decoration.replace({}).range(node.from, end));
@@ -994,6 +1105,10 @@ function applySlashChoice(view, from, to, type) {
       break;
     case "hr":
       insert = "---\n\n";
+      cursorOffset = insert.length;
+      break;
+    case "quote":
+      insert = "> ";
       cursorOffset = insert.length;
       break;
     case "paragraph":
@@ -1353,6 +1468,7 @@ export function createNoteEditor({
         blockHandleEventHandlers(onBlockContextMenu),
         blockLinesPlugin(),
         blockSpacingPlugin(),
+        quotePlugin(),
         blankLinePlugin(),
         syntaxMarkPlugin(),
         hrField,

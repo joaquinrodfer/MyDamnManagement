@@ -6,6 +6,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Citas (`> texto`), anidables (`> > texto`)**: nuevo tipo de bloque, convertible desde el menú contextual y desde el comando `/quote`. Al editar se ve el Markdown crudo (el `>` tenue, como el resto de marcadores); en cuanto se deja de editar, se ve una barra de color de acento por nivel de anidación (una cita dentro de otra se nota) sobre un fondo gris clarito con las esquinas redondeadas arriba y abajo. Toda la cita (con independencia de cuántos niveles tenga dentro) es un único bloque seleccionable/convertible/borrable, igual que un bloque de código.
+
 - **Botón de inicio** (🏠, junto a atrás/adelante/subir) para volver a la landing de páginas recientes/fechas cercanas cuando se quiera, no solo al arrancar o al borrar la página abierta. Se integra con el historial: `atrás` después de ir al inicio vuelve a donde estabas.
 - **"Nueva subpágina" en el menú contextual del árbol**: clic derecho sobre cualquier página (una sola, no con selección múltiple -- sería ambiguo bajo cuál crearla) para crear una nota hija de ella directamente. El `+` de la barra lateral pasa a crear **siempre** en la raíz, sin importar qué página esté abierta -- antes creaba como hija de la nota abierta, ambiguo con esta opción nueva.
 
