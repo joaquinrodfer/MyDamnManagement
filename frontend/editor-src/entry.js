@@ -78,7 +78,11 @@ function buildWikilinkDecorations(view, resolvePage) {
       const alias = m[2] ? m[2].trim() : null;
       const resolved = resolvePage(title);
 
-      if (resolved && !selectionIntersects(view.state, start, end)) {
+      // Igual que en los enlaces Markdown: un Decoration.replace() que
+      // cruce un salto de línea no se admite desde un ViewPlugin y tira
+      // abajo el editor entero -- si el wikilink tiene un "\n" en medio
+      // (Enter sin querer entre los corchetes), se deja siempre en crudo.
+      if (resolved && !m[0].includes("\n") && !selectionIntersects(view.state, start, end)) {
         ranges.push(
           Decoration.replace({ widget: new WikilinkWidget(alias || title, resolved.id) }).range(start, end)
         );
@@ -215,7 +219,15 @@ function buildMarkdownLinkDecorations(view) {
       const label = m[1];
       const url = m[2];
 
-      if (!selectionIntersects(view.state, start, end)) {
+      // Decoration.replace() que cruce un salto de línea SOLO se puede dar
+      // desde un StateField, nunca desde un ViewPlugin (como éste) -- si el
+      // texto del enlace tiene un "\n" en medio (p. ej. se escribió sin
+      // querer un Enter a mitad del texto entre corchetes), CodeMirror lo
+      // rechaza con una excepción sin capturar que se lleva por delante
+      // todo el editor. En ese caso se deja siempre en crudo/editable --
+      // más feo, pero no rompe nada; se corrige solo en cuanto se quite el
+      // salto de línea de en medio.
+      if (!m[0].includes("\n") && !selectionIntersects(view.state, start, end)) {
         ranges.push(Decoration.replace({ widget: new MarkdownLinkWidget(label, url) }).range(start, end));
         continue;
       }

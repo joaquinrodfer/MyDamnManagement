@@ -4,6 +4,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Sin publicar]
 
+### Corregido (grave)
+
+- Un wikilink o enlace Markdown con un salto de línea en medio del texto (p. ej. `[[Título\ncon salto]]`, o un `[texto\n](url)` con un Enter sin querer entre corchetes) tiraba abajo el editor entero al abrir la página: `Decoration.replace()` que cruza un salto de línea no se admite desde un `ViewPlugin` (solo desde un `StateField`, como ya pasaba con la línea horizontal), y CodeMirror lo rechaza con una excepción sin capturar -- el editor nunca llegaba a montarse, así que la página se veía completamente vacía aunque el contenido siguiera intacto en la base de datos. Tanto `buildWikilinkDecorations` como `buildMarkdownLinkDecorations` ahora comprueban si el texto igualado tiene un `"\n"` y, si lo tiene, se quedan siempre en su forma cruda/editable en vez de intentar sustituirlo por el widget "bonito" -- más feo en ese caso concreto, pero no vuelve a romper nada.
+
 ### Añadido
 
 - **Editor con más pinta de Notion**: la prosa del editor pasa de fuente monoespaciada a la misma familia sans-serif del resto del panel (`--font-body`, la fuente del sistema en cada SO) -- el código (en línea y de bloque) se queda explícitamente en `--font-mono`, para que siga leyéndose como código.
