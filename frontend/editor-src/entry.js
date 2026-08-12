@@ -1394,6 +1394,32 @@ function verticalMoveExtension() {
         const state = view.state;
         const range = state.selection.main;
         const curLine = state.doc.lineAt(range.head);
+
+        // Primero se prueba el movimiento nativo de CodeMirror (coordsAtPos
+        // + una línea de alto, en píxeles). Es fiable DENTRO de un mismo
+        // párrafo envuelto en varias filas visuales -- eso es precisamente
+        // lo que rompía la versión anterior de este método, que calculaba
+        // siempre por línea LÓGICA sin distinguir un envoltorio visual de
+        // un cambio real de línea (issue #3 en GitHub).
+        const native = view.moveVertically(range, forward);
+        if (state.doc.lineAt(native.head).number === curLine.number) {
+          this.goalColumn = null; // recalcular en la próxima línea lógica de verdad
+          this.ownMove = true;
+          view.dispatch({
+            selection: extend ? EditorSelection.range(range.anchor, native.head) : native,
+            scrollIntoView: true,
+            userEvent: "select",
+          });
+          return true;
+        }
+
+        // Se sale del párrafo actual -- aquí es donde el cálculo en píxeles
+        // se desmadra con líneas colapsadas o con mucha diferencia de
+        // altura entre bloques (separadores en blanco, huecos por tipo de
+        // bloque, cajas de cita...): a moveVertically se le puede ir la
+        // mano y saltarse varias líneas lógicas de golpe. Se ignora a
+        // dónde había decidido saltar y se avanza exactamente UNA línea
+        // lógica del documento.
         const targetLineNo = curLine.number + (forward ? 1 : -1);
         if (targetLineNo < 1 || targetLineNo > state.doc.lines) return false; // primera/última línea: que decida el keymap por defecto
 

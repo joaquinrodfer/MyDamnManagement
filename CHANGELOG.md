@@ -10,6 +10,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 - **Índice de la página**: desplegable flotante (no una barra a todo lo ancho) fijo arriba a la derecha, con los encabezados (H1-H5) de la nota abierta; clic en uno para saltar a esa posición. Se recalcula en cada pulsación (no hace falta guardar para verlo actualizado) y solo aparece si la página tiene algún encabezado.
 
 - **Botón de inicio** (🏠, junto a atrás/adelante/subir) para volver a la landing de páginas recientes/fechas cercanas cuando se quiera, no solo al arrancar o al borrar la página abierta. Se integra con el historial: `atrás` después de ir al inicio vuelve a donde estabas.
+
+### Corregido
+
+- **Flechas ↑/↓ se saltaban un párrafo entero al llegar a una de sus líneas envueltas** (issue #3 en GitHub): el arreglo anterior del mismo bug (saltos de varios bloques por culpa de separadores colapsados) calculaba el movimiento SIEMPRE por línea lógica del documento, sin distinguir un párrafo envuelto en varias filas visuales de un cambio real de bloque -- así que bajar dentro de un párrafo largo se comía el resto del párrafo entero de un solo golpe. Ahora es un enfoque híbrido: se prueba primero el movimiento nativo de CodeMirror (fiable DENTRO de un mismo párrafo envuelto) y solo se sustituye por el cálculo propio, línea a línea, cuando el movimiento nativo decide saltar a un párrafo distinto (que es donde el cálculo en píxeles se desmadra con alturas muy dispares entre bloques).
 - **"Nueva subpágina" en el menú contextual del árbol**: clic derecho sobre cualquier página (una sola, no con selección múltiple -- sería ambiguo bajo cuál crearla) para crear una nota hija de ella directamente. El `+` de la barra lateral pasa a crear **siempre** en la raíz, sin importar qué página esté abierta -- antes creaba como hija de la nota abierta, ambiguo con esta opción nueva.
 
 ### Corregido
