@@ -59,6 +59,7 @@ function clearMain() {
   // la dejaba pegada en pantalla apuntando a la página anterior.
   stopLinkPreview();
   closeSlashMenu();
+  closeOutline();
   const main = document.getElementById("main");
   main.innerHTML = "";
   return main;
@@ -571,6 +572,62 @@ function exportPageAsMarkdown(page, bodyMarkdown) {
   URL.revokeObjectURL(url);
 }
 
+// -------------------------------------------------------------------- índice
+// Desplegable flotante (no una barra a todo lo ancho) arriba a la derecha,
+// con los encabezados (H1-H5) de la página abierta -- solo tiene sentido
+// dentro de una nota, así que cuelga de document.body (como el resto de
+// flotantes) y se cierra en clearMain(). Se recalcula en cada pulsación vía
+// onChange, así que no hace falta guardar para que aparezca un encabezado
+// nuevo.
+
+let outlineEl = null;
+
+function closeOutline() {
+  if (outlineEl) {
+    outlineEl.remove();
+    outlineEl = null;
+  }
+}
+
+function renderOutline() {
+  if (!outlineEl) return;
+  const wasOpen = outlineEl.open;
+  const headings = state.editor?.getOutline() ?? [];
+  outlineEl.hidden = headings.length === 0;
+
+  const list = outlineEl.querySelector(".note-outline-list");
+  list.innerHTML = "";
+  headings.forEach((h) => {
+    const item = document.createElement("div");
+    item.className = "note-outline-item";
+    item.style.paddingLeft = `${(h.level - 1) * 12}px`;
+    item.textContent = h.text.trim() || "(sin título)";
+    item.addEventListener("click", () => {
+      state.editor?.jumpTo(h.pos);
+      outlineEl.open = false;
+    });
+    list.appendChild(item);
+  });
+  outlineEl.open = wasOpen; // reconstruir la lista no debe cerrar el desplegable si ya estaba abierto
+}
+
+function createOutlinePanel() {
+  closeOutline();
+  const details = document.createElement("details");
+  details.className = "note-outline-dropdown";
+  details.hidden = true; // hasta que renderOutline() confirme que hay encabezados
+
+  const summary = document.createElement("summary");
+  summary.textContent = "Índice";
+
+  const list = document.createElement("div");
+  list.className = "note-outline-list";
+
+  details.append(summary, list);
+  document.body.appendChild(details);
+  outlineEl = details;
+}
+
 function renderNote(page, backlinks) {
   const main = clearMain();
 
@@ -836,12 +893,17 @@ function renderNote(page, backlinks) {
     }
   }
 
+  createOutlinePanel();
+
   state.editor = createNoteEditor({
     parent: bodyMount,
     doc: page.body_markdown || "",
     resolvePage: (title) => findPageByTitle(title),
     onNavigate: (pageId) => navigateToPage(pageId),
-    onChange: scheduleSave,
+    onChange: () => {
+      scheduleSave();
+      renderOutline();
+    },
     onCreatePage: createChildPage,
     onBlockContextMenu: (payload) => {
       const n = payload.count;
@@ -876,6 +938,8 @@ function renderNote(page, backlinks) {
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
   });
+
+  renderOutline(); // población inicial -- onChange solo dispara con ediciones, no al montar
 }
 
 function findPageByTitle(title) {

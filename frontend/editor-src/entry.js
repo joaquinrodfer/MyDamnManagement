@@ -1493,5 +1493,25 @@ export function createNoteEditor({
     },
     focus: () => view.focus(),
     destroy: () => view.destroy(),
+    // Índice de la página (H1-H5), para el desplegable flotante de app.js --
+    // se apoya en el mismo blockField que ya clasifica los bloques para
+    // todo lo demás (seleccionar/convertir/asa), así que un "encabezado"
+    // aquí es exactamente lo mismo que en el resto del editor.
+    getOutline() {
+      const { blocks } = view.state.field(blockField);
+      return blocks
+        .filter((b) => /^h[1-5]$/.test(b.type))
+        .map((b) => ({
+          level: Number(b.type.slice(1)),
+          text: view.state.doc.sliceString(b.from, b.to).replace(/^#{1,6}[ \t]+/, ""),
+          pos: b.from,
+        }));
+    },
+    // Lleva el cursor a una posición del documento y la centra en pantalla
+    // -- lo usa el desplegable del índice al clicar un encabezado.
+    jumpTo(pos) {
+      view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+      view.focus();
+    },
   };
 }
