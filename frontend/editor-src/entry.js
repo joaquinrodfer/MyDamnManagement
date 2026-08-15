@@ -639,6 +639,35 @@ function blockHandleEventHandlers(onBlockContextMenu) {
       view.focus();
       return true;
     },
+    // Corrección de un clic mal resuelto cerca de un widget de bloque (la
+    // línea horizontal, y en general cualquier línea de continuación de un
+    // bloque de varias líneas justo debajo de uno) -- issue #4 en GitHub,
+    // confirmado por el usuario que sigue pasando específicamente con un
+    // "---" encima. El cálculo interno de CodeMirror por coordenadas
+    // (posAtCoords, el que usa por defecto al procesar el propio clic) no
+    // siempre acierta ahí; en vez de intentar reproducir/parchear ese
+    // cálculo, se compara su resultado con el de la API del navegador
+    // pensada exactamente para esto (caretPositionFromPoint /
+    // caretRangeFromPoint, que hacen su propio hit-test sobre el DOM ya
+    // renderizado) y se corrige si no coinciden. Se hace en "click" (tras
+    // el mouseup, no en el propio mousedown) y solo si la selección sigue
+    // colapsada -- si hubo arrastre para seleccionar texto, se deja tal
+    // cual, para no romper esa selección.
+    click(event, view) {
+      if (!view.state.selection.main.empty) return false;
+      let domPos = null;
+      if (document.caretPositionFromPoint) {
+        const r = document.caretPositionFromPoint(event.clientX, event.clientY);
+        if (r) domPos = view.posAtDOM(r.offsetNode, r.offset);
+      } else if (document.caretRangeFromPoint) {
+        const r = document.caretRangeFromPoint(event.clientX, event.clientY);
+        if (r) domPos = view.posAtDOM(r.startContainer, r.startOffset);
+      }
+      if (domPos === null || domPos === undefined || Number.isNaN(domPos)) return false;
+      if (domPos === view.state.selection.main.head) return false; // ya estaba bien
+      view.dispatch({ selection: { anchor: domPos } });
+      return false;
+    },
     contextmenu(event, view) {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return false;
