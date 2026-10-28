@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import get_db
+from app.serializers import as_utc
 
 router = APIRouter(tags=["dashboard"])
 
@@ -81,7 +82,7 @@ def get_dashboard(db: Session = Depends(get_db)):
                 "icon": p.icon,
                 "type": p.type,
                 "database_id": database_id_by_page_id.get(p.id),
-                "updated_at": p.updated_at,
+                "updated_at": as_utc(p.updated_at),
             }
             for p in recent_pages
         ],

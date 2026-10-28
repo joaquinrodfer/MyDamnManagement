@@ -8,6 +8,7 @@ from app import models, schemas
 from app.config import settings
 from app.database import get_db
 from app.properties import validate_properties
+from app.serializers import as_utc
 from app.templates import TEMPLATES
 
 router = APIRouter(prefix="/databases", tags=["databases"])
@@ -42,8 +43,8 @@ def _serialize_database(db_def: models.DatabaseDef) -> schemas.DatabaseRead:
         title=page.title,
         icon=page.icon,
         schema_def=db_def.schema_def,
-        created_at=page.created_at,
-        updated_at=page.updated_at,
+        created_at=as_utc(page.created_at),
+        updated_at=as_utc(page.updated_at),
     )
 
 
@@ -54,8 +55,8 @@ def _serialize_row(row: models.Page) -> schemas.RowRead:
         title=row.title,
         icon=row.icon,
         properties=row.properties or {},
-        created_at=row.created_at,
-        updated_at=row.updated_at,
+        created_at=as_utc(row.created_at),
+        updated_at=as_utc(row.updated_at),
     )
 
 
