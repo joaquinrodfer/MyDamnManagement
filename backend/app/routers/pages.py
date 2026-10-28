@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -17,6 +17,27 @@ router = APIRouter(prefix="/pages", tags=["pages"])
 
 ATTACHMENTS_DIR = Path("/app/attachments")
 MAX_HEADER_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB, generoso para una imagen de cabecera
+
+
+def _detect_image_format(data: bytes) -> Optional[str]:
+    """Extensión ("png"/"jpg"/"gif"/"webp") según los magic bytes, o None si
+    no es uno de los formatos admitidos.
+
+    A propósito **no** se mira el Content-Type declarado ni el nombre del
+    archivo del cliente: los dos se pueden mentir, y /files sirve lo subido en
+    el mismo origen que la app (y sin CSP), así que un SVG o un HTML guardado
+    ahí sería XSS almacenado. Solo cuentan las firmas reales de PNG, JPEG, GIF
+    y WebP.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
 
 
 def _get_default_workspace(db: Session) -> models.Workspace:
@@ -188,12 +209,19 @@ async def upload_header_image(page_id: uuid.UUID, file: UploadFile, db: Session 
     page = db.get(models.Page, page_id)
     if not page:
         raise HTTPException(404, "Página no encontrada")
-    if not (file.content_type or "").startswith("image/"):
-        raise HTTPException(400, "El archivo debe ser una imagen")
 
     data = await file.read()
     if len(data) > MAX_HEADER_IMAGE_BYTES:
         raise HTTPException(400, f"Máximo {MAX_HEADER_IMAGE_BYTES // (1024 * 1024)} MB")
+
+    # La extensión sale del formato real (magic bytes), nunca del nombre de
+    # archivo ni del Content-Type que declara el cliente: es lo que decide con
+    # qué nombre y qué Content-Type se sirve luego desde /files.
+    ext = _detect_image_format(data)
+    if ext is None:
+        raise HTTPException(
+            415, "Formato no admitido: la cabecera debe ser una imagen PNG, JPEG, GIF o WebP"
+        )
 
     page_dir = ATTACHMENTS_DIR / "pages" / str(page_id)
     page_dir.mkdir(parents=True, exist_ok=True)
@@ -203,8 +231,7 @@ async def upload_header_image(page_id: uuid.UUID, file: UploadFile, db: Session 
     for old in page_dir.glob("header.*"):
         old.unlink(missing_ok=True)
 
-    ext = Path(file.filename or "").suffix or ".jpg"
-    dest = page_dir / f"header{ext}"
+    dest = page_dir / f"header.{ext}"
     dest.write_bytes(data)
 
     page.header_image_path = f"/files/pages/{page_id}/{dest.name}"
