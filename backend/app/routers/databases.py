@@ -28,6 +28,25 @@ def _get_database_or_404(db: Session, database_id: uuid.UUID) -> models.Database
     return db_def
 
 
+def delete_database_contents(db: Session, db_def: models.DatabaseDef) -> None:
+    """Borra las filas de una database y la `Page` que la contiene.
+
+    Es el único sitio donde se hace ese borrado: lo usan DELETE /databases/{id}
+    y DELETE /pages/{id} (ver routers/pages.py) para que las dos rutas dejen
+    exactamente el mismo estado, sin filas huérfanas.
+
+    Las filas de una database no cuelgan de la página contenedora vía
+    parent_id, así que el cascade de `pages` no las alcanza: al borrar la
+    `Page`, la FK `pages.database_id ON DELETE SET NULL` las dejaría con
+    database_id = NULL -- siguen en `pages`, el árbol las excluye y ninguna
+    ruta las vuelve a mostrar. Por eso se borran explícitamente primero.
+
+    No hace commit: eso lo decide quien llama.
+    """
+    db.query(models.Page).filter(models.Page.database_id == db_def.id).delete()
+    db.delete(db_def.page)  # cascada: DatabaseDef, views, links, tags, adjuntos de esa página
+
+
 def _get_row_or_404(db: Session, database_id: uuid.UUID, row_id: uuid.UUID) -> models.Page:
     row = db.get(models.Page, row_id)
     if not row or row.database_id != database_id:
@@ -172,11 +191,7 @@ def update_database(database_id: uuid.UUID, payload: schemas.DatabaseUpdate, db:
 @router.delete("/{database_id}", status_code=204)
 def delete_database(database_id: uuid.UUID, db: Session = Depends(get_db)):
     db_def = _get_database_or_404(db, database_id)
-    # Las filas no cuelgan de la página vía parent_id, así que el cascade de
-    # `pages` no las alcanza al borrar la página contenedora: hay que
-    # borrarlas explícitamente primero.
-    db.query(models.Page).filter(models.Page.database_id == database_id).delete()
-    db.delete(db_def.page)  # cascada: DatabaseDef, views, links, tags, adjuntos de esa página
+    delete_database_contents(db, db_def)
     db.commit()
 
 

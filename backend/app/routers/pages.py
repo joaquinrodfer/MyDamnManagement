@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app import models, schemas
 from app.config import settings
 from app.database import get_db
+from app.routers.databases import delete_database_contents
 from app.serializers import serialize_page
 from app.wikilinks import sync_wikilinks
 
@@ -145,7 +146,21 @@ def delete_page(page_id: uuid.UUID, db: Session = Depends(get_db)):
     page = db.get(models.Page, page_id)
     if not page:
         raise HTTPException(404, "Página no encontrada")
-    db.delete(page)
+
+    # Una página type=database arrastra su database y sus filas: el cascade de
+    # `pages` borra la fila `databases`, pero la FK pages.database_id ON DELETE
+    # SET NULL dejaría las filas con database_id = NULL (fuera del árbol y de
+    # cualquier ruta). Mismo helper que DELETE /databases/{id}, para que las dos
+    # vías de borrado dejen exactamente el mismo estado.
+    db_def = (
+        db.query(models.DatabaseDef).filter(models.DatabaseDef.page_id == page.id).one_or_none()
+        if page.type == models.PageType.database
+        else None
+    )
+    if db_def is not None:
+        delete_database_contents(db, db_def)
+    else:
+        db.delete(page)
     db.commit()
 
 
