@@ -132,6 +132,13 @@ Notas libres de la fila, opcionales.
 
 Ventaja de esta forma: las propiedades viajan con el fichero y sobreviven a cualquier copia del vault, y el `.md` se lee a mano sin la app. El `title` **no** se duplica en el frontmatter: el nombre del fichero es el único origen del título (decisión cerrada en P0).
 
+Dos precisiones que cierra P2 (el cómo, no el qué):
+
+- El `id` del fichero de la base **es** el de su página: un fichero, una identidad. El `database_id` que devuelve la API coincide con él (`database.id == page_id`).
+- Una base que cuelga de una nota vive en la carpeta de hijas de esa nota, porque la jerarquía son carpetas: `Notas/Proyecto/Contactos.md` con sus filas en `Notas/Proyecto/Contactos/`. En la raíz, `Bases/`. Una base no contiene bases.
+- Las filas llevan `created` y `updated` en el frontmatter, además de las propiedades: sus fechas no dependen del `mtime` del fichero.
+- Una fila cuyo `Bases/<slug>.md` no existe (fichero huérfano) **no tumba el reindexado**: se avisa y se indexa como nota, porque el fichero manda.
+
 ### 2.4 Reglas de escritura
 
 - **Escritura atómica**: escribir a `x.md.tmp` y `rename()` encima. Nunca un fichero a medias.

@@ -12,7 +12,7 @@ Este ADR fija el contrato que P1 implementa.
 
 **D2 — Sin vigilante de ficheros en v1.0.** El índice se reconstruye al arrancar y con `POST /reindex`. Un solo escritor: la API.
 
-**D2b — Un vault vacío no es un vault borrado.** Reindexar borra las filas `note` del índice, así que ni el arranque ni `POST /reindex` lo hacen cuando el vault no existe o no tiene ningún `.md`: se niegan con el motivo. La salida es explícita y depende de si el servicio está vivo: `POST /reindex?force=true` con la API en marcha y **`VAULT_ALLOW_EMPTY=1`** en el arranque (el endpoint no puede usarse cuando lo que falla es el propio arranque). Ese arranque deja el índice con 0 notas y **conserva las bases, filas y vistas**, que quedan sin padre hasta que P2 les dé fichero. `VAULT_ALLOW_EMPTY` no cubre una raíz inexistente: un volumen sin montar no se lee como vault vacío y el arranque sigue fallando.
+**D2b — Un vault vacío no es un vault borrado.** Reindexar borra el índice, así que ni el arranque ni `POST /reindex` lo hacen cuando el vault no existe o no tiene ningún `.md`: se niegan con el motivo. La salida es explícita y depende de si el servicio está vivo: `POST /reindex?force=true` con la API en marcha y **`VAULT_ALLOW_EMPTY=1`** en el arranque (el endpoint no puede usarse cuando lo que falla es el propio arranque). Desde P2 ese arranque deja el índice **vacío**: las bases y sus filas también son ficheros, así que si el vault está vacío de verdad no queda nada que indexar (en P1.2a sobrevivían porque solo vivían en el índice). `VAULT_ALLOW_EMPTY` no cubre una raíz inexistente: un volumen sin montar no se lee como vault vacío y el arranque sigue fallando.
 
 **D3 — SQLite como índice, no Postgres.** `JSONB`→JSON, `tsvector`→FTS5, sin servicio de base de datos ni puerto 5432.
 
@@ -50,7 +50,9 @@ updated: 2026-10-29T09:12:44Z
 Cuerpo en Markdown, tal cual.
 ```
 
-Base de datos (`Bases/Contactos.md`): `type: database`, `schema` y `views` en el frontmatter. Sus filas son ficheros en `Bases/Contactos/`, con las propiedades en el frontmatter y **sin** campo `title`: el título es el nombre del fichero.
+Base de datos (`Bases/Contactos.md`): `type: database`, `schema` y `views` en el frontmatter, y su `id` es el de la página (un fichero, una identidad). Sus filas son ficheros en `Bases/Contactos/`, con las propiedades en el frontmatter y **sin** campo `title`: el título es el nombre del fichero. Una base que cuelga de una nota vive en la carpeta de hijas de esa nota (`Notas/Proyecto/Contactos.md`, con sus filas en `Notas/Proyecto/Contactos/`): la jerarquía son carpetas (D4) y así el `parent_id` se deduce de la ruta. Una base no cuelga de otra base.
+
+Cada vista va con su `id` (UUID), `name`, `type` y su configuración al mismo nivel (`group_by: fase`). Una vista escrita a mano con un `id` que no es UUID (`v1`) se indexa igual: se le da uno derivado y estable de su base, su nombre y su posición, y se materializa al guardarla desde la app. Las filas llevan además `created`/`updated`, para que sus fechas sobrevivan a un reindexado sin depender del `mtime` del fichero.
 
 ### Reglas de escritura
 
@@ -65,7 +67,7 @@ Base de datos (`Bases/Contactos.md`): `type: database`, `schema` y `views` en el
 - **Claves que añade la app** además de las del contrato: `created_by` (quién creó la página; hoy sin login, el valor de `DEFAULT_USER_NAME`) y `header_image` (la imagen de cabecera). Van en el frontmatter y se leen de ahí al reindexar: si solo vivieran en el índice, el primer reindexado las perdería. Son una extensión de este ADR, no parte del mínimo.
 - **Adjuntos dentro del vault**: todo adjunto (hoy, la imagen de cabecera) vive en `_attachments/<año>/<mes>/<nombre>`, con año y mes UTC del momento en que se subió. `_attachments/` no se indexa. Copiar la carpeta del vault es por tanto un backup completo, imágenes incluidas, y la copia arranca sola.
 - **`header_image` es una URL que *es* la ruta del vault**: `/files/_attachments/2026/10/header-<id>.png`. Se sirve con el `Content-Type` decidido por los magic bytes del propio fichero (PNG, JPEG, GIF, WebP), `X-Content-Type-Options: nosniff` y descarga forzada para todo lo demás: el vault no es un servidor de ficheros, y nada de lo que haya dentro se ejecuta en el origen de la app (no hay CSP, porque el panel usa estilos y scripts inline). Fuera de `_attachments/`, 404.
-- **Papelera**: borrar mueve a `.trash/<fecha UTC>/<ruta original>`. `GET /trash` lista lo que hay (ruta original, fecha del borrado y tamaño) y `POST /trash/restore` devuelve un fichero a su sitio y reindexa. Si la ruta original está ocupada — por un fichero, o por un fichero donde debería ir una de sus carpetas — es **409** con el motivo: nunca un `(2)` silencioso, que dejaría dos versiones sin decir cuál es cuál, y nunca un 500 mudo por el estado del disco.
+- **Papelera**: borrar mueve a `.trash/<fecha UTC>/<ruta original>`. `GET /trash` lista lo que hay (ruta original, fecha del borrado y tamaño) y `POST /trash/restore` devuelve un fichero a su sitio y reindexa. Borrar una base mueve su `.md` y los de todas sus filas; borrar una fila mueve solo su fichero. Si la ruta original está ocupada — por un fichero, o por un fichero donde debería ir una de sus carpetas — es **409** con el motivo: nunca un `(2)` silencioso, que dejaría dos versiones sin decir cuál es cuál, y nunca un 500 mudo por el estado del disco.
 
 ### Enlaces
 
@@ -79,7 +81,7 @@ Búsqueda: FTS5 con `unicode61 remove_diacritics 2` y prefijo. `reunion` encuent
 
 Idempotencia: reconstruir dos veces, o borrar y reconstruir, produce el mismo contenido en las tablas de contenido, comparado por hash de volcado ordenado.
 
-`meta` es una tabla clave-valor con metadatos **del índice**, no del vault: hoy solo `last_reindex_at`. Queda fuera de esa huella (cambia en cada reindexado por definición) y es lo que permite que `GET /status` diga la deriva del índice contra el disco: ficheros modificados, añadidos y desaparecidos desde el último reindexado, comparando `mtime` + tamaño, con un `stat` por fichero y sin leer cuerpos. Subir el esquema a la versión 2 fue solo para añadir `meta`, con migración desde la 1: los índices existentes no se tiran. Lo que la deriva cuenta como `added` y no desaparece al reindexar: un `.md` que el índice no indexa todavía (una base o una fila, P2). Es cierto que no está en el índice, y dejará de contar cuando P2 les dé fila.
+`meta` es una tabla clave-valor con metadatos **del índice**, no del vault: hoy solo `last_reindex_at`. Queda fuera de esa huella (cambia en cada reindexado por definición) y es lo que permite que `GET /status` diga la deriva del índice contra el disco: ficheros modificados, añadidos y desaparecidos desde el último reindexado, comparando `mtime` + tamaño, con un `stat` por fichero y sin leer cuerpos. Subir el esquema a la versión 2 fue solo para añadir `meta`, con migración desde la 1: los índices existentes no se tiran. Desde P2 la deriva cuenta **todos** los `.md` indexados (notas, bases y filas): no queda ningún fichero del vault que el índice ignore a propósito, así que un `added` es siempre algo que la app todavía no conoce y desaparece al reindexar.
 
 ## Consecuencias
 

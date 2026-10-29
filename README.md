@@ -40,7 +40,9 @@ Desde **P1.2a** las notas viven en ficheros `.md` (`VAULT_PATH`, volumen `mdm_va
 
 Desde **P1.2b** los adjuntos también están dentro del vault: la imagen de cabecera se guarda en `_attachments/<año>/<mes>/header-<id>.<ext>`, su URL es la ruta del vault (`/files/_attachments/…`, servida con el tipo decidido por magic bytes y `nosniff`) y la nota la lleva en el frontmatter, así que **copiar la carpeta del vault es un backup completo** — `.md` + imágenes, y la copia arranca sola. Para los adjuntos que quedaron en el volumen viejo (`/app/attachments`) hay una migración de una vez, idempotente y con contadores. `GET /status` dice además la **deriva** entre índice y disco: cuántos ficheros han cambiado por fuera desde el último reindexado (comparando `mtime` + tamaño, sin leer cuerpos) y cuándo fue ese reindexado.
 
-Si el vault está vacío **a propósito** (lo vaciaste a mano, restauraste solo su volumen y no el del índice, o `VAULT_PATH` apunta a un directorio vacío), el arranque se niega a vaciar el índice y no arranca: `POST /reindex?force=true` no sirve de salida porque el servicio es justo el que no está en pie. La salida es arrancar una vez con `VAULT_ALLOW_EMPTY=1`, que deja el índice con **0 notas** y **conserva las bases, filas y vistas** (quedan sin padre hasta P2, que les da fichero). Una ruta que no existe no se cubre con esa variable: un volumen sin montar no es un vault vacío, y esa sigue fallando. Formato exacto en [`docs/ADR-0001-formato-del-vault.md`](docs/ADR-0001-formato-del-vault.md). Las bases de datos y sus filas siguen en el índice: son P2.
+Desde **P2** las bases de datos y sus filas también son ficheros: `Bases/<slug>.md` con `type: database`, el `schema` y las `views` en el frontmatter, y cada fila en `Bases/<slug>/<fila>.md` con las propiedades en el frontmatter y sin `title` (el título es el nombre del fichero). Crear la base (también desde CRM/Tareas), editar `schema`/`views`, crear, editar y borrar filas escriben el fichero y actualizan el índice en la misma operación; renombrar una base renombra su carpeta de filas y borrar la manda a la papelera con ellas. Una base que cuelga de una nota vive en la carpeta de hijas de esa nota (`Notas/Proyecto/Contactos.md`). Con esto **todo el contenido está en `.md` y el índice se puede tirar**: el reindexado reconstruye notas, bases, filas y vistas, y una fila huérfana (sin su `Bases/<slug>.md`) se avisa sin abortar.
+
+Si el vault está vacío **a propósito** (lo vaciaste a mano, restauraste solo su volumen y no el del índice, o `VAULT_PATH` apunta a un directorio vacío), el arranque se niega a vaciar el índice y no arranca: `POST /reindex?force=true` no sirve de salida porque el servicio es justo el que no está en pie. La salida es arrancar una vez con `VAULT_ALLOW_EMPTY=1`, que deja el índice **vacío** (desde P2 también las bases y las filas son ficheros, así que un vault vacío no tiene nada que indexar). Una ruta que no existe no se cubre con esa variable: un volumen sin montar no es un vault vacío, y esa sigue fallando. Formato exacto en [`docs/ADR-0001-formato-del-vault.md`](docs/ADR-0001-formato-del-vault.md).
 
 Tests (sin Docker y sin servicios externos, sobre un índice y un vault temporales):
 
@@ -64,6 +66,15 @@ Pasar las notas que ya están en el índice al vault (una vez, al adoptar P1.2; 
 python backend/scripts/migrate_index_to_vault.py \
     --index /data/index.sqlite --vault /data/vault --reindex
 ```
+
+Pasar las bases de datos y sus filas al vault (una vez, al adoptar P2; idempotente y con contadores: `bases_escritas`, `filas_escritas`, `vistas_escritas`, `bases_saltadas`, `filas_saltadas`). Migra antes las notas: una base que cuelga de una nota se escribe en la carpeta de esa nota solo si la nota ya está en el vault:
+
+```bash
+python backend/scripts/migrate_databases_to_vault.py \
+    --index /data/index.sqlite --vault /data/vault --reindex
+```
+
+El `id` de cada base pasa a ser el de su página, así que el `database_id` que devolvía la API cambia una vez; las filas conservan el suyo.
 
 Mover los adjuntos que quedaron fuera del vault (una vez, al adoptar P1.2b; idempotente y con contadores: `movidos`, `ya_estaban`, `notas_actualizadas`, `papelera_actualizadas`, `indice_actualizado`):
 
@@ -117,7 +128,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/`            | GET    | Panel de estado (frontend estático, sin build)           |
 | `/health`      | GET    | Comprobación de vida del servicio                       |
 | `/status`      | GET    | Estado agregado de `api` y del almacén (`db`, ahora el índice SQLite) y `drift`: ficheros modificados, añadidos o desaparecidos desde el último reindexado (`mtime` + tamaño) y la marca de ese reindexado |
-| `/reindex`     | POST   | Reconstruye el índice desde el vault (`Notas/*.md`) y devuelve recuento, duración y avisos. **409** si el vault no existe o no tiene ningún `.md` (un volumen sin montar no es un vault vacío); `?force=true` para vaciarlo a propósito (en el arranque, `VAULT_ALLOW_EMPTY=1`) |
+| `/reindex`     | POST   | Reconstruye el índice desde el vault (`Notas/*.md` y `Bases/**`) y devuelve recuento de notas, bases, filas, vistas y enlaces, duración y avisos. **409** si el vault no existe o no tiene ningún `.md` (un volumen sin montar no es un vault vacío); `?force=true` para vaciarlo a propósito (en el arranque, `VAULT_ALLOW_EMPTY=1`) |
 | `/pages`       | GET    | Lista todas las páginas del workspace                   |
 | `/pages`       | POST   | Crea la página con su cuerpo y sus wikilinks (y escribe su `.md` si es una nota) |
 | `/pages/{id}`  | GET    | Lee una página con su cuerpo                             |
@@ -165,7 +176,7 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **P1.1 — la app sin Postgres** — índice SQLite + capa de repositorio, búsqueda FTS5 sin acentos, `pytest` sin servicios externos y script de migración de una vez
 - [x] **P1.2a — las notas pasan a ficheros `.md`** — vault en disco (`Notas/`, `.trash/`), guardar/renombrar/mover/borrar escriben fichero, reindexado desde el vault (`POST /reindex` y al arrancar) y migración del índice al vault
 - [x] **P1.2b — el vault completo** — adjuntos dentro del vault (`_attachments/`, servidos por `/files` con la ruta del vault y validación por magic bytes), restaurar desde la papelera (`GET /trash`, `POST /trash/restore`) y deriva índice/disco en `/status`
-- [ ] **P2 — bases de datos y filas en ficheros** — lo que queda del roadmap de P1.2
+- [x] **P2 — bases de datos y filas en ficheros** — `Bases/<slug>.md` + `Bases/<slug>/*.md`, `schema` y `views` en el frontmatter, alta/baja/edición escribiendo ficheros, reindexado de bases y filas, papelera y migración
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue objetivo
