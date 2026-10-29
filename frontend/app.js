@@ -1035,16 +1035,20 @@ function renderNote(page, backlinks) {
     // siguen marcados como pendientes.
     const body = buildSaveBody();
 
-    if (body === lastSentBody) {
-      // Mismo contenido que el último guardado CONFIRMADO (visibilitychange y
-      // acto seguido beforeunload, por ejemplo): no se manda dos veces, y se
-      // descarta el guardado normal pendiente, que mandaría lo mismo.
-      markSaved(body);
-      return false;
-    }
-
     // Ese contenido ya va de camino: un segundo PATCH idéntico no aporta nada.
     if (beaconInFlight === body) return false;
+
+    // Mismo contenido que el último guardado CONFIRMADO y nada en vuelo
+    // (visibilitychange y acto seguido beforeunload, por ejemplo): no se manda
+    // dos veces, y se descarta el guardado normal pendiente, que mandaría lo
+    // mismo. Con otro cuerpo todavía en vuelo NO vale darlo por guardado: ese
+    // PATCH puede aplicarse después y dejar en el servidor su texto, así que se
+    // trata como pendiente y se reenvía al contestar (ver `beaconQueued`).
+    if (body === lastSentBody && !beaconInFlight) {
+      markSaved(body);
+      if (alive) setSaveState("saved"); // no queda nada por guardar: que no diga lo contrario
+      return false;
+    }
 
     if (beaconInFlight) {
       // Hay OTRO contenido en vuelo. Se espera a que conteste y se reenvía
@@ -1107,7 +1111,12 @@ function renderNote(page, backlinks) {
           // llegó detrás de una escritura más nueva y el servidor puede
           // quedarse con el texto anterior. Darlo por guardado dejaba el texto
           // de la pantalla sin guardar y el indicador mintiendo: `dirty` sigue
-          // puesto y se reenvía lo último en cuanto esto termine.
+          // puesto y se reenvía lo último en cuanto esto termine. Pero el
+          // servidor SÍ ha aplicado `body`, así que `lastSentBody` pasa a ser
+          // ese cuerpo: si no, y el usuario ha vuelto justo al texto confirmado
+          // antes de este PATCH, el reenvío se creería ya guardado y no
+          // mandaría nada (el servidor se quedaría con el texto abandonado).
+          lastSentBody = body;
           beaconQueued = true;
         })
         .catch((e) => {
