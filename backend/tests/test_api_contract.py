@@ -349,10 +349,18 @@ def test_wikilink_en_mayusculas_y_con_acentos_resuelve(client):
 
 
 def test_wikilink_con_titulo_duplicado_llega_a_todas(client):
-    """El título no es único en la API: antes se enlazaba a todas las páginas
-    con ese título (`LIMIT 1` dejaba una sola, y no siempre la misma)."""
+    """Un título con varias candidatas: el enlace llega a todas, no a una.
+
+    Antes de P1.2 el mismo título se podía repetir en cualquier sitio, porque el
+    título era una columna. Desde P1.2a el título ES el nombre del fichero, así
+    que dos notas con el mismo título en la MISMA carpeta no pueden existir (la
+    segunda se guarda como `... (2)`, ver `test_vault.py`). El caso que sigue
+    existiendo es el mismo título en carpetas distintas, y ahí el enlace —que se
+    resuelve por título— tiene que llegar a las dos candidatas.
+    """
+    proyectos = crear(client, title="Proyectos")
     primera = crear(client, title="Proyecto Duplicado")
-    segunda = crear(client, title="Proyecto Duplicado")
+    segunda = crear(client, title="Proyecto Duplicado", parent_id=proyectos["id"])
     nota = crear(client, title="Nota dup", body_markdown="Ver [[Proyecto Duplicado]]")
 
     assert [p["title"] for p in client.get(f"/pages/{primera['id']}/backlinks").json()] == [
