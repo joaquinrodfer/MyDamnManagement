@@ -58,8 +58,6 @@ Cada `push` y cada `pull_request` ejecutan [`.github/workflows/tests.yml`](.gith
 - **`pytest (Python 3.12)`** — la versión de Python de la imagen (`backend/Dockerfile`), no la del contenedor de desarrollo. Instala `backend/requirements.txt` junto con `backend/requirements-dev.txt`, cachea pip entre ejecuciones y ejecuta `pytest -q` desde la raíz (la suite entera de `backend/tests/`). No levanta Postgres ni Docker: el índice es un fichero SQLite y cada test estrena su propio vault temporal, así que el job no necesita nada más.
 - **`docker build`** — construye la imagen de `backend/Dockerfile` con el contexto en la raíz del repo (lo mismo que hace `docker compose up --build`) y no la publica en ningún sitio. El propio Dockerfile aborta el build si el SQLite de la base baja de 3.27.
 
-**Estado conocido:** con la punta actual el job `pytest (Python 3.12)` sale en **rojo**, y no por el workflow. `backend/scripts/migrate_attachments_into_vault.py:251` llama a `Path.read_text(..., newline="")`, parámetro que existe desde Python 3.13; en 3.12 lanza `TypeError: Path.read_text() got an unexpected keyword argument 'newline'` y arrastra consigo `backend/tests/test_migrate_attachments.py` (la suite entera en 3.12: `1 failed, 27 passed, 177 errors`; los 177 errores son cascada del fixture, no fallos distintos). Sin ese fichero, los otros pasan: `109 passed`. El mismo script es el que ejecuta la migración de adjuntos dentro de la imagen 3.12, así que ahí también revienta. El arreglo va aparte, en la tarjeta **t_0cd3ea99**; el workflow se queda en 3.12 porque es la versión de la imagen. Hasta que se arregle, el primer push sale en rojo por esta causa: es el hallazgo, no una regresión de lo que cambies.
-
 Lo que **no** cubre: que la app arranque contra los volúmenes de verdad, el panel en un navegador, ni ningún despliegue. Si un job falla, la ejecución queda en rojo en la pestaña *Actions* del repo, pero GitHub no impide el push por ello: para eso habría que marcar la comprobación como obligatoria en la protección de la rama, y eso se configura en el repo, no en este fichero.
 
 Para reproducir el job de tests tal cual, con la misma versión:
@@ -70,7 +68,7 @@ pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 pytest -q
 ```
 
-Comprobado con CPython 3.12.16 (build de [python-build-standalone](https://github.com/astral-sh/python-build-standalone), cualquier `3.12.x` reproduce lo mismo): el `pip install` sale limpio y `pytest -q` da lo descrito en «estado conocido». Con el intérprete del contenedor de desarrollo (3.13/3.14) la suite entera pasa, así que un verde local no dice nada sobre este job.
+Comprobado con CPython 3.12.16 (build de [python-build-standalone](https://github.com/astral-sh/python-build-standalone); cualquier `3.12.x` da lo mismo): el `pip install` sale limpio y `pytest -q` da `116 passed, 3 warnings`. Es la misma versión que fija `setup-python`, así que este verde y el del job significan lo mismo. Con el intérprete del contenedor de desarrollo (3.13/3.14) la suite también pasa, pero eso no dice nada del job.
 
 El job de la imagen es, desde la raíz y con Docker en marcha:
 
