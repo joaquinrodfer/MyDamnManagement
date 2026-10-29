@@ -1,12 +1,23 @@
 # Arquitectura
 
+> **Nota de P1.1 (2026-10-29).** El almacenamiento ya no es Postgres: la app
+> usa un único índice SQLite (`backend/app/index.py`) detrás de una capa de
+> repositorio (`backend/app/repository.py`), sin servicio `db` ni Alembic. Las
+> decisiones y el porqué están en
+> [`ADR-0002-indice-sqlite.md`](ADR-0002-indice-sqlite.md). Lo que sigue
+> describe el diseño funcional (motor, rutas, flujos) y sigue vigente en eso;
+> el diagrama ER de §2 y el detalle de §4 conservan la forma del modelo
+> anterior (`page_content`, `tags`, `attachments`) porque P1.2 va a cambiar otra
+> vez de dónde sale la verdad. Lo que ya no es cierto: "Postgres", "JSONB",
+> "Alembic" y "tsvector" donde aparezcan como estado actual.
+
 ## 1. Un motor, tres productos
 
 `CRM` y `Tareas/Proyectos` no tienen tablas propias: son instancias de `database` con un `schema_def` concreto y una vista `board` encima. Las notas son el caso más simple — una `page` con `type = note` y cuerpo en Markdown. Las tres viven en la misma tabla `pages`.
 
 ```mermaid
 graph LR
-    ENGINE["Motor genérico<br/>page · database · view<br/>properties: JSONB"]
+    ENGINE["Motor genérico<br/>page · database · view<br/>properties: JSON"]
     NOTES["Notas / Wiki<br/>type = note<br/>body_markdown + wikilinks"]
     CRM["CRM<br/>database 'Contactos' · vista board<br/>schema: Empresa, Fase, Valor"]
     TASKS["Tareas / Proyectos<br/>database 'Tareas' · vista board+calendar<br/>schema: Estado, Prioridad, Fecha"]
@@ -77,7 +88,7 @@ erDiagram
 
 ## 3. Arquitectura de contenedores
 
-Dos servicios en `docker-compose.yml`: `api` (FastAPI + Uvicorn) y `db` (Postgres). Los bind-mounts (`./backend/app`, `./frontend`...) solo existen en desarrollo, para recarga en caliente sin reconstruir la imagen.
+Un único servicio en `docker-compose.yml`: `api` (FastAPI + Uvicorn). El índice SQLite vive en el volumen `mdm_data` (`/data/index.sqlite`), fuera del repo; no hay servicio de base de datos ni puerto 5432. Los bind-mounts (`./backend/app`, `./frontend`...) solo existen en desarrollo, para recarga en caliente sin reconstruir la imagen.
 
 La imagen de `api` es autocontenida: su build usa como contexto la raíz del repo (no `./backend`) para poder copiar `frontend/` dentro además del propio backend. No siempre fue así -- al principio el Dockerfile solo copiaba `backend/`, y `frontend/` llegaba exclusivamente vía el bind-mount de desarrollo; fuera de esta máquina (sin ese bind-mount) `/app/frontend` se creaba vacío y el panel no se servía. Como los bind-mounts de desarrollo se superponen a lo que ya trae la imagen, arreglar esto no cambió nada del flujo de trabajo en Windows -- solo hizo que la misma imagen funcione también sin ellos.
 
@@ -86,24 +97,23 @@ graph TD
     CLIENT["Cliente<br/>navegador / futuro frontend"] -->|":8000 — dev: localhost · prod: tailnet"| API
 
     subgraph COMPOSE["docker-compose.yml"]
-        API["api<br/>FastAPI + uvicorn --reload<br/>:8000"] -->|"SQLAlchemy (psycopg2) :5432"| DB["db<br/>postgres:16-alpine"]
+        API["api<br/>FastAPI + uvicorn --reload<br/>:8000"] -->|"sqlite3 (FTS5)"| DB[("vol: mdm_data<br/>index.sqlite")]
         API --- ATT[("vol: attachments")]
-        DB --- DATA[("vol: db_data")]
     end
 ```
 
 ## 4. Flujo de una petición: `POST /pages`
 
-El caso ya implementado y probado. Todo en una única transacción — `page` y `page_content` se confirman juntas o ninguna.
+El caso ya implementado y probado. Todo en una única transacción — la página (con su cuerpo) y sus wikilinks se confirman juntos o no se guarda nada.
 
 ```mermaid
 sequenceDiagram
     participant C as Cliente
     participant A as API (FastAPI)
-    participant P as Postgres
+    participant P as Índice SQLite
 
     C->>A: POST /pages {title, body_markdown}
-    A->>P: INSERT page + INSERT page_content (misma transacción)
+    A->>P: INSERT page (title + body) + INSERT links (misma transacción)
     P-->>A: commit OK
     A-->>C: 200 · PageRead (JSON)
 ```
@@ -133,7 +143,7 @@ Los wikilinks se resuelven **al guardar**, no al leer — el cuerpo se escanea, 
 sequenceDiagram
     participant C as Cliente
     participant A as API (FastAPI)
-    participant P as Postgres
+    participant P as Índice SQLite
 
     C->>A: PATCH /pages/{id} {body_markdown: "...[[Trámites EPSJ]]..."}
     A->>A: extraer títulos referenciados (wikilinks.py)
@@ -180,10 +190,10 @@ graph TD
 graph LR
     B["Navegador"] -->|"GET /"| S["StaticFiles<br/>frontend/index.html + app.js"]
     B -->|"fetch /pages/tree, /pages/{id},<br/>/databases/{id}/rows, /search…"| API["Misma API FastAPI"]
-    API --> DB[(Postgres)]
+    API --> DB[(índice SQLite)]
 ```
 
-Un matiz importante: el editor resuelve `[[wikilinks]]` **en el cliente**, contra el árbol ya cargado (`state.pagesById`) — es puramente visual, para que el enlace se vea coloreado y navegable al escribir. El backlink real (`Link` en Postgres) solo existe si la página de origen se ha *guardado* después de que la página destino existiera; son dos resoluciones independientes y pueden desincronizarse temporalmente (se vio al probarlo: el editor ya mostraba el enlace resuelto antes de que `Backlinks` en la página destino pasara de 0 a 1).
+Un matiz importante: el editor resuelve `[[wikilinks]]` **en el cliente**, contra el árbol ya cargado (`state.pagesById`) — es puramente visual, para que el enlace se vea coloreado y navegable al escribir. El backlink real (tabla `links` del índice) solo existe si la página de origen se ha *guardado* después de que la página destino existiera; son dos resoluciones independientes y pueden desincronizarse temporalmente (se vio al probarlo: el editor ya mostraba el enlace resuelto antes de que `Backlinks` en la página destino pasara de 0 a 1).
 
 Dos IDs que no son el mismo, y un bug real que salió de ahí: una `page` de `type=database` tiene su propio `id` (fila `pages`) y, por separado, el `id` de la fila `databases` que la describe (`DatabaseDef.id`). `GET /pages/tree` construye sus nodos a partir de `pages`, así que devolvía el primero — pero `GET /databases/{id}` espera el segundo. El árbol y la búsqueda navegaban con el id equivocado y cada clic sobre una base de datos fallaba con 404 sin ningún aviso visible. Se corrigió incluyendo `database_id` en cada nodo del árbol; quedó documentado aquí porque es fácil reintroducir el mismo error en cualquier endpoint nuevo que mezcle ambos ids.
 
@@ -246,13 +256,13 @@ El menú de comando necesita `view.coordsAtPos()` para posicionarse junto al cur
 
 | Decisión | Elegido | Por qué |
 | --- | --- | --- |
-| Storage de notas | Postgres, no archivos `.md` | Elimina el problema de sincronizar archivos entre dispositivos — un único servidor es la fuente de verdad |
-| Propiedades de `database` | JSONB flexible | Añadir un campo nuevo no requiere migración de esquema |
-| Migraciones | Alembic desde Fase 1 | `create_all()` sirvió para iterar rápido en Fase 0; Alembic entra ahora que el modelo tiene datos reales que preservar. La FK circular `pages` ↔ `databases` rompe el autogenerate por defecto — ver comentario en la migración inicial |
+| Storage | Índice SQLite (P1.1); a partir de P1.2, ficheros `.md` como verdad e índice derivado | Sin servicio aparte ni puerto que abrir, backup de un fichero. P1.2 mueve la verdad a los `.md` — ver [`ADR-0001`](ADR-0001-formato-del-vault.md) y [`ADR-0002`](ADR-0002-indice-sqlite.md) |
+| Propiedades de `database` | JSON flexible (columna `TEXT` con JSON) | Añadir un campo nuevo no requiere migración de esquema |
+| Migraciones | `PRAGMA user_version` + lista de migraciones propias (P1.1) | Alembic se retiró al salir Postgres: el esquema es pequeño y propio, y un índice ilegible se aparta y se rehace en vez de migrarse. Versión más nueva que el código = error claro, nunca escritura a ciegas |
 | Resolución de wikilinks | Por título, al guardar (no al leer) | Guardar es poco frecuente, leer es constante — recalcular en cada lectura sería más caro sin necesidad |
-| Búsqueda | Postgres `tsvector`/`tsquery` (`spanish`) | A esta escala (1 usuario) no justifica una pieza aparte tipo Meilisearch; se puede migrar si hace falta |
-| Validación de `properties` | Ligera (claves + tipo básico), no estricta | Coherente con "JSONB flexible": atrapa errores obvios (typos, opciones inválidas) sin forzar campos obligatorios ni bloquear la iteración del schema |
-| Filtro/orden de vistas | En Python sobre filas ya cargadas, no SQL dinámico sobre JSONB | A esta escala (una persona, cientos de filas como mucho) es más simple y igual de rápido que construir predicados SQL contra JSONB; se puede mover a SQL si el volumen lo justifica |
+| Búsqueda | FTS5 (`unicode61 remove_diacritics 2`) sobre título + cuerpo | A esta escala (1 usuario) no justifica una pieza aparte tipo Meilisearch; encuentra sin acentos (`reunion` → `Reunión`) y usa prefijos para suplir la falta de lematizador |
+| Validación de `properties` | Ligera (claves + tipo básico), no estricta | Coherente con "JSON flexible": atrapa errores obvios (typos, opciones inválidas) sin forzar campos obligatorios ni bloquear la iteración del schema |
+| Filtro/orden de vistas | En Python sobre filas ya cargadas, no SQL dinámico sobre JSON | A esta escala (una persona, cientos de filas como mucho) es más simple y igual de rápido que construir predicados SQL contra JSON; se puede mover a SQL si el volumen lo justifica |
 | Acceso remoto | Tailscale, sin auth propia (aún) | Uso personal en solitario; `user_id`/`workspace_id` ya están en el esquema para añadir auth real sin rediseñar |
 | API | REST | Un solo tipo de cliente, sin problema real de over/under-fetching a esta escala |
 | Frontend | HTML/CSS/JS plano, sin build, servido por `api` | "Un pequeño panel" no justifica un segundo contenedor, un bundler ni un framework; cuando el proyecto lo pida (Fase 4), esto es lo primero que se reemplaza sin tocar la API |

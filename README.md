@@ -34,14 +34,23 @@ docker compose up -d --build
 curl http://localhost:8000/health
 ```
 
-El propio contenedor `api` aplica las migraciones de Alembic (`alembic upgrade head`) antes de arrancar Uvicorn — no hay que hacer nada aparte. Si generas una migración nueva tras cambiar `backend/app/models.py`:
+La app ya no necesita Postgres: guarda todo en un único índice SQLite (`INDEX_PATH`, en el contenedor `/data/index.sqlite`, volumen `mdm_data` fuera del repo). El esquema se crea o se migra solo al arrancar (`PRAGMA user_version`; ver `backend/app/index.py` y [`docs/ADR-0002-indice-sqlite.md`](docs/ADR-0002-indice-sqlite.md)): no hay `alembic upgrade head` ni servicio `db`. Si el fichero del índice está ilegible, se aparta con sufijo `.corrupto-<fecha>` y se rehace vacío — no impide arrancar.
+
+Tests (sin Docker y sin servicios externos, sobre un índice temporal):
 
 ```bash
-docker compose run --rm api alembic revision --autogenerate -m "descripción del cambio"
-docker compose run --rm api alembic upgrade head
+pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+pytest
 ```
 
-**Revisa siempre el archivo generado antes de aplicarlo.** `pages` y `databases` se referencian mutuamente, y autogenerate no resuelve bien ese ciclo (avisa con un `SAWarning` y puede ordenar las tablas de forma que la migración falle al aplicarse). Es exactamente lo que pasó en la migración inicial — se corrigió a mano separando la FK circular con `create_foreign_key`; usa esa migración como referencia si vuelve a pasar.
+Migración de una vez desde el Postgres antiguo (opcional; deja Postgres intacto como respaldo y es idempotente):
+
+```bash
+pip install -r backend/requirements-migration.txt
+python backend/scripts/migrate_postgres_to_sqlite.py \
+    --database-url postgresql://usuario:clave@localhost:5432/mydamnmanagement \
+    --index-path /data/index.sqlite
+```
 
 Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas y bases de datos a la izquierda).
 
@@ -72,12 +81,12 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | -------------- | ------ | ------------------------------------------------------ |
 | `/`            | GET    | Panel de estado (frontend estático, sin build)           |
 | `/health`      | GET    | Comprobación de vida del servicio                       |
-| `/status`      | GET    | Estado agregado de `api` y `db` (usado por el panel)     |
+| `/status`      | GET    | Estado agregado de `api` y del almacén (`db`, ahora el índice SQLite) |
 | `/pages`       | GET    | Lista todas las páginas del workspace                   |
-| `/pages`       | POST   | Crea página + `page_content` en una transacción         |
+| `/pages`       | POST   | Crea la página con su cuerpo y sus wikilinks            |
 | `/pages/{id}`  | GET    | Lee una página con su cuerpo                             |
 | `/pages/{id}`  | PATCH  | Actualiza título, icono, descripción o cuerpo             |
-| `/pages/{id}`  | DELETE | Borra la página (cascada a contenido/adjuntos/etiquetas) |
+| `/pages/{id}`  | DELETE | Borra la página (encadenado a hijos, enlaces y, si es una database, sus filas y vistas) |
 | `/pages/tree`  | GET    | Árbol de páginas por `parent_id`                        |
 | `/pages/{id}/backlinks` | GET | Páginas que enlazan a esta vía `[[wikilink]]`     |
 | `/pages/{id}/header-image` | POST | Sube/reemplaza la imagen de cabecera (`multipart/form-data`, campo `file`) |
@@ -115,11 +124,12 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Metadatos de página + autoguardado** — icono/creador/descripción/imagen de cabecera, autoguardado a los 2s
 - [x] **Edición por bloques + selección múltiple** — bloques calculados sobre el árbol de sintaxis (sin nuevo modelo de datos), selección múltiple de bloques y de páginas, menú contextual con convertir/eliminar
 - [x] **Editor al estilo Notion** — menú de comando `/`, línea horizontal como bloque, `Mayús+Enter` para bloque nuevo, selector de emoji real, autoformato de flechas y wikilinks, logo propio
+- [x] **P1.1 — la app sin Postgres** — índice SQLite + capa de repositorio, búsqueda FTS5 sin acentos, `pytest` sin servicios externos y script de migración de una vez
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue objetivo
 
-Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El mismo `docker-compose.yml` sirve para los dos: la imagen de `api` es autocontenida (backend + `frontend/` ya copiados dentro, ver más abajo), así que mover el proyecto a Proxmox es copiar `docker-compose.yml` + `.env` y levantar los contenedores ahí — los datos migran con un `pg_dump`/`pg_restore` normal y corriente.
+Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El mismo `docker-compose.yml` sirve para los dos: la imagen de `api` es autocontenida (backend + `frontend/` ya copiados dentro, ver más abajo), así que mover el proyecto a Proxmox es copiar `docker-compose.yml` + `.env` y levantar los contenedores ahí — los datos viajan en el volumen `mdm_data` (el fichero `index.sqlite`; copiarlo con la app parada basta, y a partir de P1.2 lo que habrá que copiar será la carpeta del vault).
 
 La imagen de `api` se construye con el contexto en la raíz del repo (`context: .` en `docker-compose.yml`, no `./backend`) precisamente para poder copiar `frontend/` (incluido `vendor/editor.bundle.js`, ya compilado) dentro de la imagen — antes solo llegaba vía el bind-mount de desarrollo (`./frontend:/app/frontend:ro`), que no existe fuera de esta máquina; sin el bind-mount, `/app/frontend` se creaba vacío y el panel no se servía. En desarrollo el bind-mount sigue ahí y se superpone al contenido ya copiado (para hot-reload sin reconstruir la imagen); en un despliegue sin ese bind-mount, la imagen ya trae todo consigo.
 
