@@ -941,6 +941,7 @@ function renderNote(page, backlinks) {
   let changeSeq = 0; // sube con cada cambio: distingue "guardado" de "cambiado mientras guardaba"
   let lastSentBody = null; // último cuerpo ACEPTADO por el servidor
   let beaconInFlight = null; // cuerpo del guardado de emergencia que va de camino
+  let beaconQueued = false; // se pidió guardar otro contenido mientras había un beacon en vuelo
 
   /** Cuerpo del PATCH, compartido por el guardado normal y el de emergencia:
    * uno solo, para que no puedan acabar mandando cosas distintas. */
@@ -995,6 +996,19 @@ function renderNote(page, backlinks) {
     };
   }
 
+  /** PATCH del guardado de emergencia. A partir de ~64 KB el navegador
+   * rechaza en el acto las peticiones con keepalive (límite de una cola
+   * compartida); una nota así se manda sin él -- puede que el navegador la
+   * corte al irse, pero es lo mejor que hay. */
+  function sendBeacon(body) {
+    return fetch(`/pages/${page.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: new TextEncoder().encode(body).length <= KEEPALIVE_MAX_BYTES,
+    });
+  }
+
   /** Guardado de emergencia al cerrar o esconder la pestaña: un `fetch`
    * normal lo cancela el navegador a medio camino al descargar la página, así
    * que este va con `keepalive` (la petición sigue viva aunque la pestaña no).
@@ -1006,7 +1020,14 @@ function renderNote(page, backlinks) {
    *   da por guardado si el servidor contesta 2xx. Un 500/413 llega resuelto
    *   (no pasa por el `catch` del fetch) y un corte de red lo rechaza; en los
    *   dos casos los cambios se quedan pendientes y el autoguardado de 2 s los
-   *   reintenta. "Enviado" no es "aceptado por el servidor". */
+   *   reintenta. "Enviado" no es "aceptado por el servidor".
+   *
+   * Y con la pestaña viva va UNA escritura en vuelo a la vez: dos PATCH
+   * solapados con contenidos distintos pueden aplicarse en el servidor al
+   * revés (el viejo el último) y dejar guardado el texto anterior mientras la
+   * pantalla muestra el nuevo. Mientras haya uno en vuelo, el contenido nuevo
+   * espera y se reenvía en cuanto contesta (ver `beaconQueued`).
+   */
   function flushSaveBeacon({ alive = false } = {}) {
     if (!dirty) return false; // nada pendiente: ni una petición
 
@@ -1025,24 +1046,30 @@ function renderNote(page, backlinks) {
     // Ese contenido ya va de camino: un segundo PATCH idéntico no aporta nada.
     if (beaconInFlight === body) return false;
 
+    if (beaconInFlight) {
+      // Hay OTRO contenido en vuelo. Se espera a que conteste y se reenvía
+      // entonces lo último escrito: dos PATCH solapados con cuerpos distintos
+      // pueden aplicarse al revés y dejar en el servidor el texto viejo.
+      beaconQueued = true;
+      if (alive) return false;
+      // La pestaña se está cerrando: no habrá un "después" donde reintentar,
+      // así que se manda lo nuevo igualmente (perderlo del todo es peor que
+      // el riesgo de orden) y NO se da por guardado -- si el cierre no llega
+      // a ocurrir, el siguiente guardado reenvía lo que hay en pantalla.
+      try {
+        sendBeacon(body).catch(() => {});
+      } catch {
+        // sin red o página ya descargándose
+      }
+      return true;
+    }
+
     if (alive && saving) {
       // Hay un PATCH normal en vuelo: no se solapan dos escrituras. doSave()
       // deja marcado `saveAgain` y repite en cuanto termine.
       doSave();
       return false;
     }
-
-    // A partir de ~64 KB el navegador rechaza en el acto las peticiones con
-    // keepalive (límite de una cola compartida); una nota así se manda sin él
-    // -- puede que el navegador la corte al irse, pero es lo mejor que hay.
-    const keepalive = new TextEncoder().encode(body).length <= KEEPALIVE_MAX_BYTES;
-    const send = () =>
-      fetch(`/pages/${page.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body,
-        keepalive,
-      });
 
     if (!alive) {
       // Nadie va a leer la respuesta: se da por enviado (así un beforeunload y
@@ -1054,7 +1081,7 @@ function renderNote(page, backlinks) {
       lastSentBody = body;
       clearTimeout(saveTimer);
       try {
-        send().catch(() => {}); // la pestaña se está yendo: no hay a quién avisar
+        sendBeacon(body).catch(() => {}); // la pestaña se está yendo: no hay a quién avisar
       } catch {
         // sin red o página ya descargándose
       }
@@ -1062,31 +1089,45 @@ function renderNote(page, backlinks) {
     }
 
     beaconInFlight = body;
+    beaconQueued = false;
     try {
-      send()
+      sendBeacon(body)
         .then((res) => {
           // Un 4xx/5xx llega aquí como promesa resuelta: solo vale un 2xx.
           if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "sin respuesta"}`);
           if (state.flushSaveBeacon !== flushSaveBeacon) return; // ya no es la nota abierta
-          // El servidor ya tiene este cuerpo. Si mientras tanto se ha escrito
-          // más, `dirty` sigue puesto y el autoguardado manda lo nuevo.
-          if (!dirty || buildSaveBody() === body) {
+          if (buildSaveBody() === body) {
+            // El servidor tiene exactamente lo que hay en el editor.
             markSaved(body);
             setSaveState("saved");
-          } else {
-            lastSentBody = body;
+            return;
           }
+          // Esta confirmación es de un contenido que ya no es el del editor:
+          // o se escribió más mientras iba de camino, o esta respuesta vieja
+          // llegó detrás de una escritura más nueva y el servidor puede
+          // quedarse con el texto anterior. Darlo por guardado dejaba el texto
+          // de la pantalla sin guardar y el indicador mintiendo: `dirty` sigue
+          // puesto y se reenvía lo último en cuanto esto termine.
+          beaconQueued = true;
         })
         .catch((e) => {
           // No se confirma nada: los cambios vuelven a la cola del autoguardado.
           console.error("El guardado de emergencia no se confirmó; se reintenta:", e);
+          beaconQueued = false; // el reintento de 2 s (markUnsaved) es el camino
           markUnsaved();
         })
         .finally(() => {
           if (beaconInFlight === body) beaconInFlight = null;
+          const pending = beaconQueued;
+          beaconQueued = false;
+          // Ya no hay nada en vuelo: se manda lo último que hay en el editor.
+          if (pending && dirty && state.flushSaveBeacon === flushSaveBeacon) {
+            flushSaveBeacon({ alive: true });
+          }
         });
     } catch {
       beaconInFlight = null;
+      beaconQueued = false;
       markUnsaved();
     }
     return true;
@@ -1112,7 +1153,11 @@ function renderNote(page, backlinks) {
       // Solo queda "nada pendiente" si no se ha escrito nada mientras se
       // guardaba: si se escribió, `dirty` sigue puesto y el guardado de
       // emergencia mandará el contenido nuevo en vez de darlo por guardado.
-      if (changeSeq === seqAtSave) {
+      // Tampoco basta con que este PATCH se haya aplicado si sigue en vuelo un
+      // guardado de emergencia con otro contenido: puede llegar al servidor
+      // después y dejar su texto encima. En ese caso no se cierra la cuenta;
+      // al contestar ese beacon se reenvía lo que hay en pantalla.
+      if (changeSeq === seqAtSave && (!beaconInFlight || beaconInFlight === body)) {
         dirty = false;
         lastSentBody = body; // si hubiera que salir justo después, ya está guardado
       }
