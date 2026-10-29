@@ -10,6 +10,11 @@ el vault para que las dos cosas coincidan.
 Es **idempotente**: si el `id` ya está en el vault (en el frontmatter de algún
 `.md`), esa nota se salta. Se puede ejecutar dos veces sin duplicar ficheros.
 
+Los nombres se resuelven **antes** de escribir: la carpeta de una nota es la de
+su padre más el nombre que el padre ha acabado teniendo en disco (no su título
+saneado, que cambia si dos hermanas se llaman igual). Las notas que ya estaban
+en el vault conservan el nombre que tienen.
+
 Lo que no hace: no borra nada del índice (el reindexado lo pone al día) y no
 toca las bases de datos ni sus filas, que siguen en el índice (P2).
 
@@ -57,51 +62,89 @@ def load_notes(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def folders_by_id(notes: list[dict]) -> tuple[dict[str, str], list[str]]:
-    """Carpeta de cada nota a partir de la jerarquía `parent_id` -> carpetas.
+def existing_paths(vault: str) -> dict[str, str]:
+    """Ruta relativa de cada nota que ya está en el vault, por `id`.
 
-    Se recorre la cadena de padres de cada nota; si algún antecesor no es una
-    nota (una base de datos, que en P1.2a no vive en ficheros), la nota va a
-    `Notas/` y se avisa: es preferible una nota plana y visible a una ruta que
-    el reindexado no sabría volver a deducir.
+    Son las que un reejecutado se salta, pero su nombre y su carpeta siguen
+    contando: son la base de la carpeta de sus hijas (y así la segunda pasada
+    coloca las nuevas igual que lo habría hecho la primera).
+    """
+    if not os.path.isdir(vault):
+        return {}
+    loaded = reader.load(vault)
+    return {
+        page.id: page.path
+        for page in loaded.pages.values()
+        if page.id and not page.synthetic_id
+    }
+
+
+def plan_files(
+    notes: list[dict], vault: str, existing: dict[str, str]
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """Resuelve (carpeta, nombre final) de cada nota ANTES de escribir ninguna.
+
+    La carpeta de una nota es la de su padre más el nombre **que el padre acaba
+    teniendo en disco**. Calculada desde el título saneado, con dos hermanas
+    «Misma» las hijas de la segunda acababan en `Notas/Misma/`, la carpeta de
+    la primera (donde el reindexado las colgaba de la nota equivocada).
+
+    Si algún antecesor no es una nota (una base de datos, que en P1.2a no vive
+    en ficheros), la nota va a `Notas/` y se avisa: mejor una nota plana y
+    visible que una ruta que el reindexado no sabría volver a deducir.
     """
     by_id = {n["id"]: n for n in notes}
-    folder: dict[str, str] = {}
+    plan: dict[str, tuple[str, str]] = {}
+    claimed: dict[str, set[str]] = {}
     warnings: list[str] = []
 
-    def resolve(note: dict, seen: set[str]) -> str:
-        if note["id"] in folder:
-            return folder[note["id"]]
+    def claim(folder: str, stem: str) -> None:
+        key = names.nfc(stem).casefold()
+        claimed.setdefault(folder, set()).update({key, f"{key}.md"})
+
+    def resolve(note: dict, seen: set[str]) -> tuple[str, str]:
+        note_id = note["id"]
+        if note_id in plan:
+            return plan[note_id]
+        if note_id in existing:
+            folder = os.path.dirname(existing[note_id])
+            stem = os.path.basename(existing[note_id])[:-3]
+            plan[note_id] = (folder, stem)
+            claim(folder, stem)
+            return plan[note_id]
+
         parent_id = note["parent_id"]
         if not parent_id:
-            folder[note["id"]] = NOTES_DIR
+            folder = NOTES_DIR
         elif parent_id in seen:
-            warnings.append(f"{note['id']}: ciclo de padres; va a {NOTES_DIR}/")
-            folder[note["id"]] = NOTES_DIR
+            warnings.append(f"{note_id}: ciclo de padres; va a {NOTES_DIR}/")
+            folder = NOTES_DIR
         elif parent_id not in by_id:
             warnings.append(
-                f"{note['id']} ({note['title']!r}): el padre {parent_id} no es una "
+                f"{note_id} ({note['title']!r}): el padre {parent_id} no es una "
                 f"nota (¿una base de datos?); va a {NOTES_DIR}/"
             )
-            folder[note["id"]] = NOTES_DIR
+            folder = NOTES_DIR
         else:
-            seen.add(parent_id)
-            parent_folder = resolve(by_id[parent_id], seen)
-            parent_title = names.sanitize(by_id[parent_id]["title"])[0]
-            folder[note["id"]] = f"{parent_folder}/{parent_title}"
-        return folder[note["id"]]
+            seen.add(note_id)
+            parent_folder, parent_stem = resolve(by_id[parent_id], seen)
+            folder = f"{parent_folder}/{parent_stem}"
+
+        stem, _ = names.sanitize(note["title"] or "Sin título")
+        directory = os.path.join(vault, folder)
+        stem, collided = names.unique_stem(directory, stem, claimed.get(folder))
+        if collided:
+            warnings.append(
+                f"{note_id} ({note['title']!r}): ya hay un fichero con ese nombre "
+                f"en {folder}/; se escribe como {stem!r}"
+            )
+        plan[note_id] = (folder, stem)
+        claim(folder, stem)
+        return plan[note_id]
 
     for note in notes:
         resolve(note, {note["id"]})
-    return folder, warnings
-
-
-def existing_ids(vault: str) -> set[str]:
-    """Ids que ya están en el vault (frontmatter de cualquier `.md`)."""
-    if not os.path.isdir(vault):
-        return set()
-    loaded = reader.load(vault)
-    return {page.id for page in loaded.pages.values() if page.id and not page.synthetic_id}
+    return plan, warnings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -122,13 +165,15 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    folders, warnings = folders_by_id(notes)
-    present = existing_ids(vault)
+    present = existing_paths(vault)
+    plan, warnings = plan_files(notes, vault, present)
 
     counters = {"leidas": len(notes), "escritas": 0, "saltadas": 0, "errores": 0,
                 "renombradas": 0}
     for note in notes:
         title = note["title"] or "Sin título"
+        folder, stem = plan[note["id"]]
+        rel = f"{folder}/{stem}.md"
         sanitized = names.sanitize(title)[0]
         if sanitized != title:
             counters["renombradas"] += 1
@@ -136,7 +181,6 @@ def main(argv: list[str] | None = None) -> int:
         if note["id"] in present:
             counters["saltadas"] += 1
             continue
-        rel = f"{folders[note['id']]}/{sanitized}.md"
         if args.dry_run:
             print(f"  (dry-run) {rel}")
             counters["escritas"] += 1
@@ -144,8 +188,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             written, _notes = write_note_file(
                 vault,
-                folder=folders[note["id"]],
+                folder=folder,
                 title=title,
+                stem=stem,
                 page_id=note["id"],
                 icon=note["icon"],
                 description=note["description"],
