@@ -72,6 +72,17 @@ python backend/scripts/migrate_attachments_into_vault.py \
     --source /app/attachments --vault /data/vault --index /data/index.sqlite
 ```
 
+En Docker el volumen viejo (`<proyecto>_attachments`) ya no se monta: P1.2b lo retira de `docker-compose.yml`, pero **no** borra sus datos. Hay que montarlo solo para esta pasada, sin `:ro` (el script retira los originales que ya están en el vault y poda las carpetas vacías):
+
+```bash
+docker compose run --rm \
+    -v mydamnmanagement_attachments:/app/attachments \
+    api python scripts/migrate_attachments_into_vault.py \
+    --source /app/attachments --vault /data/vault --index /data/index.sqlite
+```
+
+El nombre del volumen es el del proyecto de compose que lo creó: `docker volume ls | grep attachments` dice cuál es si no es `mydamnmanagement`.
+
 Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas y bases de datos a la izquierda).
 
 ## Panel visual
