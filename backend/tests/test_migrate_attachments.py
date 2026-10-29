@@ -196,6 +196,23 @@ def test_avisa_de_las_notas_en_la_papelera_cuya_cabecera_no_esta_en_ningun_sitio
     assert re.search(r"papelera_actualizadas\s*: 0", salida), salida
 
 
+def test_con_reindex_un_vault_sin_notas_no_vacia_el_indice(
+    client, index_path, tmp_path, capsys
+):
+    """`--reindex` respeta el guardia de siempre: un `--vault` equivocado (o un
+    volumen sin montar) no puede dejar el índice vacío."""
+    crear(client, title="Viva")
+    vacio = tmp_path / "vault-vacio"
+    vacio.mkdir()
+    source = tmp_path / "attachments"
+    source.mkdir()
+
+    assert _migrar(source, vacio, index_path, "--reindex") == 1
+    err = capsys.readouterr().err
+    assert "no se ha reindexado" in err, err
+    assert [p["title"] for p in client.get("/pages").json()] == ["Viva"]
+
+
 def test_con_reindex_el_indice_queda_al_dia_y_la_deriva_a_cero(
     client, vault_path, index_path, tmp_path, capsys
 ):

@@ -387,14 +387,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.reindex and not args.dry_run:
         from app.index import open_index
-        from app.vault.store import VaultNotes
+        from app.vault.store import VaultError, VaultNotes
 
         conn = open_index(str(index_path))
         try:
-            # `allow_empty` a propósito: si el vault quedara vacío, vaciar el
-            # índice es aquí una consecuencia de lo que pidió quien ejecuta,
-            # no el accidente que ese guardia protege (un volumen sin montar).
-            stats = VaultNotes(str(vault), conn).rebuild(allow_empty=True)
+            # Sin `allow_empty`: el mismo guardia que el arranque y `POST
+            # /reindex` (un `--vault` equivocado no vacía el índice). Si el
+            # índice ya no tiene notas, el guardia no estorba.
+            stats = VaultNotes(str(vault), conn).rebuild()
+        except VaultError as exc:
+            print(f"  aviso: no se ha reindexado: {exc}", file=sys.stderr)
+            print(
+                "  (los ficheros ya están migrados; el índice no se ha tocado: "
+                "revisa --vault/--index o reindexa a mano después)",
+                file=sys.stderr,
+            )
+            return 1
         finally:
             conn.close()
         print(
