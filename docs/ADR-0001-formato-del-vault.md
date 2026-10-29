@@ -61,6 +61,7 @@ Cada vista va con su `id` (UUID), `name`, `type` y su configuración al mismo ni
 - **Saneado**: caracteres prohibidos fuera, NFC al leer y al escribir, colisión con ` (2)`, ` (3)` sin distinguir mayúsculas, truncado a 180 bytes, nombres reservados de Windows evitados. Escapar del vault (`..`, `/`, symlinks) es error, no se sanea en silencio.
 - **`title` es clave reservada**: una base de datos no puede declarar una propiedad llamada `title`.
 - **`id` duplicado** (fichero copiado a mano): se acepta como página duplicada, se avisa, y al guardar la copia se le materializa un `id` propio.
+- **`id` de vista duplicado** (el mismo caso, en el frontmatter de una base): la primera base por ruta se queda con los `id` del fichero y la copia recibe ids derivados y estables (uuid5 de su base, posición y nombre), con aviso; al guardar la copia se materializan en su fichero. Copiar un `.md` nunca deja el índice sin poder reconstruirse.
 - **Codificación**: UTF-8 sin BOM, saltos `\n`.
 - **Tolerancia**: CRLF, BOM, Latin-1 y frontmatter sin cerrar se leen con aviso y nunca abortan el reindexado.
 - **Claves desconocidas del frontmatter**: se preservan reescribiendo solo las claves que gestiona la app.

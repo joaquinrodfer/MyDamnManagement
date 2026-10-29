@@ -17,6 +17,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 ### Corregido
 
 - **Bases en ficheros (P2)**
+  - **Copiar el fichero de una base a mano ya no tumba el reindexado ni el arranque**: `Bases/Contactos.md` y `Bases/Contactos copia.md` traen las mismas `views` con el mismo `id` en el frontmatter, y `_index_database` las insertaba tal cual — `UNIQUE constraint failed: views.id`, `/reindex` en 500 y el siguiente arranque sin levantar. Ahora la primera base por ruta (determinista) se queda con los ids del fichero y la copia recibe ids derivados y estables (uuid5 de su base, su posición y su nombre) con aviso, como ya se hacía con el `id` duplicado de una página; dos reindexados dan la misma huella. Vale también para dos vistas con el mismo `id` dentro del mismo fichero.
   - `_repath_children` comparaba el prefijo de la carpeta **sin la barra final** (`substr(path, 1, len)` contra `"Notas/X/"`), así que no actualizaba nada: al renombrar o mover una nota, el índice se quedaba con la ruta vieja de cada descendiente hasta el siguiente reindexado. Lo destapó la comprobación de que, tras cada escritura, reindexar deja la huella idéntica — que ahora es un test.
 
 - **P1.2b, tras la revisión**

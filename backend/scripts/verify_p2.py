@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -203,6 +204,50 @@ def main() -> int:
     check("la huella del índice reconstruido es idéntica", despues_hash == before_hash,
           f"{despues_hash[:16]}… vs {before_hash[:16]}…")
     check("y los recuentos también", despues_cuentas == antes_cuentas, str(despues_cuentas))
+
+    # ---- 6. un fichero de base copiado a mano --------------------------
+    print("\n6. copiar Bases/Contactos.md a mano (cp, no la app)")
+    with TestClient(app) as copia_client:
+        shutil.copyfile(VAULT / "Bases" / "Contactos.md", VAULT / "Bases" / "Contactos copia.md")
+        shutil.copytree(VAULT / "Bases" / "Contactos", VAULT / "Bases" / "Contactos copia")
+        respuesta = copia_client.post("/reindex")
+        check("el reindexado responde 200 (antes: 500 por views.id)",
+              respuesta.status_code == 200, respuesta.text[:120])
+        cuerpo = respuesta.json()
+        check("indexa las dos bases", cuerpo["databases"] == 2, str(cuerpo["databases"]))
+        avisos = " ".join(cuerpo["warning_sample"])
+        check("avisa del id de vista duplicado",
+              "duplicad" in avisos and "vista" in avisos, avisos[:180])
+        bases = {b["title"]: b for b in copia_client.get("/databases").json()}
+        check("las dos bases están en la API", set(bases) == {"Contactos", "Contactos copia"},
+              str(sorted(bases)))
+        ids = [
+            v["id"]
+            for b in bases.values()
+            for v in copia_client.get(f"/databases/{b['id']}/views").json()
+        ]
+        check("cuatro vistas con cuatro ids distintos", len(ids) == 4 and len(set(ids)) == 4,
+              str(ids))
+        vistas_copia = copia_client.get(f"/databases/{bases['Contactos copia']['id']}/views").json()
+        check("la copia conserva sus vistas y su group_by",
+              [(v["name"], v["config"].get("group_by")) for v in vistas_copia]
+              == [("Pipeline", "fase"), ("Tabla", None)], str(vistas_copia))
+        check("la copia ve sus tres filas",
+              len(copia_client.get(f"/databases/{bases['Contactos copia']['id']}/rows").json()) == 3)
+        copia_hash, copia_cuentas = huella()
+        copia_client.post("/reindex")
+        check("dos reindexados seguidos dan la misma huella", huella()[0] == copia_hash)
+
+    for sufijo in ("", "-wal", "-shm"):
+        Path(str(INDEX) + sufijo).unlink(missing_ok=True)
+    with TestClient(app) as otro:                  # arranque con la copia en el vault
+        titulos = {b["title"] for b in otro.get("/databases").json()}
+        check("el arranque levanta con la copia y las dos bases",
+              titulos == {"Contactos", "Contactos copia"}, str(sorted(titulos)))
+    arranque_hash, arranque_cuentas = huella()
+    check("y la huella del arranque es la misma", arranque_hash == copia_hash,
+          f"{arranque_hash[:16]}… vs {copia_hash[:16]}…")
+    check("con los mismos recuentos", arranque_cuentas == copia_cuentas, str(arranque_cuentas))
 
     print("\nResultado:", "TODO OK" if ok else "HAY FALLOS")
     return 0 if ok else 1

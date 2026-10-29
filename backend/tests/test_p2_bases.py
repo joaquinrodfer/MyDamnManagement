@@ -516,3 +516,97 @@ def test_una_base_escrita_a_mano_se_indexa_con_su_schema_y_sus_vistas(client, va
         ("Acme", {"empresa": "Acme S.L.", "fase": "Negociación"}),
     ]
     assert filas[0]["created_at"] is not None
+
+
+# --------------------------------------------------------------------------
+# 7. un fichero de base copiado a mano no tumba el reindexado
+# --------------------------------------------------------------------------
+
+def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
+    client, index_path, vault_path
+):
+    """`cp Bases/Contactos.md "Bases/Contactos copia.md"` es copiar y ya.
+
+    Las dos bases traen las `views` con el mismo `id` en el frontmatter: la PK
+    de `views` no puede hacerse con eso. El ADR acepta el `id` duplicado como
+    página duplicada con aviso, y `Bases/**` se indexa igual que `Notas/**`:
+    la base que llega segunda por ruta (aquí la copia, que ordena antes que el
+    original) se queda con los ids del fichero y la otra recibe ids de vista
+    derivados y estables, así que el índice se reconstruye entero las veces
+    que haga falta.
+    """
+    client.post("/databases/from-template", json={"template": "crm"})
+    original = vault_path / "Bases" / "Contactos.md"
+    copia = vault_path / "Bases" / "Contactos copia.md"
+    copia.write_text(texto(original), encoding="utf-8")
+
+    respuesta = client.post("/reindex")
+    assert respuesta.status_code == 200, respuesta.text
+    cuerpo = respuesta.json()
+    assert cuerpo["databases"] == 2, cuerpo
+    avisos = " ".join(cuerpo["warning_sample"])
+    assert "vista" in avisos and "duplicad" in avisos, avisos
+
+    # Dos bases de verdad, no una que se come a la otra.
+    bases = {b["title"]: b for b in client.get("/databases").json()}
+    assert set(bases) == {"Contactos", "Contactos copia"}
+
+    # Cada una con sus dos vistas y sin compartir ids (la PK de `views`).
+    vistas = {
+        titulo: client.get(f"/databases/{b['id']}/views").json()
+        for titulo, b in bases.items()
+    }
+    ids = [v["id"] for lista in vistas.values() for v in lista]
+    assert len(ids) == 4 and len(set(ids)) == 4, ids
+    assert [v["name"] for v in vistas["Contactos copia"]] == ["Pipeline", "Tabla"]
+    # La copia conserva el `group_by` de la vista.
+    assert vistas["Contactos copia"][0]["config"] == {"group_by": "fase"}
+
+    # La huella no cambia entre reindexados (los ids derivados son estables) y
+    # el arranque siguiente levanta con las dos bases.
+    reindexar_y_comparar_huella(client, index_path)
+    with arrancar_de_nuevo() as otro:
+        despues = otro.get("/databases").json()
+        assert {b["title"] for b in despues} == {"Contactos", "Contactos copia"}
+        # Las dos siguen sirviendo sus vistas y sus filas desde el índice.
+        for base_reconstruida in despues:
+            ruta = f"/databases/{base_reconstruida['id']}"
+            assert len(otro.get(f"{ruta}/views").json()) == 2, base_reconstruida["title"]
+            assert otro.get(f"{ruta}/rows").status_code == 200, base_reconstruida["title"]
+
+
+def test_dos_vistas_con_el_mismo_id_en_el_mismo_fichero(client, index_path, vault_path):
+    """Un `id` repetido dentro de la misma lista de `views` tampoco rompe nada."""
+    (vault_path / "Bases").mkdir(exist_ok=True)
+    (vault_path / "Bases" / "Agenda.md").write_text(
+        "---\n"
+        "id: 7c1d2c3e-0000-4000-8000-00000000000a\n"
+        "type: database\n"
+        "schema:\n"
+        "  - key: nombre\n"
+        "    name: Nombre\n"
+        "    type: text\n"
+        "views:\n"
+        "  - id: 11111111-1111-4111-8111-111111111111\n"
+        "    name: Tabla\n"
+        "    type: table\n"
+        "  - id: 11111111-1111-4111-8111-111111111111\n"
+        "    name: Tablero\n"
+        "    type: board\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    respuesta = client.post("/reindex")
+    assert respuesta.status_code == 200, respuesta.text
+    avisos = " ".join(respuesta.json()["warning_sample"])
+    assert "duplicado" in avisos and "Tablero" in avisos, avisos
+
+    base = client.get("/databases").json()[0]
+    vistas = client.get(f"/databases/{base['id']}/views").json()
+    assert [(v["name"], v["type"]) for v in vistas] == [("Tabla", "table"), ("Tablero", "board")]
+    ids = [v["id"] for v in vistas]
+    assert len(set(ids)) == 2, ids
+    # La primera conserva el id del fichero; la segunda recibe uno derivado.
+    assert ids[0] == "11111111-1111-4111-8111-111111111111"
+    reindexar_y_comparar_huella(client, index_path)

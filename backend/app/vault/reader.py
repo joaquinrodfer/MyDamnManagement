@@ -232,6 +232,25 @@ def view_id(raw_id, database_page_id: str, index: int, name: str) -> tuple[str, 
         return str(uuid.uuid5(_VIEW_ID_NAMESPACE, key)), True
 
 
+def duplicate_view_id(
+    database_page_id: str, index: int, name: str, attempt: int = 0
+) -> str:
+    """Id estable para una vista cuyo `id` ya está ocupado en el índice.
+
+    Copiar el fichero de una base a mano (`cp Bases/X.md "Bases/X copia.md"`)
+    duplica los `id` de sus vistas: el de la copia ya existe en la tabla
+    `views` de la base original. Es el mismo caso que un `id` de página
+    duplicado —un fichero copiado no rompe el reindexado—, así que la vista se
+    queda con un id derivado de su base, su posición y su nombre (uuid5, como
+    `view_id`). Determinista: dos reindexados dan el mismo. `attempt` solo entra
+    en la clave si esa derivada también estuviera ocupada.
+    """
+    key = f"duplicada:{database_page_id}:{index}:{name}"
+    if attempt:
+        key = f"{key}:{attempt}"
+    return str(uuid.uuid5(_VIEW_ID_NAMESPACE, key))
+
+
 def views_from_frontmatter(
     raw, database_page_id: str, path: str, warnings: list[str]
 ) -> list[dict]:

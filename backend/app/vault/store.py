@@ -558,11 +558,27 @@ class VaultStore:
             )
             self.conn.execute(UPSERT_PAGE, record.values())
 
-    def _index_database(self, page: reader.Page, record: _PageRecord) -> None:
-        """Las tablas `databases` y `views` dicen lo que dice el fichero."""
-        schema = reader.database_schema(page, page.path, [])
+    def _index_database(
+        self,
+        page: reader.Page,
+        record: _PageRecord,
+        warnings: Optional[list[str]] = None,
+    ) -> None:
+        """Las tablas `databases` y `views` dicen lo que dice el fichero.
+
+        El `id` de una vista lo manda el fichero, y un fichero copiado a mano
+        trae los mismos que su original: insertarlos tal cual rompería la PK de
+        `views` y con ella el reindexado entero (y el arranque). Mismo criterio
+        que un `id` de página duplicado (ADR §"Reglas de escritura"): la primera
+        base —el orden es el de las rutas, así que es determinista— se queda con
+        los ids del fichero y las demás reciben ids derivados y estables, con
+        aviso. Nada escribe en disco: al guardar la base desde la app se
+        materializa el id que tenga en el índice.
+        """
+        warnings = [] if warnings is None else warnings
+        schema = reader.database_schema(page, page.path, warnings)
         views = reader.views_from_frontmatter(
-            page.frontmatter.get("views"), record.id, page.path, []
+            page.frontmatter.get("views"), record.id, page.path, warnings
         )
         self.conn.execute(
             "INSERT INTO databases (id, page_id, schema_json) VALUES (?, ?, ?)"
@@ -570,7 +586,31 @@ class VaultStore:
             (record.id, record.id, _dump(schema)),
         )
         self.conn.execute("DELETE FROM views WHERE database_id = ?", (record.id,))
-        for view in views:
+        taken = {
+            row["id"]
+            for row in self.conn.execute(
+                "SELECT id FROM views WHERE database_id <> ?", (record.id,)
+            )
+        }
+        for position, view in enumerate(views):
+            if view["id"] in taken:
+                original = view["id"]
+                attempt = 0
+                derived = reader.duplicate_view_id(
+                    record.id, position, view["name"], attempt
+                )
+                while derived in taken:
+                    attempt += 1
+                    derived = reader.duplicate_view_id(
+                        record.id, position, view["name"], attempt
+                    )
+                view["id"] = derived
+                warnings.append(
+                    f"{page.path}: la vista {view['name']!r} trae un 'id' duplicado "
+                    f"({original}); se identifica con {derived} y se materializa al "
+                    "guardarla"
+                )
+            taken.add(view["id"])
             self.conn.execute(
                 "INSERT INTO views (id, database_id, name, type, config_json)"
                 " VALUES (?, ?, ?, ?, ?)",
@@ -624,7 +664,13 @@ class VaultStore:
         )
         self._upsert(record)
         if page.type == "database":
-            self._index_database(page, record)
+            # Un fichero copiado por fuera puede traer vistas con id repetido;
+            # aquí (camino de escritura) los avisos no tienen respuesta HTTP
+            # donde viajar, así que al menos quedan en el log.
+            avisos: list[str] = []
+            self._index_database(page, record, avisos)
+            for aviso in avisos:
+                log.warning("%s", aviso)
         elif database_id:
             self._index_row(page, record, database_id)
         sync_wikilinks(self.conn, record.id, workspace_id, record.body)
@@ -1366,7 +1412,7 @@ class VaultStore:
             for db in vault.databases.values():
                 record = by_path.get(db.path)
                 if record is not None:
-                    self._index_database(db.page, record)
+                    self._index_database(db.page, record, stats.warnings)
             for row in vault.rows:
                 record = by_path.get(row.path)
                 database_id = db_ids.get(row.database_id or "")
