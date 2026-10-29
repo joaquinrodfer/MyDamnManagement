@@ -13,12 +13,13 @@ Los módulos `fm`, `names`, `vaultfs`, `reader` y `writer` vienen del spike P0
   Latin-1 y frontmatter sin cerrar).
 - `writer`: crear/guardar/renombrar/borrar páginas sobre el vault.
 
-Lo único nuevo de P1.2a es `store.py`, el puente entre esos ficheros y el índice
-SQLite para las **notas**: escribir un `.md` y actualizar el índice en la misma
-operación, reconstruir el índice desde el vault, y mover a la papelera.
-
-Las bases de datos y sus filas siguen viviendo solo en el índice: son P2. Por
-eso el reindexado no toca sus filas de `pages`/`databases`/`views`/`rows`, y
-`store.py` rechaza anidar una nota dentro de una base con un error claro en vez
-de inventarse una ruta que después no se podría volver a deducir del disco.
+`store.py` es el puente entre esos ficheros y el índice SQLite: escribir un
+`.md` y actualizar el índice en la misma operación, reconstruir el índice desde
+el vault, y mover a la papelera. Desde P2 vale para todo lo que hay en el
+índice, no solo para las notas: las bases de datos (`Bases/<slug>.md`), sus
+filas (`Bases/<slug>/*.md`) y sus vistas (en el frontmatter de la base) también
+son ficheros, y el reindexado reconstruye `pages`/`databases`/`views`/`rows`
+desde ellos. `store.py` sigue rechazando anidar una nota dentro de una base con
+un error claro en vez de inventarse una ruta que después no se podría volver a
+deducir del disco.
 """

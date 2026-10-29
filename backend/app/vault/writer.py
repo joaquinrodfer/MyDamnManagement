@@ -64,7 +64,8 @@ def create_page(vault_root: str, folder: str, title: str, *, icon: str | None = 
 
 
 def sin_reservadas(properties: dict, notes: list[str], donde: str) -> dict:
-    """Quita las claves reservadas (`title`) de las propiedades de una fila.
+    """Quita las claves reservadas (`title`, `id`, `type`, `icon`,
+    `description`, `created`, `updated`) de las propiedades de una fila.
 
     El título de una fila ES el nombre del fichero (§9.3) y el resto de claves
     reservadas (`id`, `type`, `icon`, `description`, `created`, `updated`) son

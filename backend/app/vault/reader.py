@@ -293,10 +293,12 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
 
     Se usa al reindexar (`load`) y al escribir una base o una fila
     (`store._index_database`), para que el `schema_json` del índice salga del
-    mismo criterio en los dos caminos. `title` se descarta: es clave reservada
-    (el título de una fila es el nombre del fichero). El fichero del usuario no
-    se toca —se lee entero, con su `title` en el schema— y solo se excluye del
-    modelo efectivo.
+    mismo criterio en los dos caminos. Se descartan las claves de
+    `RESERVED_ROW_KEYS` (`title`, `id`, `type`, `icon`, `description`,
+    `created`, `updated`): son la propia fila (su título es el nombre del
+    fichero, más su identidad, tipo, icono, descripción y fechas), no
+    propiedades. El fichero del usuario no se toca —se lee entero, con esas
+    claves en el schema— y solo se excluyen del modelo efectivo.
     """
     raw = page.frontmatter.get("schema")
     if raw in (None, ""):
