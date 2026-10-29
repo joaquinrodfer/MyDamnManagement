@@ -65,12 +65,16 @@ python backend/scripts/migrate_index_to_vault.py \
     --index /data/index.sqlite --vault /data/vault --reindex
 ```
 
-Mover los adjuntos que quedaron fuera del vault (una vez, al adoptar P1.2b; idempotente y con contadores: `movidos`, `ya_estaban`, `notas_actualizadas`, `indice_actualizado`):
+Mover los adjuntos que quedaron fuera del vault (una vez, al adoptar P1.2b; idempotente y con contadores: `movidos`, `ya_estaban`, `notas_actualizadas`, `papelera_actualizadas`, `indice_actualizado`):
 
 ```bash
 python backend/scripts/migrate_attachments_into_vault.py \
-    --source /app/attachments --vault /data/vault --index /data/index.sqlite
+    --source /app/attachments --vault /data/vault --index /data/index.sqlite --reindex
 ```
+
+Reescribe el `header_image` de las notas **y también el de las que están en `.trash/`** (solo el frontmatter; el fichero no se mueve de la papelera): una nota borrada antes de migrar se queda apuntando al esquema viejo y, al restaurarla, su imagen daría 404 — el adjunto migrado no tendría ninguna referencia viva. Esas cuentan aparte, en `papelera_actualizadas`, y las que apuntan a un fichero que no existe ni en el origen ni en el vault salen como `aviso:` y se dejan intactas.
+
+El `--reindex` final es opcional pero recomendable: reescribir el frontmatter cambia el `mtime`, así que sin él `GET /status` muestra deriva (`drift.modified` = notas reescritas) hasta el siguiente reindexado. Con el flag, el índice queda al día en la misma pasada. Sin `--index` (o si el fichero no existe) el script solo toca los `.md`.
 
 En Docker el volumen viejo (`<proyecto>_attachments`) ya no se monta: P1.2b lo retira de `docker-compose.yml`, pero **no** borra sus datos. Hay que montarlo solo para esta pasada, sin `:ro` (el script retira los originales que ya están en el vault y poda las carpetas vacías):
 
@@ -78,7 +82,7 @@ En Docker el volumen viejo (`<proyecto>_attachments`) ya no se monta: P1.2b lo r
 docker compose run --rm \
     -v mydamnmanagement_attachments:/app/attachments \
     api python scripts/migrate_attachments_into_vault.py \
-    --source /app/attachments --vault /data/vault --index /data/index.sqlite
+    --source /app/attachments --vault /data/vault --index /data/index.sqlite --reindex
 ```
 
 El nombre del volumen es el del proyecto de compose que lo creó: `docker volume ls | grep attachments` dice cuál es si no es `mydamnmanagement`.
@@ -125,7 +129,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/pages/{id}/header-image` | DELETE | Quita la imagen de cabecera                       |
 | `/files/...`   | GET    | Sirve los adjuntos del vault (`_attachments/<año>/<mes>/…`): el `Content-Type` sale de los magic bytes del fichero y va con `nosniff`; fuera de `_attachments/`, 404 |
 | `/trash`       | GET    | Papelera: ruta original, fecha del borrado (UTC) y tamaño de cada fichero, lo más reciente primero |
-| `/trash/restore` | POST | Devuelve un fichero de la papelera a su ruta original y reindexa. **409** si la ruta está ocupada; **404** si la entrada no existe |
+| `/trash/restore` | POST | Devuelve un fichero de la papelera a su ruta original y reindexa. **409** si la ruta está ocupada o si un ancestro de ella es un fichero (no una carpeta); **404** si la entrada no existe |
 | `/search?q=`   | GET    | Búsqueda full-text (título + cuerpo) en español          |
 
 Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]]`) en `body_markdown`; se resuelven por título exacto (sin distinguir mayúsculas) dentro del mismo workspace al guardar la página.
