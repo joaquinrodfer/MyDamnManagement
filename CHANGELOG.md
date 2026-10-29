@@ -8,6 +8,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 - **La app ya no necesita Postgres**: el almacén pasa a ser un único índice SQLite (`backend/app/index.py`) con capa de repositorio (`backend/app/repository.py`), sin servicio `db` en `docker-compose.yml`, sin puerto 5432 y sin Alembic al arrancar. Las rutas y las respuestas de la API no cambian. La búsqueda pasa de `tsvector` a FTS5 y sigue encontrando sin acentos (`reunion` encuentra `Reunión`). Un índice ilegible se aparta y se rehace al arrancar. Incluye `pytest` sin servicios externos (`backend/tests/`) y un script de una vez para traer los datos de Postgres (`backend/scripts/migrate_postgres_to_sqlite.py`).
 
+### Corregido
+
+- **Índice SQLite (P1.1), tras la revisión**
+  - La migración de Postgres **ya no aborta si una página hija se inserta antes que su padre** (`SELECT * FROM pages` no garantiza orden: basta con editar el padre después de crear al hijo): las claves foráneas se difieren al `COMMIT` y se comprueban justo antes con `PRAGMA foreign_key_check`. Un fallo de datos sale ahora con código 3 y un mensaje que dice tabla y fila, no con un traceback.
+  - Una **fila de database con `database_id` a NULL** (el esquema viejo lo permitía al borrar la database) ya no tumba la migración: se omite, se cuenta y se avisa con su id.
+  - Los **wikilinks vuelven a resolver como antes**: `[[REUNIÓN DE EQUIPO]]` encuentra `Reunión de equipo` (`COLLATE NOCASE` de SQLite solo pliega ASCII) y un título repetido recibe el backlink en **todas** sus páginas, no en una al azar (`LIMIT 1`). `Peña` y `Pena` siguen siendo títulos distintos, como con el `lower()` de Postgres.
+  - Un **`INDEX_PATH` equivocado ya no toca un fichero ajeno**: la inspección es de solo lectura y un esquema que no es el nuestro (o una `pages` con otras columnas) para el arranque con un error claro, sin ponerle el esquema encima ni renombrarlo como «corrupto».
+  - Y un `PATCH` con el mismo título/icono/descripción ya no mueve `updated_at` (el viejo tampoco lo movía; guardar el cuerpo sí lo mueve, como antes).
+  - La imagen fija su base (`python:3.12-slim-bookworm`) y comprueba la versión de SQLite en el build; la app exige `>= 3.27` en cada conexión. `.env.example` ya no tiene `POSTGRES_*` y documenta `INDEX_PATH`. Tests nuevos para todo lo anterior (orden inverso en la migración, fila sin `database_id`, FK rota, títulos con acentos/repetidos, fichero ajeno).
+
 ### Añadido
 
 - **Citas (`> texto`), anidables (`> > texto`)**: nuevo tipo de bloque, convertible desde el menú contextual y desde el comando `/quote`. Al editar se ve el Markdown crudo (el `>` tenue, como el resto de marcadores); en cuanto se deja de editar, se ve una barra de color de acento por nivel de anidación (una cita dentro de otra se nota) sobre un fondo gris clarito con las esquinas redondeadas arriba y abajo. Toda la cita (con independencia de cuántos niveles tenga dentro) es un único bloque seleccionable/convertible/borrable, igual que un bloque de código.
