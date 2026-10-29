@@ -946,7 +946,7 @@
   </div>
 
   <dialog id="dialog-database">
-    <h3>Nueva base de datos</h3>
+    <h3 id="db-dialog-title">Nueva base de datos</h3>
     <div class="field">
       <label for="db-name">Nombre</label>
       <input type="text" id="db-name" placeholder="Contactos" />
@@ -958,7 +958,7 @@
     </div>
     <div class="dialog-actions">
       <button class="btn" id="btn-cancel-database">Cancelar</button>
-      <button class="btn btn-primary" id="btn-create-database">Crear</button>
+      <button class="btn btn-primary" id="btn-save-database">Crear</button>
     </div>
   </dialog>
 
@@ -984,6 +984,21 @@
     <div class="dialog-actions">
       <button class="btn" id="btn-cancel-view">Cancelar</button>
       <button class="btn btn-primary" id="btn-create-view">Crear</button>
+    </div>
+  </dialog>
+
+  <!-- Editar la fila de una tarjeta del tablero: los mismos controles por tipo
+       que la tabla, en un diálogo (una tarjeta no da sitio para editarla). -->
+  <dialog id="dialog-row">
+    <h3>Editar fila</h3>
+    <div class="field">
+      <label for="row-title">Título</label>
+      <input type="text" id="row-title" />
+    </div>
+    <div id="row-props"></div>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-cancel-row">Cancelar</button>
+      <button class="btn btn-primary" id="btn-save-row">Guardar</button>
     </div>
   </dialog>
 

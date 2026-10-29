@@ -1612,6 +1612,10 @@ async function selectDatabase(id) {
 
 async function renderDatabase(database, views, activeViewId) {
   const main = clearMain();
+  // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
+  // usan el tablero tras mover una tarjeta y el diálogo de propiedades, para no
+  // enseñar nada que el `.md` no tenga ya.
+  const refresh = () => renderDatabase(database, views, activeViewId);
 
   const header = document.createElement("div");
   header.className = "db-header";
@@ -1636,6 +1640,11 @@ async function renderDatabase(database, views, activeViewId) {
   const headerActions = document.createElement("div");
   headerActions.className = "btn-row";
 
+  const schemaBtn = document.createElement("button");
+  schemaBtn.className = "btn";
+  schemaBtn.textContent = "Propiedades";
+  schemaBtn.addEventListener("click", () => openDatabaseDialog(database, refresh));
+
   const newViewBtn = document.createElement("button");
   newViewBtn.className = "btn";
   newViewBtn.textContent = "+ Vista";
@@ -1656,7 +1665,7 @@ async function renderDatabase(database, views, activeViewId) {
     }
   });
 
-  headerActions.append(newViewBtn, deleteDbBtn);
+  headerActions.append(schemaBtn, newViewBtn, deleteDbBtn);
   header.append(title, headerActions);
 
   const hint = document.createElement("div");
@@ -1687,7 +1696,7 @@ async function renderDatabase(database, views, activeViewId) {
   const rows = await api(`/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""));
 
   if (activeView && activeView.type === "board" && activeView.config?.group_by) {
-    content.appendChild(renderBoard(database, rows, activeView));
+    content.appendChild(renderBoard(database, rows, activeView, refresh));
   } else {
     content.appendChild(renderTable(database, rows));
   }
@@ -1700,6 +1709,93 @@ function formatPropValue(value, prop) {
   if (prop.type === "checkbox") return value ? "✓" : "—";
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
+}
+
+/** El valor que sale de un control, en la forma que espera la API.
+ * `null` = borrar esa propiedad del frontmatter (no se escribe `"null"` como
+ * texto): vaciar una celda la quita del `.md`, igual que en las notas. */
+function readPropertyValue(prop, input) {
+  if (prop.type === "checkbox") return input.checked;
+  const raw = String(input.value ?? "").trim();
+  if (raw === "") return null;
+  if (prop.type === "multiselect") {
+    return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  if (prop.type === "number") return Number(raw);
+  return raw; // text, date, url, relation, select
+}
+
+/** Input para una propiedad según su tipo, con su valor actual. Único sitio
+ * que decide qué control usa cada tipo: lo comparten el alta de fila, la
+ * edición de una celda y el panel de fila del tablero. Devuelve también
+ * `read()`, que traduce el control a valor (`null` = sin valor). */
+function buildPropertyInput(prop, value) {
+  let input;
+  if (prop.type === "select") {
+    input = document.createElement("select");
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "—";
+    input.appendChild(blank);
+    // Un valor guardado que ya no está en `options` se sigue viendo y se
+    // conserva: si no se añadiera, abrir la celda lo convertiría en vacío.
+    const options = [...(prop.options || [])];
+    if (value !== undefined && value !== null && value !== "" && !options.includes(value)) {
+      options.push(value);
+    }
+    options.forEach((o) => {
+      const opt = document.createElement("option");
+      opt.value = o;
+      opt.textContent = o;
+      input.appendChild(opt);
+    });
+    input.value = value ?? "";
+  } else if (prop.type === "checkbox") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(value);
+  } else if (prop.type === "number") {
+    input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.value = value ?? "";
+  } else if (prop.type === "date") {
+    input = document.createElement("input");
+    input.type = "date";
+    input.value = value ?? "";
+  } else {
+    input = document.createElement("input");
+    input.type = "text";
+    if (prop.type === "multiselect") {
+      input.placeholder = "valores separados por coma";
+      input.value = Array.isArray(value) ? value.join(", ") : (value ?? "");
+    } else {
+      input.value = value ?? "";
+    }
+  }
+
+  return { input, read: () => readPropertyValue(prop, input) };
+}
+
+function sameValue(a, b) {
+  if (a === b) return true;
+  if (a === null || a === undefined) return b === null || b === undefined;
+  if (b === null || b === undefined) return false;
+  if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b);
+  return false;
+}
+
+/** Único camino de guardado de una fila: un PATCH y el estado local al día
+ * con lo que el servidor acaba de escribir en el `.md`. Si lanza, quien llama
+ * avisa con reportError() y repinta el valor viejo: nada se da por guardado
+ * sin haberse guardado. */
+async function saveRow(database, row, changes) {
+  const saved = await api(`/databases/${database.id}/rows/${row.id}`, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+  Object.assign(row, saved);
+  return saved;
 }
 
 function renderTable(database, rows) {
@@ -1728,13 +1824,15 @@ function renderTable(database, rows) {
   rows.forEach((row) => {
     const tr = document.createElement("tr");
 
+    // Título y celdas editables en el sitio: lo que se ve es el valor del
+    // `.md`, y un clic abre el control del tipo de esa propiedad.
     const titleTd = document.createElement("td");
-    titleTd.textContent = row.title;
+    paintCell(titleTd, database, row, null);
     tr.appendChild(titleTd);
 
     database.schema_def.forEach((p) => {
       const td = document.createElement("td");
-      td.textContent = formatPropValue(row.properties?.[p.key], p);
+      paintCell(td, database, row, p);
       tr.appendChild(td);
     });
 
@@ -1759,7 +1857,87 @@ function renderTable(database, rows) {
   return wrap;
 }
 
-function renderBoard(database, rows, view) {
+/** Pinta el valor de una celda y la deja lista para editarse con un clic.
+ * `prop === null` es la celda del título. */
+function paintCell(td, database, row, prop) {
+  td.textContent = prop ? formatPropValue(row.properties?.[prop.key], prop) : row.title || "Sin título";
+  td.title = "Clic para editar";
+  td.style.cursor = "pointer";
+  td.onclick =
+    prop && prop.type === "checkbox"
+      ? () => toggleCheckbox(td, database, row, prop)
+      : () => editCell(td, database, row, prop);
+}
+
+/** Un booleano no tiene "modo edición": el clic lo cambia y se guarda. */
+async function toggleCheckbox(td, database, row, prop) {
+  const next = !row.properties?.[prop.key];
+  try {
+    await saveRow(database, row, { properties: { [prop.key]: next } });
+  } catch (e) {
+    reportError("No se pudo guardar el cambio", e);
+  }
+  paintCell(td, database, row, prop); // si falló, este es el valor del servidor
+}
+
+/** Edita una celda con el input de su tipo. Guarda al confirmar (Enter o salir
+ * del campo) y, si el PATCH falla, repinta el valor viejo: la tabla nunca
+ * enseña un valor que el `.md` no tiene. */
+function editCell(td, database, row, prop) {
+  if (td.querySelector("input, select, textarea")) return;
+  const isTitle = !prop;
+  const def = isTitle ? { key: "title", name: "Título", type: "text" } : prop;
+  const { input, read } = buildPropertyInput(def, isTitle ? row.title : row.properties?.[def.key]);
+  input.style.width = "100%";
+  input.style.boxSizing = "border-box";
+  let finished = false;
+
+  async function commit() {
+    if (finished) return;
+    finished = true;
+    let changes = null;
+    if (isTitle) {
+      const title = input.value.trim() || "Sin título";
+      if (!sameValue(title, row.title)) changes = { title };
+    } else {
+      const value = read();
+      if (!sameValue(value, row.properties?.[def.key])) changes = { properties: { [def.key]: value } };
+    }
+    if (changes) {
+      try {
+        // El título renombra el `.md` en el servidor; saveRow trae el nuevo.
+        await saveRow(database, row, changes);
+      } catch (e) {
+        reportError("No se pudo guardar el cambio", e);
+      }
+    }
+    paintCell(td, database, row, prop);
+  }
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      finished = true;
+      paintCell(td, database, row, prop); // se sale sin guardar
+    }
+  });
+  input.addEventListener("blur", commit);
+  if (input.tagName === "SELECT") input.addEventListener("change", commit);
+
+  td.textContent = "";
+  td.appendChild(input);
+  input.focus?.();
+  if (input.select) input.select();
+}
+
+/** Tarjeta que se está arrastrando. `dataTransfer` no siempre está (y para
+ * nada hace falta: el dato viaja en esta variable); en un navegador real los
+ * eventos lo traen y además se rellena por si lo lee alguien más. */
+let boardDrag = null;
+
+function renderBoard(database, rows, view, refresh) {
   const groupKey = view.config.group_by;
   const prop = database.schema_def.find((p) => p.key === groupKey);
   const columns = prop?.options?.length ? prop.options : uniqueValues(rows, groupKey);
@@ -1775,8 +1953,15 @@ function renderBoard(database, rows, view) {
     else other.push(r);
   });
 
-  columns.forEach((col) => board.appendChild(renderBoardColumn(database, col, grouped.get(col) || [])));
-  if (other.length) board.appendChild(renderBoardColumn(database, "Sin valor", other));
+  const options = { groupKey, refresh };
+  columns.forEach((col) =>
+    board.appendChild(renderBoardColumn(database, col, grouped.get(col) || [], options))
+  );
+  // "Sin valor" también es destino: soltar ahí vacía la propiedad, que es lo
+  // mismo que sacar la tarjeta de cualquier columna.
+  if (other.length) {
+    board.appendChild(renderBoardColumn(database, "Sin valor", other, { ...options, value: null }));
+  }
 
   return board;
 }
@@ -1790,7 +1975,7 @@ function uniqueValues(rows, key) {
   return seen;
 }
 
-function renderBoardColumn(database, label, rows) {
+function renderBoardColumn(database, label, rows, { groupKey, refresh, value = label }) {
   const col = document.createElement("div");
   col.className = "board-col";
 
@@ -1802,6 +1987,21 @@ function renderBoardColumn(database, label, rows) {
   countSpan.textContent = String(rows.length);
   head.append(labelSpan, countSpan);
   col.appendChild(head);
+
+  // Sin `group_by` no hay arrastre: sin clave no se escribe nada, así que la
+  // columna no acepta drops.
+  if (groupKey) {
+    col.addEventListener("dragover", (e) => {
+      if (boardDrag && boardDrag.databaseId === database.id) e.preventDefault();
+    });
+    col.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const drag = boardDrag;
+      boardDrag = null;
+      if (!drag || drag.databaseId !== database.id) return;
+      moveCard(drag.row, value, database, groupKey, refresh);
+    });
+  }
 
   rows.forEach((row) => {
     const card = document.createElement("div");
@@ -1821,11 +2021,107 @@ function renderBoardColumn(database, label, rows) {
       card.appendChild(line);
     });
 
+    if (groupKey) {
+      card.draggable = true;
+      card.addEventListener("dragstart", (e) => {
+        boardDrag = { databaseId: database.id, row };
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          try {
+            e.dataTransfer.setData("text/plain", row.id);
+          } catch {
+            // algunos navegadores no dejan tocar dataTransfer en dragstart
+          }
+        }
+      });
+      card.addEventListener("dragend", () => {
+        boardDrag = null;
+      });
+    }
+    // La tarjeta abre su fila: las propiedades se editan en el diálogo, con
+    // los mismos controles por tipo que la tabla.
+    card.addEventListener("click", () => openRowDialog(database, row, refresh));
+
     col.appendChild(card);
   });
 
   return col;
 }
+
+/** Mover una tarjeta = escribir la propiedad de agrupación de la vista con el
+ * valor de la columna destino, por el mismo PATCH que usa la tabla. */
+async function moveCard(row, value, database, groupKey, refresh) {
+  if (sameValue(value, row.properties?.[groupKey] ?? null)) return; // misma columna
+  try {
+    await saveRow(database, row, { properties: { [groupKey]: value } });
+    refresh?.(); // el tablero se repinta con lo que hay en el servidor
+  } catch (e) {
+    // La tarjeta no se ha movido: el valor del servidor sigue intacto.
+    reportError("No se pudo mover la tarjeta", e);
+  }
+}
+
+// -------------------------------------------------------- diálogo: editar fila
+
+const rowDialog = document.getElementById("dialog-row");
+const rowPropsContainer = document.getElementById("row-props");
+let rowDialogContext = null; // { database, row, refresh, fields }
+
+function openRowDialog(database, row, refresh) {
+  const fields = [];
+  rowPropsContainer.innerHTML = "";
+  document.getElementById("row-title").value = row.title || "";
+  database.schema_def.forEach((p) => {
+    const field = document.createElement("div");
+    field.className = "field";
+    const label = document.createElement("label");
+    label.textContent = `${p.name} (${p.type})`;
+    const { input, read } = buildPropertyInput(p, row.properties?.[p.key]);
+    field.append(label, input);
+    rowPropsContainer.appendChild(field);
+    fields.push({ prop: p, read });
+  });
+  rowDialogContext = { database, row, refresh, fields };
+  rowDialog.showModal();
+}
+
+document.getElementById("btn-cancel-row").addEventListener("click", () => {
+  rowDialogContext = null;
+  rowDialog.close();
+});
+
+document.getElementById("btn-save-row").addEventListener("click", async () => {
+  const ctx = rowDialogContext;
+  if (!ctx) return;
+  const { database, row, refresh, fields } = ctx;
+
+  const changes = {};
+  const title = document.getElementById("row-title").value.trim() || "Sin título";
+  if (!sameValue(title, row.title)) changes.title = title;
+  const properties = {};
+  fields.forEach(({ prop, read }) => {
+    const value = read();
+    if (!sameValue(value, row.properties?.[prop.key])) properties[prop.key] = value;
+  });
+  if (Object.keys(properties).length) changes.properties = properties;
+
+  if (Object.keys(changes).length === 0) {
+    rowDialogContext = null;
+    rowDialog.close();
+    return;
+  }
+  try {
+    // Un PATCH con título y propiedades: renombra el `.md` y escribe valores.
+    await saveRow(database, row, changes);
+  } catch (e) {
+    // El diálogo no se cierra: cerrarlo daría a entender que se guardó.
+    reportError("No se pudo guardar la fila", e);
+    return;
+  }
+  rowDialogContext = null;
+  rowDialog.close();
+  refresh?.();
+});
 
 function renderAddRowForm(database) {
   const wrap = document.createElement("div");
@@ -1846,45 +2142,16 @@ function renderAddRowForm(database) {
   titleField.append(titleLabel, titleInput);
   wrap.appendChild(titleField);
 
-  const propInputs = {};
+  const propInputs = [];
   database.schema_def.forEach((p) => {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
     label.textContent = `${p.name} (${p.type})`;
-    field.appendChild(label);
-
-    let input;
-    if (p.type === "select") {
-      input = document.createElement("select");
-      const blank = document.createElement("option");
-      blank.value = "";
-      blank.textContent = "—";
-      input.appendChild(blank);
-      (p.options || []).forEach((o) => {
-        const opt = document.createElement("option");
-        opt.value = o;
-        opt.textContent = o;
-        input.appendChild(opt);
-      });
-    } else if (p.type === "checkbox") {
-      input = document.createElement("input");
-      input.type = "checkbox";
-    } else if (p.type === "number") {
-      input = document.createElement("input");
-      input.type = "number";
-      input.step = "any";
-    } else if (p.type === "date") {
-      input = document.createElement("input");
-      input.type = "date";
-    } else {
-      input = document.createElement("input");
-      input.type = "text";
-      if (p.type === "multiselect") input.placeholder = "valores separados por coma";
-    }
-    field.appendChild(input);
+    const { input, read } = buildPropertyInput(p, undefined);
+    field.append(label, input);
     wrap.appendChild(field);
-    propInputs[p.key] = { input, type: p.type };
+    propInputs.push({ prop: p, input, read });
   });
 
   const submitBtn = document.createElement("button");
@@ -1892,14 +2159,14 @@ function renderAddRowForm(database) {
   submitBtn.textContent = "Añadir fila";
   submitBtn.addEventListener("click", async () => {
     const properties = {};
-    for (const [key, { input, type }] of Object.entries(propInputs)) {
-      if (type === "checkbox") {
-        properties[key] = input.checked;
-      } else if (type === "multiselect") {
-        const raw = input.value.trim();
-        if (raw) properties[key] = raw.split(",").map((s) => s.trim()).filter(Boolean);
-      } else if (input.value !== "") {
-        properties[key] = type === "number" ? Number(input.value) : input.value;
+    for (const { prop, input, read } of propInputs) {
+      // Al crear se guarda también un checkbox desmarcado; el resto de tipos
+      // sin valor no se escriben (no hay que dejar `null` en el fichero).
+      if (prop.type === "checkbox") {
+        properties[prop.key] = input.checked;
+      } else {
+        const value = read();
+        if (value !== null) properties[prop.key] = value;
       }
     }
     try {
@@ -1917,12 +2184,18 @@ function renderAddRowForm(database) {
   return wrap;
 }
 
-// -------------------------------------------------- diálogo: nueva database
+// ------------------------------------------------ diálogo: base de datos
+// Uno solo para el alta y para editar el schema de una base existente: mismas
+// filas de propiedad y mismo botón de guardar. En edición la clave no se toca
+// (las filas guardan sus valores por clave en el frontmatter): se añade o se
+// quita la propiedad, no se renombra.
 
 const dbDialog = document.getElementById("dialog-database");
 const propRowsContainer = document.getElementById("prop-rows");
+let dbDialogContext = null; // { database: Database|null, refresh }
 
-function addPropertyRow() {
+/** Añade una fila de propiedad al diálogo. Con `prop`, la rellena (edición). */
+function addPropertyRow(prop = null) {
   const wrap = document.createElement("div");
   wrap.className = "prop-row-wrap";
 
@@ -1950,6 +2223,7 @@ function addPropertyRow() {
   removeBtn.type = "button";
   removeBtn.textContent = "×";
   removeBtn.className = "icon-btn";
+  removeBtn.title = "Quitar esta propiedad";
   removeBtn.addEventListener("click", () => wrap.remove());
 
   row.append(keyInput, nameInput, typeSelect, removeBtn);
@@ -1959,6 +2233,18 @@ function addPropertyRow() {
   optionsInput.className = "prop-options-input";
   optionsInput.hidden = true;
 
+  if (prop) {
+    keyInput.value = prop.key;
+    nameInput.value = prop.name;
+    typeSelect.value = prop.type;
+    optionsInput.value = (prop.options || []).join(", ");
+    optionsInput.hidden = !["select", "multiselect"].includes(prop.type);
+    if (dbDialogContext?.database) {
+      keyInput.readOnly = true;
+      keyInput.title = "La clave no se cambia: las filas guardan sus valores por clave";
+    }
+  }
+
   typeSelect.addEventListener("change", () => {
     optionsInput.hidden = !["select", "multiselect"].includes(typeSelect.value);
   });
@@ -1967,14 +2253,46 @@ function addPropertyRow() {
   propRowsContainer.appendChild(wrap);
 }
 
-document.getElementById("btn-new-database").addEventListener("click", () => {
-  document.getElementById("db-name").value = "";
+/** Abre el diálogo en alta (`database` nulo) o para editar una existente.
+ * `refresh` repinta la vista actual cuando el PATCH del schema termina. */
+function openDatabaseDialog(database = null, refresh = null) {
+  dbDialogContext = { database, refresh };
+  document.getElementById("db-dialog-title").textContent = database
+    ? "Propiedades de la base de datos"
+    : "Nueva base de datos";
+  document.getElementById("btn-save-database").textContent = database ? "Guardar" : "Crear";
+  document.getElementById("db-name").value = database ? database.title : "";
   propRowsContainer.innerHTML = "";
-  addPropertyRow();
+  const props = database?.schema_def || [];
+  if (props.length === 0) addPropertyRow();
+  else props.forEach((p) => addPropertyRow(p));
   dbDialog.showModal();
+}
+
+/** El `schema_def` que describen las filas del diálogo, en el formato de la API. */
+function readSchemaFromDialog() {
+  const schema_def = [];
+  propRowsContainer.querySelectorAll(".prop-row-wrap").forEach((wrap) => {
+    const key = wrap.querySelector(".prop-key").value.trim();
+    const name = wrap.querySelector(".prop-name").value.trim();
+    const type = wrap.querySelector(".prop-type").value;
+    const optionsRaw = wrap.querySelector(".prop-options-input").value.trim();
+    if (!key || !name) return;
+    const prop = { key, name, type };
+    if (["select", "multiselect"].includes(type) && optionsRaw) {
+      prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    schema_def.push(prop);
+  });
+  return schema_def;
+}
+
+document.getElementById("btn-new-database").addEventListener("click", () => openDatabaseDialog());
+document.getElementById("btn-add-prop").addEventListener("click", () => addPropertyRow());
+document.getElementById("btn-cancel-database").addEventListener("click", () => {
+  dbDialogContext = null;
+  dbDialog.close();
 });
-document.getElementById("btn-add-prop").addEventListener("click", addPropertyRow);
-document.getElementById("btn-cancel-database").addEventListener("click", () => dbDialog.close());
 
 // -------------------------------------------------- plantillas (Fase 3)
 // Un clic: crea la database ya con schema_def + vistas por defecto.
@@ -1993,30 +2311,41 @@ async function createFromTemplate(templateKey) {
   }
 }
 
-document.getElementById("btn-create-database").addEventListener("click", async () => {
+document.getElementById("btn-save-database").addEventListener("click", async () => {
   const title = document.getElementById("db-name").value.trim() || "Sin título";
-  const schema_def = [];
-  propRowsContainer.querySelectorAll(".prop-row-wrap").forEach((wrap) => {
-    const key = wrap.querySelector(".prop-key").value.trim();
-    const name = wrap.querySelector(".prop-name").value.trim();
-    const type = wrap.querySelector(".prop-type").value;
-    const optionsRaw = wrap.querySelector(".prop-options-input").value.trim();
-    if (!key || !name) return;
-    const prop = { key, name, type };
-    if (["select", "multiselect"].includes(type) && optionsRaw) {
-      prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-    }
-    schema_def.push(prop);
-  });
+  const schema_def = readSchemaFromDialog();
+  const { database, refresh } = dbDialogContext || {};
 
-  try {
-    const database = await api("/databases", { method: "POST", body: JSON.stringify({ title, schema_def }) });
-    dbDialog.close();
-    await loadTree();
-    await goTo("database", database.id);
-  } catch (e) {
-    alert("Error al crear la base de datos: " + e.message);
+  if (!database) {
+    try {
+      const created = await api("/databases", { method: "POST", body: JSON.stringify({ title, schema_def }) });
+      dbDialogContext = null;
+      dbDialog.close();
+      await loadTree();
+      await goTo("database", created.id);
+    } catch (e) {
+      reportError("No se pudo crear la base de datos", e);
+    }
+    return;
   }
+
+  // Editar el schema es escribir `schema` en el `.md` de la base (PATCH). Si
+  // falla, el diálogo sigue abierto y el servidor no ha cambiado nada.
+  try {
+    const updated = await api(`/databases/${database.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title, schema_def }),
+    });
+    Object.assign(database, updated); // el título puede haber renombrado el fichero
+  } catch (e) {
+    reportError("No se pudo guardar el esquema", e);
+    return;
+  }
+  dbDialogContext = null;
+  dbDialog.close();
+  await loadTree();
+  markActive(database.id);
+  refresh?.();
 });
 
 // ------------------------------------------------------- diálogo: nueva vista
