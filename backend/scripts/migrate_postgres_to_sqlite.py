@@ -8,7 +8,16 @@ nada allí) y los copia al índice SQLite que usa la app desde P1.1.
   DO UPDATE`, así que ejecutarlo dos veces deja el índice igual y la segunda vez
   lo dice con contadores (0 nuevas, N actualizadas).
 - **Con contadores**: por tabla (workspaces, pages, rows, databases, views,
-  links) y un resumen final.
+  links) y un resumen final, más las filas omitidas y el motivo.
+- **No depende del orden de lectura**: `SELECT * FROM pages` puede devolver un
+  hijo antes que su padre (basta con que el padre se editara después: su tupla
+  se va al final del heap). Las claves foráneas se difieren al `COMMIT`
+  (`PRAGMA defer_foreign_keys`) y, antes de confirmar, se comprueban con
+  `PRAGMA foreign_key_check`: una FK rota sale como error de datos (código 3)
+  nombrando tabla y fila, no como traceback.
+- **Filas huérfanas de database**: una fila con `database_id` NULL (el esquema
+  viejo lo permitía: `ON DELETE SET NULL`) no se puede colocar en el índice. Se
+  omite, se cuenta en `omitidas` y se avisa con su id; su página sí se migra.
 - **Sin Postgres, no inventa nada**: si falta `psycopg2`, si no hay URL o si la
   conexión falla, sale con código 2 y un mensaje claro. No escribe en el índice.
 - Postgres queda intacto como respaldo hasta que valides la migración.
@@ -36,11 +45,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -56,6 +66,13 @@ PAGE_COLUMNS = (
     "id, workspace_id, parent_id, type, title, icon, description, created_by,"
     " header_image_path, body, path, mtime, size, content_hash, created_at, updated_at"
 )
+
+# Tablas del índice, en el orden en que se escriben: `databases` y `rows`
+# dependen de `pages`, `rows` de `databases` y `links` de `pages`. La única
+# dependencia que puede ir "hacia atrás" al leer de Postgres es `pages.parent_id`
+# (un hijo puede llegar antes que su padre); es lo que resuelven
+# `defer_foreign_keys` y `foreign_key_check`.
+TABLAS = ("workspaces", "pages", "rows", "databases", "views", "links")
 
 
 class MigrationError(RuntimeError):
@@ -78,14 +95,21 @@ class Dump:
 class Counters:
     nuevas: dict[str, int] = field(default_factory=dict)
     actualizadas: dict[str, int] = field(default_factory=dict)
+    omitidas: dict[str, int] = field(default_factory=dict)
+    avisos: list[str] = field(default_factory=list)
 
     def add(self, tabla: str, created: bool) -> None:
         destino = self.nuevas if created else self.actualizadas
         destino[tabla] = destino.get(tabla, 0) + 1
 
+    def omitir(self, tabla: str, aviso: str) -> None:
+        """Cuenta una fila que no se puede migrar y guarda el porqué."""
+        self.omitidas[tabla] = self.omitidas.get(tabla, 0) + 1
+        self.avisos.append(aviso)
+
     def resumen(self) -> str:
         lineas = []
-        for tabla in ("workspaces", "pages", "rows", "databases", "views", "links"):
+        for tabla in TABLAS:
             lineas.append(
                 f"  {tabla:10s} nuevas: {self.nuevas.get(tabla, 0):5d}   "
                 f"actualizadas: {self.actualizadas.get(tabla, 0):5d}"
@@ -93,6 +117,9 @@ class Counters:
         total_nuevas = sum(self.nuevas.values())
         total_actualizadas = sum(self.actualizadas.values())
         lineas.append(f"  {'TOTAL':10s} nuevas: {total_nuevas:5d}   actualizadas: {total_actualizadas:5d}")
+        if self.omitidas:
+            detalle = ", ".join(f"{t}: {n}" for t, n in sorted(self.omitidas.items()))
+            lineas.append(f"  {'OMITIDAS':10s} {detalle}")
         return "\n".join(lineas)
 
 
@@ -264,6 +291,79 @@ def _existe(conn, tabla: str, id_: str) -> bool:
     return conn.execute(f"SELECT 1 FROM {tabla} WHERE id = ?", (id_,)).fetchone() is not None
 
 
+def _insertar(
+    conn: sqlite3.Connection, tabla: str, sql: str, params: Sequence[Any], id_: str
+) -> None:
+    """Ejecuta un INSERT y convierte un fallo de restricción en `MigrationError`.
+
+    Así el CLI enseña qué tabla y qué fila rompieron la migración en vez del
+    traceback de `sqlite3.IntegrityError`.
+    """
+    try:
+        conn.execute(sql, params)
+    except sqlite3.IntegrityError as exc:
+        raise MigrationError(
+            f"la tabla '{tabla}' rechazó la fila id={id_}: {exc}. "
+            "No se ha escrito nada: la transacción se deshace entera."
+        ) from exc
+
+
+def _verificar_claves(conn: sqlite3.Connection) -> None:
+    """Comprueba las FK antes del `COMMIT`, nombrando tabla y fila.
+
+    Con las FK diferidas, una violación aparece al confirmar y SQLite solo dice
+    "FOREIGN KEY constraint failed", sin decir dónde. `PRAGMA foreign_key_check`
+    devuelve la tabla y el rowid; aquí el rowid se traduce al `id` para que el
+    mensaje sirva de algo.
+    """
+    rotas = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if not rotas:
+        return
+    tabla, rowid, padre, fkid = (rotas[0][0], rotas[0][1], rotas[0][2], rotas[0][3])
+    id_ = columna = valor = None
+    if tabla in TABLAS:
+        fila = conn.execute(f"SELECT id FROM {tabla} WHERE rowid = ?", (rowid,)).fetchone()
+        id_ = fila["id"] if fila is not None else None
+        claves = conn.execute(f"PRAGMA foreign_key_list({tabla})").fetchall()
+        if fkid is not None and 0 <= fkid < len(claves):
+            columna = claves[fkid][3]
+            actual = conn.execute(
+                f'SELECT "{columna}" AS valor FROM {tabla} WHERE rowid = ?', (rowid,)
+            ).fetchone()
+            valor = actual["valor"] if actual is not None else None
+    detalle = f"fila id={id_}" if id_ else f"rowid={rowid}"
+    if columna:
+        detalle += f", {columna}={valor}"
+    raise MigrationError(
+        f"clave foránea rota en la tabla '{tabla}' ({detalle}): apunta a una "
+        f"fila de '{padre}' que no está ni en el dump ni en el índice. No se ha "
+        "escrito nada: la transacción se deshace entera."
+    )
+
+
+def _omitir_filas_sin_database(filas: dict[str, list[dict[str, Any]]], contadores: Counters) -> None:
+    """Quita las filas de `rows` que no tienen `database_id`, contándolas.
+
+    En el esquema viejo `rows.database_id` admitía NULL (`ON DELETE SET
+    NULL`): al borrar la database, sus filas se quedaban sin destino. En el
+    índice es NOT NULL, así que no hay dónde colocarlas. La página de la fila
+    sí se migra: existía en `/pages` y perderla sería peor que dejarla sin
+    propiedades.
+    """
+    migrables = []
+    for fila in filas["rows"]:
+        if fila.get("database_id"):
+            migrables.append(fila)
+            continue
+        contadores.omitir(
+            "rows",
+            f"la fila {fila['id']} no tiene database_id (su database se borró: "
+            "ON DELETE SET NULL); su página se migra sin propiedades, su "
+            "entrada en `rows` no",
+        )
+    filas["rows"] = migrables
+
+
 def aplicar(index_path: str, dump: Dump, dry_run: bool = False) -> Counters:
     """Escribe el dump en el índice. Idempotente por `id`."""
     contadores = Counters()
@@ -274,20 +374,25 @@ def aplicar(index_path: str, dump: Dump, dry_run: bool = False) -> Counters:
             "cumplir la FK. No se ha escrito nada. Revisa la base de datos original."
         )
 
+    filas: dict[str, list[dict[str, Any]]] = {
+        tabla: list(getattr(dump, tabla)) for tabla in TABLAS
+    }
+    _omitir_filas_sin_database(filas, contadores)
+
     if dry_run:
         # Un dry run no debe crear ni tocar el índice: si no existe, todo sería
         # nuevo; si existe, se mira qué ids faltan.
         if os.path.exists(index_path):
             conn = indice.connect(index_path)
             try:
-                for tabla in ("workspaces", "pages", "rows", "databases", "views", "links"):
-                    for fila in getattr(dump, tabla):
+                for tabla in TABLAS:
+                    for fila in filas[tabla]:
                         contadores.add(tabla, not _existe(conn, tabla, fila["id"]))
             finally:
                 conn.close()
         else:
-            for tabla in ("workspaces", "pages", "rows", "databases", "views", "links"):
-                for fila in getattr(dump, tabla):
+            for tabla in TABLAS:
+                for fila in filas[tabla]:
                     contadores.add(tabla, True)
         return contadores
 
@@ -295,78 +400,104 @@ def aplicar(index_path: str, dump: Dump, dry_run: bool = False) -> Counters:
     conn = indice.connect(index_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Las páginas llegan en el orden del heap de Postgres, y un hijo puede
+        # venir antes que su padre. Con las FK diferidas al COMMIT el orden
+        # deja de importar; las violaciones reales se comprueban justo antes de
+        # confirmar, para poder nombrarlas.
+        conn.execute("PRAGMA defer_foreign_keys = ON")
 
-        for w in dump.workspaces:
+        for w in filas["workspaces"]:
             creada = not _existe(conn, "workspaces", w["id"])
-            conn.execute(
+            _insertar(
+                conn, "workspaces",
                 "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET name = excluded.name,"
                 " created_at = excluded.created_at",
                 (w["id"], w["name"], w["created_at"]),
+                w["id"],
             )
             contadores.add("workspaces", creada)
 
-        for p in dump.pages:
+        for p in filas["pages"]:
             creada = not _existe(conn, "pages", p["id"])
             columnas = ", ".join(p)
             marcas = ", ".join("?" for _ in p)
             updates = ", ".join(f"{c} = excluded.{c}" for c in p if c != "id")
-            conn.execute(
+            _insertar(
+                conn, "pages",
                 f"INSERT INTO pages ({columnas}) VALUES ({marcas})"
                 f" ON CONFLICT(id) DO UPDATE SET {updates}",
                 tuple(p.values()),
+                p["id"],
             )
             contadores.add("pages", creada)
 
-        for d in dump.databases:
+        for d in filas["databases"]:
             creada = not _existe(conn, "databases", d["id"])
-            conn.execute(
+            _insertar(
+                conn, "databases",
                 "INSERT INTO databases (id, page_id, schema_json) VALUES (?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET page_id = excluded.page_id,"
                 " schema_json = excluded.schema_json",
                 (d["id"], d["page_id"], d["schema_json"]),
+                d["id"],
             )
             contadores.add("databases", creada)
 
         # `rows` después de `databases`: la FK va de rows.database_id a
-        # databases.id y, dentro de una transacción, SQLite la comprueba en
-        # cada sentencia.
-        for r in dump.rows:
+        # databases.id (y la de rows.id a pages.id, ya insertadas).
+        for r in filas["rows"]:
             creada = not _existe(conn, "rows", r["id"])
-            conn.execute(
+            _insertar(
+                conn, "rows",
                 "INSERT INTO rows (id, database_id, properties_json, path)"
                 " VALUES (?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET database_id = excluded.database_id,"
                 " properties_json = excluded.properties_json, path = excluded.path",
                 (r["id"], r["database_id"], r["properties_json"], r["path"]),
+                r["id"],
             )
             contadores.add("rows", creada)
 
-        for v in dump.views:
+        for v in filas["views"]:
             creada = not _existe(conn, "views", v["id"])
-            conn.execute(
+            _insertar(
+                conn, "views",
                 "INSERT INTO views (id, database_id, name, type, config_json)"
                 " VALUES (?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET database_id = excluded.database_id,"
                 " name = excluded.name, type = excluded.type,"
                 " config_json = excluded.config_json",
                 (v["id"], v["database_id"], v["name"], v["type"], v["config_json"]),
+                v["id"],
             )
             contadores.add("views", creada)
 
-        for l in dump.links:
+        for l in filas["links"]:
             creada = not _existe(conn, "links", l["id"])
-            conn.execute(
+            _insertar(
+                conn, "links",
                 "INSERT INTO links (id, from_id, to_id, kind, target_title)"
                 " VALUES (?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET from_id = excluded.from_id,"
                 " to_id = excluded.to_id, kind = excluded.kind,"
                 " target_title = excluded.target_title",
                 (l["id"], l["from_id"], l["to_id"], l["kind"], l["target_title"]),
+                l["id"],
             )
             contadores.add("links", creada)
 
-        conn.commit()
+        _verificar_claves(conn)
+        try:
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            # Red de seguridad: `_verificar_claves` ya mira las FK, pero si
+            # alguna restricción diferida se escapa, el mensaje sigue siendo
+            # el de un error de datos.
+            raise MigrationError(
+                f"el índice rechazó la migración al confirmar: {exc}. "
+                "No se ha escrito nada: la transacción se deshace entera."
+            ) from exc
     except BaseException:
         conn.rollback()
         raise
@@ -432,6 +563,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     except MigrationError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return EXIT_ERROR_DATOS
+    except indice.IndexSchemaError as exc:
+        print(
+            f"ERROR: el índice {args.index_path} no se puede usar: {exc}",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR_DATOS
+    except sqlite3.DatabaseError as exc:
+        print(
+            f"ERROR: el índice {args.index_path} rechazó la migración: {exc}",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR_DATOS
+
+    for aviso in contadores.avisos:
+        print(f"AVISO: {aviso}", file=sys.stderr)
 
     if args.dry_run:
         print("Dry run: no se ha escrito nada. Lo que se haría:")

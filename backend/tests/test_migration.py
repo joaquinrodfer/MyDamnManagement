@@ -164,3 +164,154 @@ def test_la_url_se_imprime_sin_contrasena():
     assert migracion._redact("postgresql://mdm:secreto@db:5432/mdm") == (
         "postgresql://mdm:***@db:5432/mdm"
     )
+
+
+# --------------------------------------------------------------------------
+# Rework P1.1: orden de inserción, filas sin destino y errores de datos
+# --------------------------------------------------------------------------
+
+
+def _pagina(ws: str, page_id: str, titulo: str, **extra) -> dict:
+    """Una fila de `pages` con la forma que devuelve la lectura de Postgres."""
+    fila = {
+        "id": page_id, "workspace_id": ws, "parent_id": None, "type": "note",
+        "title": titulo, "icon": "📄", "description": None, "created_by": "Tú",
+        "header_image_path": None, "body": "", "path": None, "mtime": None,
+        "size": None, "content_hash": None,
+        "created_at": "2026-10-01T10:00:00+00:00",
+        "updated_at": "2026-10-01T10:00:00+00:00",
+    }
+    fila.update(extra)
+    return fila
+
+
+def _dump_en_arbol():
+    """Abuelo > padre > hijo, con el hijo ANTES que su padre en la lista.
+
+    Es el orden que devuelve `SELECT * FROM pages` de Postgres cuando el padre
+    se editó después de crear al hijo (su tupla se va al final del heap), así
+    que la migración no puede depender del orden en que llegan las filas.
+    """
+    ws = str(uuid.uuid4())
+    abuelo, padre, hijo = (str(uuid.uuid4()) for _ in range(3))
+    dump = migracion.Dump(
+        workspaces=[{"id": ws, "name": "default", "created_at": "2026-10-01T10:00:00+00:00"}],
+        pages=[
+            _pagina(ws, hijo, "Nieto", parent_id=padre, body="Vuelta al [[Abuelo]]"),
+            _pagina(ws, padre, "Padre", parent_id=abuelo),
+            _pagina(ws, abuelo, "Abuelo"),
+        ],
+        links=[{
+            "id": str(uuid.uuid4()), "from_id": hijo, "to_id": abuelo,
+            "kind": "wikilink", "target_title": "Abuelo",
+        }],
+    )
+    return dump, (abuelo, padre, hijo)
+
+
+def test_migracion_con_hijos_antes_que_sus_padres(tmp_path):
+    """Un árbol de 3 niveles llega con el hijo primero: no puede abortar."""
+    index_path = tmp_path / "indice.sqlite"
+    dump, (abuelo, padre, hijo) = _dump_en_arbol()
+
+    primera = migracion.aplicar(str(index_path), dump)
+    assert primera.nuevas == {"workspaces": 1, "pages": 3, "links": 1}
+    assert sum(primera.actualizadas.values()) == 0
+
+    conn = sqlite3.connect(index_path)
+    try:
+        padres = dict(conn.execute("SELECT id, parent_id FROM pages"))
+        assert padres == {abuelo: None, padre: abuelo, hijo: padre}
+        assert conn.execute("SELECT count(*) FROM links").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+    # Y la segunda pasada no duplica ni cambia nada.
+    despues_primera = _volcado(index_path)
+    segunda = migracion.aplicar(str(index_path), dump)
+    assert segunda.nuevas == {}
+    assert segunda.actualizadas == {"workspaces": 1, "pages": 3, "links": 1}
+    assert _volcado(index_path) == despues_primera
+
+
+def test_fila_sin_database_id_se_omite_y_se_cuenta(tmp_path):
+    """`rows.database_id` era NULL-able (ON DELETE SET NULL) en el esquema viejo.
+
+    El índice no lo permite: la fila se omite, se cuenta y se avisa con su id,
+    en vez de tumbar la migración entera.
+    """
+    index_path = tmp_path / "indice.sqlite"
+    ws = str(uuid.uuid4())
+    huerfana = str(uuid.uuid4())
+    dump = migracion.Dump(
+        workspaces=[{"id": ws, "name": "default", "created_at": "2026-10-01T10:00:00+00:00"}],
+        pages=[_pagina(ws, huerfana, "Fila huérfana", type="database_row")],
+        rows=[{
+            "id": huerfana, "database_id": None,
+            "properties_json": "{}", "path": None,
+        }],
+    )
+
+    contadores = migracion.aplicar(str(index_path), dump)
+
+    assert contadores.omitidas == {"rows": 1}
+    assert any(huerfana in aviso for aviso in contadores.avisos)
+    assert "OMITIDAS" in contadores.resumen()
+    assert "rows: 1" in contadores.resumen()
+
+    conn = sqlite3.connect(index_path)
+    try:
+        # La página se migra (existía en /pages); su entrada en `rows` no.
+        assert conn.execute("SELECT count(*) FROM pages").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM rows").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_clave_foranea_rota_es_error_de_datos_y_no_escribe(tmp_path):
+    """Un enlace a una página que no está ni en el dump ni en el índice."""
+    index_path = tmp_path / "indice.sqlite"
+    ws = str(uuid.uuid4())
+    nota = str(uuid.uuid4())
+    fantasma = str(uuid.uuid4())
+    dump = migracion.Dump(
+        workspaces=[{"id": ws, "name": "default", "created_at": "2026-10-01T10:00:00+00:00"}],
+        pages=[_pagina(ws, nota, "Origen")],
+        links=[{
+            "id": str(uuid.uuid4()), "from_id": nota, "to_id": fantasma,
+            "kind": "wikilink", "target_title": "Fantasma",
+        }],
+    )
+
+    with pytest.raises(migracion.MigrationError) as excinfo:
+        migracion.aplicar(str(index_path), dump)
+
+    mensaje = str(excinfo.value)
+    assert "links" in mensaje and fantasma in mensaje
+    assert "No se ha escrito nada" in mensaje
+
+    conn = sqlite3.connect(index_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM pages").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM links").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_un_error_de_datos_sale_con_codigo_3_y_sin_traceback(tmp_path, monkeypatch, capsys):
+    """`main()` convierte el fallo en el mensaje de EXIT_ERROR_DATOS."""
+    index_path = tmp_path / "indice.sqlite"
+    dump, _ = _dump_en_arbol()
+    dump.links[0]["to_id"] = str(uuid.uuid4())  # destino inexistente
+    monkeypatch.setattr(migracion, "cargar_desde_postgres", lambda dsn: dump)
+
+    codigo = migracion.main([
+        "--database-url", "postgresql://mdm:secreto@db:5432/mdm",
+        "--index-path", str(index_path),
+    ])
+
+    salida = capsys.readouterr()
+    assert codigo == migracion.EXIT_ERROR_DATOS
+    assert "ERROR:" in salida.err
+    assert "links" in salida.err
+    assert "secreto" not in salida.out + salida.err
