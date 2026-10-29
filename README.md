@@ -204,11 +204,140 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **P2 — bases de datos y filas en ficheros** — `Bases/<slug>.md` + `Bases/<slug>/*.md`, `schema` y `views` en el frontmatter, alta/baja/edición escribiendo ficheros, reindexado de bases y filas, papelera y migración
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
-## Despliegue objetivo
+## Despliegue (producción, solo por Tailscale)
 
- Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El mismo `docker-compose.yml` sirve para los dos: la imagen de `api` es autocontenida (backend + `frontend/` ya copiados dentro, ver más abajo), así que mover el proyecto a Proxmox es copiar `docker-compose.yml` + `.env` y levantar los contenedores ahí — los datos viajan en dos volúmenes: `mdm_vault` (las notas `.md`, **esto es lo que hay que respaldar**; `rsync` de la carpeta basta) y `mdm_data` (el índice SQLite, reconstruible desde el vault).
+`docker-compose.yml` es el de **desarrollo**: monta `backend/app` y `frontend` encima del código que ya trae la imagen y arranca uvicorn con `--reload`. Para dejar esto corriendo en un servidor hay un fichero aparte, [`docker-compose.prod.yml`](docker-compose.prod.yml). No es un *override* del de desarrollo: es un compose completo y autónomo, se usa solo y nunca se combina con el otro.
 
-La imagen de `api` se construye con el contexto en la raíz del repo (`context: .` en `docker-compose.yml`, no `./backend`) precisamente para poder copiar `frontend/` (incluido `vendor/editor.bundle.js`, ya compilado) dentro de la imagen — antes solo llegaba vía el bind-mount de desarrollo (`./frontend:/app/frontend:ro`), que no existe fuera de esta máquina; sin el bind-mount, `/app/frontend` se creaba vacío y el panel no se servía. En desarrollo el bind-mount sigue ahí y se superpone al contenido ya copiado (para hot-reload sin reconstruir la imagen); en un despliegue sin ese bind-mount, la imagen ya trae todo consigo.
+| | desarrollo (`docker-compose.yml`) | producción (`docker-compose.prod.yml`) |
+| --- | --- | --- |
+| Código | bind-mount de `backend/app` y `frontend` | dentro de la imagen, sin montajes |
+| Recarga | `--reload` | `--workers 1`, sin recarga |
+| Puerto | `8000:8000` en todas las interfaces | `127.0.0.1:8000`, solo loopback |
+| Volúmenes | código y datos | solo `mdm_data` y `mdm_vault` |
+| Reinicio | `unless-stopped` | `unless-stopped` |
+| Healthcheck | — | `GET /status`: falla si no se leen el índice o el vault |
+| Logs | `docker logs` | `docker logs`; rotación del driver de Docker (10 MB × 3), no de la app |
+
+Un solo contenedor (`api`), sin Postgres y sin puerto 5432: el índice es un fichero SQLite y el vault son ficheros `.md`.
+
+### Puesta en marcha
+
+En el servidor (Docker con el plugin `compose` v2 y Tailscale instalado):
+
+```bash
+git clone <url-del-repo> MyDamnManagement
+cd MyDamnManagement
+git switch release/v1.0        # la rama/etiqueta que quieras desplegar
+cp .env.example .env           # DEFAULT_USER_NAME; el resto lo fija el compose
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps     # api ... (healthy)
+curl -s http://127.0.0.1:8000/health
+```
+
+- **Estado del healthcheck:** `docker inspect --format '{{.State.Health.Status}}' mdm_api_prod` (`starting` hasta que pasa el periodo de gracia del arranque, luego `healthy`). El motivo del último fallo, con texto: `docker inspect --format '{{json .State.Health}}' mdm_api_prod | python3 -m json.tool`. Está definido en el compose y no usa `/health` (que siempre contesta `ok`): pregunta a `/status`, que abre el índice y recorre el vault, y sale con código 1 diciendo qué falla — `el índice no se puede leer: …`, `no existe el vault … (¿volumen sin montar?)`, `el vault no se puede recorrer: …`.
+- **Actualizar:** `git pull && docker compose -f docker-compose.prod.yml up -d --build`. Cada arranque reindexa el vault entero, así que un cambio de código no necesita ningún paso extra sobre los datos.
+- **Los volúmenes se llaman `mdm-prod_mdm_data` y `mdm-prod_mdm_vault`** porque el compose fija `name: mdm-prod`. No dependen del directorio desde el que clones, y así el backup y el restore de más abajo son comandos exactos y no "mira a ver cómo se llama".
+
+### Exponerlo por Tailscale
+
+La app **no** se publica en la red: el compose la deja en `127.0.0.1:8000`. Delante va `tailscale serve`, que termina TLS con el certificado del tailnet y le pasa las peticiones por loopback:
+
+```bash
+tailscale status                        # el servidor está en tu tailnet
+sudo tailscale serve --bg http://127.0.0.1:8000
+tailscale serve status                  # qué está publicado y en qué nombre
+```
+
+Se entra desde cualquier dispositivo del tailnet en `https://<equipo>.<tu-tailnet>.ts.net/`. Para quitarlo, `sudo tailscale serve reset`. Hace falta que el tailnet tenga MagicDNS y HTTPS activados (es lo que emite el certificado). Si tu versión de Tailscale es más antigua y no acepta esa forma, la corta es `sudo tailscale serve --bg 8000`; `tailscale serve status` dice cuál ha quedado.
+
+Lo que esto protege y lo que no, sin adornos:
+
+- **La frontera es la red, no un login.** La app sigue sin autenticación: quien alcance el puerto lee, escribe y borra. Lo que cambia es que el puerto ya no está abierto a la LAN ni a internet, y solo llega quien esté en tu tailnet (y a quien tus ACLs de Tailscale dejen llegar a ese equipo).
+- **Nunca `tailscale funnel`**: eso publica el servicio en internet. `serve` es para el tailnet; `funnel` no.
+- Si compartes tailnet con más gente o con dispositivos que no son tuyos, restringe el acceso con ACLs de Tailscale (`tailscale.com/kb/1018/acls`) antes de meter notas de verdad.
+- La alternativa que planteaba el roadmap —un token de API por cabecera— **no está implementada**. Añadirla es código de la app (una dependencia que revise la cabecera en cada router), no empaquetado, y este cambio no toca la app. Queda como deuda para cuando haya más de un usuario.
+
+### `/docs` y `/openapi.json`
+
+**Decisión: en v1.0 se quedan encendidos.** No hay variable de entorno que los apague — `backend/app/main.py` construye `FastAPI(title=...)` sin `docs_url=None`— y añadirla es un cambio de comportamiento de la app, fuera del alcance de este cambio (aquí solo se toca el empaquetado y la documentación). La protección es la misma que la del resto de la API: solo se alcanzan desde la propia máquina o desde el tailnet, y exponen lo mismo que ya expone la API sin auth. Si quieres apagarlos, el cambio es este, en `backend/app/main.py`:
+
+```python
+app = FastAPI(
+    title="MyDamnManagement API",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+```
+
+(o el mismo ternario leyendo un ajuste de `app/config.py`, si se prefiere conmutable por `.env`). No está hecho aquí a propósito: P7 es empaquetado y documentación.
+
+### Logs
+
+uvicorn escribe a **stdout/stderr** (log de acceso y errores); la app no abre ningún fichero de log ni rota nada. Se leen con Docker:
+
+```bash
+docker compose -f docker-compose.prod.yml logs -f api
+docker logs --since 20m mdm_api_prod
+```
+
+El compose fija el driver `json-file` con `max-size: 10m` y `max-file: 3` para que el registro no llene el disco del servidor: eso es rotación del driver de Docker, no de la aplicación.
+
+### Backup
+
+Lo que hay que respaldar es **el vault**: `mdm-prod_mdm_vault` tiene las notas (`Notas/`), las bases y sus filas (`Bases/`), los adjuntos (`_attachments/`) y la papelera (`.trash/`). El índice (`mdm-prod_mdm_data`, un `index.sqlite`) es **derivado**: se reconstruye desde el vault en cada arranque, así que no se respalda.
+
+Copia con `tar` dentro del propio contenedor (misma imagen, sin instalar nada en el servidor):
+
+```bash
+cd /ruta/al/MyDamnManagement
+mkdir -p backups
+docker compose -f docker-compose.prod.yml run --rm -T --entrypoint tar \
+    api -czf - -C /data/vault . > "backups/vault-$(date +%F).tar.gz"
+tar tzf "backups/vault-$(date +%F).tar.gz" | head   # comprobar que no está vacío
+```
+
+`run` levanta un contenedor de un solo uso con los mismos volúmenes, así que funciona igual con el servicio levantado o parado. Se puede copiar en caliente: los `.md` y los adjuntos se escriben de forma atómica, de modo que lo peor es perder el último guardado, nunca un fichero a medias. Para programarlo, una línea de `cron` (aquí un ejemplo diario a las 03:30, en el `crontab` del usuario que puede usar Docker):
+
+```cron
+30 3 * * * cd /ruta/al/MyDamnManagement && docker compose -f docker-compose.prod.yml run --rm -T --entrypoint tar api -czf - -C /data/vault . > "backups/vault-$(date +\%F).tar.gz"
+```
+
+Si prefieres `rsync`, los volúmenes con nombre viven en `/var/lib/docker/volumes/mdm-prod_mdm_vault/_data` del host y `sudo rsync -a` de esa carpeta también vale; el `tar` de arriba evita depender de esa ruta y de los permisos de root.
+
+### Restore
+
+**Restaurar solo el vault** (el caso normal: el índice no hace falta):
+
+```bash
+cd /ruta/al/MyDamnManagement
+docker compose -f docker-compose.prod.yml down        # sin -v: no borra volúmenes
+docker volume rm mdm-prod_mdm_vault
+cat backups/vault-2026-10-29.tar.gz | \
+    docker compose -f docker-compose.prod.yml run --rm -T --entrypoint tar api -xzf - -C /data/vault
+docker compose -f docker-compose.prod.yml up -d
+```
+
+`run` vuelve a crear el volumen vacío que se acaba de borrar. Al arrancar, la app reindexa el vault: **no hace falta `VAULT_ALLOW_EMPTY`**, que es el caso contrario (índice con notas y vault vacío: entonces el arranque se niega a vaciarlo). Con el vault restaurado y el índice vacío, nuevo o atrasado, el arranque lo reconstruye; si el índice se quedó con notas viejas, el vault manda y se reescribe.
+
+Comprobación después del restore:
+
+```bash
+docker compose -f docker-compose.prod.yml ps                          # api ... (healthy)
+curl -s http://127.0.0.1:8000/status
+```
+
+En el JSON de `/status`, `services.db.counts.pages` tiene que ser mayor que 0 y `drift.changed` tiene que ser 0 (si no lo es, `curl -X POST http://127.0.0.1:8000/reindex`). Después, abre el panel y mira que están tus notas.
+
+**Restaurar también el índice** solo tiene sentido si guardaste `mdm-prod_mdm_data`, y entonces hay que parar el servicio antes de copiar (es un SQLite en WAL: copiarlo en caliente no es seguro). No hace falta para recuperar los datos, y este documento no lo recomienda: el vault es la verdad y el índice se rehace.
+
+### Lo que no está verificado aquí
+
+Este cambio se ha hecho sin poder arrancar el contenedor ni tocar un tailnet: en la máquina donde se escribió no hay plugin `compose` (`docker compose` no existe como subcomando), el daemon de Docker está caído y no hay `tailscale`. Por tanto:
+
+- `docker compose -f docker-compose.prod.yml config` **no se ha ejecutado**. El YAML está validado (parsea y las claves del criterio se han comprobado con un script: sin bind-mounts, puerto en loopback, `restart`, `healthcheck`, sin `--reload`), pero la validación final del CLI la tiene que hacer el despliegue: es el primer comando que conviene correr en el servidor antes de `up`.
+- El comando del `healthcheck` **sí** está probado contra la app de verdad: se extrajo el script del propio YAML y se ejecutó contra un `uvicorn` local con un índice y un vault temporales — devuelve 0 con todo sano, 1 nombrando el índice cuando el directorio del índice desaparece, 1 nombrando el vault cuando el vault desaparece o no se puede recorrer, y vuelve a 0 al restaurarlos. También se comprobó, con la app en marcha, que un índice vacío más un vault con notas arranca con el índice reconstruido (1 página, `drift.changed` 0) y que un vault editado por fuera gana al índice atrasado en el siguiente arranque.
+- `docker build` de la imagen, `docker compose up` y `tailscale serve` **no** se han ejecutado aquí.
 
 ## Licencia
 
