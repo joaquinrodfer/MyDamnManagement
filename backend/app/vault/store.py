@@ -785,10 +785,20 @@ class VaultStore:
         ).fetchall()
 
     def _repath_children(self, old_prefix: str, new_prefix: str) -> None:
-        """Actualiza la ruta de las descendientes al mover/renombrar su carpeta."""
+        """Actualiza la ruta de las descendientes al mover/renombrar su carpeta.
+
+        Incluye las filas de una base que cuelgue de la nota movida: sus rutas
+        viven en `pages.path` **y** en `rows.path`, y si una se queda atrás el
+        índice dice algo que el disco no dice (lo destapó la comprobación de
+        huella de P2).
+        """
         size = len(old_prefix) + 1          # con la barra: "Notas/X/" mide eso
         self.conn.execute(
             "UPDATE pages SET path = ? || substr(path, ?) WHERE substr(path, 1, ?) = ?",
+            (new_prefix + "/", size + 1, size, old_prefix + "/"),
+        )
+        self.conn.execute(
+            "UPDATE rows SET path = ? || substr(path, ?) WHERE substr(path, 1, ?) = ?",
             (new_prefix + "/", size + 1, size, old_prefix + "/"),
         )
 

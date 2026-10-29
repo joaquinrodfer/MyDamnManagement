@@ -244,6 +244,26 @@ def test_renombrar_la_base_renombra_su_carpeta_de_filas(client, vault_path):
     assert [(f["id"], f["title"]) for f in filas] == [(fila["id"], "Acme")]
 
 
+def test_mover_la_nota_que_contiene_una_base_mueve_tambien_sus_filas(client, index_path, vault_path):
+    """La base cuelga de la nota: si la nota se mueve, la base y sus filas van con ella."""
+    nota = client.post("/pages", json={"title": "Proyecto"}).json()
+    base = crear_database(
+        client, title="Contactos", parent_id=nota["id"], schema_def=CRM_SCHEMA
+    )
+    crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
+    assert (vault_path / "Notas" / "Proyecto" / "Contactos.md").exists()
+
+    client.patch(f"/pages/{nota['id']}", json={"title": "Proyecto 2026"})
+
+    assert (vault_path / "Notas" / "Proyecto 2026" / "Contactos.md").exists()
+    assert (vault_path / "Notas" / "Proyecto 2026" / "Contactos" / "Acme.md").exists()
+    assert not (vault_path / "Notas" / "Proyecto").exists()
+    # Y el índice no se queda con rutas viejas (`pages.path` ni `rows.path`).
+    reindexar_y_comparar_huella(client, index_path)
+    assert [f["title"] for f in client.get(f"/databases/{base['id']}/rows").json()] == ["Acme"]
+    assert client.get(f"/pages/{base['page_id']}").json()["parent_id"] == nota["id"]
+
+
 # --------------------------------------------------------------------------
 # 3. índice derivado: borrarlo y arrancar deja lo mismo, tabla a tabla
 # --------------------------------------------------------------------------
