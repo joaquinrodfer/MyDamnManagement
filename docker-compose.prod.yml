@@ -1,0 +1,118 @@
+# Despliegue de producción: el código va DENTRO de la imagen, sin recarga en
+# caliente, con un healthcheck que mira el índice y el vault de verdad, y con
+# el puerto publicado SOLO en loopback para que delante vaya `tailscale serve`
+# (paso a paso en la sección "Despliegue" del README.md).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# `docker-compose.yml` se queda como está: es el de desarrollo (bind-mounts de
+# `backend/app` y `frontend`, `--reload`). Este fichero es autónomo, no un
+# override: se usa solo, y nunca se combina con el de desarrollo.
+#
+# El nombre del proyecto se fija aquí para que los volúmenes no dependan del
+# directorio desde el que se clone el repo: se llaman `mdm-prod_mdm_vault` y
+# `mdm-prod_mdm_data`, y el README los nombra así en el backup y el restore.
+name: mdm-prod
+
+services:
+  api:
+    build:
+      context: . # raíz del repo: el Dockerfile copia backend/ y frontend/ dentro de la imagen
+      dockerfile: backend/Dockerfile
+    image: mydamnmanagement:prod
+    container_name: mdm_api_prod
+    restart: unless-stopped
+    environment:
+      # Un único fichero SQLite como índice, sin servicio de base de datos y sin
+      # puerto 5432. El vault de ficheros `.md` vive en su propio volumen: es la
+      # verdad de las notas y lo único que hay que respaldar (README, "Backup").
+      INDEX_PATH: /data/index.sqlite
+      VAULT_PATH: /data/vault
+      DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
+    # Solo datos. Nada de `./backend/app` ni `./frontend`: el código ya está en
+    # la imagen (`backend/Dockerfile` los copia) y montarlo encima reintroduciría
+    # justo el hot-reload que este fichero existe para quitar.
+    volumes:
+      - mdm_data:/data # índice SQLite: derivado, se reconstruye desde el vault
+      - mdm_vault:/data/vault # las notas, bases, filas y adjuntos: el backup
+    # 127.0.0.1, no "8000:8000": desde fuera solo se alcanza a través de la
+    # propia máquina. `tailscale serve` (en el host) termina el TLS y habla con
+    # esta dirección; sin él, la app no sale a ninguna interfaz de red.
+    # Publicar aquí "8000:8000" deja una app SIN autenticación al alcance de
+    # toda la red: es exactamente lo que este fichero evita.
+    ports:
+      - "127.0.0.1:8000:8000"
+    # Un solo worker a propósito: cada worker reindexa el vault entero en su
+    # arranque (`app.main.on_startup`) y el índice es un SQLite con un único
+    # escritor. Con `--workers > 1` son N reindexados simultáneos sobre el mismo
+    # fichero y N procesos escribiendo: contenido y bloqueos, no rendimiento.
+    # Para un cerebro personal en un solo equipo, un worker sobra; si algún día
+    # hace falta más, primero hay que sacar el reindexado del arranque.
+    #
+    # `0.0.0.0` es la interfaz DENTRO del contenedor (docker solo la publica en
+    # 127.0.0.1 del host, ver `ports`). `--proxy-headers` y
+    # `--forwarded-allow-ips` hacen que el log de acceso muestre la IP del
+    # cliente y no la del proxy de `tailscale serve`.
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+      --proxy-headers --forwarded-allow-ips=* --log-level info
+    healthcheck:
+      # No usa `/health` (siempre responde "ok" y no toca nada): pregunta a
+      # `/status`, que abre el índice y recorre el vault, y falla con un motivo
+      # legible si cualquiera de los dos no se puede leer. El motivo aparece en
+      # `docker inspect --format '{{json .State.Health}}' mdm_api_prod`.
+      #
+      # Sin `curl` a propósito: sería una dependencia más en
+      # `python:3.12-slim-bookworm` solo para esto.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import json, os, sys, urllib.request
+
+
+          def fail(msg):
+              print("healthcheck: " + msg, file=sys.stderr)
+              sys.exit(1)
+
+
+          vault = os.environ.get("VAULT_PATH", "/data/vault")
+          if not os.path.isdir(vault):
+              fail("no existe el vault " + vault + " (¿volumen sin montar?)")
+
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:8000/status", timeout=10) as resp:
+                  data = json.load(resp)
+          except Exception as exc:
+              fail("/status no responde: " + repr(exc))
+
+          db = data.get("services", {}).get("db") or {}
+          if not db.get("ok"):
+              fail("el índice no se puede leer: " + str(db.get("error")))
+
+          drift = data.get("drift") or {}
+          if not drift.get("ok"):
+              fail("el vault no se puede recorrer: " + str(drift.get("error")))
+
+          print(
+              "ok: índice v%s, %s ficheros del vault comprobados"
+              % (db.get("schema_version"), drift.get("checked"))
+          )
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      # El arranque reindexa el vault entero (0,32 s medidos con 5.033 notas):
+      # este margen evita contar como caído un arranque normal.
+      start_period: 60s
+    # stdout/stderr, sin ficheros ni rotación propia: `docker logs mdm_api_prod`.
+    # La rotación la hace el driver de Docker (abajo), no la app.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mdm_data:
+  mdm_vault:
