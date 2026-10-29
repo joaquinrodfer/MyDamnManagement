@@ -91,12 +91,12 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/`            | GET    | Panel de estado (frontend estático, sin build)           |
 | `/health`      | GET    | Comprobación de vida del servicio                       |
 | `/status`      | GET    | Estado agregado de `api` y del almacén (`db`, ahora el índice SQLite) |
-| `/reindex`     | POST   | Reconstruye el índice desde el vault (`Notas/*.md`) y devuelve recuento, duración y avisos |
+| `/reindex`     | POST   | Reconstruye el índice desde el vault (`Notas/*.md`) y devuelve recuento, duración y avisos. **409** si el vault no existe o no tiene ningún `.md` (un volumen sin montar no es un vault vacío); `?force=true` para vaciarlo a propósito |
 | `/pages`       | GET    | Lista todas las páginas del workspace                   |
 | `/pages`       | POST   | Crea la página con su cuerpo y sus wikilinks (y escribe su `.md` si es una nota) |
 | `/pages/{id}`  | GET    | Lee una página con su cuerpo                             |
 | `/pages/{id}`  | PATCH  | Actualiza título, icono, descripción, cuerpo o `parent_id` (mover de carpeta; `null` = a la raíz) |
-| `/pages/{id}`  | DELETE | Borra la página (las notas van a `.trash/`; el resto, encadenado a hijos, enlaces y, si es una database, sus filas y vistas) |
+| `/pages/{id}`  | DELETE | Borra la página (las notas van a `.trash/`; el resto, encadenado a hijos, enlaces y, si es una database, sus filas y vistas). **400** si de una nota cuelga una base: en P1.2a la base solo vive en el índice y no tendría papelera |
 | `/pages/tree`  | GET    | Árbol de páginas por `parent_id`                        |
 | `/pages/{id}/backlinks` | GET | Páginas que enlazan a esta vía `[[wikilink]]`     |
 | `/pages/{id}/header-image` | POST | Sube/reemplaza la imagen de cabecera (`multipart/form-data`, campo `file`) |
