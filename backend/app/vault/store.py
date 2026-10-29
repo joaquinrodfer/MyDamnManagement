@@ -603,6 +603,10 @@ class VaultNotes:
         stamp = vaultfs.trash_dir_for(self.root)
         for rel_file in files:
             src = os.path.join(self.root, vaultfs.safe_rel(self.root, rel_file))
+            if not os.path.exists(src):
+                # Se borró por fuera y el índice aún no lo sabe: no hay nada que
+                # mover, pero la fila sí se va (borrar es idempotente).
+                continue
             vaultfs.move(src, os.path.join(stamp, rel_file))
         _prune_empty_dirs(abs_folder)
 

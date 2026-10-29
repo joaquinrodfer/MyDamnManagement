@@ -224,6 +224,15 @@ def test_borrar_manda_a_la_papelera_y_se_puede_restaurar(client, vault_path):
     assert client.get(f"/pages/{hija['id']}").json()["parent_id"] == padre["id"]
 
 
+def test_borrar_una_nota_cuyo_fichero_ya_no_esta_no_revienta(client, vault_path):
+    """Si el .md se borró por fuera, DELETE sigue dejando el índice limpio."""
+    page = crear(client, title="Efímera")
+    (vault_path / "Notas" / "Efímera.md").unlink()
+
+    assert client.delete(f"/pages/{page['id']}").status_code == 204
+    assert client.get(f"/pages/{page['id']}").status_code == 404
+
+
 # --------------------------------------------------------------------------
 # 4. reindexado
 # --------------------------------------------------------------------------
