@@ -84,7 +84,7 @@ Idempotencia: reconstruir dos veces, o borrar y reconstruir, produce el mismo co
 ## Consecuencias
 
 - Rebuild de 5.033 ficheros: 0,32 s en disco local; ~21 s sobre el montaje 9p de desarrollo. El objetivo de 5 s se mide en disco local. Mitigación si el vault acaba en red: reindexado incremental por `mtime` + tamaño.
-- Deriva de `/status` (P1.2b, medida con 5.000 notas): **22 ms** en disco local y ~7,2 s sobre el montaje 9p de desarrollo — el mismo factor que el reindexado, porque es la misma pasada de `scandir`. Un `stat` por fichero y ningún cuerpo leído: en el disco donde corre la app no se nota (el panel pide `/status` una vez al cargar).
+- Deriva de `/status` (P1.2b, medida con 5.000 notas): **~20–40 ms** en disco local (22 ms en la medición original y 36 ms al repetirla sobre el overlay de WSL) y ~7,2 s sobre el montaje 9p de desarrollo (`/opt/data`, medido: 7,1–7,5 s) — el mismo factor que el reindexado, porque es la misma pasada de `scandir`. Un `stat` por fichero y ningún cuerpo leído: en el disco donde corre la app no se nota (el panel pide `/status` una vez al cargar).
 - Un solo escritor: el despliegue debe garantizar un único contenedor.
 - Índice corrupto: debe detectarse al arrancar y reconstruirse, no reventar.
 - FTS5 depende de la versión de SQLite (mínimo 3.27): fijarla en la imagen.
