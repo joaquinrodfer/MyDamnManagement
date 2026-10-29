@@ -1,0 +1,6 @@
+# Solo para desarrollo/tests. La imagen de producción no los instala.
+# pytest 9.x es la primera línea que soporta Python 3.14 (con 8.3 el plugin de
+# captura revienta al cerrar la sesión); con 3.12, que es la del contenedor,
+# también funciona.
+pytest==9.2.0
+httpx==0.27.2
