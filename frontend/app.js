@@ -65,6 +65,9 @@ function describeError(e) {
 }
 
 const ERROR_TOAST_MS = 6000;
+// Tope de avisos a la vez: en el móvil ocupan el ancho completo y tres ya
+// tapan bastante la parte baja del editor.
+const MAX_ERROR_TOASTS = 3;
 
 /** Aviso discreto abajo a la derecha, descartable con su aspa, que se apila
  * si llegan varios y se va solo a los ~6s. El nodo se crea desde aquí (el
@@ -79,6 +82,23 @@ function showError(message) {
     document.body.appendChild(stack);
   }
 
+  const messageText = String(message);
+
+  // Un aviso repetido no se apila otra vez: sin esto, seis fallos seguidos
+  // dejaban seis copias idénticas del mismo mensaje en pantalla.
+  const already = Array.from(stack.children).find(
+    (t) => t.querySelector(".error-toast-text")?.textContent === messageText,
+  );
+  if (already) return already;
+
+  // Y nunca más de MAX_ERROR_TOASTS a la vez: con el cupo lleno se retira el
+  // más viejo, que es el que menos contexto aporta ya.
+  while (stack.childElementCount >= MAX_ERROR_TOASTS) {
+    const oldest = stack.firstElementChild;
+    if (oldest.retireToast) oldest.retireToast();
+    else oldest.remove();
+  }
+
   const toast = document.createElement("div");
   toast.className = "error-toast";
   toast.setAttribute("role", "status"); // los lectores de pantalla lo anuncian sin robar el foco
@@ -87,7 +107,7 @@ function showError(message) {
   text.className = "error-toast-text";
   // textContent y nunca innerHTML: el mensaje puede venir del backend y un
   // detail con HTML sería una inyección -- aquí solo se pinta texto.
-  text.textContent = String(message);
+  text.textContent = messageText;
 
   const close = document.createElement("button");
   close.type = "button";
@@ -104,6 +124,13 @@ function showError(message) {
     // ir dejando nodos vacíos colgando de body.
     if (stack.childElementCount === 0) stack.remove();
   }
+  // Retirar sin tocar el contenedor: lo usa el tope de apilado, que va a
+  // añadir otro aviso justo después (dismiss() borraría el contenedor vacío
+  // y el aviso nuevo se quedaría colgando de un nodo suelto).
+  toast.retireToast = () => {
+    clearTimeout(timer);
+    toast.remove();
+  };
   close.addEventListener("click", dismiss);
 
   toast.append(text, close);
@@ -912,7 +939,8 @@ function renderNote(page, backlinks) {
   let saveAgain = false;
   let dirty = false; // hay cambios que el servidor todavía no ha confirmado
   let changeSeq = 0; // sube con cada cambio: distingue "guardado" de "cambiado mientras guardaba"
-  let lastSentBody = null; // último cuerpo enviado (normal o de emergencia)
+  let lastSentBody = null; // último cuerpo ACEPTADO por el servidor
+  let beaconInFlight = null; // cuerpo del guardado de emergencia que va de camino
 
   /** Cuerpo del PATCH, compartido por el guardado normal y el de emergencia:
    * uno solo, para que no puedan acabar mandando cosas distintas. */
@@ -940,12 +968,46 @@ function renderNote(page, backlinks) {
     };
   }
 
+  /** Da el contenido por guardado: no queda nada pendiente ni hay que mandar
+   * nada al salir. Solo se llama cuando el servidor lo ha aceptado (o cuando
+   * no hay vuelta atrás posible, en el camino de `beforeunload`). */
+  function markSaved(body) {
+    dirty = false;
+    lastSentBody = body; // si hubiera que salir justo después, ya está guardado
+    clearTimeout(saveTimer);
+    state.flushPendingSave = null;
+  }
+
+  /** Lo contrario: el intento no se confirmó. Los cambios vuelven a estar
+   * pendientes y el autoguardado normal reintenta a los 2 s. Solo toca el
+   * estado compartido si esta nota sigue abierta -- si ya se navegó,
+   * `flushPendingSave` y `setSaveState` son de la página nueva. */
+  function markUnsaved() {
+    dirty = true;
+    lastSentBody = null;
+    if (state.flushSaveBeacon !== flushSaveBeacon) return;
+    setSaveState("dirty");
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, AUTOSAVE_DELAY_MS);
+    state.flushPendingSave = () => {
+      clearTimeout(saveTimer);
+      doSave();
+    };
+  }
+
   /** Guardado de emergencia al cerrar o esconder la pestaña: un `fetch`
    * normal lo cancela el navegador a medio camino al descargar la página, así
    * que este va con `keepalive` (la petición sigue viva aunque la pestaña no).
-   * Silencioso a propósito: no queda interfaz -- ni tiempo -- donde avisar de
-   * un fallo, y el autoguardado normal ya avisa mientras la página vive. */
-  function flushSaveBeacon() {
+   *
+   * Dos caminos, porque no es lo mismo irse que quedarse:
+   * - `alive: false` (beforeunload): optimista y silencioso. No queda interfaz
+   *   ni tiempo donde reintentar, así que se da por enviado en cuanto sale.
+   * - `alive: true` (visibilitychange): la pestaña sigue viva, así que solo se
+   *   da por guardado si el servidor contesta 2xx. Un 500/413 llega resuelto
+   *   (no pasa por el `catch` del fetch) y un corte de red lo rechaza; en los
+   *   dos casos los cambios se quedan pendientes y el autoguardado de 2 s los
+   *   reintenta. "Enviado" no es "aceptado por el servidor". */
+  function flushSaveBeacon({ alive = false } = {}) {
     if (!dirty) return false; // nada pendiente: ni una petición
 
     // Se construye antes de tocar el estado: si esto lanzara, los cambios
@@ -953,33 +1015,79 @@ function renderNote(page, backlinks) {
     const body = buildSaveBody();
 
     if (body === lastSentBody) {
-      // Mismo contenido que el último envío (visibilitychange y acto seguido
-      // beforeunload, por ejemplo): no se manda dos veces, y se descarta el
-      // guardado normal pendiente, que mandaría exactamente lo mismo.
-      dirty = false;
-      clearTimeout(saveTimer);
-      state.flushPendingSave = null;
+      // Mismo contenido que el último guardado CONFIRMADO (visibilitychange y
+      // acto seguido beforeunload, por ejemplo): no se manda dos veces, y se
+      // descarta el guardado normal pendiente, que mandaría lo mismo.
+      markSaved(body);
       return false;
     }
 
-    dirty = false;
-    lastSentBody = body;
-    clearTimeout(saveTimer);
-    state.flushPendingSave = null;
+    // Ese contenido ya va de camino: un segundo PATCH idéntico no aporta nada.
+    if (beaconInFlight === body) return false;
+
+    if (alive && saving) {
+      // Hay un PATCH normal en vuelo: no se solapan dos escrituras. doSave()
+      // deja marcado `saveAgain` y repite en cuanto termine.
+      doSave();
+      return false;
+    }
 
     // A partir de ~64 KB el navegador rechaza en el acto las peticiones con
     // keepalive (límite de una cola compartida); una nota así se manda sin él
     // -- puede que el navegador la corte al irse, pero es lo mejor que hay.
     const keepalive = new TextEncoder().encode(body).length <= KEEPALIVE_MAX_BYTES;
-    try {
+    const send = () =>
       fetch(`/pages/${page.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body,
         keepalive,
-      }).catch(() => {}); // la pestaña se está yendo: no hay a quién avisar
+      });
+
+    if (!alive) {
+      // Nadie va a leer la respuesta: se da por enviado (así un beforeunload y
+      // un visibilitychange seguidos no mandan lo mismo dos veces). El gancho
+      // de navegación se deja puesto a propósito: en un cierre real no lo
+      // consume nadie, y si el evento no llega a descargar la página, navegar
+      // a otra nota reintenta lo último en vez de darlo por perdido.
+      dirty = false;
+      lastSentBody = body;
+      clearTimeout(saveTimer);
+      try {
+        send().catch(() => {}); // la pestaña se está yendo: no hay a quién avisar
+      } catch {
+        // sin red o página ya descargándose
+      }
+      return true;
+    }
+
+    beaconInFlight = body;
+    try {
+      send()
+        .then((res) => {
+          // Un 4xx/5xx llega aquí como promesa resuelta: solo vale un 2xx.
+          if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "sin respuesta"}`);
+          if (state.flushSaveBeacon !== flushSaveBeacon) return; // ya no es la nota abierta
+          // El servidor ya tiene este cuerpo. Si mientras tanto se ha escrito
+          // más, `dirty` sigue puesto y el autoguardado manda lo nuevo.
+          if (!dirty || buildSaveBody() === body) {
+            markSaved(body);
+            setSaveState("saved");
+          } else {
+            lastSentBody = body;
+          }
+        })
+        .catch((e) => {
+          // No se confirma nada: los cambios vuelven a la cola del autoguardado.
+          console.error("El guardado de emergencia no se confirmó; se reintenta:", e);
+          markUnsaved();
+        })
+        .finally(() => {
+          if (beaconInFlight === body) beaconInFlight = null;
+        });
     } catch {
-      // sin red o página ya descargándose
+      beaconInFlight = null;
+      markUnsaved();
     }
     return true;
   }
@@ -1451,9 +1559,14 @@ async function renderDatabase(database, views, activeViewId) {
   deleteDbBtn.textContent = "Borrar base de datos";
   deleteDbBtn.addEventListener("click", async () => {
     if (!confirm(`¿Borrar "${database.title}" y todas sus filas? Esto no se puede deshacer.`)) return;
-    await api(`/databases/${database.id}`, { method: "DELETE" });
-    await loadTree();
-    showEmpty();
+    try {
+      await api(`/databases/${database.id}`, { method: "DELETE" });
+      await loadTree();
+      showEmpty();
+    } catch (e) {
+      // Si no se borró, la database sigue en pantalla: mejor decir por qué.
+      reportError("No se pudo borrar la base de datos", e);
+    }
   });
 
   headerActions.append(newViewBtn, deleteDbBtn);
@@ -1868,7 +1981,15 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
  * "+" de la barra lateral (siempre en la raíz) y "Nueva subpágina" del
  * menú contextual (bajo la página sobre la que se hizo clic derecho). */
 async function createNote(parent_id) {
-  const page = await api("/pages", { method: "POST", body: JSON.stringify({ title: "Sin título", parent_id, body_markdown: "" }) });
+  let page;
+  try {
+    page = await api("/pages", { method: "POST", body: JSON.stringify({ title: "Sin título", parent_id, body_markdown: "" }) });
+  } catch (e) {
+    // Antes esto dejaba una promesa rechazada sin capturar y cero avisos: el
+    // "+" parecía no hacer nada.
+    reportError("No se pudo crear la nota", e);
+    return;
+  }
   await loadTree();
   await goTo("note", page.id);
   const titleEl = document.querySelector(".note-title");
@@ -1972,17 +2093,18 @@ setInterval(pollStatus, 4000);
 // del autoguardado (< 2s desde la última pulsación), los manda ya -- con
 // keepalive, porque un fetch normal se cancela al descargar la página.
 // `visibilitychange` cubre lo que `beforeunload` no ve: cambiar de app en el
-// móvil, minimizar, bloquear la pantalla. Con los dos disparados no se guarda
-// dos veces: flushSaveBeacon sale sin hacer nada si no hay cambios pendientes
-// o si el contenido es el mismo que el último envío.
-function flushOnExit() {
+// móvil, minimizar, bloquear la pantalla -- pero ahí la pestaña sigue viva, así
+// que ese camino espera la respuesta y, si el servidor no la acepta, devuelve
+// los cambios al autoguardado (ver flushSaveBeacon). Con los dos disparados no
+// se guarda dos veces: el mismo contenido que ya va de camino no se repite.
+function flushOnExit(alive) {
   try {
-    state.flushSaveBeacon?.();
+    state.flushSaveBeacon?.({ alive });
   } catch {
     // la pestaña se está yendo: ni aviso ni reintento posibles
   }
 }
-window.addEventListener("beforeunload", flushOnExit);
+window.addEventListener("beforeunload", () => flushOnExit(false));
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") flushOnExit();
+  if (document.visibilityState === "hidden") flushOnExit(true);
 });
