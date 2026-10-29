@@ -34,6 +34,7 @@ DATABASES_DIR = "Bases"
 
 TYPES = {"text", "number", "select", "multiselect", "checkbox", "date", "url", "relation"}
 
+
 @dataclass
 class Page:
     id: str
@@ -152,12 +153,13 @@ def title_key(title: str) -> str:
 
 
 # Claves del frontmatter de una FILA que la app gestiona y no puede haber en el
-# `schema` de una base: el título de la fila es el nombre del fichero (decisión
-# §9.3). Se rechazan al leer el `schema` (se ignoran con aviso, el fichero del
-# usuario no se toca) y se filtran al crear/guardar filas, de modo que la
-# afirmación "la app no escribe `title`" sea cierta también cuando el `schema`
-# declara una propiedad con ese nombre. Ver HALLAZGOS §9.3.
-RESERVED_ROW_KEYS = frozenset({"title"})
+# `schema` de una base: el título es el nombre del fichero (decisión §9.3) y el
+# resto son las claves de la propia fila (`id`, fechas, icono, tipo). Se
+# rechazan al leer el `schema` (se ignoran con aviso, el fichero del usuario no
+# se toca) y se filtran al crear/guardar filas, de modo que la app no pueda
+# escribir encima de la identidad de una fila porque una base declaró una
+# propiedad llamada `id`. Ver HALLAZGOS §9.3.
+RESERVED_ROW_KEYS = frozenset({"title", "id", "icon", "description", "created", "updated", "type"})
 
 
 def name_in_nfc(rel_path: str) -> bool:
