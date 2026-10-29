@@ -58,11 +58,15 @@ sería el sitio equivocado para modelarla.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
 import os
 import re
 import sqlite3
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +75,12 @@ log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
 SCHEMA_VERSION = 1
+
+# El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
+# fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
+# `pages.workspace_id` de cada fila (el ADR exige que la reconstrucción sea
+# idéntica). El nombre y la fecha sí son de la fila singleton.
+DEFAULT_WORKSPACE_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "mdm:default-workspace"))
 
 # Migraciones futuras: {versión_destino: [sql, ...]}. Se aplican en orden.
 MIGRATIONS: dict[int, list[str]] = {}
@@ -535,3 +545,75 @@ def count_rows(conn: sqlite3.Connection) -> dict[str, int]:
     counts = {t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in TABLES}
     counts["pages_fts"] = conn.execute("SELECT count(*) FROM pages_fts").fetchone()[0]
     return counts
+
+
+def _canon_cell(value):
+    """Valor estable para la huella: los BLOB (tablas internas de FTS5) en base64."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"blob": base64.b64encode(bytes(value)).decode("ascii")}
+    return value
+
+
+def _canon_row(row) -> str:
+    return json.dumps([_canon_cell(v) for v in row], ensure_ascii=False)
+
+
+# Tablas que no entran en la huella de contenido, con su motivo.
+DUMP_EXCLUDED = {
+    # Fila singleton que existe porque `pages.workspace_id` es NOT NULL: su
+    # `created_at` dice cuándo se creó el ÍNDICE, no cuándo se creó el
+    # contenido. Al borrar el índice y reconstruirlo cambia por definición, y no
+    # hay ningún dato del vault detrás. `pages.workspace_id` sí es estable (uuid5).
+    "workspaces",
+}
+
+
+def dump_hash(path: str) -> tuple[str, dict[str, int]]:
+    """Huella del contenido del índice, tabla a tabla. Devuelve (hash, conteos).
+
+    Entran las tablas con contenido del vault (`pages`, `databases`, `views`,
+    `rows`, `links`) y el **contenido** de `pages_fts` (título y cuerpo
+    indexados, sin el rowid: es un número interno que depende del orden en que
+    se insertaron las filas, no de lo que hay guardado). No entran:
+
+    - `workspaces`: ver `DUMP_EXCLUDED`.
+    - las tablas internas de FTS5 (`pages_fts_data`, `pages_fts_idx`, ...): son
+      la representación interna del índice de texto, su reparto en segmentos
+      depende del historial de escrituras y SQLite no promete que sea igual
+      entre dos caminos que guardan lo mismo.
+
+    Así, borrar el índice y reconstruirlo desde el vault da la misma huella que
+    el índice que escribió la API. Las filas se ordenan para que la huella no
+    dependa del orden físico.
+    """
+    conn = sqlite3.connect(path)
+    digest = hashlib.sha256()
+    counts: dict[str, int] = {}
+    try:
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+            if not r[0].startswith("pages_fts_") and r[0] not in DUMP_EXCLUDED
+        ]
+        for table in tables:
+            rows = conn.execute(f'SELECT * FROM "{table}"').fetchall()
+            counts[table] = len(rows)
+            for line in sorted(_canon_row(r) for r in rows):
+                digest.update(line.encode())
+                digest.update(b"\n")
+        fts_rows = conn.execute(
+            "SELECT title, body FROM pages_fts ORDER BY title, body"
+        ).fetchall()
+        counts["pages_fts"] = len(fts_rows)
+        for line in (_canon_row(r) for r in fts_rows):
+            digest.update(line.encode())
+            digest.update(b"\n")
+    finally:
+        conn.close()
+    return digest.hexdigest(), counts
+
+
+

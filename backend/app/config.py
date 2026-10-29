@@ -5,12 +5,17 @@ class Settings(BaseSettings):
     """Configuración de la app, leída de variables de entorno (ver .env.example).
 
     Ya no hay `DATABASE_URL`: la app vive de un único fichero SQLite
-    (`INDEX_PATH`), y a partir de P1.2 ese índice será derivado del vault, que
-    es lo que de verdad hay que respaldar. En Docker Compose, INDEX_PATH apunta
-    a un volumen fuera del repo (`/data`).
+    (`INDEX_PATH`) y, desde P1.2, de un vault de ficheros `.md` (`VAULT_PATH`)
+    que es la verdad para las notas. El índice se guarda **fuera** del vault
+    (ADR-0001: el vault tiene que quedar limpio y portable, y se puede copiar
+    entero como backup sin llevarse la caché). En Docker Compose, los dos
+    apuntan a volúmenes fuera del repo (`/data`).
     """
 
     index_path: str = "/data/index.sqlite"
+
+    # Raíz del vault: `Notas/`, `_attachments/` y `.trash/` viven aquí.
+    vault_path: str = "/data/vault"
 
     # Dónde se sirven el panel y los adjuntos subidos (imágenes de cabecera).
     # Configurables para poder arrancar la app en tests sin /app.

@@ -24,16 +24,32 @@ app.include_router(dashboard.router)
 def on_startup() -> None:
     # No hay Alembic ni Postgres: el esquema del índice se crea o se migra
     # aquí mismo (`PRAGMA user_version`), y un fichero ilegible se aparta y se
-    # rehace en vez de impedir el arranque. La siembra que queda es el
-    # workspace por defecto.
+    # rehace en vez de impedir el arranque.
+    #
+    # Desde P1.2a el índice es derivado: si se ha tenido que crear de cero (no
+    # existía, estaba ilegible o no tenía tablas) se reconstruye desde el vault
+    # antes de servir la primera petición. Con el índice ya en su sitio no se
+    # reindexa en cada arranque: el ADR deja eso en manos de `POST /reindex`.
     info = ensure_index(settings.index_path)
     if info.recreated:
         log.warning("índice creado de cero en %s (%s)", info.path, info.reason)
-    repo = Repository(open_index(settings.index_path))
+
+    conn = open_index(settings.index_path)
     try:
+        repo = Repository(conn)
+        repo.vault.ensure_structure()
         repo.ensure_workspace()
+        if info.recreated:
+            stats = repo.reindex()
+            log.warning(
+                "índice reconstruido desde %s: %d notas en %.2f s (%d avisos)",
+                settings.vault_path,
+                stats.notes,
+                stats.seconds,
+                len(stats.warnings),
+            )
     finally:
-        repo.close()
+        conn.close()
 
 
 @app.get("/health")

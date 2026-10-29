@@ -1,9 +1,10 @@
 """Capa de repositorio: todo el acceso al índice pasa por aquí.
 
-Los routers ya no ven SQL ni sesiones: piden y escriben a través de `Repository`.
-El motivo no es estético, es el objetivo de P1.1: cuando P1.2 cambie la fuente
-de la verdad (ficheros `.md` + índice derivado), las rutas no se tocan — solo
-cambia lo que hay detrás de estos métodos.
+Los routers ya no ven SQL ni sesiones: piden y escriben a través de `Repository`,
+y desde P1.2a guardar una nota escribe además su fichero `.md` (`VaultNotes`,
+`app/vault/store.py`) y deja el índice diciendo lo mismo que el fichero. El
+objetivo de P1.1 era exactamente este: cambiar la fuente de la verdad sin tocar
+las rutas.
 
 Se usa `sqlite3` crudo (decisión y argumentos en
 `docs/ADR-0002-indice-sqlite.md`). Los registros que devuelve (`Page`,
@@ -17,15 +18,16 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
-import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
 from app import index as index_mod
+from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
-from app.wikilinks import extract_titles
+from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
+from app.vault.store import UNSET, VaultNotes
 
 
 def _now() -> datetime:
@@ -151,62 +153,18 @@ def _view(row: sqlite3.Row) -> View:
     )
 
 
-def fold_title(title: str) -> str:
-    """Forma canónica de un título para compararlo sin distinguir mayúsculas.
-
-    `COLLATE NOCASE` de SQLite solo pliega ASCII (`'REUNIÓN' = 'Reunión'` es
-    falso), así que la comparación se hace aquí: `NFKC` compone los acentos
-    (para que `ó` precompuesta y `o` + acento combinado coincidan) y `casefold`
-    pliega las mayúsculas en todo Unicode, como el `lower()` de Postgres que
-    había antes de P1.1. A propósito **no** se quitan los acentos: `Peña` y
-    `Pena` siguen siendo títulos distintos, igual que antes.
-    """
-    return unicodedata.normalize("NFKC", title).casefold()
-
-
-def sync_wikilinks(
-    conn: sqlite3.Connection, page_id: str, workspace_id: str, body_markdown: str
-) -> None:
-    """Recalcula los wikilinks salientes de una página a partir de su cuerpo.
-
-    Se resuelven **ahora**, por título sin distinguir mayúsculas en todo
-    Unicode (ver `fold_title`) y dentro del mismo workspace. Se enlaza a
-    **todas** las páginas con ese título: el título no es único en la API y,
-    antes de P1.1, un enlace a un título repetido llegaba a cada una de ellas.
-
-    Limitación conocida, igual que antes de P1.1: renombrar una página no
-    repara los enlaces ya guardados en otras; se corrigen cuando esa página se
-    vuelve a guardar.
-    """
-    conn.execute(
-        "DELETE FROM links WHERE from_id = ? AND kind = ?",
-        (page_id, LinkKind.wikilink.value),
-    )
-    titles = extract_titles(body_markdown or "")
-    if not titles:
-        return
-    # Una consulta por guardado: título plegado -> ids de las páginas del
-    # workspace (todas, sin `LIMIT`). Una lista porque puede haber repetidos.
-    targets: dict[str, list[str]] = {}
-    for row in conn.execute(
-        "SELECT id, title FROM pages WHERE workspace_id = ? AND id != ?",
-        (workspace_id, page_id),
-    ):
-        targets.setdefault(fold_title(row["title"]), []).append(row["id"])
-    for title in titles:
-        for target_id in targets.get(fold_title(title), ()):
-            conn.execute(
-                "INSERT INTO links (id, from_id, to_id, kind, target_title)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), page_id, target_id, LinkKind.wikilink.value, title),
-            )
-
-
 class Repository:
-    """Acceso al índice. Una instancia por petición; se cierra en `close()`."""
+    """Acceso al índice y al vault. Una instancia por petición; `close()` al salir.
 
-    def __init__(self, conn: sqlite3.Connection):
+    Desde P1.2a las **notas** viven en ficheros `.md`: los métodos de página
+    delegan en `VaultNotes`, que escribe el fichero y deja el índice diciendo lo
+    mismo que el fichero. Las bases de datos y sus filas siguen solo en el
+    índice (P2), así que conservan el camino antiguo.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, vault: VaultNotes | None = None):
         self.conn = conn
+        self.vault = vault or VaultNotes(settings.vault_path, conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -227,6 +185,10 @@ class Repository:
     def stats(self) -> dict[str, int]:
         return index_mod.count_rows(self.conn)
 
+    def reindex(self):
+        """Reconstruye las notas del índice desde el vault (ADR D1)."""
+        return self.vault.rebuild()
+
     # ----------------------------------------------------------- workspace
 
     def ensure_workspace(self, name: str = "default") -> uuid.UUID:
@@ -235,7 +197,9 @@ class Repository:
         ).fetchone()
         if row is not None:
             return uuid.UUID(row["id"])
-        workspace_id = str(uuid.uuid4())
+        # Id fijo (`DEFAULT_WORKSPACE_ID`): un índice reconstruido tiene que
+        # dar las mismas filas, y con uuid4 cambiaría el workspace_id de todas.
+        workspace_id = index_mod.DEFAULT_WORKSPACE_ID
         with self._tx():
             self.conn.execute(
                 "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)",
@@ -268,6 +232,17 @@ class Repository:
         created_by: Optional[str] = None,
         body_markdown: str = "",
     ) -> Page:
+        if PageType(type) == PageType.note:
+            page_id = self.vault.create(
+                title=title,
+                parent_id=parent_id,
+                icon=icon,
+                description=description,
+                body=body_markdown or "",
+                created_by=created_by,
+            )
+            return self.get_page(page_id)
+
         workspace_id = self.ensure_workspace()
         page_id = str(uuid.uuid4())
         now = _iso(_now())
@@ -301,38 +276,55 @@ class Repository:
         icon: Optional[str] = None,
         description: Optional[str] = None,
         body_markdown: Optional[str] = None,
+        parent_id: Any = UNSET,
     ) -> Optional[Page]:
         """Actualiza solo los campos que llegan (None = no tocar), como el PATCH
         de siempre.
 
         Un escalar que llega con el valor que ya tenía **no** cuenta como
-        cambio: `updated_at` no se mueve (el PATCH viejo tampoco lo movía, y
-        mudarlo cambiaba el orden de «Páginas recientes» sin que nadie hubiera
-        tocado nada). El cuerpo sí lo mueve siempre que llegue, aunque sea
-        idéntico: es lo que hacía el `update_page` anterior (que forzaba
-        `updated_at` al guardar el cuerpo) y lo que espera el panel.
+        cambio: `updated_at` no se mueve y, desde P1.2a, tampoco se reescribe el
+        `.md` (el PATCH viejo tampoco movía `updated_at`, y mudarlo cambiaba el
+        orden de «Páginas recientes» sin que nadie hubiera tocado nada). El
+        cuerpo sí lo mueve siempre que llegue, aunque sea idéntico: es lo que
+        hacía el `update_page` anterior (que forzaba `updated_at` al guardar el
+        cuerpo) y lo que espera el panel.
         """
         current = self.get_page(page_id)
         if current is None:
             return None
 
+        changes: dict[str, Any] = {}
+        if title is not None and title != current.title:
+            changes["title"] = title
+        if icon is not None and icon != current.icon:
+            changes["icon"] = icon
+        if description is not None and description != current.description:
+            changes["description"] = description
+        if body_markdown is not None:
+            changes["body"] = body_markdown
+        if parent_id is not UNSET:
+            new_parent = str(parent_id) if parent_id else None
+            current_parent = str(current.parent_id) if current.parent_id else None
+            if new_parent != current_parent:
+                changes["parent_id"] = new_parent
+
+        if not changes:
+            return current
+
+        if current.type == PageType.note:
+            self.vault.save(page_id, **changes)
+            return self.get_page(page_id)
+
         sets: list[str] = []
         params: list[Any] = []
-        if title is not None and title != current.title:
-            sets.append("title = ?")
-            params.append(title)
-        if icon is not None and icon != current.icon:
-            sets.append("icon = ?")
-            params.append(icon)
-        if description is not None and description != current.description:
-            sets.append("description = ?")
-            params.append(description)
-        if body_markdown is not None:
+        for field_name, column in (("title", "title"), ("icon", "icon"),
+                                   ("description", "description")):
+            if field_name in changes:
+                sets.append(f"{column} = ?")
+                params.append(changes[field_name])
+        if "body" in changes:
             sets.append("body = ?")
-            params.append(body_markdown)
-
-        if not sets:
-            return current
+            params.append(changes["body"])
 
         sets.append("updated_at = ?")
         params.append(_iso(_now()))
@@ -340,11 +332,21 @@ class Repository:
 
         with self._tx():
             self.conn.execute(f"UPDATE pages SET {', '.join(sets)} WHERE id = ?", params)
-            if body_markdown is not None:
-                sync_wikilinks(self.conn, str(page_id), str(current.workspace_id), body_markdown)
+            if "body" in changes:
+                sync_wikilinks(
+                    self.conn, str(page_id), str(current.workspace_id), changes["body"]
+                )
         return self.get_page(page_id)
 
     def set_header_image(self, page_id: uuid.UUID, path: Optional[str]) -> Optional[Page]:
+        current = self.get_page(page_id)
+        if current is None:
+            return None
+        if current.type == PageType.note:
+            # La cabecera se guarda también en el frontmatter: si solo viviera
+            # en el índice, el primer reindexado se la llevaría por delante.
+            self.vault.save(page_id, header_image=path)
+            return self.get_page(page_id)
         with self._tx():
             self.conn.execute(
                 "UPDATE pages SET header_image_path = ?, updated_at = ? WHERE id = ?",
@@ -355,6 +357,10 @@ class Repository:
     def delete_page(self, page_id: uuid.UUID) -> bool:
         """Borra la página y todo lo que cuelga de ella.
 
+        Para una **nota**, borrar es mover a la papelera: su `.md` y su carpeta
+        de subpáginas van a `.trash/<fecha UTC>/<ruta original>` y la fila del
+        índice desaparece con la cascada de siempre.
+
         Las filas de una database son páginas que **no** cuelgan por
         `parent_id`: al borrar la página de la database, la cascada del esquema
         se lleva la fila `databases`, sus vistas y las entradas de `rows`, pero
@@ -364,6 +370,12 @@ class Repository:
         DELETE /databases dejan exactamente el mismo estado, sin páginas
         huérfanas fuera del árbol.
         """
+        current = self.get_page(page_id)
+        if current is None:
+            return False
+        if current.type == PageType.note:
+            return self.vault.delete(page_id)
+
         with self._tx():
             self.conn.execute(
                 "DELETE FROM pages WHERE id IN ("

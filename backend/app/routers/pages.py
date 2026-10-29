@@ -9,6 +9,7 @@ from app.config import settings
 from app.dependencies import get_repo
 from app.repository import Repository
 from app.serializers import serialize_page
+from app.vault.store import VaultError
 
 router = APIRouter(prefix="/pages", tags=["pages"])
 
@@ -50,15 +51,20 @@ def list_pages(repo: Repository = Depends(get_repo)):
 
 @router.post("", response_model=schemas.PageRead)
 def create_page(payload: schemas.PageCreate, repo: Repository = Depends(get_repo)):
-    page = repo.create_page(
-        title=payload.title,
-        type=payload.type,
-        parent_id=payload.parent_id,
-        icon=payload.icon or settings.default_icon,
-        description=payload.description,
-        created_by=settings.default_user_name,  # "obligatorio": la API siempre lo rellena
-        body_markdown=payload.body_markdown or "",
-    )
+    try:
+        page = repo.create_page(
+            title=payload.title,
+            type=payload.type,
+            parent_id=payload.parent_id,
+            icon=payload.icon or settings.default_icon,
+            description=payload.description,
+            created_by=settings.default_user_name,  # "obligatorio": la API siempre lo rellena
+            body_markdown=payload.body_markdown or "",
+        )
+    except VaultError as exc:
+        # Padre inexistente o de un tipo que todavía no vive en ficheros: 400
+        # con el motivo, en vez de un 500 desde el fondo del vault.
+        raise HTTPException(400, str(exc)) from exc
     return serialize_page(page)
 
 
@@ -81,13 +87,21 @@ def get_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
 def update_page(
     page_id: uuid.UUID, payload: schemas.PageUpdate, repo: Repository = Depends(get_repo)
 ):
-    page = repo.update_page(
-        page_id,
-        title=payload.title,
-        icon=payload.icon,
-        description=payload.description,
-        body_markdown=payload.body_markdown,
-    )
+    extra = {}
+    if "parent_id" in payload.model_fields_set:
+        # Presente en el cuerpo: mover (o `null` para subir a la raíz).
+        extra["parent_id"] = payload.parent_id
+    try:
+        page = repo.update_page(
+            page_id,
+            title=payload.title,
+            icon=payload.icon,
+            description=payload.description,
+            body_markdown=payload.body_markdown,
+            **extra,
+        )
+    except VaultError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if page is None:
         raise HTTPException(404, "Página no encontrada")
     return serialize_page(page)

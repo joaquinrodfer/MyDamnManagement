@@ -26,6 +26,11 @@ class PageUpdate(BaseModel):
     icon: Optional[str] = None
     description: Optional[str] = None
     body_markdown: Optional[str] = None
+    # Mover de carpeta: `parent_id` a otra nota, o `null` explícito a la raíz.
+    # Si la clave no llega, la página no se mueve (no se distingue de "sin
+    # cambios" si el valor por defecto es None, así que se mira el campo
+    # presente en el cuerpo del PATCH — ver routers/pages.py).
+    parent_id: Optional[uuid.UUID] = None
 
 
 class PageRead(PageBase):
