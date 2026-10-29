@@ -4,10 +4,17 @@
 > usa un único índice SQLite (`backend/app/index.py`) detrás de una capa de
 > repositorio (`backend/app/repository.py`), sin servicio `db` ni Alembic. Las
 > decisiones y el porqué están en
-> [`ADR-0002-indice-sqlite.md`](ADR-0002-indice-sqlite.md). Lo que sigue
-> describe el diseño funcional (motor, rutas, flujos) y sigue vigente en eso;
-> el diagrama ER de §2 y el detalle de §4 conservan la forma del modelo
-> anterior (`page_content`, `tags`, `attachments`) porque P1.2 va a cambiar otra
+> [`ADR-0002-indice-sqlite.md`](ADR-0002-indice-sqlite.md).
+>
+> **Nota de P1.2a (2026-10-29).** Las **notas** ya viven en ficheros `.md`
+> (`backend/app/vault/`, volumen `mdm_vault`) y el índice SQLite es derivado para
+> ellas: guardar escribe el fichero y luego el índice, y borrarlo y reindexarlo no
+> pierde nada (`POST /reindex`). Bases y filas siguen en el índice (P2). Formato
+> en [`ADR-0001-formato-del-vault.md`](ADR-0001-formato-del-vault.md).
+>
+> Lo que sigue describe el diseño funcional (motor, rutas, flujos) y sigue
+> vigente en eso; el diagrama ER de §2 y el detalle de §4 conservan la forma del modelo
+> anterior (`page_content`, `tags`, `attachments`) porque P2 va a cambiar otra
 > vez de dónde sale la verdad. Lo que ya no es cierto: "Postgres", "JSONB",
 > "Alembic" y "tsvector" donde aparezcan como estado actual.
 
@@ -98,22 +105,28 @@ graph TD
 
     subgraph COMPOSE["docker-compose.yml"]
         API["api<br/>FastAPI + uvicorn --reload<br/>:8000"] -->|"sqlite3 (FTS5)"| DB[("vol: mdm_data<br/>index.sqlite")]
+        API -->|"lee/escribe .md"| VAULT[("vol: mdm_vault<br/>Notas/ · .trash/")]
         API --- ATT[("vol: attachments")]
     end
 ```
 
 ## 4. Flujo de una petición: `POST /pages`
 
-El caso ya implementado y probado. Todo en una única transacción — la página (con su cuerpo) y sus wikilinks se confirman juntos o no se guarda nada.
+El caso ya implementado y probado. Para una **nota** (P1.2a): primero se escribe
+el `.md` (atómico: `tmp` + `rename`) y después se actualiza el índice con lo que
+dice el fichero, en una transacción. Si el proceso muriera entre las dos cosas,
+gana el fichero: el siguiente arranque o `POST /reindex` pone el índice al día.
 
 ```mermaid
 sequenceDiagram
     participant C as Cliente
     participant A as API (FastAPI)
+    participant V as Vault (.md)
     participant P as Índice SQLite
 
     C->>A: POST /pages {title, body_markdown}
-    A->>P: INSERT page (title + body) + INSERT links (misma transacción)
+    A->>V: escribe Notas/título.md (tmp + rename)
+    A->>P: UPSERT pages (leído del fichero) + INSERT links (misma transacción)
     P-->>A: commit OK
     A-->>C: 200 · PageRead (JSON)
 ```
@@ -143,9 +156,11 @@ Los wikilinks se resuelven **al guardar**, no al leer — el cuerpo se escanea, 
 sequenceDiagram
     participant C as Cliente
     participant A as API (FastAPI)
+    participant V as Vault (.md)
     participant P as Índice SQLite
 
     C->>A: PATCH /pages/{id} {body_markdown: "...[[Trámites EPSJ]]..."}
+    A->>V: reescribe el .md (y lo renombra/mueve si cambia el título)
     A->>A: extraer títulos referenciados (wikilinks.py)
     A->>P: DELETE links salientes de {id}
     A->>P: SELECT pages WHERE lower(title) IN (títulos)
@@ -154,7 +169,7 @@ sequenceDiagram
     A-->>C: 200 · PageRead
 ```
 
-Limitación conocida: renombrar una página no repara los wikilinks que otras páginas ya guardaron apuntando al título antiguo — se corrigen la próxima vez que esa página de origen se vuelva a guardar.
+Limitación conocida: renombrar una página no repara los wikilinks que otras páginas ya guardaron apuntando al título antiguo — se corrigen la próxima vez que esa página de origen se vuelva a guardar (o al reindexar el vault, que recalcula todos los enlaces desde los cuerpos).
 
 ## 7. El motor de `database` + `view`, probado con dos dominios reales
 
@@ -256,7 +271,7 @@ El menú de comando necesita `view.coordsAtPos()` para posicionarse junto al cur
 
 | Decisión | Elegido | Por qué |
 | --- | --- | --- |
-| Storage | Índice SQLite (P1.1); a partir de P1.2, ficheros `.md` como verdad e índice derivado | Sin servicio aparte ni puerto que abrir, backup de un fichero. P1.2 mueve la verdad a los `.md` — ver [`ADR-0001`](ADR-0001-formato-del-vault.md) y [`ADR-0002`](ADR-0002-indice-sqlite.md) |
+| Storage | Desde P1.2a: ficheros `.md` como verdad de las notas (vault) + índice SQLite derivado; bases y filas siguen solo en el índice | Sin servicio aparte ni puerto que abrir; backup = copiar el vault. P2 mueve bases y filas a ficheros — ver [`ADR-0001`](ADR-0001-formato-del-vault.md) y [`ADR-0002`](ADR-0002-indice-sqlite.md) |
 | Propiedades de `database` | JSON flexible (columna `TEXT` con JSON) | Añadir un campo nuevo no requiere migración de esquema |
 | Migraciones | `PRAGMA user_version` + lista de migraciones propias (P1.1) | Alembic se retiró al salir Postgres: el esquema es pequeño y propio, y un índice ilegible se aparta y se rehace en vez de migrarse. Versión más nueva que el código = error claro, nunca escritura a ciegas |
 | Resolución de wikilinks | Por título, al guardar (no al leer) | Guardar es poco frecuente, leer es constante — recalcular en cada lectura sería más caro sin necesidad |

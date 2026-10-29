@@ -60,6 +60,7 @@ Base de datos (`Bases/Contactos.md`): `type: database`, `schema` y `views` en el
 - **Codificación**: UTF-8 sin BOM, saltos `\n`.
 - **Tolerancia**: CRLF, BOM, Latin-1 y frontmatter sin cerrar se leen con aviso y nunca abortan el reindexado.
 - **Claves desconocidas del frontmatter**: se preservan reescribiendo solo las claves que gestiona la app.
+- **Claves que añade la app** además de las del contrato: `created_by` (quién creó la página; hoy sin login, el valor de `DEFAULT_USER_NAME`) y `header_image` (la ruta de la imagen de cabecera, servida desde `/files`). Van en el frontmatter y se leen de ahí al reindexar: si solo vivieran en el índice, el primer reindexado las perdería. Son una extensión de este ADR, no parte del mínimo.
 - **Papelera**: borrar mueve a `.trash/<fecha UTC>/<ruta original>`; restaurar devuelve a su sitio.
 
 ### Enlaces

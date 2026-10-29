@@ -6,15 +6,18 @@ services:
     container_name: mdm_api
     restart: unless-stopped
     environment:
-      # Un único fichero SQLite, sin servicio de base de datos ni puerto 5432.
-      # El volumen `mdm_data` lo deja fuera del repo.
+      # Un único fichero SQLite como índice, sin servicio de base de datos ni
+      # puerto 5432. El vault de ficheros `.md` vive en su propio volumen: es la
+      # verdad de las notas y lo que hay que respaldar.
       INDEX_PATH: /data/index.sqlite
+      VAULT_PATH: /data/vault
       DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
     volumes:
       - ./backend/app:/app/app # hot-reload en desarrollo (Windows y Linux por igual)
       - ./frontend:/app/frontend:ro # panel de estado; estático, sin build
       - attachments:/app/attachments
       - mdm_data:/data # índice SQLite: fuera del repo, respaldable por separado
+      - mdm_vault:/data/vault # las notas (.md) y sus adjuntos: esto es el backup
     ports:
       - "8000:8000"
     # Sin `alembic upgrade head`: el esquema del índice se crea/migra al
@@ -24,3 +27,5 @@ services:
 volumes:
   attachments:
   mdm_data:
+  mdm_vault:
+

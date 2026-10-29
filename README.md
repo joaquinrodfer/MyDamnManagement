@@ -34,9 +34,11 @@ docker compose up -d --build
 curl http://localhost:8000/health
 ```
 
-La app ya no necesita Postgres: guarda todo en un único índice SQLite (`INDEX_PATH`, en el contenedor `/data/index.sqlite`, volumen `mdm_data` fuera del repo). El esquema se crea o se migra solo al arrancar (`PRAGMA user_version`; ver `backend/app/index.py` y [`docs/ADR-0002-indice-sqlite.md`](docs/ADR-0002-indice-sqlite.md)): no hay `alembic upgrade head` ni servicio `db`. Si el fichero del índice no es una base de datos (basura o truncado de tal forma que SQLite no lo abre), se aparta con sufijo `.corrupto-<fecha>` y se rehace vacío — no impide arrancar. Si lo que hay en `INDEX_PATH` es un fichero de otra cosa (un esquema ajeno, o una base que `quick_check` da por dañada), la app **no arranca** y lo dice: en P1.1 el índice es la única copia, así que no se toca ni se renombra nada. Detalle en el §3 de [`docs/ADR-0002-indice-sqlite.md`](docs/ADR-0002-indice-sqlite.md).
+La app ya no necesita Postgres: guarda todo en un único índice SQLite (`INDEX_PATH`, en el contenedor `/data/index.sqlite`, volumen `mdm_data` fuera del repo). El esquema se crea o se migra solo al arrancar (`PRAGMA user_version`; ver `backend/app/index.py` y [`docs/ADR-0002-indice-sqlite.md`](docs/ADR-0002-indice-sqlite.md)): no hay `alembic upgrade head` ni servicio `db`. Si el fichero del índice no es una base de datos (basura o truncado de tal forma que SQLite no lo abre), se aparta con sufijo `.corrupto-<fecha>` y se rehace vacío — no impide arrancar. Si lo que hay en `INDEX_PATH` es un fichero de otra cosa (un esquema ajeno, o una base que `quick_check` da por dañada), la app **no arranca** y lo dice: el índice es reconstruible desde el vault, pero no se toca ni se renombra nada que no sea nuestro. Detalle en el §3 de [`docs/ADR-0002-indice-sqlite.md`](docs/ADR-0002-indice-sqlite.md).
 
-Tests (sin Docker y sin servicios externos, sobre un índice temporal):
+Desde **P1.2a** las notas viven en ficheros `.md` (`VAULT_PATH`, volumen `mdm_vault`): guardar una nota escribe `Notas/<título>.md` (y su carpeta si tiene subpáginas) y el índice es **derivado**. El fichero manda: si editas un `.md` por fuera, `POST /reindex` lo recoge; si borras `index.sqlite`, el arranque lo reconstruye desde el vault. Renombrar es renombrar el fichero (el `id` del frontmatter es la identidad y sobrevive) y borrar mueve a `.trash/<fecha UTC>/<ruta original>` en vez de destruir. Formato exacto en [`docs/ADR-0001-formato-del-vault.md`](docs/ADR-0001-formato-del-vault.md). Las bases de datos y sus filas siguen en el índice: son P2.
+
+Tests (sin Docker y sin servicios externos, sobre un índice y un vault temporales):
 
 ```bash
 pip install -r backend/requirements.txt -r backend/requirements-dev.txt
@@ -50,6 +52,13 @@ pip install -r backend/requirements-migration.txt
 python backend/scripts/migrate_postgres_to_sqlite.py \
     --database-url postgresql://usuario:clave@localhost:5432/mydamnmanagement \
     --index-path /data/index.sqlite
+```
+
+Pasar las notas que ya están en el índice al vault (una vez, al adoptar P1.2; idempotente y con contadores):
+
+```bash
+python backend/scripts/migrate_index_to_vault.py \
+    --index /data/index.sqlite --vault /data/vault --reindex
 ```
 
 Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas y bases de datos a la izquierda).
@@ -82,11 +91,12 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/`            | GET    | Panel de estado (frontend estático, sin build)           |
 | `/health`      | GET    | Comprobación de vida del servicio                       |
 | `/status`      | GET    | Estado agregado de `api` y del almacén (`db`, ahora el índice SQLite) |
+| `/reindex`     | POST   | Reconstruye el índice desde el vault (`Notas/*.md`) y devuelve recuento, duración y avisos |
 | `/pages`       | GET    | Lista todas las páginas del workspace                   |
-| `/pages`       | POST   | Crea la página con su cuerpo y sus wikilinks            |
+| `/pages`       | POST   | Crea la página con su cuerpo y sus wikilinks (y escribe su `.md` si es una nota) |
 | `/pages/{id}`  | GET    | Lee una página con su cuerpo                             |
-| `/pages/{id}`  | PATCH  | Actualiza título, icono, descripción o cuerpo             |
-| `/pages/{id}`  | DELETE | Borra la página (encadenado a hijos, enlaces y, si es una database, sus filas y vistas) |
+| `/pages/{id}`  | PATCH  | Actualiza título, icono, descripción, cuerpo o `parent_id` (mover de carpeta; `null` = a la raíz) |
+| `/pages/{id}`  | DELETE | Borra la página (las notas van a `.trash/`; el resto, encadenado a hijos, enlaces y, si es una database, sus filas y vistas) |
 | `/pages/tree`  | GET    | Árbol de páginas por `parent_id`                        |
 | `/pages/{id}/backlinks` | GET | Páginas que enlazan a esta vía `[[wikilink]]`     |
 | `/pages/{id}/header-image` | POST | Sube/reemplaza la imagen de cabecera (`multipart/form-data`, campo `file`) |
@@ -125,11 +135,13 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Edición por bloques + selección múltiple** — bloques calculados sobre el árbol de sintaxis (sin nuevo modelo de datos), selección múltiple de bloques y de páginas, menú contextual con convertir/eliminar
 - [x] **Editor al estilo Notion** — menú de comando `/`, línea horizontal como bloque, `Mayús+Enter` para bloque nuevo, selector de emoji real, autoformato de flechas y wikilinks, logo propio
 - [x] **P1.1 — la app sin Postgres** — índice SQLite + capa de repositorio, búsqueda FTS5 sin acentos, `pytest` sin servicios externos y script de migración de una vez
+- [x] **P1.2a — las notas pasan a ficheros `.md`** — vault en disco (`Notas/`, `.trash/`), guardar/renombrar/mover/borrar escriben fichero, reindexado desde el vault (`POST /reindex` y al arrancar) y migración del índice al vault
+- [ ] **P1.2b** — bases de datos y filas en ficheros (P2 del roadmap) y adjuntos dentro del vault
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue objetivo
 
-Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El mismo `docker-compose.yml` sirve para los dos: la imagen de `api` es autocontenida (backend + `frontend/` ya copiados dentro, ver más abajo), así que mover el proyecto a Proxmox es copiar `docker-compose.yml` + `.env` y levantar los contenedores ahí — los datos viajan en el volumen `mdm_data` (el fichero `index.sqlite`; copiarlo con la app parada basta, y a partir de P1.2 lo que habrá que copiar será la carpeta del vault).
+ Desarrollo en Windows con Docker Desktop; a producción sobre un LXC/VM de Proxmox personal, accesible solo a través de una red [Tailscale](https://tailscale.com/) (sin exponer puertos públicos, sin gestión de cuentas por ahora — uso personal en solitario). El mismo `docker-compose.yml` sirve para los dos: la imagen de `api` es autocontenida (backend + `frontend/` ya copiados dentro, ver más abajo), así que mover el proyecto a Proxmox es copiar `docker-compose.yml` + `.env` y levantar los contenedores ahí — los datos viajan en dos volúmenes: `mdm_vault` (las notas `.md`, **esto es lo que hay que respaldar**; `rsync` de la carpeta basta) y `mdm_data` (el índice SQLite, reconstruible desde el vault).
 
 La imagen de `api` se construye con el contexto en la raíz del repo (`context: .` en `docker-compose.yml`, no `./backend`) precisamente para poder copiar `frontend/` (incluido `vendor/editor.bundle.js`, ya compilado) dentro de la imagen — antes solo llegaba vía el bind-mount de desarrollo (`./frontend:/app/frontend:ro`), que no existe fuera de esta máquina; sin el bind-mount, `/app/frontend` se creaba vacío y el panel no se servía. En desarrollo el bind-mount sigue ahí y se superpone al contenido ya copiado (para hot-reload sin reconstruir la imagen); en un despliegue sin ese bind-mount, la imagen ya trae todo consigo.
 

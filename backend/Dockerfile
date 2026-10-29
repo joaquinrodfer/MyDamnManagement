@@ -30,9 +30,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
 COPY frontend/ ./frontend/
 
-# /data es donde vive el índice SQLite (volumen fuera del repo). Se crea aquí
-# para que un contenedor limpio arranque sin montar nada.
-RUN mkdir -p /app/attachments /data
+# /data es donde vive el índice SQLite y el vault de notas (volúmenes fuera del
+# repo). Se crean aquí para que un contenedor limpio arranque sin montar nada.
+RUN mkdir -p /app/attachments /data/vault
 
 EXPOSE 8000
 

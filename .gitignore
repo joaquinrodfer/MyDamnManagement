@@ -7,3 +7,8 @@ node_modules/
 dist/
 
 .pytest_cache/
+
+# Un vault local (VAULT_PATH=./vault para probar fuera de Docker): las notas son
+# tuyas y su sitio es el volumen, no el repo. Solo la carpeta de la raíz: el
+# paquete del código se llama igual (`backend/app/vault/`) y no se ignora.
+/vault/
