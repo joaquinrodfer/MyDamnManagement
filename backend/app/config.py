@@ -4,12 +4,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Configuración de la app, leída de variables de entorno (ver .env.example).
 
-    En Docker Compose, DATABASE_URL la inyecta el propio compose (apunta al
-    servicio `db`). En Proxmox no cambia nada de este archivo: solo cambia
-    el valor de las variables de entorno en el .env del host.
+    Ya no hay `DATABASE_URL`: la app vive de un único fichero SQLite
+    (`INDEX_PATH`), y a partir de P1.2 ese índice será derivado del vault, que
+    es lo que de verdad hay que respaldar. En Docker Compose, INDEX_PATH apunta
+    a un volumen fuera del repo (`/data`).
     """
 
-    database_url: str = "postgresql+psycopg2://mdm:mdm@localhost:5432/mydamnmanagement"
+    index_path: str = "/data/index.sqlite"
+
+    # Dónde se sirven el panel y los adjuntos subidos (imágenes de cabecera).
+    # Configurables para poder arrancar la app en tests sin /app.
+    frontend_dir: str = "/app/frontend"
+    attachments_dir: str = "/app/attachments"
 
     # Sin autenticación todavía (uso personal en solitario) -- "creador" de
     # una página se rellena con esto. El día que haya login de verdad, se

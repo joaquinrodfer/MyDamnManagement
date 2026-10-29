@@ -2,72 +2,45 @@ import uuid
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import schemas
 from app.config import settings
-from app.database import get_db
+from app.dependencies import get_repo
 from app.properties import validate_properties
+from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app.templates import TEMPLATES
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
 
-def _get_default_workspace(db: Session) -> models.Workspace:
-    ws = db.query(models.Workspace).first()
-    if not ws:
-        raise HTTPException(500, "No hay workspace inicializado")
-    return ws
-
-
-def _get_database_or_404(db: Session, database_id: uuid.UUID) -> models.DatabaseDef:
-    db_def = db.get(models.DatabaseDef, database_id)
-    if not db_def:
+def _get_database_or_404(repo: Repository, database_id: uuid.UUID) -> Database:
+    db_def = repo.get_database(database_id)
+    if db_def is None:
         raise HTTPException(404, "Base de datos no encontrada")
     return db_def
 
 
-def delete_database_contents(db: Session, db_def: models.DatabaseDef) -> None:
-    """Borra las filas de una database y la `Page` que la contiene.
-
-    Es el único sitio donde se hace ese borrado: lo usan DELETE /databases/{id}
-    y DELETE /pages/{id} (ver routers/pages.py) para que las dos rutas dejen
-    exactamente el mismo estado, sin filas huérfanas.
-
-    Las filas de una database no cuelgan de la página contenedora vía
-    parent_id, así que el cascade de `pages` no las alcanza: al borrar la
-    `Page`, la FK `pages.database_id ON DELETE SET NULL` las dejaría con
-    database_id = NULL -- siguen en `pages`, el árbol las excluye y ninguna
-    ruta las vuelve a mostrar. Por eso se borran explícitamente primero.
-
-    No hace commit: eso lo decide quien llama.
-    """
-    db.query(models.Page).filter(models.Page.database_id == db_def.id).delete()
-    db.delete(db_def.page)  # cascada: DatabaseDef, views, links, tags, adjuntos de esa página
-
-
-def _get_row_or_404(db: Session, database_id: uuid.UUID, row_id: uuid.UUID) -> models.Page:
-    row = db.get(models.Page, row_id)
-    if not row or row.database_id != database_id:
+def _get_row_or_404(repo: Repository, database_id: uuid.UUID, row_id: uuid.UUID) -> Page:
+    row = repo.get_row(database_id, row_id)
+    if row is None:
         raise HTTPException(404, "Fila no encontrada")
     return row
 
 
-def _serialize_database(db_def: models.DatabaseDef) -> schemas.DatabaseRead:
-    page = db_def.page
+def _serialize_database(db_def: Database) -> schemas.DatabaseRead:
     return schemas.DatabaseRead(
         id=db_def.id,
-        page_id=page.id,
-        title=page.title,
-        icon=page.icon,
+        page_id=db_def.page_id,
+        title=db_def.title,
+        icon=db_def.icon,
         schema_def=db_def.schema_def,
-        created_at=as_utc(page.created_at),
-        updated_at=as_utc(page.updated_at),
+        created_at=as_utc(db_def.created_at),
+        updated_at=as_utc(db_def.updated_at),
     )
 
 
-def _serialize_row(row: models.Page) -> schemas.RowRead:
+def _serialize_row(row: Page) -> schemas.RowRead:
     return schemas.RowRead(
         id=row.id,
         database_id=row.database_id,
@@ -79,7 +52,7 @@ def _serialize_row(row: models.Page) -> schemas.RowRead:
     )
 
 
-def _serialize_view(view: models.View) -> schemas.ViewRead:
+def _serialize_view(view: View) -> schemas.ViewRead:
     return schemas.ViewRead(
         id=view.id,
         database_id=view.database_id,
@@ -92,33 +65,20 @@ def _serialize_view(view: models.View) -> schemas.ViewRead:
 # ---------------------------------------------------------------- databases
 
 @router.post("", response_model=schemas.DatabaseRead)
-def create_database(payload: schemas.DatabaseCreate, db: Session = Depends(get_db)):
-    ws = _get_default_workspace(db)
-    page = models.Page(
-        workspace_id=ws.id,
+def create_database(payload: schemas.DatabaseCreate, repo: Repository = Depends(get_repo)):
+    db_def = repo.create_database(
         title=payload.title,
-        type=models.PageType.database,
         parent_id=payload.parent_id,
         icon=payload.icon or settings.default_icon,
         created_by=settings.default_user_name,
-    )
-    db.add(page)
-    db.flush()
-
-    db_def = models.DatabaseDef(
-        page_id=page.id,
         schema_def=[p.model_dump() for p in payload.schema_def],
     )
-    db.add(db_def)
-
-    db.commit()
-    db.refresh(db_def)
     return _serialize_database(db_def)
 
 
 @router.get("", response_model=List[schemas.DatabaseRead])
-def list_databases(db: Session = Depends(get_db)):
-    return [_serialize_database(d) for d in db.query(models.DatabaseDef).all()]
+def list_databases(repo: Repository = Depends(get_repo)):
+    return [_serialize_database(d) for d in repo.list_databases()]
 
 
 # Rutas literales de un segmento ("templates", "from-template") declaradas
@@ -135,96 +95,75 @@ def list_templates():
 
 
 @router.post("/from-template", response_model=schemas.DatabaseRead)
-def create_from_template(payload: schemas.DatabaseFromTemplate, db: Session = Depends(get_db)):
+def create_from_template(
+    payload: schemas.DatabaseFromTemplate, repo: Repository = Depends(get_repo)
+):
     template = TEMPLATES.get(payload.template)
     if not template:
         raise HTTPException(404, f"Plantilla '{payload.template}' no existe")
 
-    ws = _get_default_workspace(db)
-    page = models.Page(
-        workspace_id=ws.id,
+    db_def = repo.create_database(
         title=payload.title or template["title"],
-        type=models.PageType.database,
         icon=settings.default_icon,
         created_by=settings.default_user_name,
+        schema_def=template["schema_def"],
+        views=template["views"],
     )
-    db.add(page)
-    db.flush()
-
-    db_def = models.DatabaseDef(page_id=page.id, schema_def=template["schema_def"])
-    db.add(db_def)
-    db.flush()
-
-    for v in template["views"]:
-        db.add(models.View(database_id=db_def.id, name=v["name"], type=v["type"], config=v["config"]))
-
-    db.commit()
-    db.refresh(db_def)
     return _serialize_database(db_def)
 
 
 @router.get("/{database_id}", response_model=schemas.DatabaseRead)
-def get_database(database_id: uuid.UUID, db: Session = Depends(get_db)):
-    return _serialize_database(_get_database_or_404(db, database_id))
+def get_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    return _serialize_database(_get_database_or_404(repo, database_id))
 
 
 @router.patch("/{database_id}", response_model=schemas.DatabaseRead)
-def update_database(database_id: uuid.UUID, payload: schemas.DatabaseUpdate, db: Session = Depends(get_db)):
-    db_def = _get_database_or_404(db, database_id)
-    page = db_def.page
-
-    if payload.title is not None:
-        page.title = payload.title
-    if payload.icon is not None:
-        page.icon = payload.icon
-    if payload.schema_def is not None:
-        # Nota (v1): no se revalidan retroactivamente las filas existentes
-        # contra el schema nuevo — pueden quedar con propiedades que ya no
-        # están definidas hasta que se vuelvan a guardar.
-        db_def.schema_def = [p.model_dump() for p in payload.schema_def]
-
-    db.commit()
-    db.refresh(db_def)
+def update_database(
+    database_id: uuid.UUID, payload: schemas.DatabaseUpdate, repo: Repository = Depends(get_repo)
+):
+    db_def = repo.update_database(
+        database_id,
+        title=payload.title,
+        icon=payload.icon,
+        schema_def=None if payload.schema_def is None else [p.model_dump() for p in payload.schema_def],
+    )
+    if db_def is None:
+        raise HTTPException(404, "Base de datos no encontrada")
     return _serialize_database(db_def)
 
 
 @router.delete("/{database_id}", status_code=204)
-def delete_database(database_id: uuid.UUID, db: Session = Depends(get_db)):
-    db_def = _get_database_or_404(db, database_id)
-    delete_database_contents(db, db_def)
-    db.commit()
+def delete_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    if not repo.delete_database(database_id):
+        raise HTTPException(404, "Base de datos no encontrada")
 
 
 # --------------------------------------------------------------------- rows
 
 @router.post("/{database_id}/rows", response_model=schemas.RowRead)
-def create_row(database_id: uuid.UUID, payload: schemas.RowCreate, db: Session = Depends(get_db)):
-    db_def = _get_database_or_404(db, database_id)
-    ws = _get_default_workspace(db)
+def create_row(
+    database_id: uuid.UUID, payload: schemas.RowCreate, repo: Repository = Depends(get_repo)
+):
+    db_def = _get_database_or_404(repo, database_id)
     cleaned = validate_properties(db_def.schema_def, payload.properties)
-
-    row = models.Page(
-        workspace_id=ws.id,
-        title=payload.title,
-        type=models.PageType.database_row,
-        database_id=database_id,
-        icon=payload.icon,
-        properties=cleaned,
+    row = repo.create_row(
+        database_id, title=payload.title, icon=payload.icon, properties=cleaned
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
     return _serialize_row(row)
 
 
 @router.get("/{database_id}/rows", response_model=List[schemas.RowRead])
-def list_rows(database_id: uuid.UUID, view: Optional[uuid.UUID] = None, db: Session = Depends(get_db)):
-    _get_database_or_404(db, database_id)
-    rows = db.query(models.Page).filter(models.Page.database_id == database_id).all()
+def list_rows(
+    database_id: uuid.UUID,
+    view: Optional[uuid.UUID] = None,
+    repo: Repository = Depends(get_repo),
+):
+    _get_database_or_404(repo, database_id)
+    rows = repo.list_rows(database_id)
 
     if view is not None:
-        view_def = db.get(models.View, view)
-        if not view_def or view_def.database_id != database_id:
+        view_def = repo.get_view(database_id, view)
+        if view_def is None:
             raise HTTPException(404, "Vista no encontrada")
         rows = _apply_view(rows, view_def.config or {})
 
@@ -232,96 +171,95 @@ def list_rows(database_id: uuid.UUID, view: Optional[uuid.UUID] = None, db: Sess
 
 
 @router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowRead)
-def get_row(database_id: uuid.UUID, row_id: uuid.UUID, db: Session = Depends(get_db)):
-    return _serialize_row(_get_row_or_404(db, database_id, row_id))
+def get_row(
+    database_id: uuid.UUID, row_id: uuid.UUID, repo: Repository = Depends(get_repo)
+):
+    return _serialize_row(_get_row_or_404(repo, database_id, row_id))
 
 
 @router.patch("/{database_id}/rows/{row_id}", response_model=schemas.RowRead)
-def update_row(database_id: uuid.UUID, row_id: uuid.UUID, payload: schemas.RowUpdate, db: Session = Depends(get_db)):
-    db_def = _get_database_or_404(db, database_id)
-    row = _get_row_or_404(db, database_id, row_id)
+def update_row(
+    database_id: uuid.UUID,
+    row_id: uuid.UUID,
+    payload: schemas.RowUpdate,
+    repo: Repository = Depends(get_repo),
+):
+    db_def = _get_database_or_404(repo, database_id)
+    _get_row_or_404(repo, database_id, row_id)
 
-    if payload.title is not None:
-        row.title = payload.title
-    if payload.icon is not None:
-        row.icon = payload.icon
+    cleaned = None
     if payload.properties is not None:
         cleaned = validate_properties(db_def.schema_def, payload.properties)
-        row.properties = {**(row.properties or {}), **cleaned}
 
-    db.commit()
-    db.refresh(row)
+    row = repo.update_row(
+        database_id,
+        row_id,
+        title=payload.title,
+        icon=payload.icon,
+        properties=cleaned,
+    )
+    if row is None:
+        raise HTTPException(404, "Fila no encontrada")
     return _serialize_row(row)
 
 
 @router.delete("/{database_id}/rows/{row_id}", status_code=204)
-def delete_row(database_id: uuid.UUID, row_id: uuid.UUID, db: Session = Depends(get_db)):
-    row = _get_row_or_404(db, database_id, row_id)
-    db.delete(row)
-    db.commit()
+def delete_row(
+    database_id: uuid.UUID, row_id: uuid.UUID, repo: Repository = Depends(get_repo)
+):
+    if not repo.delete_row(database_id, row_id):
+        raise HTTPException(404, "Fila no encontrada")
 
 
 # -------------------------------------------------------------------- views
 
 @router.post("/{database_id}/views", response_model=schemas.ViewRead)
-def create_view(database_id: uuid.UUID, payload: schemas.ViewCreate, db: Session = Depends(get_db)):
-    _get_database_or_404(db, database_id)
-    view = models.View(
-        database_id=database_id,
-        name=payload.name,
-        type=payload.type,
-        config=payload.config or {},
-    )
-    db.add(view)
-    db.commit()
-    db.refresh(view)
+def create_view(
+    database_id: uuid.UUID, payload: schemas.ViewCreate, repo: Repository = Depends(get_repo)
+):
+    _get_database_or_404(repo, database_id)
+    view = repo.create_view(database_id, name=payload.name, type=payload.type, config=payload.config)
     return _serialize_view(view)
 
 
 @router.get("/{database_id}/views", response_model=List[schemas.ViewRead])
-def list_views(database_id: uuid.UUID, db: Session = Depends(get_db)):
-    _get_database_or_404(db, database_id)
-    views = db.query(models.View).filter(models.View.database_id == database_id).all()
-    return [_serialize_view(v) for v in views]
+def list_views(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    _get_database_or_404(repo, database_id)
+    return [_serialize_view(v) for v in repo.list_views(database_id)]
 
 
 @router.patch("/{database_id}/views/{view_id}", response_model=schemas.ViewRead)
 def update_view(
-    database_id: uuid.UUID, view_id: uuid.UUID, payload: schemas.ViewUpdate, db: Session = Depends(get_db)
+    database_id: uuid.UUID,
+    view_id: uuid.UUID,
+    payload: schemas.ViewUpdate,
+    repo: Repository = Depends(get_repo),
 ):
-    view = db.get(models.View, view_id)
-    if not view or view.database_id != database_id:
+    view = repo.update_view(
+        database_id, view_id, name=payload.name, type=payload.type, config=payload.config
+    )
+    if view is None:
         raise HTTPException(404, "Vista no encontrada")
-
-    if payload.name is not None:
-        view.name = payload.name
-    if payload.type is not None:
-        view.type = payload.type
-    if payload.config is not None:
-        view.config = payload.config
-
-    db.commit()
-    db.refresh(view)
     return _serialize_view(view)
 
 
 @router.delete("/{database_id}/views/{view_id}", status_code=204)
-def delete_view(database_id: uuid.UUID, view_id: uuid.UUID, db: Session = Depends(get_db)):
-    view = db.get(models.View, view_id)
-    if not view or view.database_id != database_id:
+def delete_view(
+    database_id: uuid.UUID, view_id: uuid.UUID, repo: Repository = Depends(get_repo)
+):
+    if not repo.delete_view(database_id, view_id):
         raise HTTPException(404, "Vista no encontrada")
-    db.delete(view)
-    db.commit()
 
 
 # ------------------------------------------------------------- aplicar vista
 
-def _apply_view(rows: list[models.Page], config: dict) -> list[models.Page]:
+def _apply_view(rows: list[Page], config: dict) -> list[Page]:
     """Filtra y ordena en Python (no en SQL): a escala personal, con todas
     las filas ya en memoria, es más simple y suficientemente rápido que
-    construir predicados dinámicos sobre JSONB. group_by/visible_properties
+    construir predicados dinámicos sobre JSON. group_by/visible_properties
     son metadatos para que el frontend decida cómo dibujar la vista (tablero,
-    calendario...) — no se aplican aquí."""
+    calendario...) — no se aplican aquí.
+    """
     for f in config.get("filters") or []:
         key, op, value = f.get("key"), f.get("op", "eq"), f.get("value")
         rows = [r for r in rows if _match((r.properties or {}).get(key), op, value)]

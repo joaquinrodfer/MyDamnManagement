@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from app.models import PageType, ViewType
+from app.enums import PageType, ViewType
 
 
 class PageBase(BaseModel):

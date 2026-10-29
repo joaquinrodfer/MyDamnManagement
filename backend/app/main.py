@@ -1,12 +1,15 @@
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
-from app.models import Workspace
+from app.config import settings
+from app.index import ensure_index, open_index
+from app.repository import Repository
 from app.routers import dashboard, databases, pages, search, status
+
+log = logging.getLogger("mdm.main")
 
 app = FastAPI(title="MyDamnManagement API")
 
@@ -19,20 +22,18 @@ app.include_router(dashboard.router)
 
 @app.on_event("startup")
 def on_startup() -> None:
-    # Fase 1: el esquema ya lo crea/migra Alembic (alembic upgrade head,
-    # ver docker-compose.yml) antes de que arranque uvicorn. Aquí solo
-    # queda la siembra de datos de aplicación (workspace por defecto).
-    _ensure_default_workspace()
-
-
-def _ensure_default_workspace() -> None:
-    db: Session = SessionLocal()
+    # No hay Alembic ni Postgres: el esquema del índice se crea o se migra
+    # aquí mismo (`PRAGMA user_version`), y un fichero ilegible se aparta y se
+    # rehace en vez de impedir el arranque. La siembra que queda es el
+    # workspace por defecto.
+    info = ensure_index(settings.index_path)
+    if info.recreated:
+        log.warning("índice creado de cero en %s (%s)", info.path, info.reason)
+    repo = Repository(open_index(settings.index_path))
     try:
-        if not db.query(Workspace).first():
-            db.add(Workspace(name="default"))
-            db.commit()
+        repo.ensure_workspace()
     finally:
-        db.close()
+        repo.close()
 
 
 @app.get("/health")
@@ -82,15 +83,29 @@ class AttachmentStaticFiles(NoCacheStaticFiles):
         return response
 
 
+# El volumen de adjuntos puede llegar vacío en un contenedor limpio y
+# StaticFiles no arranca sobre un directorio inexistente. El del panel NO se
+# crea a propósito: si falta, la imagen está mal construida y debe fallar en
+# claro en vez de servir una carpeta vacía.
+Path(settings.attachments_dir).mkdir(parents=True, exist_ok=True)
+
 # Adjuntos (imágenes de cabecera, etc.) subidos por la propia app -- ver
 # POST /pages/{id}/header-image. Antes del mount de "/" por la misma razón
 # de siempre: el catch-all no debe taparlo. AttachmentStaticFiles aquí también:
 # el nombre de archivo es fijo por página ("header.<ext>"), así que sin esto
 # quitar una cabecera y subir otra de inmediato podía seguir mostrando la
 # vieja (misma URL, navegador sirviendo de caché sin revalidar).
-app.mount("/files", AttachmentStaticFiles(directory="/app/attachments"), name="files")
+app.mount(
+    "/files",
+    AttachmentStaticFiles(directory=settings.attachments_dir),
+    name="files",
+)
 
 # Montado al final a propósito: así no tapa /health, /status, /pages, /files
 # ni /docs, y sigue sirviendo cualquier otra ruta (incluida "/") como
 # archivos estáticos.
-app.mount("/", NoCacheStaticFiles(directory="/app/frontend", html=True), name="frontend")
+app.mount(
+    "/",
+    NoCacheStaticFiles(directory=settings.frontend_dir, html=True),
+    name="frontend",
+)

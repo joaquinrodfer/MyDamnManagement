@@ -1,10 +1,9 @@
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
 
-from app import models
-from app.database import get_db
+from app.dependencies import get_repo
+from app.repository import Repository
 from app.serializers import as_utc
 
 router = APIRouter(tags=["dashboard"])
@@ -20,25 +19,20 @@ UPCOMING_DATES_LIMIT = 10
 
 
 @router.get("/dashboard")
-def get_dashboard(db: Session = Depends(get_db)):
+def get_dashboard(repo: Repository = Depends(get_repo)):
     """Datos de la landing del panel (se muestra cuando no hay ninguna
     página abierta): páginas con cambios recientes, y filas de cualquier
     database que tenga una propiedad de tipo `date` con un valor cercano a
     hoy. No es un modelo de datos nuevo -- solo dos consultas sobre lo que
-    ya existe (`pages.updated_at` y `pages.properties`), pensadas para
-    resolverse aquí y no como N peticiones sueltas desde el cliente."""
-    recent_pages = (
-        db.query(models.Page)
-        .filter(models.Page.type != models.PageType.database_row)
-        .order_by(models.Page.updated_at.desc())
-        .limit(RECENT_PAGES_LIMIT)
-        .all()
-    )
+    ya existe, pensadas para resolverse aquí y no como N peticiones sueltas
+    desde el cliente.
+    """
+    recent_pages = repo.list_recent_pages(RECENT_PAGES_LIMIT)
 
-    db_defs = db.query(models.DatabaseDef).all()
+    db_defs = repo.list_databases()
     # Igual que en /pages/tree: el id de la `page` de una database y el id de
-    # la fila `databases` que la describe son distintos -- el frontend
-    # navega con el segundo.
+    # la `database` que la describe son distintos -- el frontend navega con el
+    # segundo.
     database_id_by_page_id = {d.page_id: d.id for d in db_defs}
 
     today = date.today()
@@ -47,8 +41,7 @@ def get_dashboard(db: Session = Depends(get_db)):
         date_props = [p for p in (d.schema_def or []) if p.get("type") == "date"]
         if not date_props:
             continue
-        rows = db.query(models.Page).filter(models.Page.database_id == d.id).all()
-        for row in rows:
+        for row in repo.list_rows(d.id):
             props = row.properties or {}
             for prop in date_props:
                 raw = props.get(prop["key"])
@@ -65,7 +58,7 @@ def get_dashboard(db: Session = Depends(get_db)):
                             "row_id": row.id,
                             "row_title": row.title,
                             "database_id": d.id,
-                            "database_title": d.page.title,
+                            "database_title": d.title,
                             "property_name": prop.get("name", prop["key"]),
                             "date": value.isoformat(),
                             "days_from_today": delta,
