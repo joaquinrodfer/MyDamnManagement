@@ -311,14 +311,17 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
     effective: list[dict] = []
     for prop in raw:
         if isinstance(prop, dict) and str(prop.get("key")) in RESERVED_ROW_KEYS:
-            # `title` no puede ser una propiedad de la base: el título de una
-            # fila es el nombre del fichero (§9.3). Si el `schema` la declara,
-            # se ignora en el modelo (si no, la app la volvería a escribir al
-            # guardar y se avisaría a sí misma de que sobra).
+            # Una propiedad con el nombre de una clave de la propia fila no
+            # puede existir: `title` es el nombre del fichero (§9.3) y el resto
+            # son la identidad y el tipo de la fila, su icono, su descripción y
+            # sus fechas. Si el `schema` la declara, se ignora en el modelo (si
+            # no, la app la volvería a escribir al guardar y se avisaría a sí
+            # misma de que sobra).
             warnings.append(
                 f"{path}: clave de schema reservada {prop.get('key')!r} "
-                "(el título es el nombre del fichero): se ignora en el "
-                "índice y al guardar")
+                "(es una clave de la fila: identidad, tipo, icono, "
+                "descripción, fechas o el título, que es el nombre del "
+                "fichero): se ignora en el índice y al guardar")
             continue
         effective.append(prop)
         if not isinstance(prop, dict) or "key" not in prop:

@@ -66,16 +66,20 @@ def create_page(vault_root: str, folder: str, title: str, *, icon: str | None = 
 def sin_reservadas(properties: dict, notes: list[str], donde: str) -> dict:
     """Quita las claves reservadas (`title`) de las propiedades de una fila.
 
-    El título de una fila ES el nombre del fichero (§9.3). Si una base declara
-    `title` en su `schema`, `reader.load` ya la excluye del modelo efectivo, pero
-    la capa HTTP puede mandar `properties` a mano: se filtra también aquí para que
-    la app no escriba nunca `title` ni se avise a sí misma de que sobra.
+    El título de una fila ES el nombre del fichero (§9.3) y el resto de claves
+    reservadas (`id`, `type`, `icon`, `description`, `created`, `updated`) son
+    las de la propia fila. Si una base las declara en su `schema`, `reader.load`
+    ya las excluye del modelo efectivo, pero la capa HTTP puede mandar
+    `properties` a mano: se filtran también aquí para que la app no escriba
+    nunca encima de la identidad, el tipo ni las fechas de una fila, ni se avise
+    a sí misma de que sobran.
     """
     limpias = {}
     for key, value in properties.items():
         if key in reader.RESERVED_ROW_KEYS:
             notes.append(f"propiedad reservada {key!r} ignorada {donde}: "
-                         "el título es el nombre del fichero")
+                         "es una clave de la fila (identidad, tipo, icono, "
+                         "descripción, fechas o título)")
             continue
         limpias[key] = value
     return limpias
