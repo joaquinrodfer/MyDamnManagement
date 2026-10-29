@@ -190,12 +190,21 @@ def _sin_vacios(mapping: dict) -> dict:
 
 def view_entry(view: dict) -> dict:
     """Una vista con la forma del fichero: `id`, `name`, `type` y su `config`
-    al mismo nivel (ROADMAP §2.3: `group_by: fase`)."""
+    al mismo nivel (ROADMAP §2.3: `group_by: fase`).
+
+    Acepta las dos formas (con `config` anidado o ya aplanada) para que
+    normalizar dos veces no pierda nada: `{**view_entry(v)}` es `view_entry(v)`.
+    """
+    config = dict(view.get("config") or {})
+    config.update({
+        k: v for k, v in view.items()
+        if k not in ("id", "name", "type", "config")
+    })
     return {
         "id": view["id"],
         "name": view["name"],
         "type": str(getattr(view.get("type"), "value", view.get("type")) or "table"),
-        **_sin_vacios(view.get("config") or {}),
+        **_sin_vacios(config),
     }
 
 

@@ -279,6 +279,26 @@ def test_borrar_el_indice_y_arrancar_da_el_mismo_indice(client, index_path, vaul
     assert despues_hash == antes_hash, "el índice reconstruido no es idéntico"
 
 
+def test_renombrar_una_nota_actualiza_la_ruta_de_sus_hijas_en_el_indice(client, index_path):
+    """El índice dice lo mismo que el disco: la hija sigue a su padre.
+
+    `_repath_children` comparaba el prefijo sin la barra final y no actualizaba
+    nada: el índice se quedaba con la ruta vieja de cada descendiente hasta el
+    siguiente reindexado (P2 lo destapó al exigir que índice y ficheros
+    coincidan tras cada escritura).
+    """
+    padre = crear(client, title="Caja")
+    crear(client, title="Suelta", parent_id=padre["id"])
+
+    client.patch(f"/pages/{padre['id']}", json={"title": "Caja nueva"})
+
+    antes = indice.dump_hash(str(index_path))
+    assert client.post("/reindex").status_code == 200
+    assert indice.dump_hash(str(index_path)) == antes, (
+        "el índice tenía rutas que el disco no dice"
+    )
+
+
 def test_reindexar_dos_veces_es_idempotente(client, index_path):
     crear(client, title="Una", body_markdown="[[Dos]]")
     crear(client, title="Dos")

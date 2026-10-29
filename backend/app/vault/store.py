@@ -786,7 +786,7 @@ class VaultStore:
 
     def _repath_children(self, old_prefix: str, new_prefix: str) -> None:
         """Actualiza la ruta de las descendientes al mover/renombrar su carpeta."""
-        size = len(old_prefix)
+        size = len(old_prefix) + 1          # con la barra: "Notas/X/" mide eso
         self.conn.execute(
             "UPDATE pages SET path = ? || substr(path, ?) WHERE substr(path, 1, ?) = ?",
             (new_prefix + "/", size + 1, size, old_prefix + "/"),
@@ -1106,7 +1106,7 @@ class VaultStore:
 
     def _repath_rows(self, old_prefix: str, new_prefix: str) -> None:
         """Actualiza la ruta de las filas al mover/renombrar su base."""
-        size = len(old_prefix)
+        size = len(old_prefix) + 1          # con la barra: "Bases/X/" mide eso
         self.conn.execute(
             "UPDATE pages SET path = ? || substr(path, ?)"
             " WHERE type = 'database_row' AND substr(path, 1, ?) = ?",

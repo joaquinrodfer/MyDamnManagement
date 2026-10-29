@@ -16,12 +16,10 @@ Lo que cuenta, y por qué:
 
 `changed` es la suma: los tres casos se resuelven reindexando.
 
-Lo que **no** es deriva: un `.md` que el índice no indexa a propósito (una base
-de datos o una fila, que son P2 y hoy solo viven en el índice) cuenta como
-`added`, y seguirá contando después de reindexar. Es verdad —ese fichero no
-está en el índice— y dejará de contar cuando P2 les dé fila. Preferible a leer
-el frontmatter de cada fichero para adivinar el tipo, que es justo lo que esta
-comprobación evita.
+Cuenta todos los `.md` indexados: notas, bases de datos y filas. Desde P2 no
+queda ningún fichero del vault que el índice ignore a propósito, así que un
+`added` es siempre un fichero que la app todavía no conoce (una base o una fila
+creada a mano, una nota nueva de otro editor) y desaparece al reindexar.
 """
 
 from __future__ import annotations
@@ -64,7 +62,7 @@ class Drift:
 def scan(root: str, conn) -> Drift:
     """Compara el índice con el vault. Un `stat` por fichero, sin leer cuerpos."""
     rows = conn.execute(
-        "SELECT path, mtime, size FROM pages WHERE type = 'note' AND path IS NOT NULL"
+        "SELECT path, mtime, size FROM pages WHERE path IS NOT NULL"
     ).fetchall()
     indexed = {row["path"]: (row["mtime"], row["size"]) for row in rows}
 

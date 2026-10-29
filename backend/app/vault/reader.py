@@ -26,8 +26,13 @@ from . import fm
 IGNORED_DIRS = {".trash", "_attachments", ".git", ".obsidian", ".stversions"}
 SKIP_FILES = {".DS_Store", "Thumbs.db"}
 
-TYPES = {"text", "number", "select", "multiselect", "checkbox", "date", "url", "relation"}
+# Carpeta de las bases de datos en la raíz del vault (ADR: `Bases/`). El lector
+# la necesita para reconocer una fila huérfana (`Bases/X/y.md` sin
+# `Bases/X.md`) aunque todavía no haya ninguna base indexada; `store` la
+# reexporta para que el nombre viva en un solo sitio.
+DATABASES_DIR = "Bases"
 
+TYPES = {"text", "number", "select", "multiselect", "checkbox", "date", "url", "relation"}
 
 @dataclass
 class Page:
@@ -483,7 +488,10 @@ def load(root: str) -> Vault:
         db_rel = f"{grandparent}/{folder}.md" if grandparent else f"{folder}.md"
         if db_rel in vault.by_path:
             continue
-        if grandparent in db_folders:
+        # Una carpeta de filas es la hermana de una base: está dentro de la
+        # carpeta de bases, o al lado de una base ya indexada (una base que
+        # cuelga de una nota vive en la carpeta de esa nota).
+        if grandparent == DATABASES_DIR or grandparent in db_folders:
             orphans.setdefault(parent, []).append(rel)
     for folder, files in orphans.items():
         vault.warnings.append(
