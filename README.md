@@ -85,7 +85,7 @@ python backend/scripts/migrate_attachments_into_vault.py \
 
 Reescribe el `header_image` de las notas **y también el de las que están en `.trash/`** (solo el frontmatter; el fichero no se mueve de la papelera): una nota borrada antes de migrar se queda apuntando al esquema viejo y, al restaurarla, su imagen daría 404 — el adjunto migrado no tendría ninguna referencia viva. Esas cuentan aparte, en `papelera_actualizadas`, y las que apuntan a un fichero que no existe ni en el origen ni en el vault salen como `aviso:` y se dejan intactas.
 
-El `--reindex` final es opcional pero recomendable: reescribir el frontmatter cambia el `mtime`, así que sin él `GET /status` muestra deriva (`drift.modified` = notas reescritas) hasta el siguiente reindexado. Con el flag, el índice queda al día en la misma pasada. Sin `--index` (o si el fichero no existe) el script solo toca los `.md`.
+El `--reindex` final es opcional pero recomendable: reescribir el frontmatter cambia el `mtime`, así que sin él `GET /status` muestra deriva (`drift.modified` = notas reescritas) hasta el siguiente reindexado. Con el flag, el índice queda al día en la misma pasada. Sin `--index` (o si el fichero no existe) el script solo toca los `.md`; con `--reindex` y un `--index` que no existe, **no se crea el índice**: avisa (`no se reindexa: no hay índice en …`), deja los contadores de la migración como están y sale con 0, así que un `--index` con errata no deja un índice nuevo y vacío haciendo compañía al de verdad.
 
 En Docker el volumen viejo (`<proyecto>_attachments`) ya no se monta: P1.2b lo retira de `docker-compose.yml`, pero **no** borra sus datos. Hay que montarlo solo para esta pasada, sin `:ro` (el script retira los originales que ya están en el vault y poda las carpetas vacías):
 

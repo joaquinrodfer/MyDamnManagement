@@ -213,6 +213,29 @@ def test_con_reindex_un_vault_sin_notas_no_vacia_el_indice(
     assert [p["title"] for p in client.get("/pages").json()] == ["Viva"]
 
 
+def test_con_reindex_y_un_indice_inexistente_no_lo_crea(
+    client, vault_path, tmp_path, capsys
+):
+    """`open_index` crea el fichero si no está: con un `--index` con errata (o
+    un `docker run` sin el volumen montado) eso dejaría un índice nuevo con el
+    vault y un «reindexado» que miente, mientras el de la app sigue con deriva.
+    Ahora, sin índice, no se reindexa ni se crea nada."""
+    crear(client, title="Viva")
+    source = tmp_path / "attachments"
+    source.mkdir()
+    fantasma = tmp_path / "indice-con-errata.sqlite"
+
+    assert _migrar(source, vault_path, fantasma, "--reindex") == 0
+    salida, err = capsys.readouterr()
+    assert not fantasma.exists(), "no debe crear el índice que no existía"
+    assert "no se reindexa: no hay índice en" in err, err
+    assert str(fantasma) in err, err
+    assert not re.search(r"reindexado\s*:", salida), salida
+    assert re.search(r"movidos\s*: 0", salida), salida
+    # El índice de la app no se toca.
+    assert [p["title"] for p in client.get("/pages").json()] == ["Viva"]
+
+
 def test_con_reindex_el_indice_queda_al_dia_y_la_deriva_a_cero(
     client, vault_path, index_path, tmp_path, capsys
 ):

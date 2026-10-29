@@ -74,7 +74,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--index",
         default=os.environ.get("INDEX_PATH", "/data/index.sqlite"),
         help="índice SQLite (por defecto $INDEX_PATH o /data/index.sqlite); "
-        "si no existe, solo se tocan los ficheros",
+        "si no existe, solo se tocan los ficheros (con `--reindex` tampoco se "
+        "crea: avisa y no reindexa)",
     )
     parser.add_argument(
         "--reindex", action="store_true",
@@ -388,6 +389,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.reindex and not args.dry_run:
         from app.index import open_index
         from app.vault.store import VaultError, VaultStore
+
+        # `open_index` crea el fichero si no existe. Con `--index` equivocado
+        # (errata, o un `docker run` sin el volumen montado) eso dejaría un
+        # índice nuevo, vacío de lo que la app sirve, y un «reindexado» que
+        # miente: el mismo criterio que `migrate_index` (solo se toca un
+        # índice que ya está).
+        if not index_path.is_file():
+            print(
+                f"  aviso: no se reindexa: no hay índice en {index_path}",
+                file=sys.stderr,
+            )
+            print(
+                "  (los ficheros ya están migrados; no se ha creado ningún índice: "
+                "revisa --index o reindexa a mano después)",
+                file=sys.stderr,
+            )
+            return 0 if counters["errores"] == 0 else 1
 
         conn = open_index(str(index_path))
         try:
