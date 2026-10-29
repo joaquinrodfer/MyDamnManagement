@@ -1,22 +1,4 @@
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: mdm_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432" # solo para desarrollo local; en Proxmox no se expone al exterior
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   api:
     build:
       context: . # raíz del repo, no ./backend -- así el Dockerfile puede copiar frontend/ también
@@ -24,21 +6,21 @@ services:
     container_name: mdm_api
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Un único fichero SQLite, sin servicio de base de datos ni puerto 5432.
+      # El volumen `mdm_data` lo deja fuera del repo.
+      INDEX_PATH: /data/index.sqlite
       DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
     volumes:
       - ./backend/app:/app/app # hot-reload en desarrollo (Windows y Linux por igual)
-      - ./backend/alembic:/app/alembic # migraciones; bind-mount para que autogenerate escriba en el host
-      - ./backend/alembic.ini:/app/alembic.ini
       - ./frontend:/app/frontend:ro # panel de estado; estático, sin build
       - attachments:/app/attachments
+      - mdm_data:/data # índice SQLite: fuera del repo, respaldable por separado
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    # Sin `alembic upgrade head`: el esquema del índice se crea/migra al
+    # arrancar la app (PRAGMA user_version).
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
 volumes:
-  db_data:
   attachments:
+  mdm_data:

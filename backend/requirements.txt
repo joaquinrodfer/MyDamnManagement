@@ -1,7 +1,7 @@
+# La app ya no necesita Postgres: un fichero SQLite hace de índice.
+# Nada de psycopg2 ni SQLAlchemy aquí; `sqlite3` viene en la librería estándar
+# y FTS5 se usa con SQL explícito (ver backend/app/index.py).
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-sqlalchemy==2.0.36
-psycopg2-binary==2.9.9
 pydantic-settings==2.6.1
 python-multipart==0.0.12
-alembic==1.13.3
