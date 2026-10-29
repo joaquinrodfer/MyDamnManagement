@@ -95,9 +95,29 @@ services:
           if not drift.get("ok"):
               fail("el vault no se puede recorrer: " + str(drift.get("error")))
 
+          # Un índice que se puede ABRIR no es un índice CON contenido. Si el
+          # fichero del índice desaparece con la app en marcha, `ensure_index`
+          # recrea uno vacío en la siguiente consulta: `db.ok` sigue siendo true
+          # con `counts.pages == 0`, la API sirve el panel vacío y el contenedor
+          # se quedaría `healthy` para siempre (`restart: unless-stopped` no
+          # reinicia por `unhealthy`). Ese es el susto que este chequeo evita.
+          #
+          # `checked + added` son los `.md` que hay en el vault (los que el
+          # índice ya conoce y los que aún no). Se usa esa suma y no `changed` a
+          # propósito: un `.md` editado por fuera da `modified` y es el caso
+          # normal hasta el siguiente reindexado, no una caída.
+          pages = (db.get("counts") or {}).get("pages") or 0
+          en_vault = (drift.get("checked") or 0) + (drift.get("added") or 0)
+          if pages == 0 and en_vault > 0:
+              fail(
+                  "el índice está vacío (%s páginas) pero hay %d ficheros en el "
+                  "vault %s: POST /reindex o reinicia el contenedor"
+                  % (pages, en_vault, vault)
+              )
+
           print(
-              "ok: índice v%s, %s ficheros del vault comprobados"
-              % (db.get("schema_version"), drift.get("checked"))
+              "ok: índice v%s, %s páginas, %s ficheros del vault comprobados"
+              % (db.get("schema_version"), pages, drift.get("checked"))
           )
       interval: 30s
       timeout: 15s
