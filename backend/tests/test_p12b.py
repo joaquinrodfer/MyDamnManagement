@@ -97,9 +97,12 @@ def test_solo_se_sirve_como_imagen_lo_que_lo_es(client, vault_path):
     assert servido.headers["content-disposition"].startswith("attachment;")
     assert servido.headers["x-content-type-options"] == "nosniff"
 
-    # Nada fuera de `_attachments/` se sirve (ni el índice, ni las notas).
+    # Nada fuera de `_attachments/` se sirve (ni el índice, ni las notas), ni
+    # con un nombre hostil que intente salir del vault.
     assert client.get("/files/indice.sqlite").status_code == 404
     assert client.get("/files/Notas/Con cabecera.md").status_code == 404
+    assert client.get("/files/_attachments/%2e%2e/%2e%2e/etc/passwd").status_code == 404
+    assert client.get("/files/_attachments/../../etc/passwd").status_code == 404
     assert client.get("/files/_attachments/no-existe.png").status_code == 404
 
 
@@ -161,6 +164,26 @@ def test_restaurar_con_la_ruta_ocupada_es_409(client, vault_path):
     assert [e["path"] for e in client.get("/trash").json()] == [entrada["path"]]
 
 
+def test_restaurar_recrea_la_carpeta_intermedia(client, vault_path):
+    """Restaurar una subpágina sola: la carpeta se recrea y la nota vuelve sin
+    padre (su `.md` padre sigue en la papelera). Es el comportamiento declarado:
+    el fichero vuelve a su ruta, el árbol se deduce al reindexar, como siempre."""
+    padre = crear(client, title="Proyectos")
+    hija = crear(client, title="Bugs", parent_id=padre["id"])
+    assert client.delete(f"/pages/{padre['id']}").status_code == 204
+    assert not (vault_path / "Notas" / "Proyectos").exists()
+
+    entrada = next(
+        e for e in client.get("/trash").json() if e["original_path"] == "Notas/Proyectos/Bugs.md"
+    )
+    respuesta = client.post("/trash/restore", json={"path": entrada["path"]})
+    assert respuesta.status_code == 200, respuesta.text
+    assert (vault_path / "Notas" / "Proyectos" / "Bugs.md").is_file()
+
+    vuelta = client.get(f"/pages/{hija['id']}")
+    assert vuelta.status_code == 200
+    assert vuelta.json()["parent_id"] is None
+
 def test_restaurar_una_ruta_que_no_esta_en_la_papelera_es_404(client):
     respuesta = client.post("/trash/restore", json={"path": ".trash/2026-01-01T00-00-00/No hay.md"})
     assert respuesta.status_code == 404
@@ -206,3 +229,27 @@ def test_status_cuenta_la_deriva_y_vuelve_a_cero_tras_reindexar(client, vault_pa
     assert despues["changed"] == 0
     assert despues["checked"] == 3
     assert despues["last_reindex_at"] == reindex["reindexed_at"]
+
+
+def test_la_deriva_cuenta_solo_el_mtime_y_los_ficheros_borrados(client, vault_path):
+    crear(client, title="Solo mtime", body_markdown="mismo contenido")
+    crear(client, title="Desaparece")
+    assert client.get("/status").json()["drift"]["changed"] == 0
+
+    # Solo cambia el mtime: el contenido es idéntico y aun así el fichero se
+    # escribió por fuera (un `touch` basta para que el índice sirva lo viejo).
+    fichero = vault_path / "Notas" / "Solo mtime.md"
+    futuro = time.time() + 3600
+    os.utime(fichero, (futuro, futuro))
+    deriva = client.get("/status").json()["drift"]
+    assert (deriva["modified"], deriva["added"], deriva["missing"]) == (1, 0, 0), deriva
+
+    # Y un `.md` que ya no está: el índice tiene una nota sin fichero detrás.
+    (vault_path / "Notas" / "Desaparece.md").unlink()
+    deriva = client.get("/status").json()["drift"]
+    assert (deriva["modified"], deriva["added"], deriva["missing"]) == (1, 0, 1), deriva
+    assert deriva["changed"] == 2
+
+    client.post("/reindex")
+    despues = client.get("/status").json()["drift"]
+    assert (despues["changed"], despues["checked"]) == (0, 1), despues
