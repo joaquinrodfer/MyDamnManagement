@@ -1614,8 +1614,12 @@ async function renderDatabase(database, views, activeViewId) {
   const main = clearMain();
   // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
   // usan el tablero tras mover una tarjeta y el diálogo de propiedades, para no
-  // enseñar nada que el `.md` no tenga ya.
-  const refresh = () => renderDatabase(database, views, activeViewId);
+  // enseñar nada que el `.md` no tenga ya. El fallo se avisa aquí: quien
+  // repinta no espera la promesa, y una rechazada sin dueño no se ve.
+  const refresh = () =>
+    renderDatabase(database, views, activeViewId).catch((e) =>
+      reportError("No se pudo refrescar la base de datos", e),
+    );
 
   const header = document.createElement("div");
   header.className = "db-header";
