@@ -1,0 +1,59 @@
+# CI: lo que antes solo corría a mano en el contenedor de desarrollo.
+#
+# Dos jobs independientes y sin secretos:
+#   - `tests`: la suite entera sobre la versión de Python de la imagen (3.12),
+#     sin servicios. El índice es un fichero SQLite y cada test estrena su vault
+#     temporal (ver backend/tests/conftest.py), así que no hace falta Postgres
+#     ni Docker.
+#   - `imagen`: que `backend/Dockerfile` siga construyendo. El propio Dockerfile
+#     comprueba en el build que el SQLite de la base no baja de 3.27.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: pytest (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 es la versión de la imagen (backend/Dockerfile), no la del
+      # contenedor de desarrollo: los tests corren donde corre la app.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Instalar dependencias
+        run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      # Desde la raíz: pytest.ini declara testpaths = backend/tests.
+      - name: Tests
+        run: pytest -q
+
+  imagen:
+    name: docker build (backend/Dockerfile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # El contexto es la raíz del repo, como en docker-compose.yml: el
+      # Dockerfile copia backend/ y frontend/. No se levanta nada ni se
+      # publica la imagen; solo se comprueba que construye.
+      - name: Construir la imagen
+        run: docker build -f backend/Dockerfile -t mydamnmanagement:ci .
