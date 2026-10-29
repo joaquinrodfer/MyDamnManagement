@@ -236,6 +236,7 @@ curl -s http://127.0.0.1:8000/health
 
 - **Estado del healthcheck:** `docker inspect --format '{{.State.Health.Status}}' mdm_api_prod` (`starting` hasta que pasa el periodo de gracia del arranque, luego `healthy`). El motivo del último fallo, con texto: `docker inspect --format '{{json .State.Health}}' mdm_api_prod | python3 -m json.tool`. Está definido en el compose y no usa `/health` (que siempre contesta `ok`): pregunta a `/status`, que abre el índice y recorre el vault, y sale con código 1 diciendo qué falla — `el índice no se puede leer: …`, `no existe el vault … (¿volumen sin montar?)`, `el vault no se puede recorrer: …`.
 - **Actualizar:** `git pull && docker compose -f docker-compose.prod.yml up -d --build`. Cada arranque reindexa el vault entero, así que un cambio de código no necesita ningún paso extra sobre los datos.
+- **No levantes los dos composes a la vez** en la misma máquina: los dos publican el puerto 8000 del host (el de desarrollo en todas las interfaces, el de producción en loopback) y el segundo se queda sin puerto.
 - **Los volúmenes se llaman `mdm-prod_mdm_data` y `mdm-prod_mdm_vault`** porque el compose fija `name: mdm-prod`. No dependen del directorio desde el que clones, y así el backup y el restore de más abajo son comandos exactos y no "mira a ver cómo se llama".
 
 ### Exponerlo por Tailscale
@@ -337,6 +338,7 @@ Este cambio se ha hecho sin poder arrancar el contenedor ni tocar un tailnet: en
 
 - `docker compose -f docker-compose.prod.yml config` **no se ha ejecutado**. El YAML está validado (parsea y las claves del criterio se han comprobado con un script: sin bind-mounts, puerto en loopback, `restart`, `healthcheck`, sin `--reload`), pero la validación final del CLI la tiene que hacer el despliegue: es el primer comando que conviene correr en el servidor antes de `up`.
 - El comando del `healthcheck` **sí** está probado contra la app de verdad: se extrajo el script del propio YAML y se ejecutó contra un `uvicorn` local con un índice y un vault temporales — devuelve 0 con todo sano, 1 nombrando el índice cuando el directorio del índice desaparece, 1 nombrando el vault cuando el vault desaparece o no se puede recorrer, y vuelve a 0 al restaurarlos. También se comprobó, con la app en marcha, que un índice vacío más un vault con notas arranca con el índice reconstruido (1 página, `drift.changed` 0) y que un vault editado por fuera gana al índice atrasado en el siguiente arranque.
+- El `tar` que usan el backup y el restore es el de la propia imagen (`python:3.12-slim-bookworm`, base Debian): aquí no se ha podido comprobar que esté, por lo mismo. Si en tu imagen no estuviera, el mismo comando vale con un contenedor de usar y tirar: `docker run --rm -v mdm-prod_mdm_vault:/data/vault:ro -v "$PWD/backups":/backup busybox tar -czf /backup/vault.tar.gz -C /data/vault .`.
 - `docker build` de la imagen, `docker compose up` y `tailscale serve` **no** se han ejecutado aquí.
 
 ## Licencia
