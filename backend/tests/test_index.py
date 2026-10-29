@@ -90,6 +90,26 @@ def test_fichero_corrupto_se_aparta_y_se_rehace(index_path):
         repo.close()
 
 
+def test_la_app_arranca_con_un_indice_ilegible(index_path, monkeypatch):
+    """El criterio literal: un fichero corrupto se detecta al arrancar y se
+    rehace; uvicorn no se cae por encontrarse basura donde va el índice."""
+    from fastapi.testclient import TestClient
+
+    from app.config import settings
+
+    index_path.write_bytes(b"basura, no soy una base de datos" * 20)
+    monkeypatch.setattr(settings, "index_path", str(index_path))
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/pages").json() == []
+        assert client.get("/status").json()["services"]["db"]["ok"] is True
+
+    assert list(index_path.parent.glob("indice.sqlite.corrupto-*"))
+
+
 def test_indice_de_version_mas_nueva_no_se_toca(index_path):
     ensure_index(str(index_path))
     conn = sqlite3.connect(index_path)
