@@ -113,7 +113,12 @@ def delete_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
     # El borrado en cascada del índice se lleva, para una página type=database,
     # su database, sus vistas y sus filas -- el mismo estado que DELETE
     # /databases/{id}, sin dejar filas huérfanas fuera del árbol.
-    repo.delete_page(page_id)
+    try:
+        repo.delete_page(page_id)
+    except VaultError as exc:
+        # p. ej. una base colgando de la nota: la cascada se la llevaría sin
+        # papelera. 400 con el motivo, como el resto de reglas del vault.
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/{page_id}/backlinks", response_model=List[schemas.PageRead])
@@ -153,7 +158,13 @@ async def upload_header_image(
     dest = page_dir / f"header.{ext}"
     dest.write_bytes(data)
 
-    page = repo.set_header_image(page_id, f"/files/pages/{page_id}/{dest.name}")
+    try:
+        page = repo.set_header_image(page_id, f"/files/pages/{page_id}/{dest.name}")
+    except VaultError as exc:
+        # Sin `.md` (borrado por fuera) no hay dónde apuntar la cabecera: se
+        # retira la imagen recién subida para no dejar un huérfano y se explica.
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, str(exc)) from exc
     return serialize_page(page)
 
 
@@ -165,5 +176,8 @@ def delete_header_image(page_id: uuid.UUID, repo: Repository = Depends(get_repo)
     for old in page_dir.glob("header.*"):
         old.unlink(missing_ok=True)
 
-    page = repo.set_header_image(page_id, None)
+    try:
+        page = repo.set_header_image(page_id, None)
+    except VaultError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return serialize_page(page)

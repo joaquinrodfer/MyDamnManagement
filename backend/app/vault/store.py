@@ -90,6 +90,21 @@ def canonical_body(raw: str) -> str:
     return raw.rstrip("\n")
 
 
+def stored_body(raw: str) -> str:
+    """Cuerpo tal y como queda escrito en el fichero.
+
+    `writer.page_markdown` pone un `\\n` entre el `---` que cierra el
+    frontmatter y el cuerpo, y otro al final. Al guardar (`PATCH`) hay que
+    escribir exactamente lo mismo: si no, el mismo documento cambia de bytes
+    según se haya creado o editado, y hay dos escritores con dos formatos para
+    un solo contrato.
+    """
+    body = "\n" + canonical_body(raw)
+    if not body.endswith("\n"):
+        body += "\n"
+    return body
+
+
 def derived_id(rel_path: str) -> str:
     """UUID estable a partir de la ruta (fichero sin `id` en frontmatter)."""
     key = "mdm-vault:" + rel_path.replace(os.sep, "/")
@@ -187,20 +202,31 @@ def write_note_file(
     created_by: Optional[str] = None,
     header_image: Optional[str] = None,
     extra: Optional[dict[str, Any]] = None,
+    stem: Optional[str] = None,
 ) -> tuple[str, list[str]]:
     """Escribe un `.md` nuevo. Devuelve (ruta relativa al vault, avisos).
 
     No toca el índice a propósito: lo usa también el script de migración, que
     escribe el vault entero y deja que el reindexado pueble el índice.
+
+    `stem` fija el nombre del fichero sin pasar por `unique_stem`: lo usa la
+    migración, que resuelve antes los nombres de todo el árbol (si no, la
+    carpeta de las hijas se calculaba con el título del padre y no con el
+    nombre realmente escrito).
     """
     rel_folder = vaultfs.safe_rel(root, folder) if folder else ""
     directory = os.path.join(root, rel_folder) if rel_folder else root
     os.makedirs(directory, exist_ok=True)
 
-    stem, notes = names.sanitize(title)
-    stem, collided = names.unique_stem(directory, stem)
-    if collided:
-        notes.append(f"colisión en {rel_folder or '.'}: nombre final {stem!r}")
+    notes: list[str] = []
+    if stem is None:
+        stem, san_notes = names.sanitize(title)
+        notes.extend(san_notes)
+        stem, collided = names.unique_stem(directory, stem)
+        if collided:
+            notes.append(f"colisión en {rel_folder or '.'}: nombre final {stem!r}")
+    else:
+        stem = names.nfc(stem)
 
     rel = f"{rel_folder}/{stem}.md" if rel_folder else f"{stem}.md"
     extra_keys = dict(extra or {})
@@ -280,6 +306,14 @@ ON CONFLICT(id) DO UPDATE SET
     created_at = excluded.created_at,
     updated_at = excluded.updated_at
 """
+
+
+def _has_markdown(root: str) -> bool:
+    """¿Hay algún `.md` en el vault? (la papelera cuenta: son ficheros del usuario)"""
+    for _dirpath, _dirs, files in os.walk(root):
+        if any(name.lower().endswith(".md") for name in files):
+            return True
+    return False
 
 
 @dataclass
@@ -381,6 +415,25 @@ class VaultNotes:
                 "datos y sus filas todavía viven solo en el índice (P2)"
             )
         return row["path"][:-3]
+
+    def _reject_cycle(self, parent_id: Optional[str], page_id: str) -> None:
+        """`VaultError` si el padre propuesto es la página o una descendiente."""
+        seen: set[str] = set()
+        current = parent_id
+        while current:
+            if current == page_id:
+                raise VaultError(
+                    "no se puede mover una página dentro de sí misma ni de una "
+                    "de sus subpáginas: su carpeta de hijas acabaría dentro de "
+                    "sí misma y el fichero dejaría de estar en el árbol"
+                )
+            if current in seen:
+                return      # ciclo que ya venía en los datos: no lo crea esto
+            seen.add(current)
+            row = self.conn.execute(
+                "SELECT parent_id FROM pages WHERE id = ?", (current,)
+            ).fetchone()
+            current = row["parent_id"] if row is not None else None
 
     def _record_from_page(
         self, page: reader.Page, workspace_id: str, parent_id: Optional[str],
@@ -497,6 +550,10 @@ class VaultNotes:
         if parent_id is not UNSET:
             new_parent = self._parent_str(parent_id)
             if (new_parent or None) != (row["parent_id"] or None):
+                # Mover una página dentro de sí misma (o de una de sus
+                # subpáginas) metería su carpeta de hijas dentro de sí misma:
+                # `rename()` devuelve EINVAL y el panel recibe un 500 mudo.
+                self._reject_cycle(new_parent, str(row["id"]))
                 target_folder = self._folder_for_parent(new_parent)
 
         current_stem = os.path.basename(old_rel)[:-3]
@@ -552,7 +609,8 @@ class VaultNotes:
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
 
-        new_body = canonical_body(body) if body is not UNSET and body is not None else None
+        # Mismo formato que `POST` (salto tras el frontmatter y `\n` final).
+        new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)
         vaultfs.atomic_write(abs_new, new_text)
 
@@ -565,6 +623,18 @@ class VaultNotes:
         if parent_id is None or parent_id == "":
             return None
         return str(parent_id)
+
+    def _non_note_descendants(self, page_id: str) -> list[sqlite3.Row]:
+        """Filas que no son nota y cuelgan (a cualquier profundidad) de `page_id`."""
+        return self.conn.execute(
+            "WITH RECURSIVE sub(id) AS ("
+            "  SELECT id FROM pages WHERE id = ?"
+            "  UNION"
+            "  SELECT p.id FROM pages p JOIN sub s ON p.parent_id = s.id)"
+            " SELECT p.id, p.title, p.type FROM pages p JOIN sub s ON p.id = s.id"
+            " WHERE p.type <> 'note'",
+            (page_id,),
+        ).fetchall()
 
     def _repath_children(self, old_prefix: str, new_prefix: str) -> None:
         """Actualiza la ruta de las descendientes al mover/renombrar su carpeta."""
@@ -579,7 +649,7 @@ class VaultNotes:
     def delete(self, page_id: Any) -> bool:
         """Mueve la nota (y su carpeta de subpáginas) a la papelera."""
         row = self.conn.execute(
-            "SELECT id, type, path FROM pages WHERE id = ?", (str(page_id),)
+            "SELECT id, type, path, title FROM pages WHERE id = ?", (str(page_id),)
         ).fetchone()
         if row is None:
             return False
@@ -588,6 +658,21 @@ class VaultNotes:
             with self._tx():
                 self.conn.execute("DELETE FROM pages WHERE id = ?", (str(page_id),))
             return True
+
+        blockers = self._non_note_descendants(str(page_id))
+        if blockers:
+            # Las bases y sus filas viven solo en el índice (P2): la cascada se
+            # las llevaría sin papelera, y la nota sí sería recuperable. Media
+            # página restaurada es peor que un 400 con el motivo, y es simétrico
+            # con la regla de que una nota no puede colgar de una base.
+            detalle = ", ".join(f"«{b['title']}» ({b['type']})" for b in blockers[:3])
+            if len(blockers) > 3:
+                detalle += f" y {len(blockers) - 3} más"
+            raise VaultError(
+                f"no se puede borrar «{row['title']}»: cuelga de ella {detalle}, "
+                "y en P1.2a eso solo vive en el índice (no habría papelera para "
+                "recuperarlo). Bórralo primero."
+            )
 
         rel = row["path"]
         files = [rel]
@@ -631,10 +716,39 @@ class VaultNotes:
 
     # ------------------------------------------------------------ reindexar
 
-    def rebuild(self) -> RebuildStats:
-        """Reconstruye del vault todas las filas de notas del índice."""
+    def _refuse_suspicious_vault(self) -> None:
+        """No perder notas del índice porque el vault no esté donde dice."""
+        index_notes = self.conn.execute(
+            "SELECT count(*) FROM pages WHERE type = 'note'"
+        ).fetchone()[0]
+        if index_notes == 0:
+            return
+        motivo = None
+        if not os.path.isdir(self.root):
+            motivo = f"la raíz del vault {self.root!r} no existe"
+        elif not _has_markdown(self.root):
+            motivo = f"el vault {self.root!r} no tiene ningún .md"
+        if motivo is None:
+            return
+        raise VaultError(
+            f"{motivo} y el índice tiene {index_notes} notas: un volumen sin "
+            "montar (o un VAULT_PATH equivocado) no se puede leer como un vault "
+            "vacío, y reindexar así borraría las notas del índice. Corrige la "
+            "ruta y reinténtalo, o pide POST /reindex?force=true si de verdad "
+            "has vaciado el vault a mano."
+        )
+
+    def rebuild(self, *, allow_empty: bool = False) -> RebuildStats:
+        """Reconstruye del vault todas las filas de notas del índice.
+
+        Con `allow_empty=False` (lo normal) se niega a vaciar el índice cuando
+        el vault no existe o no tiene ni un `.md`. `POST /reindex?force=true`
+        es la salida explícita para cuando el vaciado es intencionado.
+        """
         started = time.perf_counter()
         stats = RebuildStats()
+        if not allow_empty:
+            self._refuse_suspicious_vault()
         vault = reader.load(self.root)
         stats.warnings.extend(vault.warnings)
 

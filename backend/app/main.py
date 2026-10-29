@@ -8,6 +8,7 @@ from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
 from app.routers import dashboard, databases, pages, search, status
+from app.vault.store import VaultError
 
 log = logging.getLogger("mdm.main")
 
@@ -20,16 +21,24 @@ app.include_router(search.router)
 app.include_router(dashboard.router)
 
 
+def _index_has_no_notes(conn) -> bool:
+    return conn.execute(
+        "SELECT count(*) FROM pages WHERE type = 'note'"
+    ).fetchone()[0] == 0
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     # No hay Alembic ni Postgres: el esquema del índice se crea o se migra
     # aquí mismo (`PRAGMA user_version`), y un fichero ilegible se aparta y se
     # rehace en vez de impedir el arranque.
     #
-    # Desde P1.2a el índice es derivado: si se ha tenido que crear de cero (no
-    # existía, estaba ilegible o no tenía tablas) se reconstruye desde el vault
-    # antes de servir la primera petición. Con el índice ya en su sitio no se
-    # reindexa en cada arranque: el ADR deja eso en manos de `POST /reindex`.
+    # Desde P1.2a el índice es derivado y se reconstruye desde el vault en
+    # CADA arranque (ADR-0001 D2, ROADMAP §1 D2), no solo cuando se ha tenido
+    # que recrear. No es un lujo: si el proceso murió entre escribir el `.md` y
+    # actualizar el índice, el índice sirve el cuerpo viejo y el autoguardado
+    # del panel lo escribe encima del fichero, que era el único que tenía el
+    # último guardado. Coste medido en el spike P0: 0,32 s con 5.033 notas.
     info = ensure_index(settings.index_path)
     if info.recreated:
         log.warning("índice creado de cero en %s (%s)", info.path, info.reason)
@@ -37,17 +46,29 @@ def on_startup() -> None:
     conn = open_index(settings.index_path)
     try:
         repo = Repository(conn)
-        repo.vault.ensure_structure()
         repo.ensure_workspace()
-        if info.recreated:
+        if _index_has_no_notes(conn):
+            # Instalación nueva (el índice no tiene notas): se crea la
+            # estructura del vault, que es lo que espera el primer POST /pages.
+            # Con notas en el índice no se crea nada: si el vault no está
+            # montado, `rebuild()` se niega a vaciarlas y el arranque falla en
+            # claro en vez de servir datos sin fichero detrás.
+            repo.vault.ensure_structure()
+        try:
             stats = repo.reindex()
-            log.warning(
-                "índice reconstruido desde %s: %d notas en %.2f s (%d avisos)",
-                settings.vault_path,
-                stats.notes,
-                stats.seconds,
-                len(stats.warnings),
-            )
+        except VaultError as exc:
+            raise RuntimeError(
+                f"no se puede arrancar: {exc} "
+                "(el índice no se puede reconstruir desde el vault)"
+            ) from exc
+        log.info(
+            "índice reconstruido desde %s: %d notas, %d enlaces en %.2f s (%d avisos)",
+            settings.vault_path,
+            stats.notes,
+            stats.links,
+            stats.seconds,
+            len(stats.warnings),
+        )
     finally:
         conn.close()
 

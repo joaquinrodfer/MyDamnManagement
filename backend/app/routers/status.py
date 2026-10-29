@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app import index
 from app.config import settings
 from app.repository import Repository
+from app.vault.store import VaultError
 
 router = APIRouter(tags=["status"])
 
@@ -47,16 +48,22 @@ def _check_index() -> dict:
 
 
 @router.post("/reindex")
-def post_reindex():
+def post_reindex(force: bool = False):
     """Reconstruye las notas del índice desde el vault (ADR-0001, D1).
 
     Es la única forma de recoger cambios hechos en los `.md` por fuera: en v1.0
     no hay vigilante de ficheros (D2). Devuelve recuentos, duración y los
     primeros avisos del reindexado (ficheros raros que se han leído igual).
+
+    `?force=true` es la salida explícita cuando el vault está vacío a propósito:
+    sin él, un vault inexistente o sin un solo `.md` devuelve 409 en vez de
+    vaciar el índice (un volumen sin montar no es un vault vacío).
     """
     conn = index.open_index(settings.index_path)
     try:
-        stats = Repository(conn).reindex()
+        stats = Repository(conn).reindex(force=force)
+    except VaultError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except OSError as exc:
         raise HTTPException(500, f"no se pudo leer el vault: {exc}") from exc
     finally:

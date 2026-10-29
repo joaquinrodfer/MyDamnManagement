@@ -185,9 +185,14 @@ class Repository:
     def stats(self) -> dict[str, int]:
         return index_mod.count_rows(self.conn)
 
-    def reindex(self):
-        """Reconstruye las notas del índice desde el vault (ADR D1)."""
-        return self.vault.rebuild()
+    def reindex(self, force: bool = False):
+        """Reconstruye las notas del índice desde el vault (ADR D1).
+
+        `force=True` permite que un vault ausente o vacío deje el índice a
+        cero: es la salida explícita cuando el vaciado es intencionado, no el
+        camino normal (ver `VaultNotes.rebuild`).
+        """
+        return self.vault.rebuild(allow_empty=force)
 
     # ----------------------------------------------------------- workspace
 
