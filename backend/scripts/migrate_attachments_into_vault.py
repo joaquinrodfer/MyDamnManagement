@@ -12,7 +12,10 @@ hecho:
    que usa la app desde P1.2b, así que un adjunto migrado y uno nuevo no se
    distinguen.
 2. **Reescribe** la clave `header_image` del frontmatter de las notas que
-   apuntaban a `/files/pages/<id>/…` para que apunten a la ruta nueva.
+   apuntaban a `/files/pages/<id>/…` para que apunten a la ruta nueva. Incluye
+   los `.md` que están en `.trash/<sello>/`: una nota borrada antes de migrar
+   se queda en la papelera con la URL vieja, y al restaurarla la imagen daría
+   404 (y el adjunto migrado quedaría sin ninguna referencia viva).
 3. **Actualiza** `pages.header_image_path` en el índice, si existe.
 
 Es **idempotente**: la segunda pasada no mueve ni reescribe nada. Y si se corta
@@ -20,10 +23,15 @@ a mitad, la siguiente reconcilia — las referencias se resuelven también
 buscando la cabecera ya movida por el `id` de la página, así que no depende de
 que el paso 1 y el 2 hayan ido juntos.
 
+Reescribir el frontmatter cambia el `mtime`, así que justo después de migrar
+`GET /status` da deriva (`modified`) igual al número de notas tocadas: el índice
+sigue sirviendo lo mismo (la URL no se pinta en las listas), pero se puede
+cerrar del todo con `--reindex`.
+
 Uso:
     python3 backend/scripts/migrate_attachments_into_vault.py \\
         --source /app/attachments --vault /data/vault --index /data/index.sqlite \\
-        [--dry-run]
+        [--reindex] [--dry-run]
 """
 
 from __future__ import annotations
@@ -67,6 +75,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("INDEX_PATH", "/data/index.sqlite"),
         help="índice SQLite (por defecto $INDEX_PATH o /data/index.sqlite); "
         "si no existe, solo se tocan los ficheros",
+    )
+    parser.add_argument(
+        "--reindex", action="store_true",
+        help="reconstruye el índice desde el vault al terminar (el frontmatter "
+             "reescrito cambia el mtime: sin esto, `/status` da deriva)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="dice lo que haría, sin escribir nada"
@@ -214,41 +227,77 @@ def _iter_markdown(vault: Path):
                 yield Path(dirpath) / name
 
 
+def _iter_trash_markdown(vault: Path):
+    """Los `.md` de `.trash/<sello>/`, que `_iter_markdown` no visita.
+
+    Reescritos sólo en el frontmatter: el fichero NO se mueve de la papelera.
+    La alternativa (resolver la URL vieja al restaurar) dejaría el mismo
+    trabajo para cada restauración futura y el adjunto migrado huérfano hasta
+    entonces; arreglarlo aquí lo hace una vez, al migrar, que es cuando se
+    mueve el fichero al que apunta.
+    """
+    trash = vault / ".trash"
+    if trash.is_dir():
+        yield from _iter_markdown(trash)
+
+
+def _fix_header_reference(
+    vault: Path, path: Path, movidas: dict[str, str], *, dry_run: bool,
+    counters: dict, warnings: list[str], counter: str,
+) -> None:
+    """Una nota: si su `header_image` es del esquema viejo, lo pasa al nuevo."""
+    try:
+        texto = path.read_text(encoding="utf-8", newline="")
+    except (OSError, UnicodeDecodeError) as exc:
+        counters["errores"] += 1
+        print(f"  error leyendo {path}: {exc}", file=sys.stderr)
+        return
+    if "/files/pages/" not in texto:
+        return
+    try:
+        raw, _body = fm.split_document(texto)
+        data = fm.parse(raw).data if raw is not None else {}
+    except fm.FrontmatterError as exc:
+        warnings.append(f"{_posix(path.relative_to(vault))}: frontmatter ilegible ({exc})")
+        return
+    old_url = data.get("header_image")
+    if not isinstance(old_url, str) or not old_url.startswith("/files/pages/"):
+        return
+    new_url = _resolve_new_url(vault, old_url, movidas)
+    if new_url is None:
+        warnings.append(
+            f"{_posix(path.relative_to(vault))}: apunta a {old_url!r} y no hay "
+            "ningún fichero que le corresponda en el vault; se deja como está"
+        )
+        return
+    counters[counter] += 1
+    print(f"  {_posix(path.relative_to(vault))}: {old_url} -> {new_url}")
+    if dry_run:
+        return
+    nuevo, _avisos = fm.rewrite(texto, {"header_image": new_url})
+    vaultfs.atomic_write(str(path), nuevo)
+
+
 def migrate_notes(
     vault: Path, movidas: dict[str, str], *, dry_run: bool, counters: dict, warnings: list[str]
 ) -> None:
-    """Reescribe `header_image` en el frontmatter de las notas que lo necesiten."""
+    """Reescribe `header_image` en el frontmatter de las notas que lo necesiten.
+
+    Dos pasadas: las notas vivas (`notas_actualizadas`) y las que están en la
+    papelera (`papelera_actualizadas`). Las de la papelera se reescriben igual
+    porque la migración mueve **su** adjunto: si no, el fichero quedaría sin
+    referencia viva y al restaurar la nota la cabecera daría 404.
+    """
     for path in _iter_markdown(vault):
-        try:
-            texto = path.read_text(encoding="utf-8", newline="")
-        except (OSError, UnicodeDecodeError) as exc:
-            counters["errores"] += 1
-            print(f"  error leyendo {path}: {exc}", file=sys.stderr)
-            continue
-        if "/files/pages/" not in texto:
-            continue
-        try:
-            raw, _body = fm.split_document(texto)
-            data = fm.parse(raw).data if raw is not None else {}
-        except fm.FrontmatterError as exc:
-            warnings.append(f"{_posix(path.relative_to(vault))}: frontmatter ilegible ({exc})")
-            continue
-        old_url = data.get("header_image")
-        if not isinstance(old_url, str) or not old_url.startswith("/files/pages/"):
-            continue
-        new_url = _resolve_new_url(vault, old_url, movidas)
-        if new_url is None:
-            warnings.append(
-                f"{_posix(path.relative_to(vault))}: apunta a {old_url!r} y no hay "
-                "ningún fichero que le corresponda en el vault; se deja como está"
-            )
-            continue
-        counters["notas_actualizadas"] += 1
-        print(f"  {_posix(path.relative_to(vault))}: {old_url} -> {new_url}")
-        if dry_run:
-            continue
-        nuevo, _avisos = fm.rewrite(texto, {"header_image": new_url})
-        vaultfs.atomic_write(str(path), nuevo)
+        _fix_header_reference(
+            vault, path, movidas, dry_run=dry_run, counters=counters,
+            warnings=warnings, counter="notas_actualizadas",
+        )
+    for path in _iter_trash_markdown(vault):
+        _fix_header_reference(
+            vault, path, movidas, dry_run=dry_run, counters=counters,
+            warnings=warnings, counter="papelera_actualizadas",
+        )
 
 
 def migrate_index(
@@ -310,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         "movidos": 0,
         "ya_estaban": 0,
         "notas_actualizadas": 0,
+        "papelera_actualizadas": 0,
         "indice_actualizado": 0,
         "errores": 0,
     }
@@ -333,7 +383,26 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Migración de adjuntos al vault" + (" (dry-run)" if args.dry_run else ""))
     for key, value in counters.items():
-        print(f"  {key:18}: {value}")
+        print(f"  {key:21}: {value}")
+
+    if args.reindex and not args.dry_run:
+        from app.index import open_index
+        from app.vault.store import VaultNotes
+
+        conn = open_index(str(index_path))
+        try:
+            # `allow_empty` a propósito: si el vault quedara vacío, vaciar el
+            # índice es aquí una consecuencia de lo que pidió quien ejecuta,
+            # no el accidente que ese guardia protege (un volumen sin montar).
+            stats = VaultNotes(str(vault), conn).rebuild(allow_empty=True)
+        finally:
+            conn.close()
+        print(
+            f"  reindexado           : {stats.notes} notas, {stats.links} enlaces, "
+            f"{len(stats.warnings)} avisos, {stats.seconds:.2f} s"
+        )
+        for warning in stats.warnings[:20]:
+            print(f"    aviso: {warning}")
     return 0 if counters["errores"] == 0 else 1
 
 

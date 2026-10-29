@@ -189,6 +189,33 @@ def test_restaurar_una_ruta_que_no_esta_en_la_papelera_es_404(client):
     assert respuesta.status_code == 404
 
 
+def test_restaurar_con_un_ancestro_ocupado_por_un_fichero_es_409(client, vault_path):
+    """Un fichero donde debería ir una carpeta: 409 con el motivo, no un 500.
+
+    `vaultfs.move` hace `os.makedirs` del directorio destino y eso lanzaba
+    `FileExistsError` sin capturar. Nada se pierde (la entrada sigue en la
+    papelera y el intruso intacto), pero el cliente recibía un 500 mudo.
+    """
+    padre = crear(client, title="Proyectos")
+    crear(client, title="Bugs", parent_id=padre["id"])
+    assert client.delete(f"/pages/{padre['id']}").status_code == 204
+
+    entrada = next(
+        e for e in client.get("/trash").json() if e["original_path"] == "Notas/Proyectos/Bugs.md"
+    )
+    intruso = vault_path / "Notas" / "Proyectos"   # fichero sin extensión, no carpeta
+    intruso.write_text("no soy una carpeta\n", encoding="utf-8")
+
+    respuesta = client.post("/trash/restore", json={"path": entrada["path"]})
+    assert respuesta.status_code == 409, respuesta.text
+    assert "Proyectos" in respuesta.json()["detail"]
+    assert "fichero" in respuesta.json()["detail"]
+
+    # Nada se pierde y la entrada sigue en la papelera, lista para reintentar.
+    assert intruso.read_text(encoding="utf-8") == "no soy una carpeta\n"
+    assert entrada["path"] in [e["path"] for e in client.get("/trash").json()]
+
+
 # --------------------------------------------------------------------------
 # 3. deriva en /status
 # --------------------------------------------------------------------------

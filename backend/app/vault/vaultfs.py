@@ -196,6 +196,23 @@ def to_trash(vault: str, rel_path: str, now: datetime | None = None) -> str:
     return dst
 
 
+def _first_file_ancestor(vault: str, rel_path: str) -> str | None:
+    """Ruta relativa del primer ancestro de `rel_path` que existe y es fichero.
+
+    `move()` hace `os.makedirs` del directorio destino, y si en medio hay un
+    fichero (alguien creó `Notas/Proyectos` sin extensión) revienta con
+    `FileExistsError`. Eso es un choque con el disco igual que la ruta final
+    ocupada, no un 500: se comprueba antes y se dice qué estorba.
+    """
+    partes = rel_path.split(os.sep)
+    for i in range(1, len(partes)):
+        prefijo = os.sep.join(partes[:i])
+        candidato = os.path.join(vault, prefijo)
+        if os.path.exists(candidato) and not os.path.isdir(candidato):
+            return prefijo
+    return None
+
+
 def restore(vault: str, trash_rel: str) -> str:
     """Devuelve a su sitio un fichero de `.trash/<ts>/<ruta>`, sin pisar nada.
 
@@ -218,6 +235,12 @@ def restore(vault: str, trash_rel: str) -> str:
         raise TrashConflict(
             f"la ruta original {rel_original!r} ya está ocupada en el vault: "
             "mueve o borra lo que hay ahí antes de restaurar"
+        )
+    estorbo = _first_file_ancestor(vault, rel_original)
+    if estorbo is not None:
+        raise TrashConflict(
+            f"no se puede restaurar {rel_original!r}: {estorbo!r} es un fichero, "
+            "no una carpeta; mueve o borra ese fichero antes de restaurar"
         )
     move(src, dst)
     return dst

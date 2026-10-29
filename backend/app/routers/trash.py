@@ -43,6 +43,14 @@ def restore_from_trash(
         raise HTTPException(
             404, f"No hay nada en la papelera en {payload.path!r}"
         ) from exc
+    except OSError as exc:
+        # El disco no deja poner el fichero en su ruta (un ancestro que es un
+        # fichero y no una carpeta, permisos, un volumen de solo lectura). Nada
+        # se ha perdido — sigue en la papelera —, así que es un choque, no un
+        # 500 mudo: 409 con el motivo, como la ruta final ocupada.
+        raise HTTPException(
+            409, f"no se pudo restaurar {payload.path!r}: {exc}"
+        ) from exc
     except (PathEscape, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
