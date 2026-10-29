@@ -83,7 +83,7 @@ La búsqueda mantiene el comportamiento observable: `reunion` encuentra `Reunió
 
 ## Consecuencias
 
-- La app arranca y se testea sin Docker, sin Postgres y sin red: `pytest` (22 tests) sobre un índice en un directorio temporal.
+- La app arranca y se testea sin Docker, sin Postgres y sin red: `pytest` en verde sobre un índice en un directorio temporal (contrato de la API, esquema/FTS5 y migración).
 - Un único fichero que respaldar (y, desde P1.2, un índice que se puede borrar y reconstruir).
 - `GET /status` mantiene `services.db` (el panel pinta `dot-db`): ahora informa del índice, con `engine`, `schema_version` y recuentos por tabla.
 - **Única diferencia observable en las respuestas**: `body_markdown` de una página `database` o de una fila pasa de `null` a `""` (en el modelo nuevo el cuerpo es una columna de `pages`, con `''` por defecto, y esas páginas nunca tuvieron fila en `page_content`). El frontend ya trataba ambos igual (`body_markdown || ""`) y las rutas, los campos y los tipos de `PageRead`/`DatabaseRead`/`RowRead`/`ViewRead` no cambian.
