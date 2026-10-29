@@ -1725,7 +1725,13 @@ function readPropertyValue(prop, input) {
   if (prop.type === "multiselect") {
     return raw.split(",").map((s) => s.trim()).filter(Boolean);
   }
-  if (prop.type === "number") return Number(raw);
+  if (prop.type === "number") {
+    const n = Number(raw);
+    // Un valor que no es número se manda tal cual: el backend lo rechaza con
+    // un 400 y la fila se queda como estaba. Devolver NaN lo convertiría en
+    // `null` al serializar el JSON, y eso borraría la clave sin avisar.
+    return Number.isFinite(n) ? n : raw;
+  }
   return raw; // text, date, url, relation, select
 }
 
@@ -1776,6 +1782,22 @@ function buildPropertyInput(prop, value) {
     } else {
       input.value = value ?? "";
     }
+  }
+
+  // Un control tipado puede no poder con el valor guardado (una propiedad
+  // `number` con "A-12" dentro, una `date` con hora): el navegador lo deja
+  // vacío y guardar borraría el dato. En ese caso se edita como texto, igual
+  // que el `select` conserva un valor que ya no está en `options`.
+  if (
+    (prop.type === "number" || prop.type === "date") &&
+    value !== undefined &&
+    value !== null &&
+    value !== "" &&
+    input.value !== String(value)
+  ) {
+    input = document.createElement("input");
+    input.type = "text";
+    input.value = String(value);
   }
 
   return { input, read: () => readPropertyValue(prop, input) };
@@ -1895,10 +1917,19 @@ function editCell(td, database, row, prop) {
   input.style.width = "100%";
   input.style.boxSizing = "border-box";
   let finished = false;
+  // Con lo que se sembró el control. Si al salir sigue igual, no se ha tocado
+  // y no hay nada que guardar: sin esta comparación, un control que no supo
+  // representar el valor (`number` con "A-12") se lee como vacío y lo borra.
+  const seeded = input.value;
 
   async function commit() {
     if (finished) return;
     finished = true;
+    if (input.value === seeded) {
+      // Sin tocar el control no hay PATCH: el `.md` se queda como está.
+      paintCell(td, database, row, prop);
+      return;
+    }
     let changes = null;
     if (isTitle) {
       const title = input.value.trim() || "Sin título";
@@ -2105,7 +2136,11 @@ document.getElementById("btn-save-row").addEventListener("click", async () => {
   const properties = {};
   fields.forEach(({ prop, read }) => {
     const value = read();
-    if (!sameValue(value, row.properties?.[prop.key])) properties[prop.key] = value;
+    const actual = row.properties?.[prop.key];
+    // Un checkbox que la fila no tenía y sigue sin marcar no se escribe: al
+    // `.md` solo va lo que ha cambiado.
+    if (prop.type === "checkbox" && actual === undefined && value === false) return;
+    if (!sameValue(value, actual)) properties[prop.key] = value;
   });
   if (Object.keys(properties).length) changes.properties = properties;
 
