@@ -27,7 +27,7 @@ from app import index as index_mod
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
-from app.vault.store import UNSET, VaultNotes
+from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultNotes
 
 
 def _now() -> datetime:
@@ -185,14 +185,19 @@ class Repository:
     def stats(self) -> dict[str, int]:
         return index_mod.count_rows(self.conn)
 
-    def reindex(self, force: bool = False):
+    def reindex(self, force: bool = False, empty_hint: str | None = None):
         """Reconstruye las notas del índice desde el vault (ADR D1).
 
         `force=True` permite que un vault ausente o vacío deje el índice a
         cero: es la salida explícita cuando el vaciado es intencionado, no el
-        camino normal (ver `VaultNotes.rebuild`).
+        camino normal (ver `VaultNotes.rebuild`). `empty_hint` es el texto que
+        nombra esa salida en el mensaje de error, porque no es la misma con el
+        servicio en marcha que durante el arranque.
         """
-        return self.vault.rebuild(allow_empty=force)
+        return self.vault.rebuild(
+            allow_empty=force,
+            empty_hint=empty_hint or EMPTY_VAULT_HINT_HTTP,
+        )
 
     # ----------------------------------------------------------- workspace
 

@@ -12,6 +12,20 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+def body_block(body: str) -> str:
+    """El cuerpo tal y como se escribe bajo el frontmatter.
+
+    Una línea en blanco entre el `---` de cierre y el texto (solo una, aunque
+    el cuerpo ya empiece por salto) y un `\n` final. Vive aquí, y no duplicado
+    en `store.stored_body`, para que crear y guardar escriban exactamente los
+    mismos bytes: es un solo contrato y un solo escritor.
+    """
+    body = body if body.startswith("\n") else "\n" + body
+    if not body.endswith("\n"):
+        body += "\n"
+    return body
+
+
 def page_markdown(*, id_: str, icon: str | None, description: str | None,
                   body: str, created: str | None = None,
                   updated: str | None = None, extra: dict | None = None) -> str:
@@ -25,10 +39,7 @@ def page_markdown(*, id_: str, icon: str | None, description: str | None,
     for key, value in (extra or {}).items():
         updates[key] = value
     raw, _ = fm.update("", updates)
-    body = body if body.startswith("\n") else "\n" + body
-    if not body.endswith("\n"):
-        body += "\n"
-    return fm.compose(raw, body)
+    return fm.compose(raw, body_block(body))
 
 
 def create_page(vault_root: str, folder: str, title: str, *, icon: str | None = None,

@@ -22,6 +22,8 @@ no estaba cubierto:
 
 from pathlib import Path
 
+import pytest
+
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
 
 
@@ -229,3 +231,98 @@ def test_borrar_una_nota_con_una_base_colgando_es_400(client, vault_path):
     # Borrando primero la base, la nota sí se va (a la papelera).
     assert client.delete(f"/databases/{base['id']}").status_code in (200, 204)
     assert client.delete(f"/pages/{nota['id']}").status_code == 204
+
+# --------------------------------------------------------------------------
+# 7. arranque con el vault vacío a propósito (ronda 3)
+# --------------------------------------------------------------------------
+
+
+def _vaciar_los_md(vault_path: Path) -> None:
+    for fichero in vault_path.rglob("*.md"):
+        fichero.unlink()
+
+
+def test_sin_allow_empty_el_arranque_no_recomienda_un_endpoint_que_no_arranca(
+    client, vault_path
+):
+    """El mensaje del arranque tiene que nombrar una salida practicable.
+
+    Antes recomendaba `POST /reindex?force=true`, que es el servicio que no
+    está en pie: el operador solo podía borrar el índice, llevándose las bases.
+    """
+    crear(client, title="Importante")
+    _vaciar_los_md(vault_path)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        with arrancar_de_nuevo():
+            pass
+
+    mensaje = str(excinfo.value)
+    assert "VAULT_ALLOW_EMPTY=1" in mensaje
+    assert "/reindex" not in mensaje
+
+
+def test_allow_empty_arranca_con_el_vault_vacio_y_conserva_las_bases(
+    client, vault_path, monkeypatch
+):
+    """`VAULT_ALLOW_EMPTY=1`: 0 notas, índice intacto en lo que no es nota."""
+    nota = crear(client, title="Con base")
+    base = client.post(
+        "/databases", json={"title": "Contactos", "parent_id": nota["id"]}
+    ).json()
+    _vaciar_los_md(vault_path)
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "vault_allow_empty", True)
+
+    with arrancar_de_nuevo() as otro:
+        paginas = otro.get("/pages").json()
+        assert [p for p in paginas if p["type"] == "note"] == []
+        # Las bases, filas y vistas no tienen fichero todavía (P2): el
+        # arranque no se las lleva, quedan sin padre.
+        assert otro.get(f"/databases/{base['id']}").status_code == 200
+
+
+def test_allow_empty_no_cubre_una_raiz_inexistente(client, tmp_path, monkeypatch):
+    """Un volumen sin montar no es un vault vacío, ni con el escape puesto."""
+    crear(client, title="Importante")
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "vault_allow_empty", True)
+    monkeypatch.setattr(settings, "vault_path", str(tmp_path / "no-existe"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        with arrancar_de_nuevo():
+            pass
+
+    assert "no existe" in str(excinfo.value)
+
+
+def test_la_variable_de_entorno_es_un_booleano(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("VAULT_ALLOW_EMPTY", "1")
+    assert Settings(_env_file=None).vault_allow_empty is True
+    monkeypatch.setenv("VAULT_ALLOW_EMPTY", "0")
+    assert Settings(_env_file=None).vault_allow_empty is False
+
+
+# --------------------------------------------------------------------------
+# 8. cuerpo que empieza por salto: POST y PATCH escriben lo mismo (ronda 3)
+# --------------------------------------------------------------------------
+
+
+def test_post_y_patch_escriben_igual_un_cuerpo_que_empieza_por_salto(client, vault_path):
+    """`stored_body` añadía un `\\n` de más: el mismo cuerpo cambiaba de bytes."""
+    creada = crear(client, title="Saltos", body_markdown="\n\nhola\n")
+    fichero = vault_path / "Notas" / "Saltos.md"
+    tras_post = texto(fichero)
+    client.patch(f"/pages/{creada['id']}", json={"body_markdown": "\n\nhola\n"})
+    tras_patch = texto(fichero)
+
+    cuerpo_post = tras_post.split("\n---\n", 1)[1]
+    cuerpo_patch = tras_patch.split("\n---\n", 1)[1]
+    assert cuerpo_post == "\nhola\n"
+    assert cuerpo_patch == cuerpo_post

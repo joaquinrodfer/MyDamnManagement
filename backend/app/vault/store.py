@@ -52,6 +52,21 @@ NOTES_DIR = "Notas"
 # frontmatter. Fijo para que dos reindexados den el mismo id.
 _ID_NAMESPACE = uuid.UUID("0b6f6b4e-6b0e-5f0a-9a43-7d1f4f6a2c11")
 
+# Salida de la guarda «el vault está vacío pero el índice tiene notas». Depende
+# del llamador: por HTTP el servicio está vivo y se puede forzar con
+# `?force=true`; en el arranque no (el endpoint es el servicio que no arranca),
+# y la salida es una variable de entorno.
+EMPTY_VAULT_HINT_HTTP = (
+    "Corrige la ruta y reinténtalo, o pide POST /reindex?force=true si de verdad "
+    "has vaciado el vault a mano."
+)
+EMPTY_VAULT_HINT_STARTUP = (
+    "Corrige VAULT_PATH y vuelve a arrancar; si el vault vacío es intencionado, "
+    "arranca una vez con VAULT_ALLOW_EMPTY=1: el índice se queda con 0 notas y "
+    "conserva las bases, filas y vistas (que quedan sin padre). Quita la "
+    "variable después."
+)
+
 
 class _Unset:
     """Centinela para distinguir «no lo toques» de «ponlo a NULL»."""
@@ -93,16 +108,13 @@ def canonical_body(raw: str) -> str:
 def stored_body(raw: str) -> str:
     """Cuerpo tal y como queda escrito en el fichero.
 
-    `writer.page_markdown` pone un `\\n` entre el `---` que cierra el
-    frontmatter y el cuerpo, y otro al final. Al guardar (`PATCH`) hay que
-    escribir exactamente lo mismo: si no, el mismo documento cambia de bytes
-    según se haya creado o editado, y hay dos escritores con dos formatos para
-    un solo contrato.
+    Delega en `writer.body_block`, el mismo criterio que usa
+    `writer.page_markdown` al crear: una línea en blanco tras el `---` de
+    cierre (solo una, aunque el cuerpo ya empiece por salto) y un `\n` final.
+    Si no, el mismo documento cambiaría de bytes según se hubiera creado o
+    editado, y habría dos escritores con dos formatos para un solo contrato.
     """
-    body = "\n" + canonical_body(raw)
-    if not body.endswith("\n"):
-        body += "\n"
-    return body
+    return writer.body_block(canonical_body(raw))
 
 
 def derived_id(rel_path: str) -> str:
@@ -716,8 +728,14 @@ class VaultNotes:
 
     # ------------------------------------------------------------ reindexar
 
-    def _refuse_suspicious_vault(self) -> None:
-        """No perder notas del índice porque el vault no esté donde dice."""
+    def _refuse_suspicious_vault(
+        self, hint: str = EMPTY_VAULT_HINT_HTTP
+    ) -> None:
+        """No perder notas del índice porque el vault no esté donde dice.
+
+        `hint` nombra la salida que tiene el llamador (HTTP o arranque): el
+        mensaje no debe recomendar un endpoint que no puede servir.
+        """
         index_notes = self.conn.execute(
             "SELECT count(*) FROM pages WHERE type = 'note'"
         ).fetchone()[0]
@@ -733,22 +751,28 @@ class VaultNotes:
         raise VaultError(
             f"{motivo} y el índice tiene {index_notes} notas: un volumen sin "
             "montar (o un VAULT_PATH equivocado) no se puede leer como un vault "
-            "vacío, y reindexar así borraría las notas del índice. Corrige la "
-            "ruta y reinténtalo, o pide POST /reindex?force=true si de verdad "
-            "has vaciado el vault a mano."
+            "vacío, y reindexar así borraría las notas del índice. "
+            f"{hint}"
         )
 
-    def rebuild(self, *, allow_empty: bool = False) -> RebuildStats:
+    def rebuild(
+        self, *, allow_empty: bool = False, empty_hint: str = EMPTY_VAULT_HINT_HTTP
+    ) -> RebuildStats:
         """Reconstruye del vault todas las filas de notas del índice.
 
         Con `allow_empty=False` (lo normal) se niega a vaciar el índice cuando
-        el vault no existe o no tiene ni un `.md`. `POST /reindex?force=true`
-        es la salida explícita para cuando el vaciado es intencionado.
+        el vault no existe o no tiene ni un `.md`. La salida explícita depende
+        del llamador y la nombra `empty_hint`: `POST /reindex?force=true` con el
+        servicio vivo, `VAULT_ALLOW_EMPTY=1` en el arranque.
+
+        Con `allow_empty=True` las filas `note` se van (el vault manda), pero
+        las bases, filas y vistas del índice no se borran: quedan sin padre
+        hasta P2, que les dará fichero.
         """
         started = time.perf_counter()
         stats = RebuildStats()
         if not allow_empty:
-            self._refuse_suspicious_vault()
+            self._refuse_suspicious_vault(empty_hint)
         vault = reader.load(self.root)
         stats.warnings.extend(vault.warnings)
 

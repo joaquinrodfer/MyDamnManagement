@@ -12,6 +12,8 @@ Este ADR fija el contrato que P1 implementa.
 
 **D2 — Sin vigilante de ficheros en v1.0.** El índice se reconstruye al arrancar y con `POST /reindex`. Un solo escritor: la API.
 
+**D2b — Un vault vacío no es un vault borrado.** Reindexar borra las filas `note` del índice, así que ni el arranque ni `POST /reindex` lo hacen cuando el vault no existe o no tiene ningún `.md`: se niegan con el motivo. La salida es explícita y depende de si el servicio está vivo: `POST /reindex?force=true` con la API en marcha y **`VAULT_ALLOW_EMPTY=1`** en el arranque (el endpoint no puede usarse cuando lo que falla es el propio arranque). Ese arranque deja el índice con 0 notas y **conserva las bases, filas y vistas**, que quedan sin padre hasta que P2 les dé fichero. `VAULT_ALLOW_EMPTY` no cubre una raíz inexistente: un volumen sin montar no se lee como vault vacío y el arranque sigue fallando.
+
 **D3 — SQLite como índice, no Postgres.** `JSONB`→JSON, `tsvector`→FTS5, sin servicio de base de datos ni puerto 5432.
 
 **D4 — La jerarquía son carpetas.** Mover un fichero de carpeta es mover la página; `parent_id` se deriva de la ruta.

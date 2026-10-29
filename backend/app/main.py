@@ -8,7 +8,7 @@ from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
 from app.routers import dashboard, databases, pages, search, status
-from app.vault.store import VaultError
+from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 
 log = logging.getLogger("mdm.main")
 
@@ -50,17 +50,37 @@ def on_startup() -> None:
         if _index_has_no_notes(conn):
             # Instalación nueva (el índice no tiene notas): se crea la
             # estructura del vault, que es lo que espera el primer POST /pages.
-            # Con notas en el índice no se crea nada: si el vault no está
-            # montado, `rebuild()` se niega a vaciarlas y el arranque falla en
-            # claro en vez de servir datos sin fichero detrás.
+            # Con notas en el índice no se crea nada: si el vault no está,
+            # `rebuild()` se niega a vaciarlas y el arranque falla en claro en
+            # vez de servir datos sin fichero detrás.
             repo.vault.ensure_structure()
+        elif settings.vault_allow_empty and not Path(settings.vault_path).is_dir():
+            # `VAULT_ALLOW_EMPTY` vale para un vault que existe y está vacío
+            # (vaciado a mano, restore parcial del volumen). Una raíz que no
+            # existe es un volumen sin montar y nunca se lee como vault vacío.
+            raise RuntimeError(
+                f"no se puede arrancar: la raíz del vault {settings.vault_path!r} "
+                "no existe. VAULT_ALLOW_EMPTY=1 no cubre ese caso (un volumen sin "
+                "montar no es un vault vacío): monta el directorio y vuelve a "
+                "arrancar."
+            )
         try:
-            stats = repo.reindex()
+            stats = repo.reindex(
+                force=settings.vault_allow_empty,
+                empty_hint=EMPTY_VAULT_HINT_STARTUP,
+            )
         except VaultError as exc:
             raise RuntimeError(
                 f"no se puede arrancar: {exc} "
                 "(el índice no se puede reconstruir desde el vault)"
             ) from exc
+        if settings.vault_allow_empty:
+            log.warning(
+                "VAULT_ALLOW_EMPTY=1: se acepta un vault vacío a propósito; "
+                "el índice se queda con %d notas (las bases, filas y vistas se "
+                "conservan, sin padre)",
+                stats.notes,
+            )
         log.info(
             "índice reconstruido desde %s: %d notas, %d enlaces en %.2f s (%d avisos)",
             settings.vault_path,
