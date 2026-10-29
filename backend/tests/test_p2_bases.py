@@ -403,9 +403,51 @@ def test_una_fila_huerfana_se_avisa_y_no_aborta_el_reindexado(client, vault_path
 
 
 # --------------------------------------------------------------------------
-# 5. los ficheros escritos a mano también son bases
+# 5. errores del vault son 400, y una base también puede nacer por /pages
 # --------------------------------------------------------------------------
 
+
+def test_si_el_fichero_de_la_base_desaparece_es_400_y_no_500(client, vault_path):
+    """El índice dice que hay base; el disco no. Se dice qué hacer, no 500."""
+    client.post("/pages", json={"title": "Otra cosa"})     # el vault no se queda vacío
+    base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
+    (vault_path / "Bases" / "Contactos.md").unlink()
+
+    fila = client.post(f"/databases/{base['id']}/rows", json={"title": "Acme"})
+    assert fila.status_code == 400, fila.text
+    assert "no está en el vault" in fila.json()["detail"]
+
+    edicion = client.patch(f"/databases/{base['id']}", json={"title": "Otra"})
+    assert edicion.status_code == 400, edicion.text
+
+    # Y se arregla reindexando: la base era un fichero y ya no está.
+    assert client.post("/reindex").status_code == 200
+    assert client.get(f"/databases/{base['id']}").status_code == 404
+
+
+def test_una_base_tambien_nace_por_post_pages(client, vault_path):
+    """`POST /pages` con `type: database` escribe la base, no una página suelta."""
+    page = client.post("/pages", json={"title": "Suelta", "type": "database"})
+    assert page.status_code == 200, page.text
+    fichero = vault_path / "Bases" / "Suelta.md"
+    assert fichero.exists()
+    assert "type: database" in texto(fichero)
+
+    base = client.get(f"/databases/{page.json()['id']}")
+    assert base.status_code == 200
+    assert base.json()["schema_def"] == []
+    assert base.json()["page_id"] == page.json()["id"]
+
+
+def test_una_fila_no_se_crea_suelta(client):
+    respuesta = client.post("/pages", json={"title": "Huerfana", "type": "database_row"})
+    assert respuesta.status_code == 400, respuesta.text
+    assert "nace en su base" in respuesta.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# 6. los ficheros escritos a mano también son bases
+# --------------------------------------------------------------------------
 
 def test_una_base_escrita_a_mano_se_indexa_con_su_schema_y_sus_vistas(client, vault_path):
     """El formato del ADR se lee sin la app: `id: v1` no es UUID y aun así vale."""

@@ -1,5 +1,6 @@
+import contextlib
 import uuid
-from typing import Any, List, Optional
+from typing import Any, Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -10,8 +11,23 @@ from app.properties import validate_properties
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app.templates import TEMPLATES
+from app.vault.store import VaultError
 
 router = APIRouter(prefix="/databases", tags=["databases"])
+
+
+@contextlib.contextmanager
+def _vault_errors() -> Iterator[None]:
+    """Un `VaultError` del vault es un 400 con el motivo, no un 500 mudo.
+
+    Los caminos de base y fila escriben ficheros (P2): si el `.md` de la base ya
+    no está en el disco, o el título no cabe en un nombre de fichero, lo que
+    falla es la petición, no el servidor.
+    """
+    try:
+        yield
+    except VaultError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _get_database_or_404(repo: Repository, database_id: uuid.UUID) -> Database:
@@ -66,13 +82,14 @@ def _serialize_view(view: View) -> schemas.ViewRead:
 
 @router.post("", response_model=schemas.DatabaseRead)
 def create_database(payload: schemas.DatabaseCreate, repo: Repository = Depends(get_repo)):
-    db_def = repo.create_database(
-        title=payload.title,
-        parent_id=payload.parent_id,
-        icon=payload.icon or settings.default_icon,
-        created_by=settings.default_user_name,
-        schema_def=[p.model_dump() for p in payload.schema_def],
-    )
+    with _vault_errors():
+        db_def = repo.create_database(
+            title=payload.title,
+            parent_id=payload.parent_id,
+            icon=payload.icon or settings.default_icon,
+            created_by=settings.default_user_name,
+            schema_def=[p.model_dump() for p in payload.schema_def],
+        )
     return _serialize_database(db_def)
 
 
@@ -102,13 +119,14 @@ def create_from_template(
     if not template:
         raise HTTPException(404, f"Plantilla '{payload.template}' no existe")
 
-    db_def = repo.create_database(
-        title=payload.title or template["title"],
-        icon=settings.default_icon,
-        created_by=settings.default_user_name,
-        schema_def=template["schema_def"],
-        views=template["views"],
-    )
+    with _vault_errors():
+        db_def = repo.create_database(
+            title=payload.title or template["title"],
+            icon=settings.default_icon,
+            created_by=settings.default_user_name,
+            schema_def=template["schema_def"],
+            views=template["views"],
+        )
     return _serialize_database(db_def)
 
 
@@ -121,12 +139,13 @@ def get_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
 def update_database(
     database_id: uuid.UUID, payload: schemas.DatabaseUpdate, repo: Repository = Depends(get_repo)
 ):
-    db_def = repo.update_database(
-        database_id,
-        title=payload.title,
-        icon=payload.icon,
-        schema_def=None if payload.schema_def is None else [p.model_dump() for p in payload.schema_def],
-    )
+    with _vault_errors():
+        db_def = repo.update_database(
+            database_id,
+            title=payload.title,
+            icon=payload.icon,
+            schema_def=None if payload.schema_def is None else [p.model_dump() for p in payload.schema_def],
+        )
     if db_def is None:
         raise HTTPException(404, "Base de datos no encontrada")
     return _serialize_database(db_def)
@@ -134,7 +153,9 @@ def update_database(
 
 @router.delete("/{database_id}", status_code=204)
 def delete_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
-    if not repo.delete_database(database_id):
+    with _vault_errors():
+        borrada = repo.delete_database(database_id)
+    if not borrada:
         raise HTTPException(404, "Base de datos no encontrada")
 
 
@@ -146,9 +167,10 @@ def create_row(
 ):
     db_def = _get_database_or_404(repo, database_id)
     cleaned = validate_properties(db_def.schema_def, payload.properties)
-    row = repo.create_row(
-        database_id, title=payload.title, icon=payload.icon, properties=cleaned
-    )
+    with _vault_errors():
+        row = repo.create_row(
+            database_id, title=payload.title, icon=payload.icon, properties=cleaned
+        )
     return _serialize_row(row)
 
 
@@ -191,13 +213,14 @@ def update_row(
     if payload.properties is not None:
         cleaned = validate_properties(db_def.schema_def, payload.properties)
 
-    row = repo.update_row(
-        database_id,
-        row_id,
-        title=payload.title,
-        icon=payload.icon,
-        properties=cleaned,
-    )
+    with _vault_errors():
+        row = repo.update_row(
+            database_id,
+            row_id,
+            title=payload.title,
+            icon=payload.icon,
+            properties=cleaned,
+        )
     if row is None:
         raise HTTPException(404, "Fila no encontrada")
     return _serialize_row(row)
@@ -207,7 +230,9 @@ def update_row(
 def delete_row(
     database_id: uuid.UUID, row_id: uuid.UUID, repo: Repository = Depends(get_repo)
 ):
-    if not repo.delete_row(database_id, row_id):
+    with _vault_errors():
+        borrada = repo.delete_row(database_id, row_id)
+    if not borrada:
         raise HTTPException(404, "Fila no encontrada")
 
 
@@ -218,7 +243,8 @@ def create_view(
     database_id: uuid.UUID, payload: schemas.ViewCreate, repo: Repository = Depends(get_repo)
 ):
     _get_database_or_404(repo, database_id)
-    view = repo.create_view(database_id, name=payload.name, type=payload.type, config=payload.config)
+    with _vault_errors():
+        view = repo.create_view(database_id, name=payload.name, type=payload.type, config=payload.config)
     return _serialize_view(view)
 
 
@@ -235,9 +261,10 @@ def update_view(
     payload: schemas.ViewUpdate,
     repo: Repository = Depends(get_repo),
 ):
-    view = repo.update_view(
-        database_id, view_id, name=payload.name, type=payload.type, config=payload.config
-    )
+    with _vault_errors():
+        view = repo.update_view(
+            database_id, view_id, name=payload.name, type=payload.type, config=payload.config
+        )
     if view is None:
         raise HTTPException(404, "Vista no encontrada")
     return _serialize_view(view)
@@ -247,7 +274,9 @@ def update_view(
 def delete_view(
     database_id: uuid.UUID, view_id: uuid.UUID, repo: Repository = Depends(get_repo)
 ):
-    if not repo.delete_view(database_id, view_id):
+    with _vault_errors():
+        borrada = repo.delete_view(database_id, view_id)
+    if not borrada:
         raise HTTPException(404, "Vista no encontrada")
 
 

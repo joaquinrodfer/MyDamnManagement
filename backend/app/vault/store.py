@@ -1146,6 +1146,11 @@ class VaultStore:
     ) -> str:
         """Escribe `Bases/<slug>/<fila>.md` e indexa. Devuelve el id de la fila."""
         db = self._database_row(database_id)
+        if not os.path.exists(self._abs(db["path"])):
+            raise VaultError(
+                f"el fichero de la base {database_id} no está en el vault ({db['path']}): "
+                "lanza POST /reindex para reconciliar el índice con el disco"
+            )
         row_id = str(uuid.uuid4())
         page, notes = writer.create_row(
             self.root, db["path"][:-3], title, properties or {},
