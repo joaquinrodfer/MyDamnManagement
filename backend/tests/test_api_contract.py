@@ -6,6 +6,7 @@ plantilla, filas, vistas con filtro y orden, búsqueda sin acentos y dashboard.
 Es el primer paso de P6 (tests que corren en un contenedor sin servicios).
 """
 
+import time
 from datetime import date, timedelta
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
@@ -311,3 +312,80 @@ def test_el_indice_sobrevive_a_una_peticion_nueva(client, index_path):
     # no en memoria del proceso.
     assert index_path.exists()
     assert [p["title"] for p in client.get("/pages").json()] == ["Persistente"]
+
+
+# --------------------------------------------------------------------------
+# Rework P1.1: los wikilinks tienen que resolver como antes (Unicode, todas
+# las coincidencias) y un PATCH que no cambia nada no mueve `updated_at`.
+# --------------------------------------------------------------------------
+
+
+def test_wikilink_en_mayusculas_y_con_acentos_resuelve(client):
+    """`[[REUNIÓN DE EQUIPO]]` tiene que encontrar `Reunión de equipo`.
+
+    `COLLATE NOCASE` de SQLite solo pliega ASCII, así que el enlace se perdía
+    en silencio en cuanto se escribía en mayúsculas (o con la Ñ).
+    """
+    destino = crear(client, title="Reunión de equipo")
+    enie = crear(client, title="Ñandú")
+    origen = crear(
+        client,
+        title="Nota que enlaza",
+        body_markdown="Ver [[REUNIÓN DE EQUIPO]] y también [[ÑANDÚ]].",
+    )
+
+    assert [p["title"] for p in client.get(f"/pages/{destino['id']}/backlinks").json()] == [
+        "Nota que enlaza"
+    ]
+    assert [p["title"] for p in client.get(f"/pages/{enie['id']}/backlinks").json()] == [
+        "Nota que enlaza"
+    ]
+
+    # Y sigue sin resolver lo que solo coincide al quitar el acento: `peña` y
+    # `pena` son títulos distintos, como lo eran con el `lower()` de Postgres.
+    pena = crear(client, title="Pena")
+    crear(client, title="Otra nota", body_markdown="[[Peña]]")
+    assert client.get(f"/pages/{pena['id']}/backlinks").json() == []
+
+
+def test_wikilink_con_titulo_duplicado_llega_a_todas(client):
+    """El título no es único en la API: antes se enlazaba a todas las páginas
+    con ese título (`LIMIT 1` dejaba una sola, y no siempre la misma)."""
+    primera = crear(client, title="Proyecto Duplicado")
+    segunda = crear(client, title="Proyecto Duplicado")
+    nota = crear(client, title="Nota dup", body_markdown="Ver [[Proyecto Duplicado]]")
+
+    assert [p["title"] for p in client.get(f"/pages/{primera['id']}/backlinks").json()] == [
+        "Nota dup"
+    ]
+    assert [p["title"] for p in client.get(f"/pages/{segunda['id']}/backlinks").json()] == [
+        "Nota dup"
+    ]
+    # Dos filas en `links`, una por destino: no se queda con una sola.
+    assert client.get("/status").json()["services"]["db"]["counts"]["links"] == 2
+    # Y la nota no se enlaza a sí misma.
+    assert client.get(f"/pages/{nota['id']}/backlinks").json() == []
+
+
+def test_patch_sin_cambios_no_mueve_updated_at(client):
+    """El PATCH viejo no tocaba `updated_at` si el valor era el mismo."""
+    page = crear(client, title="Estable", body_markdown="Texto")
+
+    igual = client.patch(
+        f"/pages/{page['id']}",
+        json={"title": "Estable", "icon": page["icon"], "description": None},
+    ).json()
+    assert igual["updated_at"] == page["updated_at"]
+
+    # Guardar el mismo cuerpo sí lo mueve, como antes: el update_page viejo
+    # forzaba `updated_at` cuando llegaba `body_markdown`, aunque fuera igual
+    # (el frontend lo usa para el orden de «Páginas recientes»).
+    time.sleep(0.005)  # los timestamps van con microsegundos; que no coincidan
+    mismo_cuerpo = client.patch(
+        f"/pages/{page['id']}", json={"body_markdown": "Texto"}
+    ).json()
+    assert mismo_cuerpo["updated_at"] > page["updated_at"]
+
+    # Un cambio real, por supuesto, también.
+    cambiada = client.patch(f"/pages/{page['id']}", json={"title": "Estable (2)"}).json()
+    assert cambiada["updated_at"] > mismo_cuerpo["updated_at"]

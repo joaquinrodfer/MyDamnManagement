@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -150,33 +151,55 @@ def _view(row: sqlite3.Row) -> View:
     )
 
 
+def fold_title(title: str) -> str:
+    """Forma canónica de un título para compararlo sin distinguir mayúsculas.
+
+    `COLLATE NOCASE` de SQLite solo pliega ASCII (`'REUNIÓN' = 'Reunión'` es
+    falso), así que la comparación se hace aquí: `NFKC` compone los acentos
+    (para que `ó` precompuesta y `o` + acento combinado coincidan) y `casefold`
+    pliega las mayúsculas en todo Unicode, como el `lower()` de Postgres que
+    había antes de P1.1. A propósito **no** se quitan los acentos: `Peña` y
+    `Pena` siguen siendo títulos distintos, igual que antes.
+    """
+    return unicodedata.normalize("NFKC", title).casefold()
+
+
 def sync_wikilinks(
     conn: sqlite3.Connection, page_id: str, workspace_id: str, body_markdown: str
 ) -> None:
     """Recalcula los wikilinks salientes de una página a partir de su cuerpo.
 
-    Se resuelven **ahora**, por título exacto sin distinguir mayúsculas, dentro
-    del mismo workspace — igual que antes de P1.1 (y con la misma limitación
-    conocida: renombrar una página no repara los enlaces ya guardados en otras;
-    se corrigen cuando esa página se vuelve a guardar).
+    Se resuelven **ahora**, por título sin distinguir mayúsculas en todo
+    Unicode (ver `fold_title`) y dentro del mismo workspace. Se enlaza a
+    **todas** las páginas con ese título: el título no es único en la API y,
+    antes de P1.1, un enlace a un título repetido llegaba a cada una de ellas.
+
+    Limitación conocida, igual que antes de P1.1: renombrar una página no
+    repara los enlaces ya guardados en otras; se corrigen cuando esa página se
+    vuelve a guardar.
     """
     conn.execute(
         "DELETE FROM links WHERE from_id = ? AND kind = ?",
         (page_id, LinkKind.wikilink.value),
     )
-    for title in extract_titles(body_markdown or ""):
-        target = conn.execute(
-            "SELECT id FROM pages WHERE workspace_id = ? AND id != ?"
-            " AND title = ? COLLATE NOCASE LIMIT 1",
-            (workspace_id, page_id, title),
-        ).fetchone()
-        if target is None:
-            continue
-        conn.execute(
-            "INSERT INTO links (id, from_id, to_id, kind, target_title)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), page_id, target["id"], LinkKind.wikilink.value, title),
-        )
+    titles = extract_titles(body_markdown or "")
+    if not titles:
+        return
+    # Una consulta por guardado: título plegado -> ids de las páginas del
+    # workspace (todas, sin `LIMIT`). Una lista porque puede haber repetidos.
+    targets: dict[str, list[str]] = {}
+    for row in conn.execute(
+        "SELECT id, title FROM pages WHERE workspace_id = ? AND id != ?",
+        (workspace_id, page_id),
+    ):
+        targets.setdefault(fold_title(row["title"]), []).append(row["id"])
+    for title in titles:
+        for target_id in targets.get(fold_title(title), ()):
+            conn.execute(
+                "INSERT INTO links (id, from_id, to_id, kind, target_title)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), page_id, target_id, LinkKind.wikilink.value, title),
+            )
 
 
 class Repository:
@@ -280,8 +303,14 @@ class Repository:
         body_markdown: Optional[str] = None,
     ) -> Optional[Page]:
         """Actualiza solo los campos que llegan (None = no tocar), como el PATCH
-        de siempre. Cualquier cambio mueve `updated_at`, incluido guardar solo
-        el cuerpo (que antes vivía en otra tabla y no lo movía si no se forzaba).
+        de siempre.
+
+        Un escalar que llega con el valor que ya tenía **no** cuenta como
+        cambio: `updated_at` no se mueve (el PATCH viejo tampoco lo movía, y
+        mudarlo cambiaba el orden de «Páginas recientes» sin que nadie hubiera
+        tocado nada). El cuerpo sí lo mueve siempre que llegue, aunque sea
+        idéntico: es lo que hacía el `update_page` anterior (que forzaba
+        `updated_at` al guardar el cuerpo) y lo que espera el panel.
         """
         current = self.get_page(page_id)
         if current is None:
@@ -289,13 +318,13 @@ class Repository:
 
         sets: list[str] = []
         params: list[Any] = []
-        if title is not None:
+        if title is not None and title != current.title:
             sets.append("title = ?")
             params.append(title)
-        if icon is not None:
+        if icon is not None and icon != current.icon:
             sets.append("icon = ?")
             params.append(icon)
-        if description is not None:
+        if description is not None and description != current.description:
             sets.append("description = ?")
             params.append(description)
         if body_markdown is not None:
