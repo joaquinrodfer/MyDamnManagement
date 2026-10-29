@@ -20,16 +20,101 @@ const state = {
 // ---------------------------------------------------------------- helpers
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...opts,
+    });
+  } catch (e) {
+    // `fetch` solo lanza por red/DNS/servidor inalcanzable -- un 4xx/5xx llega
+    // como respuesta y se trata más abajo. Se marca el error para que el aviso
+    // sepa que es de red y no lo confunda con cualquier otro TypeError.
+    const err = new Error((e && e.message) || "Failed to fetch");
+    err.network = true;
+    throw err;
+  }
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error((data && data.detail) || `HTTP ${res.status}`);
   }
   return data;
+}
+
+// ------------------------------------------------- avisos de error (toasts)
+// Un único sitio donde decirle al usuario que algo ha fallado -- antes no
+// había ninguno y un 500 se quedaba en una pantalla en blanco sin
+// explicación, o en el console.error que solo ve quien abre las herramientas
+// de desarrollo.
+
+/** Mensaje presentable a partir de lo que puede lanzar api(): el `detail`
+ * del backend en un error HTTP, o -- camino distinto -- un fallo de red, que
+ * `api()` marca con `.network` y que si no se traduce aquí saldría como el
+ * texto crudo en inglés del navegador ("Failed to fetch", "NetworkError",
+ * "Load failed"). */
+function describeError(e) {
+  const raw = (e && e.message) || "";
+  if (e?.network || /failed to fetch|networkerror|load failed|network error/i.test(raw)) {
+    return "Sin conexión con la API";
+  }
+  // Cualquier otro error (un fallo real del código incluido) se enseña tal
+  // cual: sigue yendo a console.error vía reportError(), no se disfraza.
+  return raw || "Error inesperado";
+}
+
+const ERROR_TOAST_MS = 6000;
+
+/** Aviso discreto abajo a la derecha, descartable con su aspa, que se apila
+ * si llegan varios y se va solo a los ~6s. El nodo se crea desde aquí (el
+ * HTML no lleva nada) y cuelga de body, no de #main, para seguir visible
+ * mientras se navega. */
+function showError(message) {
+  let stack = document.getElementById("error-toasts");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "error-toasts";
+    stack.className = "error-toasts";
+    document.body.appendChild(stack);
+  }
+
+  const toast = document.createElement("div");
+  toast.className = "error-toast";
+  toast.setAttribute("role", "status"); // los lectores de pantalla lo anuncian sin robar el foco
+
+  const text = document.createElement("span");
+  text.className = "error-toast-text";
+  // textContent y nunca innerHTML: el mensaje puede venir del backend y un
+  // detail con HTML sería una inyección -- aquí solo se pinta texto.
+  text.textContent = String(message);
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "error-toast-close";
+  close.title = "Descartar aviso";
+  close.setAttribute("aria-label", "Descartar aviso");
+  close.textContent = "×";
+
+  let timer = setTimeout(dismiss, ERROR_TOAST_MS);
+  function dismiss() {
+    clearTimeout(timer);
+    toast.remove();
+    // Sin toasts no hay nada que apilar: se va también el contenedor, para no
+    // ir dejando nodos vacíos colgando de body.
+    if (stack.childElementCount === 0) stack.remove();
+  }
+  close.addEventListener("click", dismiss);
+
+  toast.append(text, close);
+  stack.appendChild(toast);
+  return toast;
+}
+
+/** Deja el detalle técnico en la consola (para depurar) y avisa al usuario
+ * con una frase corta. Un solo camino: no hay cuatro copias del aviso. */
+function reportError(context, e) {
+  console.error(`${context}:`, e);
+  showError(`${context}. ${describeError(e)}`);
 }
 
 function escapeHtml(s) {
@@ -213,27 +298,33 @@ function setDot(name, ok) {
 // ------------------------------------------------------------------ árbol
 
 async function loadTree() {
-  const tree = await api("/pages/tree");
-  state.pagesById.clear();
-  indexTree(tree);
+  try {
+    const tree = await api("/pages/tree");
+    state.pagesById.clear();
+    indexTree(tree);
 
-  const notes = tree.filter((n) => n.type !== "database");
-  const dbs = tree.filter((n) => n.type === "database");
+    const notes = tree.filter((n) => n.type !== "database");
+    const dbs = tree.filter((n) => n.type === "database");
 
-  const treeContainer = document.getElementById("tree-container");
-  const dbContainer = document.getElementById("db-tree-container");
-  treeContainer.innerHTML = "";
-  dbContainer.innerHTML = "";
+    const treeContainer = document.getElementById("tree-container");
+    const dbContainer = document.getElementById("db-tree-container");
+    treeContainer.innerHTML = "";
+    dbContainer.innerHTML = "";
 
-  if (notes.length === 0) treeContainer.innerHTML = '<div class="search-empty">Sin páginas aún.</div>';
-  notes.forEach((n) => treeContainer.appendChild(renderTreeNode(n)));
+    if (notes.length === 0) treeContainer.innerHTML = '<div class="search-empty">Sin páginas aún.</div>';
+    notes.forEach((n) => treeContainer.appendChild(renderTreeNode(n)));
 
-  if (dbs.length === 0) dbContainer.innerHTML = '<div class="search-empty">Sin bases de datos.</div>';
-  dbs.forEach((n) => dbContainer.appendChild(renderTreeNode(n)));
+    if (dbs.length === 0) dbContainer.innerHTML = '<div class="search-empty">Sin bases de datos.</div>';
+    dbs.forEach((n) => dbContainer.appendChild(renderTreeNode(n)));
 
-  if (state.current) markActive(state.current.id);
-  applyPageSelectionClasses();
-  updateNavButtons(); // "subir un nivel" depende de parent_id, que solo se sabe tras recargar el árbol
+    if (state.current) markActive(state.current.id);
+    applyPageSelectionClasses();
+    updateNavButtons(); // "subir un nivel" depende de parent_id, que solo se sabe tras recargar el árbol
+  } catch (e) {
+    // El árbol anterior (si lo había) se queda tal cual: solo se vacía
+    // después de que la petición haya ido bien.
+    reportError("No se pudo cargar el árbol de páginas", e);
+  }
 }
 
 function indexTree(nodes) {
@@ -389,7 +480,7 @@ async function bulkDeletePages(items) {
         if (item.id === currentId) currentWasDeleted = true;
       }
     } catch (e) {
-      console.error(`Error al borrar "${item.title}":`, e);
+      reportError(`No se pudo borrar "${item.title}"`, e);
     }
   }
 
@@ -528,10 +619,20 @@ function openEmojiPicker(anchorEl, onSelect) {
 // ------------------------------------------------------------------ notas
 
 async function selectNote(id) {
+  const previous = state.current;
   state.current = { kind: "note", id };
   markActive(id);
-  const [page, backlinks] = await Promise.all([api(`/pages/${id}`), api(`/pages/${id}/backlinks`)]);
-  renderNote(page, backlinks);
+  try {
+    const [page, backlinks] = await Promise.all([api(`/pages/${id}`), api(`/pages/${id}/backlinks`)]);
+    renderNote(page, backlinks);
+  } catch (e) {
+    // renderNote() no llegó a ejecutarse, así que #main sigue mostrando la
+    // página anterior: se devuelven state.current y el resaltado del árbol a
+    // donde estaban, para que no apunten a algo que no se ha pintado.
+    state.current = previous;
+    markActive(previous ? previous.id : null);
+    reportError("No se pudo abrir la nota", e);
+  }
 }
 
 const AUTOSAVE_DELAY_MS = 2000;
@@ -1230,10 +1331,19 @@ function showContextMenu(x, y, sections) {
 // -------------------------------------------------------------- databases
 
 async function selectDatabase(id) {
+  const previous = state.current;
   state.current = { kind: "database", id };
   markActive(id);
-  const [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
-  await renderDatabase(database, views, views[0]?.id ?? null);
+  try {
+    const [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
+    await renderDatabase(database, views, views[0]?.id ?? null);
+  } catch (e) {
+    // Igual que en selectNote: si falla la carga, no se ha pintado nada y el
+    // estado vuelve a donde estaba.
+    state.current = previous;
+    markActive(previous ? previous.id : null);
+    reportError("No se pudo abrir la base de datos", e);
+  }
 }
 
 async function renderDatabase(database, views, activeViewId) {
@@ -1725,26 +1835,32 @@ searchInput.addEventListener("input", () => {
 });
 
 async function runSearch(q) {
-  const results = await api(`/search?q=${encodeURIComponent(q)}`);
-  navSections.hidden = true;
-  searchResults.hidden = false;
-  searchResults.innerHTML = "";
-  if (results.length === 0) {
-    searchResults.innerHTML = '<div class="search-empty">Sin resultados.</div>';
-    return;
-  }
-  results.forEach((r) => {
-    const el = document.createElement("div");
-    el.className = "search-hit";
-    el.textContent = `${typeIcon(r.type)} ${r.title}`;
-    el.addEventListener("click", () => {
-      searchInput.value = "";
-      searchResults.hidden = true;
-      navSections.hidden = false;
-      navigateToPage(r.id);
+  try {
+    const results = await api(`/search?q=${encodeURIComponent(q)}`);
+    navSections.hidden = true;
+    searchResults.hidden = false;
+    searchResults.innerHTML = "";
+    if (results.length === 0) {
+      searchResults.innerHTML = '<div class="search-empty">Sin resultados.</div>';
+      return;
+    }
+    results.forEach((r) => {
+      const el = document.createElement("div");
+      el.className = "search-hit";
+      el.textContent = `${typeIcon(r.type)} ${r.title}`;
+      el.addEventListener("click", () => {
+        searchInput.value = "";
+        searchResults.hidden = true;
+        navSections.hidden = false;
+        navigateToPage(r.id);
+      });
+      searchResults.appendChild(el);
     });
-    searchResults.appendChild(el);
-  });
+  } catch (e) {
+    // La lista anterior se queda como estaba: el aviso explica que la
+    // búsqueda no llegó a hacerse, sin vaciar la barra lateral.
+    reportError("No se pudo completar la búsqueda", e);
+  }
 }
 
 // Clic en zona vacía de la barra lateral (no sobre una fila) -> limpia la

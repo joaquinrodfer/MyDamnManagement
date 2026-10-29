@@ -835,6 +835,60 @@
   .prop-options-input { width: 100%; margin-top: 6px; padding: 5px 7px; border-radius: 5px; border: 1px solid var(--panel-border); background: var(--bg); color: var(--ink); font-size: 12.5px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
+  /* ---------- avisos de error (toasts) ----------
+     Cuelgan de document.body, no de #main (ver showError en app.js): así
+     siguen visibles al navegar y no se los lleva por delante el siguiente
+     render. Se apilan de abajo arriba en la esquina inferior derecha. */
+  .error-toasts {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 1200; /* por encima del índice (900) y de los menús flotantes (1000) */
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    max-width: min(360px, calc(100vw - 36px));
+    pointer-events: none; /* el hueco entre avisos no se come clics */
+  }
+  .error-toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 10px 9px 12px;
+    border: 1px solid var(--panel-border);
+    border-left: 3px solid var(--down);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 12.5px;
+    line-height: 1.35;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+    animation: mdm-toast-in 0.16s ease-out;
+  }
+  @keyframes mdm-toast-in { from { opacity: 0; transform: translateY(4px); } }
+  .error-toast-text { flex: 1 1 auto; overflow-wrap: anywhere; }
+  .error-toast-close {
+    flex: 0 0 auto;
+    margin: -3px -2px 0 0;
+    padding: 0 3px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--ink-muted);
+    font-size: 15px;
+    line-height: 1;
+  }
+  .error-toast-close:hover { color: var(--down); }
+  /* En pantallas pequeñas ocupan el ancho útil en vez de una columna estrecha
+     pegada a la derecha. */
+  @media (max-width: 600px) {
+    .error-toasts { right: 10px; left: 10px; bottom: 10px; align-items: stretch; max-width: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .error-toast { animation: none; }
+  }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
