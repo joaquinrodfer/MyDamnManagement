@@ -940,6 +940,7 @@ function renderNote(page, backlinks) {
   let dirty = false; // hay cambios que el servidor todavía no ha confirmado
   let changeSeq = 0; // sube con cada cambio: distingue "guardado" de "cambiado mientras guardaba"
   let lastSentBody = null; // último cuerpo ACEPTADO por el servidor
+  let savingBody = null; // cuerpo del PATCH normal que va de camino (null: ninguno)
   let beaconInFlight = null; // cuerpo del guardado de emergencia que va de camino
   let beaconQueued = false; // se pidió guardar otro contenido mientras había un beacon en vuelo
 
@@ -1038,13 +1039,22 @@ function renderNote(page, backlinks) {
     // Ese contenido ya va de camino: un segundo PATCH idéntico no aporta nada.
     if (beaconInFlight === body) return false;
 
+    // Hay un PATCH normal en vuelo con OTRO cuerpo que el que hay ahora en
+    // pantalla: puede aplicarse después de este momento y dejar en el servidor
+    // el texto abandonado. Es la misma trampa que `beaconInFlight`, pero por el
+    // camino del autoguardado de 2 s (p. ej. se escribe A, el autoguardado sale
+    // y tarda, el usuario deshace y vuelve al texto ya confirmado, y oculta).
+    const saveInFlight = saving && savingBody !== null && savingBody !== body;
+
     // Mismo contenido que el último guardado CONFIRMADO y nada en vuelo
     // (visibilitychange y acto seguido beforeunload, por ejemplo): no se manda
     // dos veces, y se descarta el guardado normal pendiente, que mandaría lo
     // mismo. Con otro cuerpo todavía en vuelo NO vale darlo por guardado: ese
     // PATCH puede aplicarse después y dejar en el servidor su texto, así que se
-    // trata como pendiente y se reenvía al contestar (ver `beaconQueued`).
-    if (body === lastSentBody && !beaconInFlight) {
+    // trata como pendiente y se reenvía al contestar (ver `beaconQueued`). Con
+    // un guardado normal en vuelo, igual: se deja `dirty` puesto y se reenvía
+    // al contestar (ver la rama de `saving` más abajo).
+    if (body === lastSentBody && !beaconInFlight && !saveInFlight) {
       markSaved(body);
       if (alive) setSaveState("saved"); // no queda nada por guardar: que no diga lo contrario
       return false;
@@ -1069,10 +1079,28 @@ function renderNote(page, backlinks) {
     }
 
     if (alive && saving) {
-      // Hay un PATCH normal en vuelo: no se solapan dos escrituras. doSave()
-      // deja marcado `saveAgain` y repite en cuanto termine.
-      doSave();
+      // Hay un PATCH normal en vuelo: no se solapan dos escrituras. Si lleva
+      // otro cuerpo, doSave() deja marcado `saveAgain` y repite en cuanto
+      // termine; si lleva justo lo que hay en pantalla, no hay nada que
+      // reenviar (y un segundo PATCH idéntico solo sería ruido).
+      if (savingBody !== body) doSave();
       return false;
+    }
+
+    if (!alive && saveInFlight) {
+      // La pestaña se está cerrando y hay un PATCH normal en vuelo con otro
+      // contenido: se manda lo de la pantalla igualmente (perderlo del todo es
+      // peor que el riesgo de orden, y este va con keepalive), pero NO se da
+      // por guardado. Si el cierre no llega a ocurrir y la pestaña sobrevive,
+      // el autoguardado de 2 s reenvía el contenido del editor en cuanto
+      // termine el PATCH en vuelo; darlo por guardado aquí dejaba el texto
+      // viejo en el servidor sin nada que lo corrigiera.
+      try {
+        sendBeacon(body).catch(() => {}); // la pestaña se está yendo: no hay a quién avisar
+      } catch {
+        // sin red o página ya descargándose
+      }
+      return true;
     }
 
     if (!alive) {
@@ -1154,6 +1182,7 @@ function renderNote(page, backlinks) {
 
     const seqAtSave = changeSeq;
     const body = buildSaveBody();
+    savingBody = body; // para que el guardado de emergencia sepa qué va de camino
 
     try {
       const updated = await api(`/pages/${page.id}`, { method: "PATCH", body });
@@ -1169,9 +1198,12 @@ function renderNote(page, backlinks) {
       if (changeSeq === seqAtSave && (!beaconInFlight || beaconInFlight === body)) {
         dirty = false;
         lastSentBody = body; // si hubiera que salir justo después, ya está guardado
+        state.flushPendingSave = null;
       }
-      setSaveState("saved");
-      state.flushPendingSave = null;
+      // Si sigue habiendo algo pendiente (se escribió durante el guardado, o va
+      // otro PATCH de camino), el indicador no puede decir "Guardado": lo
+      // manda el autoguardado de 2 s o el reenvío del beacon.
+      setSaveState(dirty ? "dirty" : "saved");
       await loadTree();
       markActive(page.id);
     } catch (e) {
@@ -1179,6 +1211,7 @@ function renderNote(page, backlinks) {
       console.error(e);
     } finally {
       saving = false;
+      savingBody = null;
       if (saveAgain) {
         saveAgain = false;
         doSave();
