@@ -62,8 +62,10 @@ Base de datos (`Bases/Contactos.md`): `type: database`, `schema` y `views` en el
 - **Codificación**: UTF-8 sin BOM, saltos `\n`.
 - **Tolerancia**: CRLF, BOM, Latin-1 y frontmatter sin cerrar se leen con aviso y nunca abortan el reindexado.
 - **Claves desconocidas del frontmatter**: se preservan reescribiendo solo las claves que gestiona la app.
-- **Claves que añade la app** además de las del contrato: `created_by` (quién creó la página; hoy sin login, el valor de `DEFAULT_USER_NAME`) y `header_image` (la ruta de la imagen de cabecera, servida desde `/files`). Van en el frontmatter y se leen de ahí al reindexar: si solo vivieran en el índice, el primer reindexado las perdería. Son una extensión de este ADR, no parte del mínimo.
-- **Papelera**: borrar mueve a `.trash/<fecha UTC>/<ruta original>`; restaurar devuelve a su sitio.
+- **Claves que añade la app** además de las del contrato: `created_by` (quién creó la página; hoy sin login, el valor de `DEFAULT_USER_NAME`) y `header_image` (la imagen de cabecera). Van en el frontmatter y se leen de ahí al reindexar: si solo vivieran en el índice, el primer reindexado las perdería. Son una extensión de este ADR, no parte del mínimo.
+- **Adjuntos dentro del vault**: todo adjunto (hoy, la imagen de cabecera) vive en `_attachments/<año>/<mes>/<nombre>`, con año y mes UTC del momento en que se subió. `_attachments/` no se indexa. Copiar la carpeta del vault es por tanto un backup completo, imágenes incluidas, y la copia arranca sola.
+- **`header_image` es una URL que *es* la ruta del vault**: `/files/_attachments/2026/10/header-<id>.png`. Se sirve con el `Content-Type` decidido por los magic bytes del propio fichero (PNG, JPEG, GIF, WebP), `X-Content-Type-Options: nosniff` y descarga forzada para todo lo demás: el vault no es un servidor de ficheros, y nada de lo que haya dentro se ejecuta en el origen de la app (no hay CSP, porque el panel usa estilos y scripts inline). Fuera de `_attachments/`, 404.
+- **Papelera**: borrar mueve a `.trash/<fecha UTC>/<ruta original>`. `GET /trash` lista lo que hay (ruta original, fecha del borrado y tamaño) y `POST /trash/restore` devuelve un fichero a su sitio y reindexa. Si la ruta original está ocupada, **409** con el motivo: nunca un `(2)` silencioso, que dejaría dos versiones sin decir cuál es cuál.
 
 ### Enlaces
 
@@ -75,7 +77,9 @@ Tablas `pages`, `databases`, `rows`, `links`, `pages_fts` (+ internas de FTS5). 
 
 Búsqueda: FTS5 con `unicode61 remove_diacritics 2` y prefijo. `reunion` encuentra `Reunión`. Coste aceptado: `ñ` se pliega a `n`.
 
-Idempotencia: reconstruir dos veces, o borrar y reconstruir, produce el mismo contenido en las 9 tablas, comparado por hash de volcado ordenado.
+Idempotencia: reconstruir dos veces, o borrar y reconstruir, produce el mismo contenido en las tablas de contenido, comparado por hash de volcado ordenado.
+
+`meta` es una tabla clave-valor con metadatos **del índice**, no del vault: hoy solo `last_reindex_at`. Queda fuera de esa huella (cambia en cada reindexado por definición) y es lo que permite que `GET /status` diga la deriva del índice contra el disco: ficheros modificados, añadidos y desaparecidos desde el último reindexado, comparando `mtime` + tamaño, con un `stat` por fichero y sin leer cuerpos. Subir el esquema a la versión 2 fue solo para añadir `meta`, con migración desde la 1: los índices existentes no se tiran. Lo que la deriva cuenta como `added` y no desaparece al reindexar: un `.md` que el índice no indexa todavía (una base o una fila, P2). Es cierto que no está en el índice, y dejará de contar cuando P2 les dé fila.
 
 ## Consecuencias
 

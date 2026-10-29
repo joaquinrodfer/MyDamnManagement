@@ -105,8 +105,7 @@ graph TD
 
     subgraph COMPOSE["docker-compose.yml"]
         API["api<br/>FastAPI + uvicorn --reload<br/>:8000"] -->|"sqlite3 (FTS5)"| DB[("vol: mdm_data<br/>index.sqlite")]
-        API -->|"lee/escribe .md"| VAULT[("vol: mdm_vault<br/>Notas/ · .trash/")]
-        API --- ATT[("vol: attachments")]
+        API -->|"lee/escribe .md"| VAULT[("vol: mdm_vault<br/>Notas/ · _attachments/ · .trash/")]
     end
 ```
 
@@ -284,7 +283,7 @@ El menú de comando necesita `view.coordsAtPos()` para posicionarse junto al cur
 | Editor de notas | CodeMirror 6, vendorizado (build único, no en cada edición) | Se planteó React+Vite para todo el frontend; el problema real (editor bueno) lo resuelve una librería de edición dedicada, no el framework — así que se compiló solo esa pieza y el resto sigue sin build |
 | Caché de estáticos | `Cache-Control: no-cache` (revalida por ETag) | Sin cabecera, el navegador puede servir una versión vieja de `app.js`/`index.html` sin avisar — pasó de verdad durante el desarrollo del editor |
 | Guardado | Autoguardado con debounce de 2s + flush al navegar/cerrar | Un botón "Guardar" explícito no encaja con un editor con formato en vivo; a un solo usuario no hace falta resolución de conflictos, solo no perder el margen del debounce |
-| Imagen de cabecera | Un campo `header_image_path` en `page` + `/files` estático | Más simple que enrutar por el modelo `Attachment` genérico (que sigue sin usarse); si attachments arbitrarios se vuelven necesarios, se generaliza entonces |
+| Imagen de cabecera | Un campo `header_image_path` en `page` (y `header_image` en el frontmatter) + la ruta `/files`, que sirve el vault | Más simple que enrutar por el modelo `Attachment` genérico (que sigue sin usarse); desde P1.2b el adjunto vive en `_attachments/` dentro del vault, así que el backup del vault es completo y la URL es la propia ruta del fichero |
 | "Obligatorio" en icono/creador | Aplicado por la API al crear, no por `NOT NULL` en la columna | Garantiza el invariante para páginas nuevas sin forzar una migración de backfill sobre las que ya existen |
 | Bloques del editor | Calculados sobre el árbol de sintaxis, no un modelo de datos nuevo | Cubre seleccionar/convertir/borrar en lote (lo pedido) sin reescribir wikilinks/backlinks/búsqueda; el coste es no tener reordenar por arrastre gratis |
 | Asa de bloque (`⋮⋮`) | Widget dentro de la línea (`position: absolute`), no un `gutter()` | Los gutters de CM6 asumen altura de línea uniforme; con encabezados más altos que un párrafo, hasta `lineNumbers()` nativo queda desalineado. Un widget hijo de la línea hereda su altura real sin cálculo aparte |

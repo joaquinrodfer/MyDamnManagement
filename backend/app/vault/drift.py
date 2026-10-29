@@ -15,6 +15,13 @@ Lo que cuenta, y por qué:
 - `missing`: el índice tiene una nota cuyo `.md` ya no está.
 
 `changed` es la suma: los tres casos se resuelven reindexando.
+
+Lo que **no** es deriva: un `.md` que el índice no indexa a propósito (una base
+de datos o una fila, que son P2 y hoy solo viven en el índice) cuenta como
+`added`, y seguirá contando después de reindexar. Es verdad —ese fichero no
+está en el índice— y dejará de contar cuando P2 les dé fila. Preferible a leer
+el frontmatter de cada fichero para adivinar el tipo, que es justo lo que esta
+comprobación evita.
 """
 
 from __future__ import annotations

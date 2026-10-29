@@ -36,7 +36,9 @@ curl http://localhost:8000/health
 
 La app ya no necesita Postgres: guarda todo en un único índice SQLite (`INDEX_PATH`, en el contenedor `/data/index.sqlite`, volumen `mdm_data` fuera del repo). El esquema se crea o se migra solo al arrancar (`PRAGMA user_version`; ver `backend/app/index.py` y [`docs/ADR-0002-indice-sqlite.md`](docs/ADR-0002-indice-sqlite.md)): no hay `alembic upgrade head` ni servicio `db`. Si el fichero del índice no es una base de datos (basura o truncado de tal forma que SQLite no lo abre), se aparta con sufijo `.corrupto-<fecha>` y se rehace vacío — no impide arrancar. Si lo que hay en `INDEX_PATH` es un fichero de otra cosa (un esquema ajeno, o una base que `quick_check` da por dañada), la app **no arranca** y lo dice: el índice es reconstruible desde el vault, pero no se toca ni se renombra nada que no sea nuestro. Detalle en el §3 de [`docs/ADR-0002-indice-sqlite.md`](docs/ADR-0002-indice-sqlite.md).
 
-Desde **P1.2a** las notas viven en ficheros `.md` (`VAULT_PATH`, volumen `mdm_vault`): guardar una nota escribe `Notas/<título>.md` (y su carpeta si tiene subpáginas) y el índice es **derivado**. El fichero manda: si editas un `.md` por fuera, `POST /reindex` lo recoge; si borras `index.sqlite`, el arranque lo reconstruye desde el vault. Renombrar es renombrar el fichero (el `id` del frontmatter es la identidad y sobrevive) y borrar mueve a `.trash/<fecha UTC>/<ruta original>` en vez de destruir.
+Desde **P1.2a** las notas viven en ficheros `.md` (`VAULT_PATH`, volumen `mdm_vault`): guardar una nota escribe `Notas/<título>.md` (y su carpeta si tiene subpáginas) y el índice es **derivado**. El fichero manda: si editas un `.md` por fuera, `POST /reindex` lo recoge; si borras `index.sqlite`, el arranque lo reconstruye desde el vault. Renombrar es renombrar el fichero (el `id` del frontmatter es la identidad y sobrevive) y borrar mueve a `.trash/<fecha UTC>/<ruta original>` en vez de destruir: `GET /trash` lo lista con su ruta original y su fecha, y `POST /trash/restore` lo devuelve a su sitio (409 si esa ruta está ocupada, nunca un duplicado silencioso).
+
+Desde **P1.2b** los adjuntos también están dentro del vault: la imagen de cabecera se guarda en `_attachments/<año>/<mes>/header-<id>.<ext>`, su URL es la ruta del vault (`/files/_attachments/…`, servida con el tipo decidido por magic bytes y `nosniff`) y la nota la lleva en el frontmatter, así que **copiar la carpeta del vault es un backup completo** — `.md` + imágenes, y la copia arranca sola. Para los adjuntos que quedaron en el volumen viejo (`/app/attachments`) hay una migración de una vez, idempotente y con contadores. `GET /status` dice además la **deriva** entre índice y disco: cuántos ficheros han cambiado por fuera desde el último reindexado (comparando `mtime` + tamaño, sin leer cuerpos) y cuándo fue ese reindexado.
 
 Si el vault está vacío **a propósito** (lo vaciaste a mano, restauraste solo su volumen y no el del índice, o `VAULT_PATH` apunta a un directorio vacío), el arranque se niega a vaciar el índice y no arranca: `POST /reindex?force=true` no sirve de salida porque el servicio es justo el que no está en pie. La salida es arrancar una vez con `VAULT_ALLOW_EMPTY=1`, que deja el índice con **0 notas** y **conserva las bases, filas y vistas** (quedan sin padre hasta P2, que les da fichero). Una ruta que no existe no se cubre con esa variable: un volumen sin montar no es un vault vacío, y esa sigue fallando. Formato exacto en [`docs/ADR-0001-formato-del-vault.md`](docs/ADR-0001-formato-del-vault.md). Las bases de datos y sus filas siguen en el índice: son P2.
 
@@ -61,6 +63,13 @@ Pasar las notas que ya están en el índice al vault (una vez, al adoptar P1.2; 
 ```bash
 python backend/scripts/migrate_index_to_vault.py \
     --index /data/index.sqlite --vault /data/vault --reindex
+```
+
+Mover los adjuntos que quedaron fuera del vault (una vez, al adoptar P1.2b; idempotente y con contadores: `movidos`, `ya_estaban`, `notas_actualizadas`, `indice_actualizado`):
+
+```bash
+python backend/scripts/migrate_attachments_into_vault.py \
+    --source /app/attachments --vault /data/vault --index /data/index.sqlite
 ```
 
 Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas y bases de datos a la izquierda).
@@ -92,7 +101,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | -------------- | ------ | ------------------------------------------------------ |
 | `/`            | GET    | Panel de estado (frontend estático, sin build)           |
 | `/health`      | GET    | Comprobación de vida del servicio                       |
-| `/status`      | GET    | Estado agregado de `api` y del almacén (`db`, ahora el índice SQLite) |
+| `/status`      | GET    | Estado agregado de `api` y del almacén (`db`, ahora el índice SQLite) y `drift`: ficheros modificados, añadidos o desaparecidos desde el último reindexado (`mtime` + tamaño) y la marca de ese reindexado |
 | `/reindex`     | POST   | Reconstruye el índice desde el vault (`Notas/*.md`) y devuelve recuento, duración y avisos. **409** si el vault no existe o no tiene ningún `.md` (un volumen sin montar no es un vault vacío); `?force=true` para vaciarlo a propósito (en el arranque, `VAULT_ALLOW_EMPTY=1`) |
 | `/pages`       | GET    | Lista todas las páginas del workspace                   |
 | `/pages`       | POST   | Crea la página con su cuerpo y sus wikilinks (y escribe su `.md` si es una nota) |
@@ -103,7 +112,9 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/pages/{id}/backlinks` | GET | Páginas que enlazan a esta vía `[[wikilink]]`     |
 | `/pages/{id}/header-image` | POST | Sube/reemplaza la imagen de cabecera (`multipart/form-data`, campo `file`) |
 | `/pages/{id}/header-image` | DELETE | Quita la imagen de cabecera                       |
-| `/files/...`   | GET    | Sirve los archivos subidos (imágenes de cabecera, etc.)  |
+| `/files/...`   | GET    | Sirve los adjuntos del vault (`_attachments/<año>/<mes>/…`): el `Content-Type` sale de los magic bytes del fichero y va con `nosniff`; fuera de `_attachments/`, 404 |
+| `/trash`       | GET    | Papelera: ruta original, fecha del borrado (UTC) y tamaño de cada fichero, lo más reciente primero |
+| `/trash/restore` | POST | Devuelve un fichero de la papelera a su ruta original y reindexa. **409** si la ruta está ocupada; **404** si la entrada no existe |
 | `/search?q=`   | GET    | Búsqueda full-text (título + cuerpo) en español          |
 
 Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]]`) en `body_markdown`; se resuelven por título exacto (sin distinguir mayúsculas) dentro del mismo workspace al guardar la página.
@@ -138,7 +149,8 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 - [x] **Editor al estilo Notion** — menú de comando `/`, línea horizontal como bloque, `Mayús+Enter` para bloque nuevo, selector de emoji real, autoformato de flechas y wikilinks, logo propio
 - [x] **P1.1 — la app sin Postgres** — índice SQLite + capa de repositorio, búsqueda FTS5 sin acentos, `pytest` sin servicios externos y script de migración de una vez
 - [x] **P1.2a — las notas pasan a ficheros `.md`** — vault en disco (`Notas/`, `.trash/`), guardar/renombrar/mover/borrar escriben fichero, reindexado desde el vault (`POST /reindex` y al arrancar) y migración del índice al vault
-- [ ] **P1.2b** — bases de datos y filas en ficheros (P2 del roadmap) y adjuntos dentro del vault
+- [x] **P1.2b — el vault completo** — adjuntos dentro del vault (`_attachments/`, servidos por `/files` con la ruta del vault y validación por magic bytes), restaurar desde la papelera (`GET /trash`, `POST /trash/restore`) y deriva índice/disco en `/status`
+- [ ] **P2 — bases de datos y filas en ficheros** — lo que queda del roadmap de P1.2
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue objetivo

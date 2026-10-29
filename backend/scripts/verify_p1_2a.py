@@ -30,7 +30,6 @@ VAULT = WORK / "vault"
 INDEX = WORK / "index.sqlite"
 
 os.environ["FRONTEND_DIR"] = str(REPO_DIR / "frontend")
-os.environ["ATTACHMENTS_DIR"] = str(WORK / "attachments")
 os.environ["VAULT_PATH"] = str(VAULT)
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -39,7 +38,6 @@ from app.config import settings  # noqa: E402
 
 settings.vault_path = str(VAULT)
 settings.index_path = str(INDEX)
-settings.attachments_dir = str(WORK / "attachments")
 
 from app.index import dump_hash  # noqa: E402
 from app.main import app  # noqa: E402

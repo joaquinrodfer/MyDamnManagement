@@ -73,7 +73,7 @@ La búsqueda mantiene el comportamiento observable: `reunion` encuentra `Reunió
 
 `docker-compose.yml` queda con un único servicio `api`; sin `db`, sin puerto 5432, sin `depends_on`. El índice vive en el volumen `mdm_data` montado en `/data` (fuera del repo).
 
-Directorios: los crea la **imagen** en el build (`RUN mkdir -p /app/attachments /data`), así que un contenedor limpio arranca sin montar nada; y al importarse, `app/main.py` crea `attachments_dir` para el caso de un volumen de adjuntos vacío. Lo que la app **no** hace es crear el directorio de `INDEX_PATH`: si el volumen no está montado donde toca, o `INDEX_PATH` apunta a un directorio que no existe, el arranque falla con `unable to open database file`. Es deliberado: un índice que no está donde la app cree es mejor que uno vacío y silencioso.
+Directorios: los crea la **imagen** en el build (`RUN mkdir -p /data/vault`), así que un contenedor limpio arranca sin montar nada. Desde P1.2b los adjuntos viven dentro del vault (`_attachments/`) y los crea la app al guardar: ya no hay un volumen `attachments` ni un `attachments_dir` que montar. Lo que la app **no** hace es crear el directorio de `INDEX_PATH`: si el volumen no está montado donde toca, o `INDEX_PATH` apunta a un directorio que no existe, el arranque falla con `unable to open database file`. Es deliberado: un índice que no está donde la app cree es mejor que uno vacío y silencioso.
 
 ### 6. Migración de una vez, idempotente
 

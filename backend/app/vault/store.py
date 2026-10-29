@@ -690,7 +690,12 @@ class VaultNotes:
     # --------------------------------------------------------------- borrar
 
     def delete(self, page_id: Any) -> bool:
-        """Mueve la nota (y su carpeta de subpáginas) a la papelera."""
+        """Mueve la nota (y su carpeta de subpáginas) a la papelera.
+
+        El adjunto de la cabecera **no** se mueve ni se borra: si la nota se
+        restaura, su imagen sigue donde estaba. Barrer los huérfanos que deja un
+        borrado definitivo es v1.1.
+        """
         row = self.conn.execute(
             "SELECT id, type, path, title FROM pages WHERE id = ?", (str(page_id),)
         ).fetchone()
