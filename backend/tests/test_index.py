@@ -146,3 +146,101 @@ def test_fts_query_escapa_sintaxis_del_usuario():
     assert indice.fts_query('hola "mundo" OR NEAR(x)') == '"hola"* "mundo"* "OR"* "NEAR"* "x"*'
     assert indice.fts_query("") == ""
     assert indice.fts_query("  ,,, ") == ""
+
+
+# --------------------------------------------------------------------------
+# Rework P1.1: un INDEX_PATH equivocado no puede tocar un fichero ajeno
+# --------------------------------------------------------------------------
+
+
+def test_fichero_ajeno_no_se_toca_ni_se_renombra(index_path):
+    """Un fichero con tablas y ninguna `pages` no es nuestro índice.
+
+    Antes se le ejecutaba `SCHEMA_SQL` encima (convivían su tabla y las del
+    esquema y la app escribía ahí dentro). Ahora se para en claro sin tocar
+    ni renombrar el fichero.
+    """
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE notas (texto TEXT)")
+        conn.execute("INSERT INTO notas VALUES ('lo mío')")
+        conn.commit()
+    finally:
+        conn.close()
+    antes = index_path.read_bytes()
+
+    with pytest.raises(IndexSchemaError) as excinfo:
+        open_index(str(index_path))
+
+    assert "notas" in str(excinfo.value)
+    assert "INDEX_PATH" in str(excinfo.value)
+
+    # Mismo fichero, byte a byte, con su tabla y sus datos.
+    assert index_path.read_bytes() == antes
+    conn = sqlite3.connect(index_path)
+    try:
+        assert [r[0] for r in conn.execute("SELECT texto FROM notas")] == ["lo mío"]
+        tablas = {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert "pages" not in tablas
+    finally:
+        conn.close()
+    assert list(index_path.parent.glob("*.corrupto-*")) == []
+
+
+def test_fichero_ajeno_con_una_tabla_del_esquema_no_se_renombra(index_path):
+    """`views` es un nombre común: el `executescript` fallaba a medias y el
+    fichero acababa renombrado como `.corrupto-*` ("ilegible"), que no es."""
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE views (nombre TEXT)")
+        conn.execute("INSERT INTO views VALUES ('la del usuario')")
+        conn.commit()
+    finally:
+        conn.close()
+    antes = index_path.read_bytes()
+
+    with pytest.raises(IndexSchemaError) as excinfo:
+        open_index(str(index_path))
+
+    assert "views" in str(excinfo.value)
+    assert index_path.read_bytes() == antes
+    conn = sqlite3.connect(index_path)
+    try:
+        assert [r[0] for r in conn.execute("SELECT nombre FROM views")] == ["la del usuario"]
+    finally:
+        conn.close()
+    assert list(index_path.parent.glob("*.corrupto-*")) == []
+
+
+def test_fichero_con_pages_de_otra_forma_se_rechaza(index_path):
+    """Una tabla `pages` que no es la nuestra tampoco se migra a ciegas."""
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("CREATE TABLE pages (id TEXT PRIMARY KEY, titulo TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+    antes = index_path.read_bytes()
+
+    with pytest.raises(IndexSchemaError) as excinfo:
+        open_index(str(index_path))
+
+    assert "pages" in str(excinfo.value)
+    assert index_path.read_bytes() == antes
+    assert list(index_path.parent.glob("*.corrupto-*")) == []
+
+
+def test_version_de_sqlite_minima_se_comprueba(monkeypatch):
+    """La imagen fija la versión del motor; si el runtime trae una más vieja
+    (o la imagen se cambia de base), se dice al arrancar en vez de fallar con
+    un error raro al crear `pages_fts`."""
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 8, 0))
+    with pytest.raises(IndexSchemaError) as excinfo:
+        indice.check_sqlite_version()
+    assert "3.8.0" in str(excinfo.value)
+    assert "3.27" in str(excinfo.value)
+
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", indice.MIN_SQLITE_VERSION)
+    indice.check_sqlite_version()  # justo en el mínimo: vale
