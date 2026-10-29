@@ -248,7 +248,10 @@ def _fix_header_reference(
 ) -> None:
     """Una nota: si su `header_image` es del esquema viejo, lo pasa al nuevo."""
     try:
-        texto = path.read_text(encoding="utf-8", newline="")
+        # read_text(newline=...) no existe hasta 3.13; open con newline=""
+        # equivale y funciona también en 3.12, que es la de la imagen.
+        with path.open("r", encoding="utf-8", newline="") as fh:
+            texto = fh.read()
     except (OSError, UnicodeDecodeError) as exc:
         counters["errores"] += 1
         print(f"  error leyendo {path}: {exc}", file=sys.stderr)
