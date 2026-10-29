@@ -6,6 +6,7 @@ plantilla, filas, vistas con filtro y orden, búsqueda sin acentos y dashboard.
 Es el primer paso de P6 (tests que corren en un contenedor sin servicios).
 """
 
+import re
 import time
 from datetime import date, timedelta
 
@@ -31,7 +32,7 @@ def test_health_y_status(client):
     assert estado["services"]["api"]["ok"] is True
     assert estado["services"]["db"]["ok"] is True
     assert estado["services"]["db"]["engine"] == "sqlite"
-    assert estado["services"]["db"]["schema_version"] == 1
+    assert estado["services"]["db"]["schema_version"] == 2
     assert estado["services"]["db"]["counts"]["pages"] == 0
     assert estado["checked_at"].endswith("+00:00")
 
@@ -292,7 +293,12 @@ def test_imagen_de_cabecera(client):
         files={"file": ("cabecera.png", PNG, "image/png")},
     )
     assert subida.status_code == 200
-    assert subida.json()["header_image_path"] == f"/files/pages/{page['id']}/header.png"
+    # El adjunto vive en el vault: la URL es su ruta dentro de `_attachments/`
+    # (`<año>/<mes>` en UTC, así que se comprueba la forma y no el mes exacto).
+    ruta = subida.json()["header_image_path"]
+    assert re.fullmatch(
+        rf"/files/_attachments/\d{{4}}/\d{{2}}/header-{page['id']}\.png", ruta
+    ), ruta
 
     # Solo valen imágenes de verdad: un SVG (o HTML) disfrazado, no.
     rechazada = client.post(

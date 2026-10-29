@@ -26,10 +26,10 @@ class Settings(BaseSettings):
     # lee como vault vacío.
     vault_allow_empty: bool = False
 
-    # Dónde se sirven el panel y los adjuntos subidos (imágenes de cabecera).
-    # Configurables para poder arrancar la app en tests sin /app.
+    # Dónde se sirve el panel. Configurable para poder arrancar la app en
+    # tests sin /app. Los adjuntos ya no tienen carpeta propia: viven dentro
+    # del vault (`_attachments/`, ver `app/vault/attachments.py`).
     frontend_dir: str = "/app/frontend"
-    attachments_dir: str = "/app/attachments"
 
     # Sin autenticación todavía (uso personal en solitario) -- "creador" de
     # una página se rellena con esto. El día que haya login de verdad, se

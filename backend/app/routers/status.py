@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app import index
 from app.config import settings
 from app.repository import Repository
+from app.vault import drift
 from app.vault.store import VaultError
 
 router = APIRouter(tags=["status"])
@@ -17,14 +18,19 @@ def get_status():
     La clave `db` se mantiene tal cual (el panel pinta `dot-db` con
     `services.db.ok`): lo que cambia es qué hay detrás — antes una conexión a
     Postgres, ahora el índice SQLite.
+
+    `drift` es la deriva entre el índice y el disco (ADR-0001): sin vigilante
+    de ficheros, editar un `.md` por fuera no se nota hasta que alguien
+    reindexa, y esto dice cuántos ficheros van por detrás y cuándo se reindexó
+    por última vez. Cuesta un `stat` por fichero y no lee ningún cuerpo.
     """
-    services = {
-        "api": {"ok": True},
-        "db": _check_index(),
-    }
     return {
         "checked_at": datetime.now(timezone.utc).isoformat(),
-        "services": services,
+        "services": {
+            "api": {"ok": True},
+            "db": _check_index(),
+        },
+        "drift": _check_drift(),
     }
 
 
@@ -47,13 +53,27 @@ def _check_index() -> dict:
             conn.close()
 
 
+def _check_drift() -> dict:
+    """Índice contra disco. Nunca lanza: el estado no debe tumbar el panel."""
+    conn = None
+    try:
+        conn = index.open_index(settings.index_path)
+        return {"ok": True, **drift.scan(settings.vault_path, conn).as_dict()}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @router.post("/reindex")
 def post_reindex(force: bool = False):
     """Reconstruye las notas del índice desde el vault (ADR-0001, D1).
 
     Es la única forma de recoger cambios hechos en los `.md` por fuera: en v1.0
-    no hay vigilante de ficheros (D2). Devuelve recuentos, duración y los
-    primeros avisos del reindexado (ficheros raros que se han leído igual).
+    no hay vigilante de ficheros (D2). Devuelve recuentos, duración, la marca
+    del reindexado y los primeros avisos (ficheros raros que se han leído
+    igual).
 
     `?force=true` es la salida explícita cuando el vault está vacío a propósito:
     sin él, un vault inexistente o sin un solo `.md` devuelve 409 en vez de

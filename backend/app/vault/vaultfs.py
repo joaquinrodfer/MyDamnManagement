@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import secrets
 import shutil
 from datetime import datetime, timezone
@@ -33,6 +34,15 @@ TMP_SUFFIX = ".tmp-"
 
 class PathEscape(ValueError):
     """Una ruta construida desde un título o una carpeta se sale del vault."""
+
+
+class TrashConflict(ValueError):
+    """Al restaurar, la ruta original ya está ocupada por otro fichero.
+
+    No se renombra en silencio a `x (2).md`: quien restaura quiere *ese*
+    fichero en *su* ruta, y un duplicado mudo le deja dos versiones sin decir
+    cuál es cuál. La API lo traduce a 409.
+    """
 
 
 def safe_rel(root: str, *parts: str) -> str:
@@ -90,6 +100,31 @@ def atomic_write(path: str, data: str, *, simulate_crash: bool = False,
     return tmp
 
 
+def atomic_write_bytes(path: str, data: bytes) -> str:
+    """Igual que `atomic_write`, para contenido binario (adjuntos del vault).
+
+    Un adjunto a medias deja una imagen rota que `/files` sirve igual; el mismo
+    `tmp` + `fsync` + `rename` cuesta lo mismo y evita el caso.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp = os.path.join(directory, f".{os.path.basename(path)}{TMP_SUFFIX}"
+                                  f"{os.getpid()}-{secrets.token_hex(4)}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    _fsync_dir(directory)
+    return tmp
+
+
 def move(src: str, dst: str) -> None:
     """Mueve un fichero (rename) creando el directorio destino si hace falta."""
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
@@ -99,10 +134,21 @@ def move(src: str, dst: str) -> None:
         _fsync_dir(os.path.dirname(src) or ".")
 
 
+# Formato del sello de papelera: `2026-10-29T18-04-11`, con `-2`, `-3`… si
+# hay dos borrados en el mismo segundo.
+TRASH_STAMP_FORMAT = "%Y-%m-%dT%H-%M-%S"
+
+# El sello entero, con el sufijo opcional separado: quitarle un `-<n>` final a
+# pelo pelado se comería los segundos (`…T18-04-11` -> `…T18-04`).
+_TRASH_STAMP_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d+))?$"
+)
+
+
 def trash_dir_for(vault: str, now: datetime | None = None) -> str:
     """Directorio de papelera para este borrado, con sufijo si ya existe."""
     now = now or datetime.now(timezone.utc)
-    stamp = now.strftime("%Y-%m-%dT%H-%M-%S")
+    stamp = now.strftime(TRASH_STAMP_FORMAT)
     base = os.path.join(vault, ".trash", stamp)
     if not os.path.exists(base):
         return base
@@ -110,6 +156,24 @@ def trash_dir_for(vault: str, now: datetime | None = None) -> str:
     while os.path.exists(f"{base}-{n}"):
         n += 1
     return f"{base}-{n}"
+
+
+def parse_trash_stamp(name: str) -> datetime | None:
+    """Fecha UTC del sello de una carpeta de papelera, o None si no lo es.
+
+    El sello lo escribe `trash_dir_for`; este es su lector para poder decir en
+    `GET /trash` cuándo se borró cada fichero sin guardar metadatos aparte.
+    """
+    match = _TRASH_STAMP_RE.match(name)
+    if match is None:
+        return None
+    dia, hora, minuto, segundo = match.group(1, 2, 3, 4)
+    try:
+        return datetime.strptime(
+            f"{dia}T{hora}-{minuto}-{segundo}", TRASH_STAMP_FORMAT
+        ).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def to_trash(vault: str, rel_path: str, now: datetime | None = None) -> str:
@@ -133,7 +197,11 @@ def to_trash(vault: str, rel_path: str, now: datetime | None = None) -> str:
 
 
 def restore(vault: str, trash_rel: str) -> str:
-    """Devuelve a su sitio un fichero de `.trash/<ts>/<ruta>`, sin pisar nada."""
+    """Devuelve a su sitio un fichero de `.trash/<ts>/<ruta>`, sin pisar nada.
+
+    Si la ruta original está ocupada lanza `TrashConflict` en vez de inventar
+    un `x (2).md`.
+    """
     # Ambas rutas se validan: `trash_rel` no puede salir de `.trash/` y la ruta
     # original reconstruida no puede salir del vault (antes, un `..` en el
     # nombre dentro de la papelera hacía que `restore` escribiera fuera).
@@ -143,12 +211,14 @@ def restore(vault: str, trash_rel: str) -> str:
     if len(parts) < 2 or parts[0] in (os.curdir, os.pardir):
         raise ValueError("ruta de papelera sin ruta original")
     rel_original = os.sep.join(parts[1:])
+    if not os.path.isfile(src):
+        raise FileNotFoundError(f"no hay ningún fichero en {trash_rel!r}")
     dst = os.path.join(vault, safe_rel(vault, rel_original))
-    base, ext = os.path.splitext(dst)
-    n = 2
-    while os.path.exists(dst):
-        dst = f"{base} ({n}){ext}"
-        n += 1
+    if os.path.exists(dst):
+        raise TrashConflict(
+            f"la ruta original {rel_original!r} ya está ocupada en el vault: "
+            "mueve o borra lo que hay ahí antes de restaurar"
+        )
     move(src, dst)
     return dst
 

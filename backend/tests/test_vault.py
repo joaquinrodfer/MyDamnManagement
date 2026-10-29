@@ -206,12 +206,18 @@ def test_borrar_manda_a_la_papelera_y_se_puede_restaurar(client, vault_path):
     try:
         vault = VaultNotes(settings.vault_path, conn)
         en_papelera = vault.list_trash()
-        assert en_papelera == [
+        assert [e.path for e in en_papelera] == [
             f".trash/{papeleras[0].name}/Notas/Proyectos.md",
             f".trash/{papeleras[0].name}/Notas/Proyectos/Bugs.md",
         ]
-        for rel in en_papelera:
-            vault.restore(rel)
+        assert [e.original_path for e in en_papelera] == [
+            "Notas/Proyectos.md",
+            "Notas/Proyectos/Bugs.md",
+        ]
+        # La fecha sale del sello de la carpeta de papelera, no de metadatos.
+        assert all(e.deleted_at is not None for e in en_papelera)
+        for entry in en_papelera:
+            vault.restore(entry.path)
     finally:
         conn.close()
 

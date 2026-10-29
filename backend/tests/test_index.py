@@ -19,12 +19,12 @@ def _pagina(repo: Repository, titulo: str, cuerpo: str = ""):
 
 def test_esquema_versionado_y_fts5(index_path):
     info = ensure_index(str(index_path))
-    assert info.version == indice.SCHEMA_VERSION == 1
+    assert info.version == indice.SCHEMA_VERSION == 2
     assert info.recreated is True  # no existía
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
         tablas = {
@@ -230,6 +230,34 @@ def test_fichero_con_pages_de_otra_forma_se_rechaza(index_path):
     assert "pages" in str(excinfo.value)
     assert index_path.read_bytes() == antes
     assert list(index_path.parent.glob("*.corrupto-*")) == []
+
+
+def test_un_indice_de_la_version_1_migra_y_gana_la_tabla_meta(index_path):
+    """P1.2b sube el esquema a la 2 solo para añadir `meta`: los índices de la
+    1 se migran (no se tiran) y conservan sus filas."""
+    ensure_index(str(index_path))
+    conn = sqlite3.connect(index_path)
+    try:
+        # Un índice tal y como lo dejó P1.1/P1.2a: sin `meta`, versión 1.
+        conn.execute("DROP TABLE meta")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = open_index(str(index_path))
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == indice.SCHEMA_VERSION == 2
+        tablas = {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert "meta" in tablas
+        # Y la tabla nueva se usa: `last_reindex_at` empieza vacío y se escribe.
+        assert indice.get_meta(conn, indice.META_LAST_REINDEX) is None
+        indice.set_meta(conn, indice.META_LAST_REINDEX, "2026-10-29T18:04:11+00:00")
+        assert indice.get_meta(conn, indice.META_LAST_REINDEX) == "2026-10-29T18:04:11+00:00"
+    finally:
+        conn.close()
 
 
 def test_version_de_sqlite_minima_se_comprueba(monkeypatch):

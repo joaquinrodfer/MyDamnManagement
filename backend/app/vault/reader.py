@@ -246,8 +246,11 @@ def read_file(abs_path: str, rel_path: str, st=None) -> Page:
     return page
 
 
-def _walk_markdown(root: str) -> list[tuple[str, os.stat_result]]:
+def walk_markdown(root: str) -> list[tuple[str, os.stat_result]]:
     """Recorre el vault con `os.scandir` una sola vez.
+
+    Pública porque la detección de deriva (`app.vault.drift`) necesita
+    exactamente esto: cada `.md` con su `stat` y sin leer ninguno.
 
     `os.walk` + `os.stat` cuesta DOS llamadas al sistema por fichero. Con
     `scandir`, `DirEntry.stat()` sale del propio readdir en los sistemas de
@@ -278,7 +281,7 @@ def _walk_markdown(root: str) -> list[tuple[str, os.stat_result]]:
 
 def load(root: str) -> Vault:
     vault = Vault(root=root)
-    candidates: list[tuple[str, os.stat_result]] = _walk_markdown(root)
+    candidates: list[tuple[str, os.stat_result]] = walk_markdown(root)
 
     # 1) páginas y bases
     for rel, st in candidates:

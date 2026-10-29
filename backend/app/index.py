@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -83,7 +83,12 @@ SCHEMA_VERSION = 1
 DEFAULT_WORKSPACE_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "mdm:default-workspace"))
 
 # Migraciones futuras: {versión_destino: [sql, ...]}. Se aplican en orden.
-MIGRATIONS: dict[int, list[str]] = {}
+MIGRATIONS: dict[int, list[str]] = {
+    # P1.2b: `meta` guarda metadatos del índice que no son contenido del vault
+    # (cuándo se reindexó por última vez, que es lo que `/status` necesita para
+    # dar la deriva). Por eso queda fuera de la huella: ver `DUMP_EXCLUDED`.
+    2: ["CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"],
+}
 
 SCHEMA_SQL = """
 CREATE TABLE workspaces (
@@ -168,7 +173,15 @@ CREATE TRIGGER pages_fts_au AFTER UPDATE ON pages BEGIN
     INSERT INTO pages_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
 END;
 
-PRAGMA user_version = 1;
+-- Metadatos del índice, no del vault: `last_reindex_at` (P1.2b). Fuera de
+-- `TABLES` y de la huella de contenido a propósito, que si no dos reindexados
+-- del mismo vault darían huellas distintas.
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+PRAGMA user_version = 2;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -444,7 +457,7 @@ def _inspect(path: str) -> IndexInfo:
             version = SCHEMA_VERSION
 
         missing = {"pages", "databases", "views", "rows", "links",
-                   "workspaces"} - _table_names(conn)
+                   "workspaces", "meta"} - _table_names(conn)
         if missing:
             raise IndexSchemaError(
                 "al índice le faltan tablas: " + ", ".join(sorted(missing))
@@ -547,6 +560,25 @@ def count_rows(conn: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+# Clave de `meta` con el instante del último reindexado (ISO 8601 UTC). Vive en
+# el índice y no en el vault: dice cuándo se leyó el vault, no qué contiene, y
+# viaja con el índice al que describe.
+META_LAST_REINDEX = "last_reindex_at"
+
+
+def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row is not None else None
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
 def _canon_cell(value):
     """Valor estable para la huella: los BLOB (tablas internas de FTS5) en base64."""
     if isinstance(value, (bytes, bytearray, memoryview)):
@@ -565,6 +597,10 @@ DUMP_EXCLUDED = {
     # contenido. Al borrar el índice y reconstruirlo cambia por definición, y no
     # hay ningún dato del vault detrás. `pages.workspace_id` sí es estable (uuid5).
     "workspaces",
+    # Cuándo se reindexó por última vez: es historia del índice, no contenido
+    # del vault. Cambia en cada reindexado por definición, así que incluirlo
+    # rompería la idempotencia (`misma huella` al borrar y reconstruir).
+    "meta",
 }
 
 

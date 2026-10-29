@@ -108,8 +108,6 @@ def test_mover_una_pagina_dentro_de_su_descendiente_es_400(client, vault_path):
 
 
 def test_la_cabecera_con_el_fichero_borrado_por_fuera_es_400(client, vault_path):
-    from app.config import settings
-
     page = crear(client, title="Sin fichero")
     subida = client.post(
         f"/pages/{page['id']}/header-image",
@@ -126,9 +124,8 @@ def test_la_cabecera_con_el_fichero_borrado_por_fuera_es_400(client, vault_path)
     assert respuesta.status_code == 400, respuesta.text
     assert "no está en el vault" in respuesta.json()["detail"]
 
-    # La imagen recién subida no se queda huérfana.
-    page_dir = Path(settings.attachments_dir) / "pages" / page["id"]
-    assert list(page_dir.glob("header.*")) == []
+    # La imagen recién subida no se queda huérfana en `_attachments/`.
+    assert list((vault_path / "_attachments").rglob(f"header-{page['id']}.*")) == []
 
     # Y quitar la cabecera tampoco revienta.
     respuesta = client.delete(f"/pages/{page['id']}/header-image")

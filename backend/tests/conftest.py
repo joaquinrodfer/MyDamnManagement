@@ -1,11 +1,12 @@
 """Arnés de tests: la app entera contra SQLite y un vault, sin servicios externos.
 
-Antes de importar `app.main` se apuntan el panel y los adjuntos a directorios
-que existen (la imagen de Docker los tiene en /app; aquí no hay /app), y cada
-test estrena su propio fichero de índice **y su propio vault** en directorios
-temporales: desde P1.2a guardar una nota escribe un `.md`, así que un vault
-compartido entre tests haría que un reindexado se llevara notas de otro test.
-Ni Docker, ni Postgres, ni red.
+Antes de importar `app.main` se apunta el panel a un directorio que existe (la
+imagen de Docker lo tiene en /app; aquí no hay /app), y cada test estrena su
+propio fichero de índice **y su propio vault** en directorios temporales: desde
+P1.2a guardar una nota escribe un `.md`, así que un vault compartido entre
+tests haría que un reindexado se llevara notas de otro test. Desde P1.2b los
+adjuntos también viven en el vault, así que no hay ninguna ruta fuera de él
+que apuntar. Ni Docker, ni Postgres, ni red.
 """
 
 import os
@@ -19,11 +20,11 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 REPO_DIR = BACKEND_DIR.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
-# `app.main` monta los estáticos al importarse: los directorios tienen que
-# existir y no pueden ser /app.
+# `app.main` monta los estáticos del panel al importarse: el directorio tiene
+# que existir y no puede ser /app. Los adjuntos ya no tienen carpeta propia:
+# viven dentro del vault de cada test (`_attachments/`).
 _SESSION_TMP = Path(tempfile.mkdtemp(prefix="mdm-tests-"))
 os.environ["FRONTEND_DIR"] = str(REPO_DIR / "frontend")
-os.environ["ATTACHMENTS_DIR"] = str(_SESSION_TMP / "attachments")
 os.environ["VAULT_PATH"] = str(_SESSION_TMP / "vault")
 
 
@@ -55,7 +56,6 @@ def client(tmp_path: Path, index_path: Path, vault_path: Path, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "index_path", str(index_path))
-    monkeypatch.setattr(settings, "attachments_dir", str(tmp_path / "attachments"))
 
     from app.main import app
 

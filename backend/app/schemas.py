@@ -143,3 +143,30 @@ class ViewRead(BaseModel):
     name: str
     type: ViewType
     config: dict[str, Any]
+
+
+# --- Papelera (P1.2b) ---------------------------------------------------
+
+
+class TrashEntry(BaseModel):
+    """Un fichero de `.trash/`, con la ruta de la que salió y cuándo."""
+
+    path: str              # `.trash/<sello>/<ruta original>`, relativo al vault
+    original_path: str     # `Notas/Proyectos.md`
+    deleted_at: Optional[str] = None   # ISO 8601 UTC, del nombre del sello
+    size: int
+    kind: str              # "note" | "file"
+
+
+class TrashRestoreRequest(BaseModel):
+    # La ruta de la entrada que devuelve `GET /trash` (`path`), no la original:
+    # dos borrados del mismo nombre dejan dos ficheros en la papelera y hay que
+    # decir cuál vuelve.
+    path: str
+
+
+class TrashRestoreResult(BaseModel):
+    restored_path: str     # ruta original, relativa al vault
+    reindexed: bool
+    notes: int
+    links: int

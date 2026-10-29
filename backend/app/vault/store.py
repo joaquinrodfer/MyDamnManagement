@@ -335,6 +335,7 @@ class RebuildStats:
     links: int = 0
     seconds: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    reindexed_at: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -344,6 +345,36 @@ class RebuildStats:
             "seconds": round(self.seconds, 3),
             "warnings": len(self.warnings),
             "warning_sample": self.warnings[:20],
+            "reindexed_at": self.reindexed_at,
+        }
+
+
+@dataclass(frozen=True)
+class TrashEntry:
+    """Un fichero de la papelera, con la ruta de la que salió y cuándo.
+
+    La papelera no guarda metadatos aparte (ADR-0001: el árbol de `.trash/`
+    conserva la ruta original, y eso basta para restaurar). La fecha sale del
+    nombre de la carpeta de borrado, así que no hay un segundo sitio que se
+    pueda desincronizar.
+    """
+
+    path: str            # `.trash/<sello>/<ruta original>`, relativo al vault
+    original_path: str   # `Notas/Proyectos.md`
+    deleted_at: Optional[str]
+    size: int
+
+    @property
+    def kind(self) -> str:
+        return "note" if self.original_path.lower().endswith(".md") else "file"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "original_path": self.original_path,
+            "deleted_at": self.deleted_at,
+            "size": self.size,
+            "kind": self.kind,
         }
 
 
@@ -711,18 +742,48 @@ class VaultNotes:
             self.conn.execute("DELETE FROM pages WHERE id = ?", (str(page_id),))
         return True
 
-    def list_trash(self) -> list[str]:
-        """Rutas (relativas al vault) de lo que hay en `.trash/`."""
+    def list_trash(self) -> list[TrashEntry]:
+        """Lo que hay en `.trash/`, con su ruta original y la fecha del borrado.
+
+        Lo más reciente primero. Un `.md` suelto dentro de `.trash/` (sin
+        carpeta de fecha, de un `mv` a mano) no se lista: no hay ruta original
+        que restaurar, y adivinarla sería inventarse el sitio del fichero.
+        """
         trash = os.path.join(self.root, ".trash")
-        found: list[str] = []
-        for dirpath, _dirs, names in os.walk(trash):
-            for name in names:
+        entries: list[TrashEntry] = []
+        for dirpath, dirnames, filenames in os.walk(trash):
+            dirnames.sort()
+            for name in sorted(filenames):
                 full = os.path.join(dirpath, name)
-                found.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
-        return sorted(found)
+                rel = os.path.relpath(full, self.root).replace(os.sep, "/")
+                parts = rel.split("/")
+                if len(parts) < 3:      # `.trash/<sello>/<ruta original...>`
+                    continue
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    continue            # desapareció mientras se listaba
+                stamp = vaultfs.parse_trash_stamp(parts[1])
+                entries.append(
+                    TrashEntry(
+                        path=rel,
+                        original_path="/".join(parts[2:]),
+                        deleted_at=_iso(stamp) if stamp else None,
+                        size=size,
+                    )
+                )
+        # Lo más reciente primero; dentro del mismo borrado, la ruta original
+        # en orden (dos ordenaciones estables: la segunda manda).
+        entries.sort(key=lambda e: e.path)
+        entries.sort(key=lambda e: e.deleted_at or "", reverse=True)
+        return entries
 
     def restore(self, trash_rel: str) -> str:
-        """Devuelve un fichero de la papelera a su sitio. Devuelve su ruta."""
+        """Devuelve un fichero de la papelera a su sitio. Devuelve su ruta.
+
+        `vaultfs.restore` lanza `TrashConflict` si la ruta original está
+        ocupada; aquí se deja subir, que la API lo traduzca a 409 con el motivo.
+        """
         dst = vaultfs.restore(self.root, trash_rel)
         return os.path.relpath(dst, self.root).replace(os.sep, "/")
 
@@ -853,6 +914,11 @@ class VaultNotes:
                 "SELECT id, workspace_id, body FROM pages WHERE type <> 'note'"
             ).fetchall():
                 sync_wikilinks(self.conn, row["id"], row["workspace_id"], row["body"])
+
+            # Marca del último reindexado. `GET /status` compara el índice con
+            # el disco y dice cuánto ha cambiado por fuera desde aquí.
+            stats.reindexed_at = now_iso()
+            index_mod.set_meta(self.conn, index_mod.META_LAST_REINDEX, stats.reindexed_at)
 
         stats.notes = len(records)
         stats.links = self.conn.execute("SELECT count(*) FROM links").fetchone()[0]

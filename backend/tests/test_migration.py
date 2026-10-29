@@ -118,7 +118,7 @@ def test_migracion_idempotente_con_contadores(tmp_path):
     conn = sqlite3.connect(index_path)
     try:
         assert conn.execute("SELECT count(*) FROM pages").fetchone()[0] == 3
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
         # Los triggers de FTS5 han indexado el texto migrado, sin acentos.
         filas = conn.execute(
             "SELECT p.title FROM pages_fts JOIN pages p ON p.rowid = pages_fts.rowid"
