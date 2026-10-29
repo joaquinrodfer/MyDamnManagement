@@ -11,6 +11,7 @@ const state = {
   current: null, // {kind: 'note'|'database', id}
   editor: null, // instancia activa del editor de notas (createNoteEditor), o null
   flushPendingSave: null, // fuerza el autoguardado en curso antes de navegar a otra página
+  flushSaveBeacon: null, // guarda ya (con keepalive) la nota abierta, al cerrar u ocultar la pestaña
   selectedPages: new Map(), // id de página (nodo del árbol) -> node; selección múltiple en la barra lateral
   lastClickedRowId: null, // para el rango de Mayús+clic
   history: [], // [{kind, id}, ...] -- pila de navegación para los botones atrás/adelante
@@ -135,6 +136,9 @@ function clearMain() {
     state.flushPendingSave();
     state.flushPendingSave = null;
   }
+  // El guardado de emergencia es de la nota que se está dejando atrás: en
+  // cuanto se navega, ya no queda nada suyo que pueda estar pendiente.
+  state.flushSaveBeacon = null;
   if (state.editor) {
     state.editor.destroy();
     state.editor = null;
@@ -636,6 +640,9 @@ async function selectNote(id) {
 }
 
 const AUTOSAVE_DELAY_MS = 2000;
+// Presupuesto de la cola `keepalive` de los navegadores (~64 KB entre todas
+// las peticiones en vuelo): se deja margen para no rozar el límite.
+const KEEPALIVE_MAX_BYTES = 60000;
 
 /** Frontmatter YAML + cuerpo, en un único .md descargable -- al ser todo
  * Markdown de por sí (incluidos los metadatos, como frontmatter), exportar
@@ -903,8 +910,27 @@ function renderNote(page, backlinks) {
   let saveTimer = null;
   let saving = false;
   let saveAgain = false;
+  let dirty = false; // hay cambios que el servidor todavía no ha confirmado
+  let changeSeq = 0; // sube con cada cambio: distingue "guardado" de "cambiado mientras guardaba"
+  let lastSentBody = null; // último cuerpo enviado (normal o de emergencia)
+
+  /** Cuerpo del PATCH, compartido por el guardado normal y el de emergencia:
+   * uno solo, para que no puedan acabar mandando cosas distintas. */
+  function buildSaveBody() {
+    // El icono es "obligatorio": si lo han vaciado, se restaura un valor por
+    // defecto en vez de guardar un icono vacío.
+    if (!page.icon) page.icon = "📄";
+    return JSON.stringify({
+      title: titleInput.value,
+      icon: page.icon,
+      description: descInput.value,
+      body_markdown: state.editor.getValue(),
+    });
+  }
 
   function scheduleSave() {
+    dirty = true;
+    changeSeq += 1;
     setSaveState("dirty");
     clearTimeout(saveTimer);
     saveTimer = setTimeout(doSave, AUTOSAVE_DELAY_MS);
@@ -913,6 +939,51 @@ function renderNote(page, backlinks) {
       doSave();
     };
   }
+
+  /** Guardado de emergencia al cerrar o esconder la pestaña: un `fetch`
+   * normal lo cancela el navegador a medio camino al descargar la página, así
+   * que este va con `keepalive` (la petición sigue viva aunque la pestaña no).
+   * Silencioso a propósito: no queda interfaz -- ni tiempo -- donde avisar de
+   * un fallo, y el autoguardado normal ya avisa mientras la página vive. */
+  function flushSaveBeacon() {
+    if (!dirty) return false; // nada pendiente: ni una petición
+
+    // Se construye antes de tocar el estado: si esto lanzara, los cambios
+    // siguen marcados como pendientes.
+    const body = buildSaveBody();
+
+    if (body === lastSentBody) {
+      // Mismo contenido que el último envío (visibilitychange y acto seguido
+      // beforeunload, por ejemplo): no se manda dos veces, y se descarta el
+      // guardado normal pendiente, que mandaría exactamente lo mismo.
+      dirty = false;
+      clearTimeout(saveTimer);
+      state.flushPendingSave = null;
+      return false;
+    }
+
+    dirty = false;
+    lastSentBody = body;
+    clearTimeout(saveTimer);
+    state.flushPendingSave = null;
+
+    // A partir de ~64 KB el navegador rechaza en el acto las peticiones con
+    // keepalive (límite de una cola compartida); una nota así se manda sin él
+    // -- puede que el navegador la corte al irse, pero es lo mejor que hay.
+    const keepalive = new TextEncoder().encode(body).length <= KEEPALIVE_MAX_BYTES;
+    try {
+      fetch(`/pages/${page.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive,
+      }).catch(() => {}); // la pestaña se está yendo: no hay a quién avisar
+    } catch {
+      // sin red o página ya descargándose
+    }
+    return true;
+  }
+  state.flushSaveBeacon = flushSaveBeacon;
 
   async function doSave() {
     clearTimeout(saveTimer);
@@ -923,22 +994,20 @@ function renderNote(page, backlinks) {
     saving = true;
     setSaveState("saving");
 
-    // El icono es "obligatorio": si lo han vaciado, se restaura un valor por
-    // defecto en vez de guardar un icono vacío.
-    if (!page.icon) page.icon = "📄";
+    const seqAtSave = changeSeq;
+    const body = buildSaveBody();
 
     try {
-      const updated = await api(`/pages/${page.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          title: titleInput.value,
-          icon: page.icon,
-          description: descInput.value,
-          body_markdown: state.editor.getValue(),
-        }),
-      });
+      const updated = await api(`/pages/${page.id}`, { method: "PATCH", body });
       page.updated_at = updated.updated_at;
       page.title = updated.title;
+      // Solo queda "nada pendiente" si no se ha escrito nada mientras se
+      // guardaba: si se escribió, `dirty` sigue puesto y el guardado de
+      // emergencia mandará el contenido nuevo en vez de darlo por guardado.
+      if (changeSeq === seqAtSave) {
+        dirty = false;
+        lastSentBody = body; // si hubiera que salir justo después, ya está guardado
+      }
       setSaveState("saved");
       state.flushPendingSave = null;
       await loadTree();
@@ -1900,7 +1969,20 @@ pollStatus();
 setInterval(pollStatus, 4000);
 
 // Red de seguridad: si cierras/recargas la pestaña con cambios pendientes
-// del autoguardado (< 2s desde la última pulsación), los manda ya.
-window.addEventListener("beforeunload", () => {
-  state.flushPendingSave?.();
+// del autoguardado (< 2s desde la última pulsación), los manda ya -- con
+// keepalive, porque un fetch normal se cancela al descargar la página.
+// `visibilitychange` cubre lo que `beforeunload` no ve: cambiar de app en el
+// móvil, minimizar, bloquear la pantalla. Con los dos disparados no se guarda
+// dos veces: flushSaveBeacon sale sin hacer nada si no hay cambios pendientes
+// o si el contenido es el mismo que el último envío.
+function flushOnExit() {
+  try {
+    state.flushSaveBeacon?.();
+  } catch {
+    // la pestaña se está yendo: ni aviso ni reintento posibles
+  }
+}
+window.addEventListener("beforeunload", flushOnExit);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushOnExit();
 });
