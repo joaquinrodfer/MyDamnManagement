@@ -7,7 +7,9 @@ Es el primer paso de P6 (tests que corren en un contenedor sin servicios).
 """
 
 import re
+import sqlite3
 import time
+import unicodedata
 from datetime import date, timedelta
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
@@ -379,6 +381,60 @@ def test_wikilink_con_titulo_duplicado_llega_a_todas(client):
     assert client.get("/status").json()["services"]["db"]["counts"]["links"] == 2
     # Y la nota no se enlaza a sí misma.
     assert client.get(f"/pages/{nota['id']}/backlinks").json() == []
+
+
+def test_wikilink_repetido_en_dos_formas_no_duplica_el_backlink(client, index_path):
+    """El mismo enlace, escrito de dos formas en un cuerpo, es un solo vínculo.
+
+    Antes de P1.1 la resolución era un `IN` sobre `pages` y devolvía cada página
+    destino una vez, así que dos formas del mismo enlace daban una fila. Al
+    resolver los títulos en Python (`app/links.py`, `fold_title` con NFKC +
+    casefold) cada forma insertaba la suya y el panel enseñaba la nota
+    repetida. Tampoco puede quedar dos veces la misma cadena en NFC y en NFD.
+    """
+
+    def filas(to_id: str) -> list[str]:
+        con = sqlite3.connect(index_path)
+        try:
+            return [
+                r[0]
+                for r in con.execute(
+                    "SELECT target_title FROM links WHERE to_id = ? ORDER BY target_title",
+                    (to_id,),
+                )
+            ]
+        finally:
+            con.close()
+
+    destino = crear(client, title="Reunión de equipo")
+    nota = crear(
+        client,
+        title="Nota A",
+        body_markdown="Ver [[REUNIÓN DE EQUIPO]] y [[Reunión de equipo]]",
+    )
+    assert [p["title"] for p in client.get(f"/pages/{destino['id']}/backlinks").json()] == [
+        "Nota A"
+    ]
+    assert len(filas(destino["id"])) == 1
+
+    # La misma cadena en NFC y en NFD pliega al mismo título: una sola fila.
+    nfd = unicodedata.normalize("NFD", "Señal de prueba")
+    assert nfd != "Señal de prueba"
+    destino_nfd = crear(client, title="Señal de prueba")
+    crear(client, title="Nota B", body_markdown=f"[[Señal de prueba]] y [[{nfd}]]")
+    assert [
+        p["title"] for p in client.get(f"/pages/{destino_nfd['id']}/backlinks").json()
+    ] == ["Nota B"]
+    assert len(filas(destino_nfd["id"])) == 1
+
+    # Una fila por destino también en /status, que es lo que ve el panel.
+    assert client.get("/status").json()["services"]["db"]["counts"]["links"] == 2
+
+    # La forma elegida es estable: guardar otra vez el mismo cuerpo no la
+    # cambia (si no, dos reindexados del mismo vault darían índices distintos).
+    antes = filas(destino["id"])
+    client.patch(f"/pages/{nota['id']}", json={"body_markdown": nota["body_markdown"]})
+    assert filas(destino["id"]) == antes
 
 
 def test_patch_sin_cambios_no_mueve_updated_at(client):

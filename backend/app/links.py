@@ -42,6 +42,13 @@ def sync_wikilinks(
 ) -> None:
     """Recalcula los wikilinks salientes de una página a partir de su cuerpo.
 
+    Una fila por página destino, no por forma del enlace: si el cuerpo nombra
+    el mismo destino dos veces (`[[REUNIÓN DE EQUIPO]]` y `[[Reunión de
+    equipo]]`, o la misma cadena en NFC y en NFD) hay un solo vínculo, como
+    cuando la resolución era un `IN` sobre `pages` (que devuelve cada página
+    una vez). De las formas se queda la primera del cuerpo, para que dos
+    guardados del mismo texto den la misma fila.
+
     Limitación conocida, igual que antes de P1.1: renombrar una página no
     repara los enlaces ya guardados en otras; se corrigen cuando esa página se
     vuelve a guardar (o, desde P1.2, al reindexar el vault entero).
@@ -61,19 +68,26 @@ def sync_wikilinks(
         (workspace_id, page_id),
     ):
         targets.setdefault(fold_title(row["title"]), []).append(row["id"])
+    # Destino -> forma del título que se guarda. El `dict` conserva el orden
+    # del cuerpo y `setdefault` deja la primera forma encontrada: dos guardados
+    # del mismo cuerpo escriben la misma fila (y el `UNIQUE` no sirve para
+    # deduplicar aquí, porque `target_title` es distinto en cada forma).
+    chosen: dict[str, str] = {}
     for title in titles:
         for target_id in targets.get(fold_title(title), ()):
-            conn.execute(
-                "INSERT INTO links (id, from_id, to_id, kind, target_title)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (
-                    link_id(page_id, target_id, LinkKind.wikilink.value, title),
-                    page_id,
-                    target_id,
-                    LinkKind.wikilink.value,
-                    title,
-                ),
-            )
+            chosen.setdefault(target_id, title)
+    for target_id, title in chosen.items():
+        conn.execute(
+            "INSERT INTO links (id, from_id, to_id, kind, target_title)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                link_id(page_id, target_id, LinkKind.wikilink.value, title),
+                page_id,
+                target_id,
+                LinkKind.wikilink.value,
+                title,
+            ),
+        )
 
 
 def link_id(from_id: str, to_id: str, kind: str, target_title: str) -> str:
