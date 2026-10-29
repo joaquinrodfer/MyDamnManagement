@@ -46,10 +46,6 @@ def _uuid(value: Optional[str]) -> Optional[uuid.UUID]:
     return uuid.UUID(value) if value else None
 
 
-def _dump(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-
 def _load(value: Optional[str], default: Any) -> Any:
     return json.loads(value) if value else default
 
