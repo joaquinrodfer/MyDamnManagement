@@ -1,0 +1,5 @@
+# Solo para la migración de una vez Postgres -> SQLite
+# (backend/scripts/migrate_postgres_to_sqlite.py). La app no lo usa: Postgres
+# ya no forma parte del despliegue. Fuera de la imagen a propósito, para no
+# arrastrar libpq en un contenedor que solo habla SQLite.
+psycopg2-binary==2.9.9
