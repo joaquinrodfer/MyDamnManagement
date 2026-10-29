@@ -145,7 +145,7 @@ def test_no_se_puede_colgar_una_nota_de_una_base_de_datos(client):
         "/pages", json={"title": "Hija", "parent_id": base["page_id"]}
     )
     assert respuesta.status_code == 400
-    assert "P2" in respuesta.json()["detail"]
+    assert "solo puede colgar de otra nota" in respuesta.json()["detail"]
 
     # Y un padre que no existe tampoco es un 500.
     respuesta = client.post(
@@ -185,7 +185,7 @@ def test_dos_notas_con_el_mismo_titulo_en_la_misma_carpeta_no_se_pisan(client, v
 def test_borrar_manda_a_la_papelera_y_se_puede_restaurar(client, vault_path):
     from app.config import settings
     from app.index import open_index
-    from app.vault.store import VaultNotes
+    from app.vault.store import VaultStore
 
     padre = crear(client, title="Proyectos")
     hija = crear(client, title="Bugs", parent_id=padre["id"])
@@ -204,7 +204,7 @@ def test_borrar_manda_a_la_papelera_y_se_puede_restaurar(client, vault_path):
 
     conn = open_index(settings.index_path)
     try:
-        vault = VaultNotes(settings.vault_path, conn)
+        vault = VaultStore(settings.vault_path, conn)
         en_papelera = vault.list_trash()
         assert [e.path for e in en_papelera] == [
             f".trash/{papeleras[0].name}/Notas/Proyectos.md",
@@ -393,14 +393,19 @@ def test_la_cabecera_de_la_nota_sobrevive_al_reindexado(client, vault_path):
 
 
 # --------------------------------------------------------------------------
-# 5. nada escribe solo en el índice
+# 5. nada escribe solo en el índice (P2: también bases y filas)
 # --------------------------------------------------------------------------
 
 
-def test_las_bases_siguen_en_el_indice_y_el_reindexado_no_las_borra(
+def test_una_base_y_sus_filas_viven_en_ficheros_y_el_reindexado_las_rehace(
     client, index_path, vault_path
 ):
-    """P1.2a solo mueve notas a ficheros; las bases son P2 y no se tocan."""
+    """P2: la base es `Bases/<slug>.md` y cada fila un `.md` en su carpeta.
+
+    Eran lo último que solo vivía en el índice; ahora borrar el índice y
+    reconstruirlo deja el mismo contenido (P2 lo comprueba a fondo en
+    `test_p2_bases.py`).
+    """
     base = client.post(
         "/databases",
         json={"title": "Contactos", "schema_def": [{"key": "empresa", "name": "Empresa", "type": "text"}]},
@@ -410,14 +415,15 @@ def test_las_bases_siguen_en_el_indice_y_el_reindexado_no_las_borra(
     ).json()
     crear(client, title="Nota normal")
 
+    assert (vault_path / "Bases" / "Contactos.md").exists()
+    assert (vault_path / "Bases" / "Contactos" / "Acme.md").exists()
     assert client.post("/reindex").json()["notes"] == 1
 
     assert client.get(f"/databases/{base['id']}").json()["title"] == "Contactos"
     filas = client.get(f"/databases/{base['id']}/rows").json()
     assert [f["properties"] for f in filas] == [{"empresa": "Acme"}]
-    # La nota sí está en disco; la base sigue solo en el índice y el reindexado
-    # no se la ha llevado por delante.
-    assert (vault_path / "Notas" / "Nota normal.md").exists()
+    assert client.get(f"/databases/{base['id']}/rows/{fila['id']}").status_code == 200
+
     cuentas = indice.dump_hash(str(index_path))[1]
     assert cuentas["databases"] == 1
     assert cuentas["rows"] == 1

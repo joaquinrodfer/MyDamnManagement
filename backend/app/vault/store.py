@@ -1,8 +1,8 @@
-"""Puente entre el vault (ficheros `.md`) y el índice SQLite, para notas.
+"""Puente entre el vault (ficheros `.md`) y el índice SQLite.
 
 Contrato que implementa (ADR-0001 y ROADMAP §2):
 
-- Guardar una nota = escribir el `.md` y, en la misma operación, actualizar el
+- Guardar una página = escribir el `.md` y, en la misma operación, actualizar el
   índice con lo que dice el fichero. **El fichero manda**: si el proceso muere
   entre las dos cosas, el índice se corrige en el siguiente arranque o con
   `POST /reindex`.
@@ -12,9 +12,16 @@ Contrato que implementa (ADR-0001 y ROADMAP §2):
 - Borrar = mover a `.trash/<fecha UTC>/<ruta original>`, con la carpeta de
   subpáginas incluida (si no, quedarían ficheros huérfanos que el reindexado
   leería como notas sueltas, justo lo que la cascada del índice ya no haría).
-- Reindexar = leer el vault y reescribir las filas de tipo `note` del índice en
-  una sola transacción. El resto de filas (`database`, `database_row`) no se
-  tocan: en P1.2a las bases y sus filas todavía viven solo en el índice.
+- Reindexar = leer el vault y reescribir el índice entero en una sola
+  transacción: notas, bases de datos, sus filas y sus vistas.
+
+Desde P2 las **bases de datos** también son ficheros: `Bases/<slug>.md` con
+`type: database` y el `schema` y las `views` en el frontmatter, y sus filas en
+`Bases/<slug>/<fila>.md`, con las propiedades en el frontmatter y sin `title`
+(el título de una fila es el nombre del fichero). Una base que cuelga de una
+nota vive en la carpeta de hijas de esa nota, porque la jerarquía son carpetas
+(D4) y así el reindexado puede volver a deducir su `parent_id`. El `id` de la
+base es el suyo y el de su página a la vez: un fichero, una identidad.
 
 Un fichero sin `id` en el frontmatter (creado a mano) recibe un UUID derivado
 de su ruta, determinista entre reindexados; al guardarlo desde la app se
@@ -22,14 +29,16 @@ materializa ese mismo `id` en el frontmatter, así que a partir de ahí sobreviv
 a renombrados y movimientos.
 
 Claves de frontmatter que gestiona la app además de las del ADR (`id`, `icon`,
-`description`, `created`, `updated`): `created_by` y `header_image`. Sin ellas,
-un reindexado perdería el autor y la cabecera, que hoy la API devuelve; el ADR
-permite claves extra y se preservan al reescribir.
+`description`, `created`, `updated`): `created_by` y `header_image`, y en las
+filas `created`/`updated`. Sin ellas, un reindexado perdería el autor, la
+cabecera y las fechas, que hoy la API devuelve; el ADR permite claves extra y
+se preservan al reescribir.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import sqlite3
@@ -47,6 +56,11 @@ log = logging.getLogger("mdm.vault")
 
 # Carpeta de las páginas dentro del vault (ADR: `Notas/...`).
 NOTES_DIR = "Notas"
+
+# Carpeta de las bases de datos que no cuelgan de una nota (ADR:
+# `Bases/Contactos.md`). Las filas viven en la carpeta hermana del fichero de su
+# base, así que se mueven con ella.
+DATABASES_DIR = "Bases"
 
 # Namespace de los ids derivados de la ruta: ficheros sin `id` en el
 # frontmatter. Fijo para que dos reindexados den el mismo id.
@@ -130,6 +144,19 @@ def _as_uuid(value: Any) -> Optional[str]:
         return str(uuid.UUID(str(value).strip()))
     except (ValueError, AttributeError):
         return None
+
+
+def _dump(value: Any) -> str:
+    """JSON canónico de una columna `*_json` del índice.
+
+    `sort_keys` para que la misma estructura dé la misma cadena venga del
+    orden que venga: la huella del índice compara filas, no diccionarios.
+    """
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _load(value: Optional[str], default: Any) -> Any:
+    return json.loads(value) if value else default
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:
@@ -266,10 +293,18 @@ def write_note_file(
 
 
 @dataclass
-class _NoteRecord:
+class _PageRecord:
+    """Una página de cualquier tipo, con lo que guarda el índice de ella.
+
+    Es la misma forma para notas, bases y filas: el esquema de `pages` no
+    distingue tipos, y lo que cambia (schema/views de una base, propiedades y
+    `database_id` de una fila) va en sus tablas (`databases`, `views`, `rows`).
+    """
+
     id: str
     workspace_id: str
     parent_id: Optional[str]
+    type: str
     title: str
     icon: Optional[str]
     description: Optional[str]
@@ -285,22 +320,22 @@ class _NoteRecord:
 
     def values(self) -> tuple:
         return (
-            self.id, self.workspace_id, self.parent_id, "note", self.title,
+            self.id, self.workspace_id, self.parent_id, self.type, self.title,
             self.icon, self.description, self.created_by, self.header_image,
             self.body, self.path, self.mtime, self.size, self.content_hash,
             self.created_at, self.updated_at,
         )
 
 
-NOTE_COLUMNS = (
+PAGE_COLUMNS = (
     "id, workspace_id, parent_id, type, title, icon, description, created_by,"
     " header_image_path, body, path, mtime, size, content_hash, created_at,"
     " updated_at"
 )
 
-INSERT_NOTE = f"INSERT INTO pages ({NOTE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+INSERT_PAGE = f"INSERT INTO pages ({PAGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
-UPSERT_NOTE = INSERT_NOTE + """
+UPSERT_PAGE = INSERT_PAGE + """
 ON CONFLICT(id) DO UPDATE SET
     workspace_id = excluded.workspace_id,
     parent_id = excluded.parent_id,
@@ -331,6 +366,9 @@ def _has_markdown(root: str) -> bool:
 @dataclass
 class RebuildStats:
     notes: int = 0
+    databases: int = 0
+    rows: int = 0
+    views: int = 0
     skipped: int = 0
     links: int = 0
     seconds: float = 0.0
@@ -340,6 +378,9 @@ class RebuildStats:
     def as_dict(self) -> dict[str, Any]:
         return {
             "notes": self.notes,
+            "databases": self.databases,
+            "rows": self.rows,
+            "views": self.views,
             "skipped_files": self.skipped,
             "links": self.links,
             "seconds": round(self.seconds, 3),
@@ -383,8 +424,8 @@ class TrashEntry:
 # --------------------------------------------------------------------------
 
 
-class VaultNotes:
-    """Operaciones de notas sobre el vault, con el índice al día."""
+class VaultStore:
+    """Operaciones del vault (notas, bases y filas), con el índice al día."""
 
     def __init__(self, root: str, conn: sqlite3.Connection):
         self.root = os.path.abspath(root)
@@ -404,8 +445,8 @@ class VaultNotes:
             self.conn.commit()
 
     def ensure_structure(self) -> None:
-        """Crea `Notas/`, `_attachments/` y `.trash/` si faltan."""
-        for rel in (NOTES_DIR, "_attachments", ".trash"):
+        """Crea `Notas/`, `Bases/`, `_attachments/` y `.trash/` si faltan."""
+        for rel in (NOTES_DIR, DATABASES_DIR, "_attachments", ".trash"):
             os.makedirs(os.path.join(self.root, rel), exist_ok=True)
 
     def _workspace(self) -> str:
@@ -430,8 +471,8 @@ class VaultNotes:
             raise VaultError(f"la página {page_id} no existe")
         if row["type"] != "note":
             raise VaultError(
-                f"la página {page_id} es de tipo {row['type']}: en P1.2a solo las "
-                "notas viven en ficheros (las bases y sus filas son P2)"
+                f"la página {page_id} es de tipo {row['type']}: aquí solo se "
+                "guardan notas (las bases y sus filas tienen su propio camino)"
             )
         if not row["path"]:
             raise VaultError(f"la nota {page_id} no tiene ruta en el índice")
@@ -441,9 +482,10 @@ class VaultNotes:
         """Carpeta donde vive una nota cuyo padre es `parent_id`.
 
         La jerarquía son carpetas (D4): `Notas/Proyectos.md` tiene sus hijas en
-        `Notas/Proyectos/`. Un padre que no es nota no tiene carpeta propia en
-        P1.2a: devolver una ruta inventada dejaría una nota que el reindexado
-        no podría volver a colgar de su padre.
+        `Notas/Proyectos/`. Un padre que no es nota no tiene carpeta propia:
+        una nota no cuelga de una base de datos (sus filas no son páginas del
+        árbol), y devolver una ruta inventada dejaría una nota que el
+        reindexado no podría volver a colgar de su padre.
         """
         if parent_id is None or parent_id == "":
             return NOTES_DIR
@@ -454,8 +496,8 @@ class VaultNotes:
             raise VaultError(f"la página padre {parent_id} no existe")
         if row["type"] != "note" or not row["path"]:
             raise VaultError(
-                "en P1.2a una nota solo puede colgar de otra nota: las bases de "
-                "datos y sus filas todavía viven solo en el índice (P2)"
+                "una nota solo puede colgar de otra nota: una base de datos y "
+                "sus filas no son carpetas de notas"
             )
         return row["path"][:-3]
 
@@ -480,15 +522,16 @@ class VaultNotes:
 
     def _record_from_page(
         self, page: reader.Page, workspace_id: str, parent_id: Optional[str],
-        page_id: Optional[str] = None,
-    ) -> _NoteRecord:
+        page_id: Optional[str] = None, page_type: Optional[str] = None,
+    ) -> _PageRecord:
         body = canonical_body(page.body)
         created = _parse_iso(page.frontmatter.get("created")) or _from_mtime(page.mtime)
         updated = _parse_iso(page.frontmatter.get("updated")) or created
-        return _NoteRecord(
+        return _PageRecord(
             id=page_id or _as_uuid(page.id) or derived_id(page.path),
             workspace_id=workspace_id,
             parent_id=parent_id,
+            type=page_type or page.type,
             title=page.title,
             icon=page.icon,
             description=page.description,
@@ -503,9 +546,9 @@ class VaultNotes:
             updated_at=_iso(updated),
         )
 
-    def _upsert(self, record: _NoteRecord) -> None:
+    def _upsert(self, record: _PageRecord) -> None:
         try:
-            self.conn.execute(UPSERT_NOTE, record.values())
+            self.conn.execute(UPSERT_PAGE, record.values())
         except sqlite3.IntegrityError:
             # Fila huérfana con la misma ruta (fichero borrado por fuera y aún
             # sin reindexar): la del fichero manda, se aparta la otra.
@@ -513,15 +556,77 @@ class VaultNotes:
                 "DELETE FROM pages WHERE path = ? AND id <> ?",
                 (record.path, record.id),
             )
-            self.conn.execute(UPSERT_NOTE, record.values())
+            self.conn.execute(UPSERT_PAGE, record.values())
 
-    def _index_file(self, rel: str, parent_id: Optional[str]) -> str:
+    def _index_database(self, page: reader.Page, record: _PageRecord) -> None:
+        """Las tablas `databases` y `views` dicen lo que dice el fichero."""
+        schema = reader.database_schema(page, page.path, [])
+        views = reader.views_from_frontmatter(
+            page.frontmatter.get("views"), record.id, page.path, []
+        )
+        self.conn.execute(
+            "INSERT INTO databases (id, page_id, schema_json) VALUES (?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET schema_json = excluded.schema_json",
+            (record.id, record.id, _dump(schema)),
+        )
+        self.conn.execute("DELETE FROM views WHERE database_id = ?", (record.id,))
+        for view in views:
+            self.conn.execute(
+                "INSERT INTO views (id, database_id, name, type, config_json)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (view["id"], record.id, view["name"], view["type"], _dump(view["config"])),
+            )
+
+    def _index_row(self, page: reader.Page, record: _PageRecord, database_id: str) -> None:
+        """La tabla `rows`: la base, las propiedades coaccionadas y la ruta."""
+        db = self.conn.execute(
+            "SELECT schema_json FROM databases WHERE id = ?", (database_id,)
+        ).fetchone()
+        schema = _load(db["schema_json"], []) if db is not None else []
+        properties = reader.row_properties(schema, page.frontmatter)
+        self.conn.execute(
+            "INSERT INTO rows (id, database_id, properties_json, path) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET database_id = excluded.database_id,"
+            " properties_json = excluded.properties_json, path = excluded.path",
+            (record.id, database_id, _dump(properties), page.path),
+        )
+
+    def _database_of_row(self, rel: str) -> Optional[str]:
+        """Id de la base a la que pertenece la fila en `rel`, si es una fila.
+
+        Una fila no lleva `type` en el frontmatter (el título es el nombre del
+        fichero y el tipo lo dice su sitio): es el `.md` que está dentro de la
+        carpeta hermana de una base. Es la misma regla que aplica
+        `reader.load`, aquí contra el índice, para indexar un fichero suelto sin
+        releer el vault entero.
+        """
+        folder = os.path.dirname(rel)
+        if not folder:
+            return None
+        row = self.conn.execute(
+            "SELECT id FROM pages WHERE path = ? AND type = 'database'",
+            (f"{folder}.md",),
+        ).fetchone()
+        return row["id"] if row is not None else None
+
+    def _index_file(
+        self, rel: str, parent_id: Optional[str], *, database_id: Optional[str] = None
+    ) -> str:
         """Lee el fichero recién escrito y deja el índice diciendo lo mismo."""
         abs_path = os.path.join(self.root, vaultfs.safe_rel(self.root, rel))
         page = reader.read_file(abs_path, rel)
+        if database_id is None:
+            database_id = self._database_of_row(rel)
         workspace_id = self._workspace()
-        record = self._record_from_page(page, workspace_id, parent_id)
+        record = self._record_from_page(
+            page, workspace_id, parent_id,
+            page_type="database_row" if database_id else None,
+        )
         self._upsert(record)
+        if page.type == "database":
+            self._index_database(page, record)
+        elif database_id:
+            self._index_row(page, record, database_id)
         sync_wikilinks(self.conn, record.id, workspace_id, record.body)
         return record.id
 
@@ -792,20 +897,362 @@ class VaultNotes:
         dst = vaultfs.restore(self.root, trash_rel)
         return os.path.relpath(dst, self.root).replace(os.sep, "/")
 
+    # ------------------------------------------------------- bases de datos
+
+    def _database_row(self, page_id: Any) -> sqlite3.Row:
+        """Fila `pages` de una base de datos (su `path` es el del fichero).
+
+        Desde P2 el `id` de la base y el de su página son el mismo: un fichero,
+        una identidad. Así el frontmatter de `Bases/<slug>.md` lleva un solo
+        `id` y el reindexado puede reconstruir `databases.id` y
+        `databases.page_id` sin un segundo identificador escondido.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM pages WHERE id = ?", (str(page_id),)
+        ).fetchone()
+        if row is None:
+            raise VaultError(f"la base de datos {page_id} no existe")
+        if row["type"] != "database":
+            raise VaultError(
+                f"la página {page_id} es de tipo {row['type']}, no una base de datos"
+            )
+        if not row["path"]:
+            raise VaultError(f"la base {page_id} no tiene ruta en el índice")
+        return row
+
+    def _database_folder(self, parent_id: Any) -> str:
+        """Carpeta donde vive una base cuyo padre es `parent_id`.
+
+        En la raíz, `Bases/` (ADR: `Bases/Contactos.md`). Colgando de una nota,
+        la carpeta de hijas de esa nota: la jerarquía son carpetas (D4) y así el
+        reindexado vuelve a deducir el `parent_id` de la ruta. Una base no
+        cuelga de otra base: sus filas no son páginas del árbol.
+        """
+        if parent_id is None or parent_id == "":
+            return DATABASES_DIR
+        row = self.conn.execute(
+            "SELECT type, path FROM pages WHERE id = ?", (str(parent_id),)
+        ).fetchone()
+        if row is None:
+            raise VaultError(f"la página padre {parent_id} no existe")
+        if row["type"] != "note" or not row["path"]:
+            raise VaultError(
+                "una base de datos solo puede colgar de una nota: una base "
+                "dentro de otra no existe (v1.1)"
+            )
+        return row["path"][:-3]
+
+    def _abs(self, rel: str) -> str:
+        return os.path.join(self.root, vaultfs.safe_rel(self.root, rel))
+
+    def create_database(
+        self,
+        *,
+        title: str,
+        schema: list[dict],
+        views: Optional[list[dict]] = None,
+        parent_id: Optional[Any] = None,
+        icon: Optional[str] = None,
+        description: Optional[str] = None,
+        created_by: Optional[str] = None,
+    ) -> str:
+        """Escribe `Bases/<slug>.md` (y su carpeta de filas) e indexa. Devuelve su id."""
+        self.ensure_structure()
+        folder = self._database_folder(parent_id)
+        page_id = str(uuid.uuid4())
+        entries = [
+            writer.view_entry({**view, "id": view.get("id") or str(uuid.uuid4())})
+            for view in views or []
+        ]
+        page, notes = writer.create_database(
+            self.root, folder, title, schema, entries,
+            icon=icon, db_id=page_id, description=description, created_by=created_by,
+        )
+        with self._tx():
+            self._index_file(page.path, self._parent_str(parent_id))
+        if notes:
+            log.info("base %s: %s", page.path, "; ".join(notes))
+        return page_id
+
+    def save_database(
+        self,
+        page_id: Any,
+        *,
+        title: Any = UNSET,
+        icon: Any = UNSET,
+        description: Any = UNSET,
+        schema: Any = UNSET,
+        views: Any = UNSET,
+        body: Any = UNSET,
+        header_image: Any = UNSET,
+        parent_id: Any = UNSET,
+    ) -> None:
+        """Reescribe la base (y la renombra con sus filas si toca) y la indexa.
+
+        Renombrar la base renombra su carpeta de filas: si no, las filas
+        quedarían en la carpeta vieja y el reindexado ya no las vería como filas
+        de esta base (`Bases/<slug>/` es lo que las define).
+        """
+        row = self._database_row(page_id)
+        old_rel = row["path"]
+        abs_old = self._abs(old_rel)
+        if not os.path.exists(abs_old):
+            raise VaultError(
+                f"el fichero de la base {page_id} no está en el vault ({old_rel}): "
+                "lanza POST /reindex para reconciliar el índice con el disco"
+            )
+        text, _warnings = _read_text(abs_old)
+
+        # Mover de carpeta = mover el fichero y su carpeta de filas (D4).
+        target_folder = os.path.dirname(old_rel)
+        new_parent = row["parent_id"]
+        if parent_id is not UNSET:
+            new_parent = self._parent_str(parent_id)
+            if (new_parent or None) != (row["parent_id"] or None):
+                target_folder = self._database_folder(new_parent)
+
+        current_stem = os.path.basename(old_rel)[:-3]
+        if title is not UNSET and title is not None:
+            desired_stem = names.sanitize(title)[0]
+        else:
+            desired_stem = current_stem
+        if (
+            target_folder == os.path.dirname(old_rel)
+            and names.nfc(desired_stem).casefold() == names.nfc(current_stem).casefold()
+        ):
+            final_stem = desired_stem
+        else:
+            directory = self._abs(target_folder) if target_folder else self.root
+            final_stem, _collided = names.unique_stem(directory, desired_stem)
+        new_rel = f"{target_folder}/{final_stem}.md" if target_folder else f"{final_stem}.md"
+
+        old_children, new_children = old_rel[:-3], new_rel[:-3]
+        folder_moved = new_children != old_children and os.path.isdir(
+            self._abs(old_children)
+        )
+        if folder_moved:
+            vaultfs.move(self._abs(old_children), self._abs(new_children))
+        if new_rel != old_rel:
+            vaultfs.move(abs_old, self._abs(new_rel))
+
+        updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
+        try:
+            raw, _body = fm.split_document(text)
+            data = fm.parse(raw).data if raw is not None else {}
+        except fm.FrontmatterError:
+            data = {}
+        if "created" not in data and row["created_at"]:
+            updates["created"] = row["created_at"]
+        if "created_by" not in data and row["created_by"]:
+            updates["created_by"] = row["created_by"]
+        if icon is not UNSET and icon is not None:
+            updates["icon"] = icon
+        if description is not UNSET and description is not None:
+            updates["description"] = description
+        if header_image is not UNSET:
+            updates["header_image"] = header_image  # None borra la clave
+        if schema is not UNSET and schema is not None:
+            updates["schema"] = writer.schema_entries(schema)
+        if views is not UNSET and views is not None:
+            updates["views"] = [
+                writer.view_entry({**view, "id": view.get("id") or str(uuid.uuid4())})
+                for view in views
+            ]
+
+        new_body = stored_body(body) if body is not UNSET and body is not None else None
+        new_text, _warnings = fm.rewrite(text, updates, new_body)
+        vaultfs.atomic_write(self._abs(new_rel), new_text)
+
+        with self._tx():
+            self._index_file(new_rel, new_parent)
+            if folder_moved:
+                self._repath_rows(old_children, new_children)
+
+    def delete_database(self, page_id: Any) -> bool:
+        """Mueve la base y todas sus filas a la papelera y limpia el índice."""
+        row = self.conn.execute(
+            "SELECT id, type, path FROM pages WHERE id = ?", (str(page_id),)
+        ).fetchone()
+        if row is None or row["type"] != "database":
+            return False
+        rel = row["path"]
+        if rel:
+            files = [rel]
+            folder = rel[:-3]
+            if os.path.isdir(self._abs(folder)):
+                for dirpath, _dirs, filenames in os.walk(self._abs(folder)):
+                    for name in sorted(filenames):
+                        if name.lower().endswith(".md"):
+                            full = os.path.join(dirpath, name)
+                            files.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
+            stamp = vaultfs.trash_dir_for(self.root)
+            for rel_file in files:
+                src = self._abs(rel_file)
+                if not os.path.exists(src):
+                    continue
+                vaultfs.move(src, os.path.join(stamp, rel_file))
+            _prune_empty_dirs(self._abs(folder))
+
+        with self._tx():
+            # Las filas son páginas, pero no cuelgan de `parent_id`: la cascada
+            # del esquema no se las lleva (la FK va de `rows.id` a `pages.id`).
+            self.conn.execute(
+                "DELETE FROM pages WHERE id IN ("
+                " SELECT r.id FROM rows r WHERE r.database_id = ?)",
+                (row["id"],),
+            )
+            cur = self.conn.execute("DELETE FROM pages WHERE id = ?", (row["id"],))
+        return cur.rowcount > 0
+
+    def _repath_rows(self, old_prefix: str, new_prefix: str) -> None:
+        """Actualiza la ruta de las filas al mover/renombrar su base."""
+        size = len(old_prefix)
+        self.conn.execute(
+            "UPDATE pages SET path = ? || substr(path, ?)"
+            " WHERE type = 'database_row' AND substr(path, 1, ?) = ?",
+            (new_prefix + "/", size + 1, size, old_prefix + "/"),
+        )
+        self.conn.execute(
+            "UPDATE rows SET path = ? || substr(path, ?) WHERE substr(path, 1, ?) = ?",
+            (new_prefix + "/", size + 1, size, old_prefix + "/"),
+        )
+
+    # --------------------------------------------------------------- filas
+
+    def _row_row(self, page_id: Any) -> sqlite3.Row:
+        row = self.conn.execute(
+            "SELECT p.*, r.database_id AS database_id FROM pages p"
+            " LEFT JOIN rows r ON r.id = p.id WHERE p.id = ?",
+            (str(page_id),),
+        ).fetchone()
+        if row is None:
+            raise VaultError(f"la fila {page_id} no existe")
+        if row["type"] != "database_row" or not row["path"]:
+            raise VaultError(f"la página {page_id} no es una fila de una base")
+        if not row["database_id"]:
+            raise VaultError(
+                f"la fila {page_id} no dice a qué base pertenece: lanza POST /reindex"
+            )
+        return row
+
+    def create_row(
+        self,
+        database_id: Any,
+        *,
+        title: str,
+        properties: Optional[dict] = None,
+        icon: Optional[str] = None,
+        body: str = "",
+    ) -> str:
+        """Escribe `Bases/<slug>/<fila>.md` e indexa. Devuelve el id de la fila."""
+        db = self._database_row(database_id)
+        row_id = str(uuid.uuid4())
+        page, notes = writer.create_row(
+            self.root, db["path"][:-3], title, properties or {},
+            body=body, row_id=row_id, icon=icon,
+        )
+        with self._tx():
+            self._index_file(page.path, None, database_id=str(db["id"]))
+        if notes:
+            log.info("fila %s: %s", page.path, "; ".join(notes))
+        return row_id
+
+    def save_row(
+        self,
+        page_id: Any,
+        *,
+        title: Any = UNSET,
+        icon: Any = UNSET,
+        description: Any = UNSET,
+        body: Any = UNSET,
+        properties: Any = UNSET,
+        header_image: Any = UNSET,
+    ) -> None:
+        """Reescribe la fila (renombrándola si toca) y actualiza el índice.
+
+        `properties` llega ya mezclada por el repositorio (PATCH parcial): un
+        `None` en un valor borra esa clave del frontmatter, como en las notas.
+        """
+        row = self._row_row(page_id)
+        old_rel = row["path"]
+        abs_old = self._abs(old_rel)
+        if not os.path.exists(abs_old):
+            raise VaultError(
+                f"el fichero de la fila {page_id} no está en el vault ({old_rel}): "
+                "lanza POST /reindex para reconciliar el índice con el disco"
+            )
+        text, _warnings = _read_text(abs_old)
+
+        folder = os.path.dirname(old_rel)
+        current_stem = os.path.basename(old_rel)[:-3]
+        if title is not UNSET and title is not None:
+            desired_stem = names.sanitize(title)[0]
+        else:
+            desired_stem = current_stem
+        if names.nfc(desired_stem).casefold() == names.nfc(current_stem).casefold():
+            final_stem = desired_stem
+        else:
+            final_stem, _collided = names.unique_stem(self._abs(folder), desired_stem)
+        new_rel = f"{folder}/{final_stem}.md"
+        if new_rel != old_rel:
+            vaultfs.move(abs_old, self._abs(new_rel))
+
+        updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
+        try:
+            raw, _body = fm.split_document(text)
+            data = fm.parse(raw).data if raw is not None else {}
+        except fm.FrontmatterError:
+            data = {}
+        if "created" not in data and row["created_at"]:
+            updates["created"] = row["created_at"]
+        if icon is not UNSET and icon is not None:
+            updates["icon"] = icon
+        if description is not UNSET and description is not None:
+            updates["description"] = description
+        if header_image is not UNSET:
+            updates["header_image"] = header_image  # None borra la clave
+        if properties is not UNSET and properties is not None:
+            # `title` no se escribe nunca: el título es el nombre del fichero.
+            updates.update(writer.sin_reservadas(properties, [], "al guardar la fila"))
+
+        new_body = stored_body(body) if body is not UNSET and body is not None else None
+        new_text, _warnings = fm.rewrite(text, updates, new_body)
+        vaultfs.atomic_write(self._abs(new_rel), new_text)
+
+        with self._tx():
+            self._index_file(new_rel, None, database_id=str(row["database_id"]))
+
+    def delete_row(self, page_id: Any) -> bool:
+        """Mueve la fila a la papelera y la quita del índice."""
+        row = self.conn.execute(
+            "SELECT id, type, path FROM pages WHERE id = ?", (str(page_id),)
+        ).fetchone()
+        if row is None or row["type"] != "database_row":
+            return False
+        if row["path"]:
+            src = self._abs(row["path"])
+            if os.path.exists(src):
+                vaultfs.move(src, os.path.join(
+                    vaultfs.trash_dir_for(self.root), row["path"]))
+        with self._tx():
+            cur = self.conn.execute("DELETE FROM pages WHERE id = ?", (row["id"],))
+        return cur.rowcount > 0
+
     # ------------------------------------------------------------ reindexar
 
     def _refuse_suspicious_vault(
         self, hint: str = EMPTY_VAULT_HINT_HTTP
     ) -> None:
-        """No perder notas del índice porque el vault no esté donde dice.
+        """No perder páginas del índice porque el vault no esté donde dice.
 
-        `hint` nombra la salida que tiene el llamador (HTTP o arranque): el
-        mensaje no debe recomendar un endpoint que no puede servir.
+        Desde P2 cuenta cualquier página indexada (notas, bases y filas), no
+        solo las notas: reindexar contra un vault vacío se llevaría también las
+        bases de datos. `hint` nombra la salida que tiene el llamador (HTTP o
+        arranque): el mensaje no debe recomendar un endpoint que no puede
+        servir.
         """
-        index_notes = self.conn.execute(
-            "SELECT count(*) FROM pages WHERE type = 'note'"
-        ).fetchone()[0]
-        if index_notes == 0:
+        indexed = self.conn.execute("SELECT count(*) FROM pages").fetchone()[0]
+        if indexed == 0:
             return
         motivo = None
         if not os.path.isdir(self.root):
@@ -815,25 +1262,27 @@ class VaultNotes:
         if motivo is None:
             return
         raise VaultError(
-            f"{motivo} y el índice tiene {index_notes} notas: un volumen sin "
+            f"{motivo} y el índice tiene {indexed} páginas: un volumen sin "
             "montar (o un VAULT_PATH equivocado) no se puede leer como un vault "
-            "vacío, y reindexar así borraría las notas del índice. "
+            "vacío, y reindexar así borraría el índice. "
             f"{hint}"
         )
 
     def rebuild(
         self, *, allow_empty: bool = False, empty_hint: str = EMPTY_VAULT_HINT_HTTP
     ) -> RebuildStats:
-        """Reconstruye del vault todas las filas de notas del índice.
+        """Reconstruye el índice entero desde el vault (ADR D1).
+
+        Notas, bases de datos, sus vistas y sus filas: todo lo que está en el
+        índice sale de un `.md`, así que se puede tirar el índice sin perder
+        nada. Las filas no cuelgan del árbol (`parent_id` NULL, como antes de
+        P2): su sitio es la tabla de su base, y la carpeta de la base ya las
+        identifica en el disco.
 
         Con `allow_empty=False` (lo normal) se niega a vaciar el índice cuando
         el vault no existe o no tiene ni un `.md`. La salida explícita depende
         del llamador y la nombra `empty_hint`: `POST /reindex?force=true` con el
         servicio vivo, `VAULT_ALLOW_EMPTY=1` en el arranque.
-
-        Con `allow_empty=True` las filas `note` se van (el vault manda), pero
-        las bases, filas y vistas del índice no se borran: quedan sin padre
-        hasta P2, que les dará fichero.
         """
         started = time.perf_counter()
         stats = RebuildStats()
@@ -842,22 +1291,14 @@ class VaultNotes:
         vault = reader.load(self.root)
         stats.warnings.extend(vault.warnings)
 
-        notes: list[reader.Page] = []
-        for page in vault.pages.values():
-            if page.type == "note":
-                notes.append(page)
-            else:
-                stats.skipped += 1
+        pages = list(vault.pages.values())
+        for page in pages:
+            if page.type not in ("note", "database", "database_row"):
                 stats.warnings.append(
-                    f"{page.path}: type '{page.type}' no se indexa todavía "
-                    "(bases y filas son P2)"
+                    f"{page.path}: type {page.type!r} desconocido; se indexa como nota"
                 )
-        # Padres antes que hijas: la FK `parent_id` es inmediata.
-        notes.sort(key=lambda p: (p.path.count("/"), p.path))
-
-        ids_by_path: dict[str, str] = {}
-        for page in notes:
-            ids_by_path[page.path] = _as_uuid(page.id) or derived_id(page.path)
+                page.type = "note"
+        ids_by_path = {p.path: (_as_uuid(p.id) or derived_id(p.path)) for p in pages}
 
         def parent_of(page: reader.Page) -> Optional[str]:
             folder = os.path.dirname(page.path)
@@ -865,67 +1306,78 @@ class VaultNotes:
                 return None
             return ids_by_path.get(f"{folder}.md")
 
-        for page in notes:
-            if _as_uuid(page.id) is None:
-                stats.warnings.append(
-                    f"{page.path}: sin 'id' utilizable en el frontmatter; id derivado "
-                    "de la ruta (se materializa al guardarla)"
-                )
+        # Padres antes que hijas: la FK `parent_id` es inmediata.
+        pages.sort(key=lambda p: (p.path.count("/"), p.path))
+        for page in pages:
             folder = os.path.dirname(page.path)
-            if folder and folder != NOTES_DIR and not folder.startswith(NOTES_DIR + "/"):
+            if folder and not (
+                folder == NOTES_DIR
+                or folder.startswith(NOTES_DIR + "/")
+                or folder == DATABASES_DIR
+                or folder.startswith(DATABASES_DIR + "/")
+            ):
                 stats.warnings.append(
-                    f"{page.path}: está fuera de {NOTES_DIR}/ (se indexa igual: el "
-                    "fichero manda)"
+                    f"{page.path}: está fuera de {NOTES_DIR}/ y {DATABASES_DIR}/ "
+                    "(se indexa igual: el fichero manda)"
                 )
-
         workspace_id = self._workspace()
         records = [
-            self._record_from_page(page, workspace_id, parent_of(page), ids_by_path[page.path])
-            for page in notes
+            self._record_from_page(
+                page, workspace_id,
+                None if page.type == "database_row" else parent_of(page),
+                ids_by_path[page.path],
+            )
+            for page in pages
         ]
+        by_path = {record.path: record for record in records}
 
         with self._tx():
-            # Las bases y sus filas no se reindexan (P2): se apartan de la
-            # cascada mientras se reconstruyen las notas y se vuelven a colgar
-            # de su padre si ese padre sigue existiendo.
-            orphan_parents = [
-                (r["id"], r["parent_id"])
-                for r in self.conn.execute(
-                    "SELECT id, parent_id FROM pages WHERE type <> 'note'"
-                )
-            ]
-            self.conn.execute("UPDATE pages SET parent_id = NULL WHERE type <> 'note'")
-            self.conn.execute("DELETE FROM pages WHERE type = 'note'")
-
-            self.conn.executemany(UPSERT_NOTE, [r.values() for r in records])
+            # Todas las páginas están en ficheros: se rehace el árbol entero y
+            # las cascadas del esquema se llevan bases, vistas, filas y enlaces.
+            self.conn.execute("DELETE FROM pages")
+            self.conn.executemany(UPSERT_PAGE, [r.values() for r in records])
             # FTS5 con `content='pages'`: se regenera desde la tabla de
             # contenido para que dos reindexados den el mismo índice.
             self.conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('rebuild')")
 
-            note_ids = {r.id for r in records}
-            for page_id, parent_id in orphan_parents:
-                if parent_id and parent_id in note_ids:
-                    self.conn.execute(
-                        "UPDATE pages SET parent_id = ? WHERE id = ?",
-                        (parent_id, page_id),
+            # Bases y filas. El `database_id` de una fila apunta al id que la
+            # base tiene en el ÍNDICE (puede ser uno derivado de la ruta si el
+            # fichero no traía `id`), no al que traía el lector en memoria.
+            db_ids = {
+                db.id: ids_by_path[db.path]
+                for db in vault.databases.values()
+                if db.path in ids_by_path
+            }
+            for db in vault.databases.values():
+                record = by_path.get(db.path)
+                if record is not None:
+                    self._index_database(db.page, record)
+            for row in vault.rows:
+                record = by_path.get(row.path)
+                database_id = db_ids.get(row.database_id or "")
+                if record is None or database_id is None:
+                    stats.warnings.append(
+                        f"{row.path}: fila sin base en el índice; se queda fuera "
+                        "de la tabla de su base"
                     )
+                    continue
+                self._index_row(row, record, database_id)
+            stats.databases = len(vault.databases)
+            stats.rows = sum(len(db.rows) for db in vault.databases.values())
+            stats.views = self.conn.execute("SELECT count(*) FROM views").fetchone()[0]
 
-            # Enlaces: se recalculan enteros desde los cuerpos (los de las
-            # notas vienen del fichero; los de una base, de su fila).
+            # Enlaces: se recalculan enteros desde los cuerpos (los de una fila
+            # también: el `.md` de una fila puede llevar `[[wikilinks]]`).
             self.conn.execute("DELETE FROM links")
             for record in records:
                 sync_wikilinks(self.conn, record.id, workspace_id, record.body)
-            for row in self.conn.execute(
-                "SELECT id, workspace_id, body FROM pages WHERE type <> 'note'"
-            ).fetchall():
-                sync_wikilinks(self.conn, row["id"], row["workspace_id"], row["body"])
 
             # Marca del último reindexado. `GET /status` compara el índice con
             # el disco y dice cuánto ha cambiado por fuera desde aquí.
             stats.reindexed_at = now_iso()
             index_mod.set_meta(self.conn, index_mod.META_LAST_REINDEX, stats.reindexed_at)
 
-        stats.notes = len(records)
+        stats.notes = sum(1 for record in records if record.type == "note")
         stats.links = self.conn.execute("SELECT count(*) FROM links").fetchone()[0]
         stats.seconds = time.perf_counter() - started
         return stats

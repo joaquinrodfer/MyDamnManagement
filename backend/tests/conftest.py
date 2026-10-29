@@ -32,7 +32,7 @@ os.environ["VAULT_PATH"] = str(_SESSION_TMP / "vault")
 def vault_path(tmp_path: Path, monkeypatch) -> Path:
     """Un vault vacío por test (autouse: nadie puede escribir en `/data`).
 
-    Es autouse a propósito: `Repository(conn)` construye su `VaultNotes` con
+    Es autouse a propósito: `Repository(conn)` construye su `VaultStore` con
     `settings.vault_path`, y hay tests que usan el repositorio sin pasar por el
     cliente HTTP.
     """

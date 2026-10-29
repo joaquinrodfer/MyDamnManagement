@@ -218,11 +218,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.reindex and not args.dry_run:
         from app.index import open_index
-        from app.vault.store import VaultNotes
+        from app.vault.store import VaultStore
 
         conn = open_index(str(index_path))
         try:
-            stats = VaultNotes(vault, conn).rebuild()
+            stats = VaultStore(vault, conn).rebuild()
         finally:
             conn.close()
         print(f"  reindexado  : {stats.notes} notas, {stats.links} enlaces, "

@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import os
 import unicodedata
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -188,6 +189,119 @@ def _coerce(prop: dict, raw):
     return raw
 
 
+def row_properties(schema: list[dict], frontmatter: dict) -> dict:
+    """Propiedades de una fila, coaccionadas contra el `schema` de su base.
+
+    Solo las claves que el fichero **trae**: una propiedad sin valor no se
+    escribe en el `.md` (ver `writer.row_markdown`) y por tanto tampoco aparece
+    aquí. Así el `properties_json` del índice es exactamente lo que dice el
+    fichero, y el índice escrito por la API y el reconstruido desde el disco
+    coinciden (`POST /reindex` no inventa claves a `null`).
+    """
+    properties: dict = {}
+    for prop in schema:
+        if not isinstance(prop, dict) or "key" not in prop:
+            continue
+        key = prop["key"]
+        if key in frontmatter:
+            properties[key] = _coerce(prop, frontmatter[key])
+    return properties
+
+
+# Namespace de los ids de vista derivados: una vista escrita a mano (el ejemplo
+# del ROADMAP usa `id: v1`) no es un UUID y la API la identifica por UUID. En
+# vez de tirarla, se le da uno determinista a partir de su base, su nombre y su
+# posición: dos reindexados dan el mismo, y al guardarla desde la app se
+# materializa el UUID en el fichero.
+_VIEW_ID_NAMESPACE = uuid.UUID("5f2a1c4b-6d1e-5b21-9d1a-0c7e3f5a8b42")
+
+
+def view_id(raw_id, database_page_id: str, index: int, name: str) -> tuple[str, bool]:
+    """(id de la vista, si hubo que derivarlo)."""
+    try:
+        return str(uuid.UUID(str(raw_id).strip())), False
+    except (TypeError, ValueError, AttributeError):
+        key = f"{database_page_id}:{index}:{name}"
+        return str(uuid.uuid5(_VIEW_ID_NAMESPACE, key)), True
+
+
+def views_from_frontmatter(
+    raw, database_page_id: str, path: str, warnings: list[str]
+) -> list[dict]:
+    """Normaliza las `views` del frontmatter a lo que guarda el índice.
+
+    En el fichero una vista es `{id, name, type, ...config}` (ROADMAP §2.3:
+    `group_by` al mismo nivel que `name`). Se acepta también la forma con
+    `config:` anidado, para no perder una vista escrita con el otro criterio.
+    """
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        warnings.append(f"{path}: 'views' no es una lista; se ignora")
+        return []
+    views: list[dict] = []
+    for position, item in enumerate(raw):
+        if not isinstance(item, dict):
+            warnings.append(f"{path}: vista inválida (no es un mapa): {item!r}")
+            continue
+        name = str(item.get("name") or "").strip()
+        vtype = str(item.get("type") or "table").strip()
+        config = {k: v for k, v in item.items() if k not in ("id", "name", "type")}
+        nested = config.pop("config", None)
+        if isinstance(nested, dict):
+            config = {**nested, **config}
+        elif nested not in (None, ""):
+            warnings.append(f"{path}: 'config' de la vista {name!r} no es un mapa: se ignora")
+        vid, derived = view_id(item.get("id"), database_page_id, position, name)
+        if derived:
+            warnings.append(
+                f"{path}: la vista {name or position!r} no tiene un 'id' UUID "
+                f"({item.get('id')!r}); se identifica con {vid} y se materializa al guardarla"
+            )
+        views.append({"id": vid, "name": name or "Vista", "type": vtype, "config": config})
+    return views
+
+
+def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
+    """Esquema efectivo de una base: lo que la app entiende de su frontmatter.
+
+    Se usa al reindexar (`load`) y al escribir una base o una fila
+    (`store._index_database`), para que el `schema_json` del índice salga del
+    mismo criterio en los dos caminos. `title` se descarta: es clave reservada
+    (el título de una fila es el nombre del fichero). El fichero del usuario no
+    se toca —se lee entero, con su `title` en el schema— y solo se excluye del
+    modelo efectivo.
+    """
+    raw = page.frontmatter.get("schema")
+    if raw in (None, ""):
+        if "schema" not in page.frontmatter:
+            warnings.append(
+                f"{path}: base sin 'schema' legible (¿YAML no soportado, p. ej. 'schema: >'?); "
+                "queda sin propiedades en el índice")
+        return []
+    if not isinstance(raw, list):
+        warnings.append(f"schema no es lista en {path}")
+        return []
+    effective: list[dict] = []
+    for prop in raw:
+        if isinstance(prop, dict) and str(prop.get("key")) in RESERVED_ROW_KEYS:
+            # `title` no puede ser una propiedad de la base: el título de una
+            # fila es el nombre del fichero (§9.3). Si el `schema` la declara,
+            # se ignora en el modelo (si no, la app la volvería a escribir al
+            # guardar y se avisaría a sí misma de que sobra).
+            warnings.append(
+                f"{path}: clave de schema reservada {prop.get('key')!r} "
+                "(el título es el nombre del fichero): se ignora en el "
+                "índice y al guardar")
+            continue
+        effective.append(prop)
+        if not isinstance(prop, dict) or "key" not in prop:
+            warnings.append(f"propiedad de schema inválida en {path}: {prop!r}")
+        elif prop.get("type") not in TYPES:
+            warnings.append(f"tipo desconocido {prop.get('type')!r} en {path}:{prop.get('key')}")
+    return effective
+
+
 def read_file(abs_path: str, rel_path: str, st=None) -> Page:
     st = st if st is not None else os.stat(abs_path)
     warnings: list[str] = []
@@ -298,42 +412,16 @@ def load(root: str) -> Vault:
             page.synthetic_id = True
             vault.warnings.append(f"sin 'id' en frontmatter: {rel} (id derivado de la ruta)")
         if page.type == "database":
-            schema = page.frontmatter.get("schema") or []
-            views = page.frontmatter.get("views") or []
-            if not schema and "schema" not in page.frontmatter:
-                vault.warnings.append(
-                    f"{rel}: base sin 'schema' legible (¿YAML no soportado, p. ej. 'schema: >'?); "
-                    "queda sin propiedades en el índice")
-            if not isinstance(schema, list):
-                vault.warnings.append(f"schema no es lista en {rel}")
-                schema = []
-            effective: list[dict] = []
-            for prop in schema:
-                if isinstance(prop, dict) and str(prop.get("key")) in RESERVED_ROW_KEYS:
-                    # `title` no puede ser una propiedad de la base: el título de
-                    # una fila es el nombre del fichero (§9.3). Si el `schema` la
-                    # declara, se ignora en el modelo (si no, la app la volvería a
-                    # escribir al guardar y se avisaría a sí misma de que sobra).
-                    # El fichero del usuario no se toca: se lee entero, con su
-                    # `title` en el schema, pero el modelo efectivo lo excluye.
-                    vault.warnings.append(
-                        f"{rel}: clave de schema reservada {prop.get('key')!r} "
-                        "(el título es el nombre del fichero): se ignora en el "
-                        "índice y al guardar")
-                    continue
-                effective.append(prop)
-                if not isinstance(prop, dict) or "key" not in prop:
-                    vault.warnings.append(f"propiedad de schema inválida en {rel}: {prop!r}")
-                elif prop.get("type") not in TYPES:
-                    vault.warnings.append(f"tipo desconocido {prop.get('type')!r} en {rel}:{prop.get('key')}")
-            schema = effective
+            schema = database_schema(page, rel, vault.warnings)
+            views = views_from_frontmatter(
+                page.frontmatter.get("views"), page.id, rel, vault.warnings
+            )
         vault.by_path[page.path] = page
         _merge_page(vault, page)      # puede reasignar page.id si el id está duplicado
         if page.type == "database":
             # Se registra DESPUÉS del merge: si el fichero de la base traía un id
             # duplicado, la clave tiene que ser la que finalmente tiene la página.
-            vault.databases[page.id] = Database(
-                page=page, schema=schema, views=views if isinstance(views, list) else [])
+            vault.databases[page.id] = Database(page=page, schema=schema, views=views)
 
     # 2) filas: hijos directos de la carpeta hermana de una base
     for db in vault.databases.values():
@@ -347,10 +435,7 @@ def load(root: str) -> Vault:
                 continue
             row.type = "database_row"
             row.database_id = db.id
-            for prop in db.schema:
-                if not isinstance(prop, dict) or "key" not in prop:
-                    continue
-                row.properties[prop["key"]] = _coerce(prop, row.frontmatter.get(prop["key"]))
+            row.properties = row_properties(db.schema, row.frontmatter)
             # `title` ya no lo escribe la app (decisión 9.3), pero el usuario puede
             # añadirlo a mano. No manda: manda el nombre del fichero. Si difiere,
             # se avisa en vez de obedecerlo en silencio.
@@ -362,7 +447,11 @@ def load(root: str) -> Vault:
                     f"nombre del fichero ({row.title!r}); manda el nombre")
             # `title` NO está en `managed`: si el usuario lo escribe a mano es una
             # clave suya (se preserva al guardar) y además se avisa arriba.
-            managed = {"id"} | {p["key"] for p in db.schema if isinstance(p, dict) and "key" in p}
+            # `created`/`updated` son de la app (los escribe `writer.row_markdown`):
+            # la identidad y las fechas de una fila no son propiedades.
+            managed = {"id", "created", "updated"} | {
+                p["key"] for p in db.schema if isinstance(p, dict) and "key" in p
+            }
             row.extra_keys = {k: v for k, v in row.frontmatter.items() if k not in managed}
             db.rows.append(row)
             vault.rows.append(row)

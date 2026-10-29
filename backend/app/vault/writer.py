@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import os
 import uuid
 
@@ -62,7 +63,7 @@ def create_page(vault_root: str, folder: str, title: str, *, icon: str | None = 
     return reader.read_file(os.path.join(vault_root, rel), rel), notes
 
 
-def _sin_reservadas(properties: dict, notes: list[str], donde: str) -> dict:
+def sin_reservadas(properties: dict, notes: list[str], donde: str) -> dict:
     """Quita las claves reservadas (`title`) de las propiedades de una fila.
 
     El título de una fila ES el nombre del fichero (§9.3). Si una base declara
@@ -109,7 +110,7 @@ def save_page(vault_root: str, page: reader.Page, *, icon=None, description=None
         # (decisión 9.3). Escribirlo aquí dejaba dos verdades que divergían en
         # cuanto alguien renombraba el fichero por fuera. Si el `schema` declaraba
         # `title` o la capa HTTP lo manda, se filtra (con aviso) en vez de escribirlo.
-        updates.update(_sin_reservadas(properties, notes, "al guardar la fila"))
+        updates.update(sin_reservadas(properties, notes, "al guardar la fila"))
     new_text, warnings = fm.rewrite(text, updates, body if body is not None else None)
     vaultfs.atomic_write(abs_path, new_text)
     return notes + warnings
@@ -149,26 +150,105 @@ def delete_page(vault_root: str, page: reader.Page) -> str:
 # bases de datos y filas
 # --------------------------------------------------------------------------
 
+
+def _plain(value):
+    """El valor tal y como se escribe: un `Enum` de la API, por su valor.
+
+    `payload.schema_def` llega como `model_dump()` de pydantic, que devuelve el
+    miembro del `Enum` y no su cadena; escribirlo tal cual dejaría
+    `type: PropertyType.text` en el fichero.
+    """
+    if isinstance(value, enum.Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
+
+
+def _sin_vacios(mapping: dict) -> dict:
+    """Copia un mapa sin las claves sin valor (`None`) ni los mapas vacíos.
+
+    El contrato dice que en el `.md` va lo que hay: una propiedad sin valor no
+    se escribe `a: null` (el parser de `fm` no infiere tipos y la leería como la
+    cadena `"null"`), y un `config: {}` de una vista de tabla no se escribe (un
+    flow map vacío es opaco para el parser y la clave se perdería al releer).
+
+    Al **guardar** no se usa para las propiedades: ahí un `None` es «bórrame
+    esta clave» y `fm.update` ya lo entiende así.
+    """
+    out: dict = {}
+    for key, value in mapping.items():
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)) and not value:
+            continue
+        out[key] = _plain(value)
+    return out
+
+
+def view_entry(view: dict) -> dict:
+    """Una vista con la forma del fichero: `id`, `name`, `type` y su `config`
+    al mismo nivel (ROADMAP §2.3: `group_by: fase`)."""
+    return {
+        "id": view["id"],
+        "name": view["name"],
+        "type": str(getattr(view.get("type"), "value", view.get("type")) or "table"),
+        **_sin_vacios(view.get("config") or {}),
+    }
+
+
+def property_entries(properties: dict) -> dict:
+    """Propiedades de una fila tal y como se escriben: sin `title` ni vacías."""
+    return _sin_vacios({k: v for k, v in properties.items()
+                        if k not in reader.RESERVED_ROW_KEYS})
+
+
+def schema_entries(schema: list[dict]) -> list[dict]:
+    """El `schema` tal y como se escribe: sin claves sin valor.
+
+    `options: None` de una propiedad de texto no se escribe: el parser no
+    infiere tipos y `options: null` volvería como la cadena `"null"`, que no es
+    una lista de opciones.
+    """
+    return [_sin_vacios(prop) for prop in schema if isinstance(prop, dict)]
+
+
 def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
                       views: list[dict], created: str | None = None,
-                      description: str | None = None) -> str:
+                      updated: str | None = None,
+                      description: str | None = None,
+                      created_by: str | None = None,
+                      header_image: str | None = None) -> str:
+    """`Bases/<slug>.md`: `type: database`, `schema` y `views` en el frontmatter.
+
+    Cada vista se escribe con `id`, `name`, `type` y su `config` **al mismo
+    nivel**, que es la forma del ejemplo del ROADMAP §2.3 (`group_by: fase`)
+    y la que `reader.views_from_frontmatter` vuelve a leer sin ambigüedad.
+    """
     now = created or reader.now_iso()
     updates: dict = {"id": id_, "type": "database"}
     if icon is not None:
         updates["icon"] = icon
     if description is not None:
         updates["description"] = description
+    if created_by:
+        updates["created_by"] = created_by
+    if header_image:
+        updates["header_image"] = header_image
     updates["created"] = now
-    updates["updated"] = now
-    updates["schema"] = schema
-    updates["views"] = views
+    updates["updated"] = updated or now
+    updates["schema"] = schema_entries(schema)
+    updates["views"] = [view_entry(view) for view in views]
     raw, _ = fm.update("", updates)
     return fm.compose(raw, "\n")
 
 
 def create_database(vault_root: str, folder: str, title: str, schema: list[dict],
                     views: list[dict] | None = None, *, icon: str | None = "🗄",
-                    db_id: str | None = None, description: str | None = None
+                    db_id: str | None = None, description: str | None = None,
+                    created_by: str | None = None
                     ) -> tuple[reader.Page, list[str]]:
     """Crea `folder/title.md` y su carpeta de filas (mismo nombre sin .md)."""
     stem, notes = names.sanitize(title)
@@ -180,24 +260,38 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
         notes.append(f"colisión de base en {rel_dir or '.'}: nombre final '{stem}'")
     rel = f"{rel_dir}/{stem}.md" if rel_dir else f"{stem}.md"
     text = database_markdown(id_=db_id or new_id(), icon=icon, schema=schema,
-                             views=views or [], description=description)
+                             views=views or [], description=description,
+                             created_by=created_by)
     vaultfs.atomic_write(os.path.join(vault_root, rel), text)
     os.makedirs(os.path.join(vault_root, rel[:-3]), exist_ok=True)
     return reader.read_file(os.path.join(vault_root, rel), rel), notes
 
 
-def row_markdown(*, id_: str, properties: dict) -> str:
-    """Frontmatter de una fila: `id` + propiedades. Sin `title` (decisión 9.3)."""
+def row_markdown(*, id_: str, properties: dict, created: str | None = None,
+                 updated: str | None = None, icon: str | None = None) -> str:
+    """Frontmatter de una fila: `id`, fechas y propiedades.
+
+    Sin `title` (decisión 9.3: el título es el nombre del fichero) y sin las
+    propiedades que no tienen valor (`_sin_vacios`). `icon` va aquí y no en las
+    propiedades porque el icono de la fila es de la fila, no una propiedad
+    declarada en el `schema`.
+    """
+    now = created or reader.now_iso()
     updates: dict = {"id": id_}
-    updates.update({k: v for k, v in properties.items()
-                    if k not in reader.RESERVED_ROW_KEYS})
+    if icon is not None:
+        updates["icon"] = icon
+    updates["created"] = now
+    updates["updated"] = updated or now
+    updates.update(property_entries(properties))
     raw, _ = fm.update("", updates)
     return fm.compose(raw, "\n")
 
 
-def create_row(vault_root: str, db: reader.Database, title: str,
-               properties: dict, *, body: str = "") -> tuple[reader.Page, list[str]]:
-    folder = db.path[:-3]
+def create_row(vault_root: str, folder: str, title: str,
+               properties: dict, *, body: str = "", row_id: str | None = None,
+               created: str | None = None, icon: str | None = None
+               ) -> tuple[reader.Page, list[str]]:
+    """Escribe una fila en `folder` (la carpeta hermana de su base)."""
     stem, notes = names.sanitize(title)
     rel_dir = vaultfs.safe_rel(vault_root, folder)
     directory = os.path.join(vault_root, rel_dir)
@@ -206,8 +300,9 @@ def create_row(vault_root: str, db: reader.Database, title: str,
     if collided:
         notes.append(f"colisión de fila en {rel_dir}: '{stem}'")
     rel = f"{rel_dir}/{stem}.md"
-    props = _sin_reservadas(properties, notes, "al crear la fila")
-    text = row_markdown(id_=new_id(), properties=props)
+    props = sin_reservadas(properties, notes, "al crear la fila")
+    text = row_markdown(id_=row_id or new_id(), properties=props, created=created,
+                        icon=icon)
     if body:
         text = text.rstrip("\n") + ("\n" if not body.startswith("\n") else "") + body
         if not text.endswith("\n"):

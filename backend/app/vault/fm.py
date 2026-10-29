@@ -260,39 +260,41 @@ def dump_scalar(value: str) -> str:
     return str(value)
 
 
-def _dump_inline_list(values: list[str]) -> str:
+def _dump_inline_list(values: list) -> str:
     return "[" + ", ".join(dump_scalar(str(v)) for v in values) + "]"
 
 
-def dump_value(key: str, value, indent: int = 0) -> list[str]:
-    """Serializa una clave gestionada a líneas YAML."""
+def _dump_map_item(item: dict, indent: int) -> list[str]:
+    """Un `dict` como item de secuencia: `- clave: valor` y el resto debajo.
+
+    Las líneas de continuación van a `indent + 2`, alineadas con la clave del
+    primer item (`"- "` ocupa lo mismo que dos espacios), que es lo que espera
+    el parser al leer las claves hermanas de un item de secuencia.
+    """
     pad = " " * indent
-    if isinstance(value, list) and value and all(not isinstance(v, dict) for v in value):
-        return [f"{pad}{key}: {_dump_inline_list(value)}"]
-    if isinstance(value, list):
-        out = [f"{pad}{key}:"]
-        for item in value:
-            if not isinstance(item, dict):
-                out.append(f"{pad}  - {dump_scalar(str(item))}")
-                continue
-            first = True
-            for k, v in item.items():
-                prefix = f"{pad}  - " if first else f"{pad}    "
-                first = False
-                if isinstance(v, list):
-                    out.append(f"{prefix}{k}: {_dump_inline_list(v)}")
-                elif isinstance(v, dict):
-                    out.append(f"{prefix}{k}:")
-                    for kk, vv in v.items():
-                        out.append(f"{prefix}  {kk}: {dump_scalar(str(vv))}")
-                else:
-                    out.append(f"{prefix}{k}: {dump_scalar(str(v))}")
-        return out
-    if isinstance(value, dict):
-        out = [f"{pad}{key}:"]
-        for k, v in value.items():
-            out.append(f"{pad}  {k}: {dump_scalar(str(v))}")
-        return out
+    lines: list[str] = []
+    first = True
+    for key, value in item.items():
+        block = dump_value(key, value, indent + 2)
+        if first:
+            lines.append(f"{pad}- " + block[0].lstrip(" "))
+            lines.extend(block[1:])
+            first = False
+        else:
+            lines.extend(block)
+    return lines
+
+
+def dump_value(key: str, value, indent: int = 0) -> list[str]:
+    """Serializa una clave gestionada a líneas YAML.
+
+    Cubre lo que pide el contrato del vault y el parser entiende: escalares,
+    listas de escalares (en línea), listas de mapas (`schema`, `views`, los
+    `filters` y el `sort` de una vista) y mapas anidados. Hasta P2 solo bajaba
+    dos niveles, y un `dict` dentro de un item de secuencia se escribía como su
+    `repr` de Python: ilegible a mano y perdido al releer.
+    """
+    pad = " " * indent
     if isinstance(value, bool):
         return [f"{pad}{key}: {'true' if value else 'false'}"]
     if isinstance(value, float) and value.is_integer():
@@ -301,6 +303,29 @@ def dump_value(key: str, value, indent: int = 0) -> list[str]:
         return [f"{pad}{key}: {value}"]
     if value is None:
         return [f"{pad}{key}: null"]
+    if isinstance(value, list):
+        if not value:
+            return [f"{pad}{key}: []"]
+        if all(not isinstance(v, (dict, list)) for v in value):
+            return [f"{pad}{key}: {_dump_inline_list(value)}"]
+        out = [f"{pad}{key}:"]
+        for item in value:
+            if isinstance(item, dict):
+                out.extend(_dump_map_item(item, indent + 2))
+            else:
+                out.append(f"{pad}  - {dump_scalar(str(item))}")
+        return out
+    if isinstance(value, dict):
+        if not value:
+            # `{}` es un flow map y el parser lo marca opaco (`{` abre una
+            # construcción no soportada), así que la clave se perdería al
+            # releer. Quien escribe ya omite los mapas vacíos (una vista de
+            # tabla sin `config` no tiene nada que guardar).
+            return [f"{pad}{key}: {{}}"]
+        out = [f"{pad}{key}:"]
+        for k, v in value.items():
+            out.extend(dump_value(k, v, indent + 2))
+        return out
     return [f"{pad}{key}: {dump_scalar(str(value))}"]
 
 

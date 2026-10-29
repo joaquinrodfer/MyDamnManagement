@@ -1,10 +1,10 @@
 """Capa de repositorio: todo el acceso al índice pasa por aquí.
 
 Los routers ya no ven SQL ni sesiones: piden y escriben a través de `Repository`,
-y desde P1.2a guardar una nota escribe además su fichero `.md` (`VaultNotes`,
-`app/vault/store.py`) y deja el índice diciendo lo mismo que el fichero. El
-objetivo de P1.1 era exactamente este: cambiar la fuente de la verdad sin tocar
-las rutas.
+y desde P1.2a guardar una nota escribe además su fichero `.md` (`VaultStore`,
+`app/vault/store.py`) y deja el índice diciendo lo mismo que el fichero. Desde
+P2 lo mismo vale para las bases de datos y sus filas. El objetivo de P1.1 era
+exactamente este: cambiar la fuente de la verdad sin tocar las rutas.
 
 Se usa `sqlite3` crudo (decisión y argumentos en
 `docs/ADR-0002-indice-sqlite.md`). Los registros que devuelve (`Page`,
@@ -27,7 +27,7 @@ from app import index as index_mod
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
-from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultNotes
+from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultError, VaultStore
 
 
 def _now() -> datetime:
@@ -156,15 +156,15 @@ def _view(row: sqlite3.Row) -> View:
 class Repository:
     """Acceso al índice y al vault. Una instancia por petición; `close()` al salir.
 
-    Desde P1.2a las **notas** viven en ficheros `.md`: los métodos de página
-    delegan en `VaultNotes`, que escribe el fichero y deja el índice diciendo lo
-    mismo que el fichero. Las bases de datos y sus filas siguen solo en el
-    índice (P2), así que conservan el camino antiguo.
+    Desde P1.2a las **notas** viven en ficheros `.md`, y desde P2 las **bases de
+    datos y sus filas** también: los métodos de página, base, fila y vista
+    delegan en `VaultStore`, que escribe el fichero y deja el índice diciendo lo
+    mismo que el fichero. Ningún camino escribe solo en el índice.
     """
 
-    def __init__(self, conn: sqlite3.Connection, vault: VaultNotes | None = None):
+    def __init__(self, conn: sqlite3.Connection, vault: VaultStore | None = None):
         self.conn = conn
-        self.vault = vault or VaultNotes(settings.vault_path, conn)
+        self.vault = vault or VaultStore(settings.vault_path, conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -190,7 +190,7 @@ class Repository:
 
         `force=True` permite que un vault ausente o vacío deje el índice a
         cero: es la salida explícita cuando el vaciado es intencionado, no el
-        camino normal (ver `VaultNotes.rebuild`). `empty_hint` es el texto que
+        camino normal (ver `VaultStore.rebuild`). `empty_hint` es el texto que
         nombra esa salida en el mensaje de error, porque no es la misma con el
         servicio en marcha que durante el arranque.
         """
@@ -253,30 +253,24 @@ class Repository:
             )
             return self.get_page(page_id)
 
-        workspace_id = self.ensure_workspace()
-        page_id = str(uuid.uuid4())
-        now = _iso(_now())
-        with self._tx():
-            self.conn.execute(
-                "INSERT INTO pages (id, workspace_id, parent_id, type, title, icon,"
-                " description, created_by, body, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    page_id,
-                    str(workspace_id),
-                    str(parent_id) if parent_id else None,
-                    PageType(type).value,
-                    title,
-                    icon,
-                    description,
-                    created_by,
-                    body_markdown or "",
-                    now,
-                    now,
-                ),
+        if PageType(type) == PageType.database:
+            # Una base también nace con su fichero (P2): el `POST /pages` con
+            # `type: database` crea la base vacía, no una página sin `databases`
+            # detrás que el reindexado no podría reconstruir.
+            page_id = self.vault.create_database(
+                title=title,
+                schema=[],
+                parent_id=parent_id,
+                icon=icon,
+                description=description,
+                created_by=created_by,
             )
-            sync_wikilinks(self.conn, page_id, str(workspace_id), body_markdown)
-        return self.get_page(page_id)
+            return self.get_page(page_id)
+
+        raise VaultError(
+            "una fila no se crea suelta: nace en su base "
+            "(POST /databases/{database_id}/rows)"
+        )
 
     def update_page(
         self,
@@ -323,29 +317,17 @@ class Repository:
 
         if current.type == PageType.note:
             self.vault.save(page_id, **changes)
-            return self.get_page(page_id)
-
-        sets: list[str] = []
-        params: list[Any] = []
-        for field_name, column in (("title", "title"), ("icon", "icon"),
-                                   ("description", "description")):
-            if field_name in changes:
-                sets.append(f"{column} = ?")
-                params.append(changes[field_name])
-        if "body" in changes:
-            sets.append("body = ?")
-            params.append(changes["body"])
-
-        sets.append("updated_at = ?")
-        params.append(_iso(_now()))
-        params.append(str(page_id))
-
-        with self._tx():
-            self.conn.execute(f"UPDATE pages SET {', '.join(sets)} WHERE id = ?", params)
-            if "body" in changes:
-                sync_wikilinks(
-                    self.conn, str(page_id), str(current.workspace_id), changes["body"]
+        elif current.type == PageType.database:
+            # Mismo camino que PATCH /databases/{id}: la base es un fichero y su
+            # título es el nombre, así que renombrar mueve el fichero (y sus
+            # filas) y el índice se actualiza leyéndolo.
+            self.vault.save_database(page_id, **changes)
+        else:
+            if "parent_id" in changes:
+                raise VaultError(
+                    "una fila no se mueve de carpeta: su sitio lo decide su base"
                 )
+            self.vault.save_row(page_id, **changes)
         return self.get_page(page_id)
 
     def set_header_image(self, page_id: uuid.UUID, path: Optional[str]) -> Optional[Page]:
@@ -356,12 +338,10 @@ class Repository:
             # La cabecera se guarda también en el frontmatter: si solo viviera
             # en el índice, el primer reindexado se la llevaría por delante.
             self.vault.save(page_id, header_image=path)
-            return self.get_page(page_id)
-        with self._tx():
-            self.conn.execute(
-                "UPDATE pages SET header_image_path = ?, updated_at = ? WHERE id = ?",
-                (path, _iso(_now()), str(page_id)),
-            )
+        elif current.type == PageType.database:
+            self.vault.save_database(page_id, header_image=path)
+        else:
+            self.vault.save_row(page_id, header_image=path)
         return self.get_page(page_id)
 
     def delete_page(self, page_id: uuid.UUID) -> bool:
@@ -371,30 +351,27 @@ class Repository:
         de subpáginas van a `.trash/<fecha UTC>/<ruta original>` y la fila del
         índice desaparece con la cascada de siempre.
 
+        Para una **base de datos** (P2) es lo mismo: su `.md` y su carpeta de
+        filas van a la papelera, y sus filas, vistas y enlaces se van del
+        índice. Para una **fila**, solo su fichero.
+
         Las filas de una database son páginas que **no** cuelgan por
         `parent_id`: al borrar la página de la database, la cascada del esquema
         se lleva la fila `databases`, sus vistas y las entradas de `rows`, pero
         no las páginas de esas filas (la FK va de `rows.id` a `pages.id`, así
-        que borrar la entrada no borra la página). Por eso se borran aquí
-        explícitamente, en el mismo sitio para las dos rutas: DELETE /pages y
-        DELETE /databases dejan exactamente el mismo estado, sin páginas
-        huérfanas fuera del árbol.
+        que borrar la entrada no borra la página). Por eso `VaultStore` las
+        borra explícitamente, en el mismo sitio para las dos rutas: DELETE
+        /pages y DELETE /databases dejan exactamente el mismo estado, sin
+        páginas huérfanas fuera del árbol.
         """
         current = self.get_page(page_id)
         if current is None:
             return False
         if current.type == PageType.note:
             return self.vault.delete(page_id)
-
-        with self._tx():
-            self.conn.execute(
-                "DELETE FROM pages WHERE id IN ("
-                " SELECT r.id FROM rows r JOIN databases d ON d.id = r.database_id"
-                " WHERE d.page_id = ?)",
-                (str(page_id),),
-            )
-            cur = self.conn.execute("DELETE FROM pages WHERE id = ?", (str(page_id),))
-        return cur.rowcount > 0
+        if current.type == PageType.database:
+            return self.vault.delete_database(page_id)
+        return self.vault.delete_row(page_id)
 
     def tree(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -461,44 +438,15 @@ class Repository:
         created_by: Optional[str] = None,
         views: Optional[list[dict[str, Any]]] = None,
     ) -> Database:
-        workspace_id = self.ensure_workspace()
-        page_id = str(uuid.uuid4())
-        database_id = str(uuid.uuid4())
-        now = _iso(_now())
-        with self._tx():
-            self.conn.execute(
-                "INSERT INTO pages (id, workspace_id, parent_id, type, title, icon,"
-                " created_by, body, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
-                (
-                    page_id,
-                    str(workspace_id),
-                    str(parent_id) if parent_id else None,
-                    PageType.database.value,
-                    title,
-                    icon,
-                    created_by,
-                    now,
-                    now,
-                ),
-            )
-            self.conn.execute(
-                "INSERT INTO databases (id, page_id, schema_json) VALUES (?, ?, ?)",
-                (database_id, page_id, _dump(schema_def)),
-            )
-            for view in views or []:
-                self.conn.execute(
-                    "INSERT INTO views (id, database_id, name, type, config_json)"
-                    " VALUES (?, ?, ?, ?, ?)",
-                    (
-                        str(uuid.uuid4()),
-                        database_id,
-                        view["name"],
-                        view["type"],
-                        _dump(view.get("config") or {}),
-                    ),
-                )
-        return self.get_database(database_id)
+        """Crea `Bases/<slug>.md` (y sus vistas en el frontmatter) y la indexa."""
+        return self.get_database(uuid.UUID(self.vault.create_database(
+            title=title,
+            schema=schema_def,
+            views=views,
+            parent_id=parent_id,
+            icon=icon,
+            created_by=created_by,
+        )))
 
     def update_database(
         self,
@@ -511,32 +459,15 @@ class Repository:
         current = self.get_database(database_id)
         if current is None:
             return None
-        sets: list[str] = []
-        params: list[Any] = []
-        if title is not None:
-            sets.append("title = ?")
-            params.append(title)
-        if icon is not None:
-            sets.append("icon = ?")
-            params.append(icon)
-        if not sets and schema_def is None:
-            return current
-        with self._tx():
-            if sets:
-                sets.append("updated_at = ?")
-                params.append(_iso(_now()))
-                params.append(str(current.page_id))
-                self.conn.execute(
-                    f"UPDATE pages SET {', '.join(sets)} WHERE id = ?", params
-                )
-            if schema_def is not None:
-                # Nota (v1): las filas existentes no se revalidan contra el
-                # schema nuevo; pueden quedar con propiedades que ya no están
-                # definidas hasta que se vuelvan a guardar.
-                self.conn.execute(
-                    "UPDATE databases SET schema_json = ? WHERE id = ?",
-                    (_dump(schema_def), str(database_id)),
-                )
+        # Nota (v1): las filas existentes no se revalidan contra el schema
+        # nuevo; pueden quedar con propiedades que ya no están definidas hasta
+        # que se vuelvan a guardar (y entonces se filtran al escribir).
+        self.vault.save_database(
+            current.page_id,
+            title=UNSET if title is None else title,
+            icon=UNSET if icon is None else icon,
+            schema=UNSET if schema_def is None else schema_def,
+        )
         return self.get_database(database_id)
 
     def delete_database(self, database_id: uuid.UUID) -> bool:
@@ -569,27 +500,9 @@ class Repository:
         icon: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
     ) -> Page:
-        workspace_id = self.ensure_workspace()
-        row_id = str(uuid.uuid4())
-        now = _iso(_now())
-        with self._tx():
-            self.conn.execute(
-                "INSERT INTO pages (id, workspace_id, type, title, icon, body,"
-                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, '', ?, ?)",
-                (
-                    row_id,
-                    str(workspace_id),
-                    PageType.database_row.value,
-                    title,
-                    icon,
-                    now,
-                    now,
-                ),
-            )
-            self.conn.execute(
-                "INSERT INTO rows (id, database_id, properties_json) VALUES (?, ?, ?)",
-                (row_id, str(database_id), _dump(properties or {})),
-            )
+        row_id = self.vault.create_row(
+            database_id, title=title, properties=properties or {}, icon=icon
+        )
         return self.get_row(database_id, uuid.UUID(row_id))
 
     def update_row(
@@ -604,45 +517,25 @@ class Repository:
         current = self.get_row(database_id, row_id)
         if current is None:
             return None
-        sets: list[str] = []
-        params: list[Any] = []
-        if title is not None:
-            sets.append("title = ?")
-            params.append(title)
-        if icon is not None:
-            sets.append("icon = ?")
-            params.append(icon)
         merged: Optional[dict[str, Any]] = None
         if properties is not None:
-            # Merge parcial, como antes: lo que no llega se conserva.
+            # Merge parcial, como antes: lo que no llega se conserva. Un valor
+            # `None` borra la propiedad del frontmatter.
             merged = {**(current.properties or {}), **properties}
-        if not sets and merged is None:
+        if merged is None and title is None and icon is None:
             return current
-        now = _iso(_now())
-        with self._tx():
-            if sets:
-                sets.append("updated_at = ?")
-                params.append(now)
-                params.append(str(row_id))
-                self.conn.execute(
-                    f"UPDATE pages SET {', '.join(sets)} WHERE id = ?", params
-                )
-            if merged is not None:
-                self.conn.execute(
-                    "UPDATE rows SET properties_json = ? WHERE id = ?",
-                    (_dump(merged), str(row_id)),
-                )
-                if not sets:
-                    self.conn.execute(
-                        "UPDATE pages SET updated_at = ? WHERE id = ?",
-                        (now, str(row_id)),
-                    )
+        self.vault.save_row(
+            row_id,
+            title=UNSET if title is None else title,
+            icon=UNSET if icon is None else icon,
+            properties=UNSET if merged is None else merged,
+        )
         return self.get_row(database_id, row_id)
 
     def delete_row(self, database_id: uuid.UUID, row_id: uuid.UUID) -> bool:
         if self.get_row(database_id, row_id) is None:
             return False
-        return self.delete_page(row_id)
+        return self.vault.delete_row(row_id)
 
     # -------------------------------------------------------------- views
 
@@ -662,6 +555,31 @@ class Repository:
         ).fetchone()
         return _view(row) if row else None
 
+    def _views_with(self, database_id: uuid.UUID, **overrides) -> list[dict[str, Any]]:
+        """Las vistas de la base en la forma del fichero, con una sustituida."""
+        views: list[dict[str, Any]] = []
+        for view in self.list_views(database_id):
+            entry = {
+                "id": str(view.id),
+                "name": view.name,
+                "type": view.type.value,
+                "config": view.config or {},
+            }
+            if entry["id"] == overrides.get("id"):
+                entry.update({k: v for k, v in overrides.items() if v is not None})
+            views.append(entry)
+        return views
+
+    def _database_page_id(self, database_id: uuid.UUID) -> uuid.UUID:
+        """La página (fichero) de la base. Desde P2 es el mismo id; la consulta
+        deja el camino preparado para un índice anterior al reindexado."""
+        row = self.conn.execute(
+            "SELECT page_id FROM databases WHERE id = ?", (str(database_id),)
+        ).fetchone()
+        if row is None:
+            raise VaultError(f"la base de datos {database_id} no existe")
+        return uuid.UUID(row["page_id"])
+
     def create_view(
         self,
         database_id: uuid.UUID,
@@ -670,13 +588,16 @@ class Repository:
         type: ViewType,
         config: Optional[dict[str, Any]] = None,
     ) -> View:
+        """Añade la vista al frontmatter de la base y al índice, en una operación."""
         view_id = str(uuid.uuid4())
-        with self._tx():
-            self.conn.execute(
-                "INSERT INTO views (id, database_id, name, type, config_json)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (view_id, str(database_id), name, ViewType(type).value, _dump(config or {})),
-            )
+        views = self._views_with(database_id)
+        views.append({
+            "id": view_id,
+            "name": name,
+            "type": str(getattr(type, "value", type)),
+            "config": config or {},
+        })
+        self.vault.save_database(self._database_page_id(database_id), views=views)
         return self.get_view(database_id, uuid.UUID(view_id))
 
     def update_view(
@@ -691,31 +612,24 @@ class Repository:
         current = self.get_view(database_id, view_id)
         if current is None:
             return None
-        sets: list[str] = []
-        params: list[Any] = []
-        if name is not None:
-            sets.append("name = ?")
-            params.append(name)
-        if type is not None:
-            sets.append("type = ?")
-            params.append(ViewType(type).value)
-        if config is not None:
-            sets.append("config_json = ?")
-            params.append(_dump(config))
-        if not sets:
+        if name is None and type is None and config is None:
             return current
-        params.append(str(view_id))
-        with self._tx():
-            self.conn.execute(f"UPDATE views SET {', '.join(sets)} WHERE id = ?", params)
+        views = self._views_with(
+            database_id,
+            id=str(view_id),
+            name=name,
+            type=str(getattr(type, "value", type)) if type is not None else None,
+            config=config,
+        )
+        self.vault.save_database(self._database_page_id(database_id), views=views)
         return self.get_view(database_id, view_id)
 
     def delete_view(self, database_id: uuid.UUID, view_id: uuid.UUID) -> bool:
-        with self._tx():
-            cur = self.conn.execute(
-                "DELETE FROM views WHERE id = ? AND database_id = ?",
-                (str(view_id), str(database_id)),
-            )
-        return cur.rowcount > 0
+        if self.get_view(database_id, view_id) is None:
+            return False
+        views = [v for v in self._views_with(database_id) if v["id"] != str(view_id)]
+        self.vault.save_database(self._database_page_id(database_id), views=views)
+        return True
 
     # ------------------------------------------------------------- search
 

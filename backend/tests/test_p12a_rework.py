@@ -259,14 +259,23 @@ def test_sin_allow_empty_el_arranque_no_recomienda_un_endpoint_que_no_arranca(
     assert "/reindex" not in mensaje
 
 
-def test_allow_empty_arranca_con_el_vault_vacio_y_conserva_las_bases(
+def test_allow_empty_arranca_con_el_vault_vacio_y_el_indice_queda_vacio(
     client, vault_path, monkeypatch
 ):
-    """`VAULT_ALLOW_EMPTY=1`: 0 notas, índice intacto en lo que no es nota."""
+    """`VAULT_ALLOW_EMPTY=1`: acepta el vaciado intencionado y el índice lo sigue.
+
+    Hasta P2 este test comprobaba lo contrario: las bases y sus filas, que
+    vivían solo en el índice, sobrevivían a un arranque con el vault vacío.
+    Desde P2 también son ficheros, así que el fichero manda y un vault vacío
+    deja el índice a cero. Es el precio de D1 (los ficheros son la verdad) y
+    por eso `VAULT_ALLOW_EMPTY` sigue siendo un escape explícito, no el camino
+    normal.
+    """
     nota = crear(client, title="Con base")
     base = client.post(
         "/databases", json={"title": "Contactos", "parent_id": nota["id"]}
     ).json()
+    assert (vault_path / "Notas" / "Con base" / "Contactos.md").exists()
     _vaciar_los_md(vault_path)
 
     from app.config import settings
@@ -274,11 +283,8 @@ def test_allow_empty_arranca_con_el_vault_vacio_y_conserva_las_bases(
     monkeypatch.setattr(settings, "vault_allow_empty", True)
 
     with arrancar_de_nuevo() as otro:
-        paginas = otro.get("/pages").json()
-        assert [p for p in paginas if p["type"] == "note"] == []
-        # Las bases, filas y vistas no tienen fichero todavía (P2): el
-        # arranque no se las lleva, quedan sin padre.
-        assert otro.get(f"/databases/{base['id']}").status_code == 200
+        assert otro.get("/pages").json() == []
+        assert otro.get(f"/databases/{base['id']}").status_code == 404
 
 
 def test_allow_empty_no_cubre_una_raiz_inexistente(client, tmp_path, monkeypatch):
