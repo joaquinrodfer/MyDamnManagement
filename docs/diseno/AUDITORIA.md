@@ -67,15 +67,15 @@ Todas las capturas se encuentran en `docs/diseno/capturas/`:
 #### 4. Áreas de toque / clic minúsculas (por debajo del mínimo de 24×24 px de WCAG 2.2 AA y lejos de 32–44 px)
 - **Dónde vive y medidas reales en DOM:**
   - `.icon-btn` (`frontend/index.html:133-145`): **`20×20 px`**. Se usa en los botones más frecuentes de toda la app: `#btn-toggle-sidebar` (`☰`), `#btn-nav-home` (`🏠`), `#btn-nav-back` (`←`), `#btn-nav-forward` (`→`), `#btn-nav-up` (`↑`), `#btn-new-note` (`+`), `#btn-new-database` (`+`), botón exportar nota (`⇩`) y botón quitar propiedad en el modal (`×`). Además, en `.nav-history-controls` (`frontend/index.html:152`) están separados por apenas `gap: 2px`, facilitando clics erróneos.
-  - `.row-del` (`frontend/index.html:800`): **`19.8×17 px`** (`padding: 0`, sin alto ni ancho mínimo) para una acción destructiva (`🗑` borrar fila de la tabla).
+  - `.row-del` (`frontend/index.html:800`): **`19.8×17 px`** (sin `padding`, alto ni ancho mínimo declarados) para una acción destructiva (`🗑` borrar fila de la tabla).
   - `.error-toast-close` (`frontend/index.html:872-882`): **`13×15 px`** (`padding: 0 3px; font-size: 15px`).
   - `.note-header-remove` (`frontend/index.html:348-355`): `padding: 0; font-size: 12px` (**`15 px` de alto**).
 
 #### 5. Contraste insuficiente en el botón primario (`.btn-primary`) en ambos modos
-- **Dónde vive:** `frontend/index.html:15, 32, 206-212` (`.btn-primary { background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; }`).
+- **Dónde vive:** `frontend/index.html:15, 32, 195-212` (`font-size: 13px` heredado de `.btn` en `:196`, y `.btn-primary { background: var(--accent); color: #fff; font-weight: 600; }` en `:206-212`).
 - **Evidencia medida:**
   - **Modo claro:** texto blanco `#ffffff` (13 px) sobre `--accent` (`#b8763a`) tiene un ratio de contraste de **3.69:1** (incumple WCAG AA para texto normal, que exige **4.5:1**).
-  - **Modo oscuro:** texto blanco `#ffffff` (13 px) sobre `--accent` (`#e0994f`) cae a **2.38:1** (ilegible e incumple incluso el umbral de texto grande de 3.0:1; además usa texto blanco sobre un naranja pastel luminoso en vez de texto oscuro `#14161b` que daría **7.94:1**).
+  - **Modo oscuro:** texto blanco `#ffffff` (13 px) sobre `--accent` (`#e0994f`) cae a **2.38:1** (ilegible e incumple incluso el umbral de texto grande de 3.0:1; además usa texto blanco sobre un naranja pastel luminoso en vez de texto oscuro `#14161b` que daría **7.62:1**).
 
 ---
 
