@@ -15,16 +15,53 @@ Está redactada para que el desarrollador la aplique directamente en `frontend/i
 
 ## 1. Tokens finales (`:root` oscuro por defecto + `html[data-theme="light"]`)
 
-### 1.1. Regla de arranque del tema (oscuro por defecto, sin depender de `prefers-color-scheme`)
+### 1.1. Regla de arranque del tema e interruptor `#btn-toggle-theme` (elemento nuevo a añadir en `frontend/index.html` y `frontend/app.js`)
 
-1. En `frontend/index.html`, la etiqueta raíz debe ser `<html lang="es" data-theme="dark">`.
-2. Se elimina el bloque `@media (prefers-color-scheme: dark)` de `frontend/index.html`. `:root` contiene directamente los tokens del **tema oscuro** (valor inicial garantizado aunque `localStorage` esté vacío o el sistema operativo pida modo claro).
-3. El selector `html[data-theme="light"]` sobrescribe los tokens de color y sombra cuando el usuario activa el tema claro con el interruptor `#btn-toggle-theme` (persistido en `localStorage.getItem("mdm_theme")`).
+> **Nota importante para el implementador:** Actualmente `frontend/index.html` solo tiene `@media (prefers-color-scheme: dark)` (línea 25) y **no existe todavía** el botón `#btn-toggle-theme` ni la lectura de `localStorage.getItem("mdm_theme")` en `frontend/app.js`. Para cumplir el requisito de tema oscuro por defecto con interruptor a claro funcional, el desarrollador debe añadir el marcado y el JS siguientes:
+
+1. **Etiqueta raíz (`frontend/index.html:2`):** Cambiar `<html lang="es">` por `<html lang="es" data-theme="dark">`.
+2. **Reemplazo de `@media (prefers-color-scheme: dark)` (`frontend/index.html:25-39`):** Eliminar el media query y pegar en su lugar el bloque `:root` (oscuro por defecto con `color-scheme: dark;`) y el bloque `html[data-theme="light"]` (con `color-scheme: light;`) de §1.2.
+3. **Marcado del botón `#btn-toggle-theme` a insertar en `header` (`frontend/index.html:907-910`, dentro de `.status-strip`, justo después de `<span class="status-item"><span class="dot" id="dot-db"></span>db</span>`):**
+   ```html
+   <div class="status-strip">
+     <span class="status-item"><span class="dot" id="dot-api"></span>api</span>
+     <span class="status-item"><span class="dot" id="dot-db"></span>db</span>
+     <button type="button" class="icon-btn" id="btn-toggle-theme" title="Cambiar a tema claro" aria-label="Cambiar entre tema oscuro y claro" aria-pressed="false">
+       <svg class="svg-icon theme-icon-light" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg>
+       <svg class="svg-icon theme-icon-dark" aria-hidden="true" focusable="false"><use href="#i-moon"/></svg>
+     </button>
+   </div>
+   ```
+4. **Lógica JS de persistencia y conmutación a añadir en `frontend/app.js` (junto al bloque de `SIDEBAR_COLLAPSED_KEY` en `app.js:2526-2539`):**
+   ```js
+   const THEME_KEY = "mdm_theme";
+   const themeBtn = document.getElementById("btn-toggle-theme");
+
+   function applyTheme(theme) {
+     const resolved = theme === "light" ? "light" : "dark";
+     document.documentElement.dataset.theme = resolved;
+     localStorage.setItem(THEME_KEY, resolved);
+     if (themeBtn) {
+       const isLight = resolved === "light";
+       themeBtn.setAttribute("aria-pressed", isLight ? "true" : "false");
+       themeBtn.title = isLight ? "Cambiar a tema oscuro" : "Cambiar a tema claro";
+     }
+   }
+
+   themeBtn?.addEventListener("click", () => {
+     const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+     applyTheme(next);
+   });
+
+   applyTheme(localStorage.getItem(THEME_KEY) || "dark");
+   ```
 
 ### 1.2. Bloque CSS `:root` y `html[data-theme="light"]` listo para pegar
 
 ```css
   :root {
+    color-scheme: dark;
+
     /* --- Superficies y bordes (Tema Oscuro por defecto) --- */
     --bg: #0f1117;               /* L = 0.0056 | Barra lateral, cabecera, carriles Kanban, barra nota */
     --panel: #161922;            /* L = 0.0098 | Lienzo principal (main), tabla de datos, inputs */
@@ -42,7 +79,7 @@ Está redactada para que el desarrollador la aplique directamente en `frontend/i
     --accent-btn: #4e5ac0;       /* L = 0.1274 | Fondo de botón primario .btn-primary */
     --accent-contrast: #ffffff;  /* L = 1.0000 | Texto sobre .btn-primary (5.92:1 sobre --accent-btn) */
     --accent-ink: #9ba4ff;       /* L = 0.4074 | Wikilinks, pestañas activas, fila activa (7.65:1 sobre --panel) */
-    --accent-soft: rgba(94, 106, 210, 0.18); /* Compuesto: #1d2139 sobre --bg (L=0.0148), #232842 sobre --panel (L=0.0209) */
+    --accent-soft: rgba(94, 106, 210, 0.18); /* Compuesto: #1d2139 sobre --bg (L=0.0164), #232842 sobre --panel (L=0.0227) */
 
     /* --- Estados semánticos --- */
     --ok: #3dd68c;               /* L = 0.5098 | Online / completado (9.36:1 sobre --panel, 10.06:1 sobre --bg) */
@@ -97,6 +134,8 @@ Está redactada para que el desarrollador la aplique directamente en `frontend/i
   }
 
   html[data-theme="light"] {
+    color-scheme: light;
+
     --bg: #f3f4f8;               /* L = 0.9053 */
     --panel: #ffffff;            /* L = 1.0000 */
     --surface-elevated: #f8f9fc; /* L = 0.9474 */
@@ -111,17 +150,34 @@ Está redactada para que el desarrollador la aplique directamente en `frontend/i
     --accent-btn: #3b44d1;       /* L = 0.0967 */
     --accent-contrast: #ffffff;  /* L = 1.0000 (7.16:1 sobre --accent-btn) */
     --accent-ink: #323ab8;       /* L = 0.0716 (8.63:1 sobre --panel, 7.85:1 sobre --bg) */
-    --accent-soft: rgba(67, 76, 230, 0.10); /* Compuesto: #e1e3f6 sobre --bg (L=0.7745), #ecedfc sobre --panel (L=0.8543) */
+    --accent-soft: rgba(67, 76, 230, 0.10); /* Compuesto: #e1e3f6 sobre --bg (L=0.7760), #ecedfc sobre --panel (L=0.8543) */
 
     --ok: #18794e;               /* L = 0.1442 (5.41:1 sobre --panel, 4.92:1 sobre --bg) */
     --warn: #b45309;             /* L = 0.1591 (5.02:1 sobre --panel, 4.57:1 sobre --bg) */
     --down: #c81e1e;             /* L = 0.1330 (5.74:1 sobre --panel, 5.22:1 sobre --bg) */
-    --down-bg: rgba(200, 30, 30, 0.10);     /* Compuesto: #fae8e8 sobre --panel (L=0.8407; --down da 4.86:1) */
+    --down-bg: rgba(200, 30, 30, 0.10);     /* Compuesto: #fae8e8 sobre --panel (L=0.8386; --down da 4.86:1) */
 
     --shadow-card: 0 1px 2px rgba(17, 20, 28, 0.06);
     --shadow-float: 0 12px 32px rgba(17, 20, 28, 0.16);
     --shadow-toast: 0 6px 18px rgba(17, 20, 28, 0.14);
   }
+
+  /* Utilidad de accesibilidad para texto solo visible a lectores de pantalla */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Conmutación del icono en #btn-toggle-theme según el tema activo */
+  html[data-theme="dark"] .theme-icon-dark { display: none; }
+  html[data-theme="light"] .theme-icon-light { display: none; }
 ```
 
 ### 1.3. Tabla de verificación de contrastes (reproducible con la fórmula WCAG 2.x)
@@ -138,8 +194,8 @@ Está redactada para que el desarrollador la aplique directamente en `frontend/i
 | `.btn-primary`: `--accent-contrast` sobre `--accent-btn` | `#ffffff` ($1.0000$) vs. `#4e5ac0` ($0.1274$) | **5.92:1** | `#ffffff` ($1.0000$) vs. `#3b44d1` ($0.0967$) | **7.16:1** | $\ge 4.5:1$ (AA/AAA) |
 | `--accent-ink` sobre `--panel` | `#9ba4ff` ($0.4074$) vs. `#161922` ($0.0098$) | **7.65:1** | `#323ab8` ($0.0716$) vs. `#ffffff` ($1.0000$) | **8.63:1** | $\ge 4.5:1$ (AAA) |
 | `--accent-ink` sobre `--bg` | `#9ba4ff` ($0.4074$) vs. `#0f1117` ($0.0056$) | **8.22:1** | `#323ab8` ($0.0716$) vs. `#f3f4f8` ($0.9053$) | **7.85:1** | $\ge 4.5:1$ (AAA) |
-| `--accent-ink` sobre `--accent-soft` (en `--bg`) | `#9ba4ff` ($0.4074$) vs. `#1d2139` ($0.0148$) | **6.88:1** | `#323ab8` ($0.0716$) vs. `#e1e3f6` ($0.7745$) | **6.79:1** | $\ge 4.5:1$ (AA) |
-| `--accent-ink` sobre `--accent-soft` (en `--panel`) | `#9ba4ff` ($0.4074$) vs. `#232842` ($0.0209$) | **6.29:1** | `#323ab8` ($0.0716$) vs. `#ecedfc` ($0.8543$) | **7.43:1** | $\ge 4.5:1$ (AAA) |
+| `--accent-ink` sobre `--accent-soft` (en `--bg`) | `#9ba4ff` ($0.4074$) vs. `#1d2139` ($0.0164$) | **6.88:1** | `#323ab8` ($0.0716$) vs. `#e1e3f6` ($0.7760$) | **6.79:1** | $\ge 4.5:1$ (AA) |
+| `--accent-ink` sobre `--accent-soft` (en `--panel`) | `#9ba4ff` ($0.4074$) vs. `#232842` ($0.0227$) | **6.29:1** | `#323ab8` ($0.0716$) vs. `#ecedfc` ($0.8543$) | **7.43:1** | $\ge 4.5:1$ (AAA) |
 | `--border-input` sobre `--panel` | `#6c7690` ($0.1816$) vs. `#161922` ($0.0098$) | **3.87:1** | `#798295` ($0.2220$) vs. `#ffffff` ($1.0000$) | **3.86:1** | $\ge 3.0:1$ (1.4.11) |
 | `--border-input` sobre `--bg` | `#6c7690` ($0.1816$) vs. `#0f1117` ($0.0056$) | **4.16:1** | `#798295` ($0.2220$) vs. `#f3f4f8` ($0.9053$) | **3.51:1** | $\ge 3.0:1$ (1.4.11) |
 | `--border-input` sobre `--surface-elevated` | `#6c7690` ($0.1816$) vs. `#1e222e` ($0.0162$) | **3.50:1** | `#798295` ($0.2220$) vs. `#f8f9fc` ($0.9474$) | **3.67:1** | $\ge 3.0:1$ (1.4.11) |
@@ -150,13 +206,13 @@ Está redactada para que el desarrollador la aplique directamente en `frontend/i
 | `--warn` sobre `--panel` | `#f5a623` ($0.4681$) vs. `#161922` ($0.0098$) | **8.66:1** | `#b45309` ($0.1591$) vs. `#ffffff` ($1.0000$) | **5.02:1** | $\ge 4.5:1$ (AA) |
 | `--down` sobre `--panel` | `#f26464` ($0.2891$) vs. `#161922` ($0.0098$) | **5.67:1** | `#c81e1e` ($0.1330$) vs. `#ffffff` ($1.0000$) | **5.74:1** | $\ge 4.5:1$ (AA) |
 | `--down` sobre `--bg` | `#f26464` ($0.2891$) vs. `#0f1117` ($0.0056$) | **6.09:1** | `#c81e1e` ($0.1330$) vs. `#f3f4f8` ($0.9053$) | **5.22:1** | $\ge 4.5:1$ (AA) |
-| `--down` sobre `--down-bg` (en `--panel`) | `#f26464` ($0.2891$) vs. `#37242c` ($0.0226$) | **4.67:1** | `#c81e1e` ($0.1330$) vs. `#fae8e8` ($0.8407$) | **4.86:1** | $\ge 4.5:1$ (AA) |
+| `--down` sobre `--down-bg` (en `--panel`) | `#f26464` ($0.2891$) vs. `#37242c` ($0.0226$) | **4.67:1** | `#c81e1e` ($0.1330$) vs. `#fae8e8` ($0.8386$) | **4.86:1** | $\ge 4.5:1$ (AA) |
 
 ---
 
 ## 2. Mapa de aplicación completo (Selector real → Propiedad → Valor)
 
-Todos los selectores listados a continuación son los que existen en `frontend/index.html` y `frontend/app.js` (más la clase `.svg-icon` para los iconos vectoriales y `.is-dragover` para el estado de arrastre en `.board-col`).
+Todos los selectores listados a continuación son los que existen en `frontend/index.html` y `frontend/app.js`, más las clases nuevas creadas explícitamente en esta spec: `.svg-icon` (`.icon-18`, `.icon-20`), `.sr-only`, `#btn-toggle-theme` (`.theme-icon-light`, `.theme-icon-dark`) e `.is-dragover` / `.is-dragging` para el arrastre en `.board-col`.
 
 ### 2.1. Base, Cabecera (`header`) y Layout (`aside`, `main`)
 
@@ -168,6 +224,8 @@ Todos los selectores listados a continuación son los que existen en `frontend/i
 | `.svg-icon` | `display: inline-block; width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; vertical-align: middle;` |
 | `.svg-icon.icon-18` | `width: 18px; height: 18px;` |
 | `.svg-icon.icon-20` | `width: 20px; height: 20px;` |
+| `.sr-only` *(nueva)* | `position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;` |
+| `html[data-theme="dark"] .theme-icon-dark, html[data-theme="light"] .theme-icon-light` *(nueva)* | `display: none;` |
 | `header` | `flex-shrink: 0; height: var(--header-height); display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--panel-border); background: var(--bg);` |
 | `.header-left` | `display: flex; align-items: center; gap: 10px;` |
 | `header .brand` | `display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; color: var(--ink);` |
@@ -398,12 +456,18 @@ Ningún componente queda a la invención del desarrollador:
 
 ## 5. Resolución exacta de los cinco hallazgos graves de la auditoría (y el hallazgo de ronda 2 en asas de bloque)
 
-### Hallazgo #1 — Navegación por teclado en elementos interactivos (`frontend/app.js` + `frontend/index.html`)
-Para que toda la interfaz sea operable con `Tab`, `Enter` y `Espacio` sin cambiar etiquetas que puedan afectar selectores:
-1. **Helper en `frontend/app.js`:**
+### Hallazgo #1 — Navegación por teclado en elementos interactivos con *roving tabindex* y ARIA válido (`frontend/app.js` + `frontend/index.html`)
+Para que toda la interfaz sea operable con `Tab`, flechas, `Enter` y `Espacio` sin generar `role="treeitem"` huérfanos ni decenas de paradas de `Tab` en el árbol o en las 72 celdas de una tabla:
+
+1. **Contenedores de árbol con `role="tree"` (`frontend/index.html:926` y `938`, y `frontend/app.js:464`):**
+   - En `frontend/index.html:926`: `<div id="tree-container" role="tree" aria-label="Páginas"></div>`.
+   - En `frontend/index.html:938`: `<div id="db-tree-container" role="tree" aria-label="Bases de datos"></div>`.
+   - En `frontend/app.js:464` (`renderTreeNode`, cuando el nodo tiene hijos): añadir `kids.setAttribute("role", "group");` a `<div class="tree-children" role="group">`.
+2. **Helper de activación por teclado y *roving tabindex* en el árbol (`frontend/app.js`):**
+   - Cada contenedor `[role="tree"]` expone **una única parada de `Tab` (`tabIndex = 0`)**: la fila `.tree-row.active` (o la primera `.tree-row` del contenedor si ninguna está activa); el resto de `.tree-row` llevan `tabIndex = -1` y se recorren con `ArrowDown` / `ArrowUp` / `Home` / `End`.
    ```js
-   function makeKeyboardActivatable(el, role = "button") {
-     el.tabIndex = 0;
+   function makeKeyboardActivatable(el, role = "button", tabIndex = 0) {
+     el.tabIndex = tabIndex;
      if (role) el.setAttribute("role", role);
      el.addEventListener("keydown", (e) => {
        if (e.target !== el) return; // no interceptar Enter/Espacio dentro de un <input> hijo en edición
@@ -413,15 +477,84 @@ Para que toda la interfaz sea operable con `Tab`, `Enter` y `Espacio` sin cambia
        }
      });
    }
+
+   function initTreeRovingTabIndex(container) {
+     if (!container) return;
+     const rows = [...container.querySelectorAll(".tree-row")];
+     if (!rows.length) return;
+     const active = rows.find((r) => r.classList.contains("active")) || rows[0];
+     rows.forEach((r) => {
+       const isCurrent = r === active;
+       r.tabIndex = isCurrent ? 0 : -1;
+       r.setAttribute("aria-selected", r.classList.contains("active") ? "true" : "false");
+     });
+     if (!container.dataset.rovingBound) {
+       container.dataset.rovingBound = "1";
+       container.addEventListener("keydown", (e) => {
+         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+         const currentRows = [...container.querySelectorAll(".tree-row")];
+         const idx = currentRows.indexOf(document.activeElement);
+         if (idx === -1) return;
+         e.preventDefault();
+         let nextIdx = idx;
+         if (e.key === "ArrowDown") nextIdx = Math.min(currentRows.length - 1, idx + 1);
+         else if (e.key === "ArrowUp") nextIdx = Math.max(0, idx - 1);
+         else if (e.key === "Home") nextIdx = 0;
+         else if (e.key === "End") nextIdx = currentRows.length - 1;
+         currentRows.forEach((r, i) => { r.tabIndex = i === nextIdx ? 0 : -1; });
+         currentRows[nextIdx].focus();
+       });
+     }
+   }
    ```
-2. **Dónde se invoca en `frontend/app.js`:**
-   - `renderTreeNode` (`app.js:372`): `makeKeyboardActivatable(row, "treeitem")` en cada `.tree-row`.
-   - `dashboardItem` (`app.js:220`): `makeKeyboardActivatable(item, "button")` en cada `.dashboard-item`.
-   - `renderOutline` (`app.js:736`): `makeKeyboardActivatable(item, "button")` en cada `.note-outline-item`.
-   - `renderNote` (`app.js:811`): `makeKeyboardActivatable(item, "button")` en cada `.backlink-item`.
-   - `runSearch` (`app.js:2493`): `makeKeyboardActivatable(el, "button")` en cada `.search-hit`.
-   - `renderBoardColumn` (`app.js:2042`): `makeKeyboardActivatable(card, "button")` en cada `.board-card`.
-   - `paintCell` (`app.js:1888`): añadir `td.tabIndex = 0;` y `td.onkeydown = (e) => { if (e.target === td && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); td.click(); } };`. Al usar `e.target === td`, cuando `editCell()` monta el `<input>` o `<select>` dentro de `td`, pulsar `Enter` o `Espacio` dentro del `<input>` ejecuta el `commit()` del propio input sin re-disparar `td.click()`.
+   - En `renderTreeNode` (`app.js:372`): llamar a `makeKeyboardActivatable(row, "treeitem", -1)`.
+   - Al final de `loadTree()` (`app.js:353`, tras `markActive`) y dentro de `markActive()` (`app.js:474`): invocar `initTreeRovingTabIndex(treeContainer); initTreeRovingTabIndex(dbContainer);`.
+3. **Elementos tipo botón en vistas (`tabIndex = 0`, `role="button"`):**
+   - `dashboardItem` (`app.js:220`): `makeKeyboardActivatable(item, "button", 0)` en cada `.dashboard-item`.
+   - `renderOutline` (`app.js:736`): `makeKeyboardActivatable(item, "button", 0)` en cada `.note-outline-item`.
+   - `renderNote` (`app.js:811`): `makeKeyboardActivatable(item, "button", 0)` en cada `.backlink-item`.
+   - `runSearch` (`app.js:2493`): `makeKeyboardActivatable(el, "button", 0)` en cada `.search-hit`.
+   - `renderBoardColumn` (`app.js:2042`): `makeKeyboardActivatable(card, "button", 0)` en cada `.board-card`.
+4. **Celdas editables en `.rows-table` con *roving tabindex* (`paintCell` y `renderTableView`, `app.js:1830-1896`):**
+   - Para evitar 72 paradas de `Tab` en una tabla de 9×8, solo la **primera celda editable de la tabla** (`tbody tr:first-child td:first-child`) arranca con `tabIndex = 0`; todas las demás celdas editables tienen `tabIndex = -1` (los botones `.row-del` de cada fila conservan su foco nativo de `<button>`).
+   - Dentro de la tabla, las flechas `ArrowRight` / `ArrowLeft` / `ArrowDown` / `ArrowUp` mueven el foco entre celdas editables (`td[data-editable="1"]`) actualizando el `tabIndex = 0` a la celda activa, y `Enter` o `Espacio` activan la edición (`td.click()`):
+   ```js
+   // En paintCell (app.js:1888):
+   td.dataset.editable = "1";
+   td.tabIndex = -1;
+   td.onkeydown = (e) => {
+     if (e.target !== td) return; // no interceptar teclas dentro del <input>/<select> de editCell()
+     if (e.key === "Enter" || e.key === " ") {
+       e.preventDefault();
+       td.click();
+       return;
+     }
+     if (["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(e.key)) {
+       e.preventDefault();
+       const tr = td.parentElement;
+       const tbody = tr.parentElement;
+       const allRows = [...tbody.querySelectorAll("tr")];
+       const rIdx = allRows.indexOf(tr);
+       const cells = [...tr.querySelectorAll('td[data-editable="1"]')];
+       const cIdx = cells.indexOf(td);
+       let target = null;
+       if (e.key === "ArrowRight") target = cells[cIdx + 1] || allRows[rIdx + 1]?.querySelectorAll('td[data-editable="1"]')[0];
+       else if (e.key === "ArrowLeft") {
+         const prevCells = allRows[rIdx - 1]?.querySelectorAll('td[data-editable="1"]');
+         target = cells[cIdx - 1] || (prevCells ? prevCells[prevCells.length - 1] : null);
+       } else if (e.key === "ArrowDown") target = allRows[rIdx + 1]?.querySelectorAll('td[data-editable="1"]')[cIdx];
+       else if (e.key === "ArrowUp") target = allRows[rIdx - 1]?.querySelectorAll('td[data-editable="1"]')[cIdx];
+       if (target) {
+         td.tabIndex = -1;
+         target.tabIndex = 0;
+         target.focus();
+       }
+     }
+   };
+   // Y al final de renderTableView (app.js:1880), antes de return wrap:
+   const firstCell = tbody.querySelector('td[data-editable="1"]');
+   if (firstCell) firstCell.tabIndex = 0;
+   ```
 
 ### Hallazgo #2 — Fin de la colisión de `.note-outline-dropdown` con `Backlinks` y `Exportar`
 - **Causa actual:** `createOutlinePanel()` cuelga `<details class="note-outline-dropdown">` de `document.body` con `position: fixed; top: 60px; right: 20px; z-index: 900`, tapando `.note-topbar-right` (`⇩` y `Backlinks`).
@@ -436,7 +569,7 @@ Para que toda la interfaz sea operable con `Tab`, `Enter` y `Espacio` sin cambia
   1. **Tamaño:** `.cm-mdm-block-add, .cm-mdm-block-handle` pasan a **`width: 28px; height: 28px; min-width: 28px; min-height: 28px; opacity: 1;`** (cumple holgadamente WCAG 2.5.8 de $24\times24\text{ px}$ e iguala a `.icon-btn`).
   2. **Posición y margen:** `#note-body .cm-content` sube su `padding-left` de `44px` a `64px`, y `.cm-mdm-block-handle-wrap` se posiciona en `left: -60px; gap: 2px;` ($28 + 2 + 28 = 58\text{ px}$, quedando a $2\text{ px}$ del texto sin pisarlo jamás).
   3. **Teclado y `:focus-within`:** En `BlockHandleWidget.toDOM()` (`entry.js` o en el DOM del editor), `addBtn` y `handle` llevan `tabindex="0"`, `role="button"` y `aria-label` (`"Añadir bloque debajo"` y `"Acciones del bloque"`). En CSS, la regla `#note-body .cm-line:hover .cm-mdm-block-handle-wrap, #note-body .cm-line:focus-within .cm-mdm-block-handle-wrap, .cm-mdm-block-handle-wrap:focus-within, .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) { opacity: 1; }` garantiza que al enfocar cualquiera de los dos controles con `Tab`, el contenedor está a **`opacity: 1`** (100 %) y el anillo `:focus-visible` (`2px solid var(--accent)`) mide **3.74:1** en oscuro y **6.15:1** en claro.
-  4. **Acciones de portada (`.note-header-remove` / `.note-cover-action`):** Cualquier botón de acción sobre la cabecera de nota tiene `min-height: 28px; padding: 4px 10px;` (nunca `22px` ni `15px`).
+  4. **Acción de portada (`.note-header-remove`, `frontend/index.html:278` y `app.js:855`):** Sube a `min-height: 28px; padding: 4px 10px;` (nunca `22px` ni `15px`).
 
 ### Hallazgo #4 — Objetivos táctiles $\ge 28\times28\text{ px}$ en todos los botones de icono
 - `.icon-btn`: **`28×28 px`** (`width: 28px; height: 28px; min-width: 28px; min-height: 28px`), con `gap: 4px` en `.nav-history-controls`.
@@ -450,7 +583,7 @@ Para que toda la interfaz sea operable con `Tab`, `Enter` y `Espacio` sin cambia
   - En **tema claro**: `#ffffff` ($L = 1.0000$) sobre `#3b44d1` ($L = 0.0967$) → **7.16:1** (cumple WCAG AAA $\ge 7.0:1$).
 - **Formulario `.inline-form` ("+ Nueva fila"):**
   - En lugar de apilar 7 campos de `891 px` de ancho que suman `541 px` de altura, `.inline-form` se declara como `display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-items: end;`.
-  - No requiere ni siquiera cambiar la estructura de hijos que genera `renderAddRowForm(database)` en `frontend/app.js:2165-2224`: el primer hijo `.panel-head` ocupa toda la fila superior con `.inline-form > .panel-head { grid-column: 1 / -1; margin: 0 0 2px; }`, cada `.field` ocupa una celda de la rejilla con `margin-bottom: 0`, y el botón final `.btn-primary` se alinea en la base de la última celda (`height: 28px; align-self: end;`). Altura total medida con 7 propiedades: **`~118 px`** (reducción del 78 % respecto a `541 px`).
+  - No requiere ni siquiera cambiar la estructura de hijos que genera `renderAddRowForm(database)` en `frontend/app.js:2165-2224`: el primer hijo `.panel-head` ocupa toda la fila superior con `.inline-form > .panel-head { grid-column: 1 / -1; margin: 0 0 2px; }`, cada `.field` ocupa una celda de la rejilla con `margin-bottom: 0`, y el botón final `.btn-primary` se alinea en la base de la última celda (`height: 28px; align-self: end;`). Altura total medida en el navegador a `1280 px` de ancho: **`137 px`** (`976×137 px`, frente a los `541 px` del formulario vertical actual, lo que supone una reducción real del **74,7 %** calculada como $(541 - 137) / 541 = 74,68\%$).
 
 ---
 
@@ -496,8 +629,8 @@ function svgIcon(id, sizeClass = "") {
 | 16 | `+` | `#i-plus` | `plus` | `index.html:924` (`#btn-new-note`), `index.html:935` (`#btn-new-database`), `index.html:957` (`#btn-add-prop`), `entry.js:540` (`.cm-mdm-block-add`), `app.js:866` (`+ Imagen de cabecera`), `app.js:1654` (`+ Vista`), `app.js:2172` (`+ Nueva fila`) | **16×16** | En botones solo-icono (`#btn-new-note`, `#btn-new-database`, `.cm-mdm-block-add`): `aria-label` obligatorio en el botón (`"Nueva nota"`, `"Nueva base de datos en blanco"`, `"Añadir un bloque después de este"`). En botones con texto (`Propiedad`, `Vista`, `Imagen de cabecera`, `Nueva fila`): `<svg aria-hidden="true">` |
 | 17 | `↔` | `#i-arrow-left-right` | `move-horizontal` | `entry.js:286` (`<->` en `ARROW_GLYPHS`) | **16×16** | Decorativo/tipográfico en línea: `aria-hidden="true"` |
 | 18 | `📑` | `#i-list-tree` | `list-tree` | `index.html:325` / `app.js:756` (`.note-outline-dropdown summary` `"Índice"`) | **16×16** | Decorativo junto al texto `"Índice"`: `<svg aria-hidden="true">` |
-| 19 | `☀` | `#i-sun` | `sun` | `index.html` (`#btn-toggle-theme` cuando el tema activo es oscuro, para indicar paso a claro, o icono par del conmutador) | **16×16** | `<svg aria-hidden="true">`; botón `#btn-toggle-theme` con `aria-label="Cambiar entre tema oscuro y claro"` |
-| 20 | `☾` | `#i-moon` | `moon` | `index.html` (`#btn-toggle-theme` cuando el tema activo es claro) | **16×16** | `<svg aria-hidden="true">`; botón `#btn-toggle-theme` con `aria-label="Cambiar entre tema oscuro y claro"` |
+| 19 | *(nuevo)* | `#i-sun` | `sun` | `index.html:910` (botón nuevo `#btn-toggle-theme` a insertar en `.status-strip` según §1.1, visible cuando `data-theme="dark"` con `.theme-icon-light`) | **16×16** | `<svg aria-hidden="true">`; botón `#btn-toggle-theme` con `aria-label="Cambiar entre tema oscuro y claro"` y `aria-pressed="false"` |
+| 20 | *(nuevo)* | `#i-moon` | `moon` | `index.html:910` (botón nuevo `#btn-toggle-theme` a insertar en `.status-strip` según §1.1, visible cuando `data-theme="light"` con `.theme-icon-dark`) | **16×16** | `<svg aria-hidden="true">`; botón `#btn-toggle-theme` con `aria-label="Cambiar entre tema oscuro y claro"` y `aria-pressed="true"` |
 
 ### 6.4. Escala de tamaños de icono y alineación con el texto
 
@@ -546,7 +679,7 @@ Capturas tomadas sobre `docs/diseno/direccion-b.html` con el tema oscuro por def
 
 | Captura | Pantalla y condición verificada |
 | :--- | :--- |
-| ![Base de datos en vista Tabla (Oscuro)](capturas/16-b-tabla-oscuro.png) | `capturas/16-b-tabla-oscuro.png` (y `14-mockup-direccion-b.png`) — **Vista Tabla en tema oscuro por defecto**: iconos `#i-menu`, `#i-home`, `#i-arrow-*`, `#i-plus`, `#i-file-text`, `#i-database`, `#i-check`, `#i-trash` y formulario `.inline-form` en rejilla compacta (`137 px` de alto frente a `541 px`). |
+| ![Base de datos en vista Tabla (Oscuro)](capturas/16-b-tabla-oscuro.png) | `capturas/16-b-tabla-oscuro.png` — **Vista Tabla en tema oscuro por defecto**: iconos `#i-menu`, `#i-home`, `#i-arrow-*`, `#i-plus`, `#i-file-text`, `#i-database`, `#i-check`, `#i-trash`, interruptor `#btn-toggle-theme` en `.status-strip` y formulario `.inline-form` en rejilla compacta (`137 px` de alto frente a `541 px`, reducción del 74,7 %). |
 | ![Nota abierta (Oscuro)](capturas/17-b-nota-oscuro.png) | `capturas/17-b-nota-oscuro.png` — **Nota abierta en tema oscuro**: barra `.note-topbar` con `#i-check`, `#i-download` (`28×28 px`), `#i-chevron-right` en `Backlinks (3)` e `#i-list-tree` en `Índice (4)` sin colisión (`overlap: false`), y asas de bloque `#i-plus` + `#i-grip-vertical` a `28×28 px` con `:focus-within { opacity: 1 }`. |
 | ![Tablero Kanban (Oscuro)](capturas/18-b-tablero-oscuro.png) | `capturas/18-b-tablero-oscuro.png` — **Tablero Kanban en tema oscuro**: columnas `.board-col` con contenedor propio, insignias de estado e iconos `#i-calendar` y `#i-check`. |
 | ![Modal Editar Fila (Oscuro)](capturas/19-b-modal-oscuro.png) | `capturas/19-b-modal-oscuro.png` — **Modal `<dialog id="dialog-row">` en tema oscuro**: ancho `520 px`, botón de cierre `#i-x` (`28×28 px`), bordes `--border-input` (`3.50:1`) y botón primario `.btn-primary` (`5.92:1`). |
