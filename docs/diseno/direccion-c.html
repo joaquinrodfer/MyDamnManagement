@@ -1,0 +1,1098 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MyDamnManagement — Dirección C: Tablero Suizo</title>
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --panel: #ffffff;
+    --panel-border: #141413;
+    --border-subtle: #b8b3a6;
+    --ink: #141413;
+    --ink-muted: #4a4843;
+    --accent: #d9381e;
+    --accent-contrast: #ffffff;
+    --accent-ink: #b02710;
+    --accent-soft: #ffe6e0;
+    --highlight: #f5d94c;
+    --ok: #157f3b;
+    --down: #b81d13;
+    --down-bg: #ffe3e0;
+    --code-bg: #e8e4da;
+    --shadow-hard: 3px 3px 0 var(--panel-border);
+    --shadow-hard-lg: 7px 7px 0 var(--panel-border);
+    --font-body: "Helvetica Neue", Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  html[data-theme="dark"] {
+    --bg: #121211;
+    --panel: #1a1a18;
+    --panel-border: #e6e3dc;
+    --border-subtle: #3d3c38;
+    --ink: #f4f1ea;
+    --ink-muted: #b5b0a4;
+    --accent: #ff5a36;
+    --accent-contrast: #121211;
+    --accent-ink: #ff7a5c;
+    --accent-soft: #3a1d16;
+    --highlight: #d4af37;
+    --ok: #4ce080;
+    --down: #ff6b6b;
+    --down-bg: #3d1a1a;
+    --code-bg: #262623;
+  }
+
+  * { box-sizing: border-box; border-radius: 0 !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    display: flex;
+    flex-direction: column;
+  }
+  button { font-family: inherit; cursor: pointer; }
+  input, select, textarea, button {
+    font-family: inherit;
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  :focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  /* ---------- cabecera reticular suiza ---------- */
+  header {
+    flex-shrink: 0;
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    border-bottom: 2px solid var(--panel-border);
+    background: var(--panel);
+    min-height: 46px;
+  }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 16px;
+    border-right: 2px solid var(--panel-border);
+  }
+  header .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .brand-box {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    padding: 3px 6px;
+    border: 1.5px solid var(--panel-border);
+    font-weight: 800;
+  }
+  .nav-history-controls { display: flex; gap: 4px; }
+
+  .mockup-switcher {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+  }
+  .mockup-switcher-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink);
+    background: var(--highlight);
+    color: #141413;
+    padding: 3px 7px;
+    border: 1.5px solid var(--panel-border);
+  }
+  .mockup-pill {
+    border: 1.5px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 4px 10px;
+  }
+  .mockup-pill:hover { background: var(--code-bg); }
+  .mockup-pill.active {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    box-shadow: 2px 2px 0 var(--panel-border);
+  }
+
+  .status-strip {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 16px;
+    border-left: 2px solid var(--panel-border);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    background: var(--code-bg);
+  }
+  .status-item { display: flex; align-items: center; gap: 6px; }
+  .dot {
+    width: 9px;
+    height: 9px;
+    border: 1.5px solid var(--panel-border);
+    background: var(--ink-muted);
+  }
+  .dot.ok { background: var(--ok); }
+  .dot.down { background: var(--down); }
+
+  /* ---------- layout ---------- */
+  .layout { flex: 1; display: flex; min-height: 0; }
+  aside {
+    width: 268px;
+    flex-shrink: 0;
+    border-right: 2px solid var(--panel-border);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .layout.sidebar-collapsed aside { display: none; }
+  @media (max-width: 1100px) {
+    aside { width: 232px; }
+  }
+
+  main {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    background: var(--bg);
+    padding: 28px 34px 64px;
+  }
+
+  /* ---------- controles (>= 30x30px con borde visible) ---------- */
+  .icon-btn {
+    background: var(--panel);
+    border: 1.5px solid var(--panel-border);
+    color: var(--ink);
+    width: 30px;
+    height: 30px;
+    line-height: 1;
+    font-size: 14px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .icon-btn:hover:not(:disabled) {
+    background: var(--highlight);
+    color: #141413;
+    box-shadow: 2px 2px 0 var(--panel-border);
+  }
+  .icon-btn:disabled { opacity: 0.35; cursor: default; border-style: dashed; }
+
+  /* ---------- sidebar ---------- */
+  .sidebar-search {
+    padding: 12px;
+    border-bottom: 2px solid var(--panel-border);
+    background: var(--code-bg);
+  }
+  .sidebar-search input {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1.5px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+  }
+  .sidebar-section {
+    padding: 10px;
+    border-bottom: 1.5px solid var(--panel-border);
+  }
+  .sidebar-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 4px 8px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .template-btn {
+    background: var(--panel);
+    border: 1.5px solid var(--panel-border);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    min-height: 30px;
+  }
+  .template-btn:hover { background: var(--highlight); color: #141413; box-shadow: 2px 2px 0 var(--panel-border); }
+
+  .tree-node { user-select: none; }
+  .tree-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    min-height: 32px;
+    border: 1.5px solid transparent;
+    cursor: pointer;
+    font-size: 13.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tree-row:hover { background: var(--code-bg); border-color: var(--panel-border); }
+  .tree-row.active {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    border-color: var(--panel-border);
+    box-shadow: 2px 2px 0 var(--panel-border);
+    font-weight: 700;
+  }
+  .tree-children {
+    margin-left: 14px;
+    border-left: 2px solid var(--panel-border);
+    padding-left: 6px;
+  }
+
+  /* ---------- botones ---------- */
+  .btn {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 6px 12px;
+    min-height: 32px;
+    border: 1.5px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+    box-shadow: var(--shadow-hard);
+  }
+  .btn:hover {
+    transform: translate(-1px, -1px);
+    box-shadow: 4px 4px 0 var(--panel-border);
+    background: var(--highlight);
+    color: #141413;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-contrast);
+  }
+  .btn-primary:hover {
+    background: var(--accent);
+    color: var(--accent-contrast);
+  }
+  .btn-danger {
+    color: var(--down);
+    background: var(--panel);
+  }
+  .btn-danger:hover {
+    background: var(--down-bg);
+    color: var(--down);
+  }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  /* ---------- vista de database / tablero suizo ---------- */
+  .db-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--panel-border);
+    margin-bottom: 8px;
+  }
+  .db-title {
+    font-family: var(--font-body);
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    text-transform: uppercase;
+    border: none;
+    background: none;
+    color: var(--ink);
+  }
+  .db-schema-hint {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--ink-muted);
+    margin-bottom: 16px;
+    text-transform: uppercase;
+  }
+  .view-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+  }
+  .view-tab {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    min-height: 32px;
+    border: 1.5px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .view-tab.active {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    box-shadow: var(--shadow-hard);
+  }
+
+  /* Tablero Kanban con columnas estructurales */
+  .board {
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    padding-bottom: 12px;
+  }
+  .board-col {
+    flex: 0 0 264px;
+    background: var(--code-bg);
+    border: 2px solid var(--panel-border);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .board-col-head {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink);
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--panel-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .board-count {
+    background: var(--highlight);
+    color: #141413;
+    border: 1.5px solid var(--panel-border);
+    padding: 1px 7px;
+    font-weight: 800;
+  }
+  .board-card {
+    background: var(--panel);
+    border: 1.5px solid var(--panel-border);
+    padding: 12px;
+    font-size: 13.5px;
+    cursor: pointer;
+    box-shadow: var(--shadow-hard);
+  }
+  .board-card:hover {
+    transform: translate(-1px, -1px);
+    box-shadow: 4px 4px 0 var(--accent);
+  }
+  .board-card-title {
+    font-weight: 800;
+    font-size: 14.5px;
+    margin-bottom: 8px;
+    line-height: 1.3;
+  }
+  .board-card-prop {
+    font-family: var(--font-mono);
+    color: var(--ink-muted);
+    font-size: 11.5px;
+    margin-top: 4px;
+  }
+
+  .tag-box {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border: 1.5px solid var(--panel-border);
+    background: var(--bg);
+  }
+  .tag-box.high { background: var(--accent-soft); color: var(--accent-ink); }
+  .tag-box.done { background: var(--highlight); color: #141413; }
+
+  /* Tabla con rejilla visible */
+  .table-wrap {
+    overflow-x: auto;
+    border: 2px solid var(--panel-border);
+    background: var(--panel);
+    box-shadow: var(--shadow-hard);
+  }
+  table.rows-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .rows-table th, .rows-table td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1.5px solid var(--panel-border);
+    border-right: 1px solid var(--border-subtle);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .rows-table th {
+    background: var(--code-bg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink);
+  }
+  .rows-table td:first-child { font-weight: 700; }
+  .rows-table tbody tr:hover td { background: var(--accent-soft); }
+
+  .row-del {
+    background: var(--panel);
+    border: 1.5px solid var(--panel-border);
+    color: var(--down);
+    width: 28px;
+    height: 28px;
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .row-del:hover { background: var(--down-bg); }
+
+  /* Nota en ficha técnica */
+  .note-sheet {
+    max-width: 760px;
+    background: var(--panel);
+    border: 2px solid var(--panel-border);
+    box-shadow: var(--shadow-hard-lg);
+    padding: 24px 32px 48px;
+  }
+  .note-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 12px;
+    margin-bottom: 18px;
+    border-bottom: 2px solid var(--panel-border);
+  }
+  .note-savestatus {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .note-topbar-right { display: flex; align-items: center; gap: 8px; }
+  .note-backlinks-dropdown, .note-outline-dropdown { position: relative; }
+  .note-backlinks-dropdown summary, .note-outline-dropdown summary {
+    cursor: pointer;
+    list-style: none;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    background: var(--code-bg);
+    border: 1.5px solid var(--panel-border);
+    padding: 5px 10px;
+  }
+  .dropdown-FloatingPanel {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 900;
+    width: 240px;
+    background: var(--panel);
+    border: 2px solid var(--panel-border);
+    box-shadow: var(--shadow-hard);
+    padding: 6px;
+  }
+  .note-outline-item, .backlink-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 8px;
+    border: none;
+    background: none;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  .note-outline-item:hover, .backlink-item:hover { background: var(--highlight); color: #141413; }
+
+  .note-title-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .note-icon-btn {
+    font-size: 24px;
+    width: 40px;
+    height: 40px;
+    border: 2px solid var(--panel-border);
+    background: var(--highlight);
+    cursor: pointer;
+  }
+  .note-title {
+    font-family: var(--font-body);
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    border: none;
+    background: none;
+    color: var(--ink);
+    width: 100%;
+  }
+  .note-meta {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-bottom: 10px;
+  }
+  .note-description {
+    width: 100%;
+    border: 1.5px solid var(--panel-border);
+    background: var(--code-bg);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    padding: 8px 10px;
+    margin-bottom: 20px;
+    resize: none;
+  }
+
+  #note-body .cm-content {
+    padding: 4px 4px 60px 38px;
+    font-size: 15.5px;
+    line-height: 1.65;
+  }
+  #note-body .cm-line { position: relative; }
+  .cm-mdm-h1 { font-size: 1.7em; font-weight: 800; text-transform: uppercase; letter-spacing: -0.02em; }
+  .cm-mdm-h2 { font-size: 1.35em; font-weight: 800; }
+  .cm-mdm-mark { font-family: var(--font-mono); color: var(--accent-ink); font-weight: 700; margin-right: 6px; }
+  .cm-mdm-code {
+    font-family: var(--font-mono);
+    background: var(--code-bg);
+    border: 1px solid var(--panel-border);
+    padding: 1px 5px;
+    font-size: 0.9em;
+  }
+  .cm-mdm-wikilink-rendered {
+    color: var(--accent-ink);
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    cursor: pointer;
+  }
+  #note-body .cm-mdm-line-quote {
+    background: var(--code-bg);
+    border: 1.5px solid var(--panel-border);
+    border-left: 6px solid var(--accent);
+    padding: 10px 14px;
+    margin: 12px 0;
+    font-weight: 500;
+  }
+  #note-body .cm-mdm-line-code {
+    background: var(--code-bg);
+    border: 1.5px solid var(--panel-border);
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    margin: 12px 0;
+  }
+
+  .inline-form {
+    margin-top: 18px;
+    padding: 14px;
+    border: 2px solid var(--panel-border);
+    background: var(--panel);
+    box-shadow: var(--shadow-hard);
+  }
+  .inline-form-grid {
+    display: grid;
+    grid-template-columns: 2fr repeat(4, 1fr) auto;
+    gap: 10px;
+    align-items: end;
+  }
+  @media (max-width: 1100px) {
+    .inline-form-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .field input, .field select {
+    padding: 6px 8px;
+    min-height: 32px;
+    border: 1.5px solid var(--panel-border);
+    background: var(--bg);
+    color: var(--ink);
+  }
+
+  dialog {
+    border: 2.5px solid var(--panel-border);
+    padding: 22px;
+    background: var(--panel);
+    color: var(--ink);
+    width: min(520px, 92vw);
+    box-shadow: var(--shadow-hard-lg);
+  }
+  dialog::backdrop { background: rgba(20, 20, 19, 0.55); }
+  dialog h3 {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    margin: 0 0 14px;
+    font-size: 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--panel-border);
+  }
+  .dialog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <button class="icon-btn" id="btn-toggle-sidebar" title="Mostrar/ocultar barra lateral">☰</button>
+      <span class="brand"><span class="brand-box">MDM</span>MyDamnManagement</span>
+      <div class="nav-history-controls">
+        <button class="icon-btn" id="btn-nav-home" title="Ir al inicio">🏠</button>
+        <button class="icon-btn" id="btn-nav-back" title="Atrás">←</button>
+        <button class="icon-btn" id="btn-nav-forward" title="Adelante" disabled>→</button>
+        <button class="icon-btn" id="btn-nav-up" title="Subir un nivel">↑</button>
+      </div>
+    </div>
+
+    <div class="mockup-switcher" role="toolbar" aria-label="Cambiar vista del mockup">
+      <span class="mockup-switcher-label">Dirección C · Suizo</span>
+      <button type="button" class="mockup-pill" data-target="view-note">Nota</button>
+      <button type="button" class="mockup-pill" data-target="view-db-table">Tabla</button>
+      <button type="button" class="mockup-pill active" data-target="view-db-board">Tablero Kanban</button>
+      <button type="button" class="mockup-pill" id="btn-open-modal">Modal</button>
+      <button type="button" class="mockup-pill" id="btn-toggle-theme">☀/☾ Tema</button>
+    </div>
+
+    <div class="status-strip">
+      <span class="status-item"><span class="dot ok" id="dot-api"></span>api</span>
+      <span class="status-item"><span class="dot ok" id="dot-db"></span>db</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <div class="sidebar-search">
+        <input type="search" id="search-input" placeholder="BUSCAR EN EL VAULT…" />
+      </div>
+
+      <div id="nav-sections">
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <span>01 / Páginas</span>
+            <button class="icon-btn" id="btn-new-note" title="Nueva nota">+</button>
+          </div>
+          <div id="tree-container">
+            <div class="tree-node">
+              <div class="tree-row" tabindex="0" role="treeitem" data-switch="view-note">
+                <span class="type-icon">🏗️</span>
+                <span class="tree-label">Arquitectura del Sistema</span>
+              </div>
+              <div class="tree-children">
+                <div class="tree-node">
+                  <div class="tree-row" tabindex="0" role="treeitem" data-switch="view-note">
+                    <span class="type-icon">🚀</span>
+                    <span class="tree-label">Guía de Despliegue</span>
+                  </div>
+                </div>
+                <div class="tree-node">
+                  <div class="tree-row" tabindex="0" role="treeitem" data-switch="view-note">
+                    <span class="type-icon">⚙️</span>
+                    <span class="tree-label">Variables de Entorno</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="tree-node">
+              <div class="tree-row" tabindex="0" role="treeitem" data-switch="view-note">
+                <span class="type-icon">🗺️</span>
+                <span class="tree-label">Hoja de Ruta Q4</span>
+              </div>
+            </div>
+            <div class="tree-node">
+              <div class="tree-row" tabindex="0" role="treeitem" data-switch="view-note">
+                <span class="type-icon">📝</span>
+                <span class="tree-label">Notas de Reunión Semanal</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <span>02 / Bases de datos</span>
+            <div class="btn-row" style="gap: 4px;">
+              <button class="template-btn" id="btn-template-crm">CRM</button>
+              <button class="template-btn" id="btn-template-tasks">Tareas</button>
+              <button class="icon-btn" id="btn-new-database" title="Nueva base de datos">+</button>
+            </div>
+          </div>
+          <div id="db-tree-container">
+            <div class="tree-node">
+              <div class="tree-row active" tabindex="0" role="treeitem" aria-selected="true" data-switch="view-db-board">
+                <span class="type-icon">🗄</span>
+                <span class="tree-label">Plan de Producto Q4</span>
+              </div>
+            </div>
+            <div class="tree-node">
+              <div class="tree-row" tabindex="0" role="treeitem" data-switch="view-db-table">
+                <span class="type-icon">📇</span>
+                <span class="tree-label">Contactos CRM</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <!-- VISTA 1: NOTA ABIERTA -->
+      <section id="view-note" class="note-sheet" hidden>
+        <div class="note-topbar">
+          <div class="note-savestatus">
+            <span>[OK] GUARDADO EN DISCO</span>
+          </div>
+          <div class="note-topbar-right">
+            <button class="icon-btn" title="Exportar como Markdown (.md)">⇩</button>
+            <details class="note-backlinks-dropdown">
+              <summary>Backlinks (3)</summary>
+              <div class="dropdown-FloatingPanel">
+                <button type="button" class="backlink-item">🚀 Guía de Despliegue</button>
+                <button type="button" class="backlink-item">🗺️ Hoja de Ruta Q4</button>
+                <button type="button" class="backlink-item">📝 Notas de Reunión Semanal</button>
+              </div>
+            </details>
+            <details class="note-outline-dropdown">
+              <summary>📑 Índice (4)</summary>
+              <div class="dropdown-FloatingPanel">
+                <button type="button" class="note-outline-item">01. Arquitectura General</button>
+                <button type="button" class="note-outline-item" style="padding-left: 16px;">02. Principios de Diseño</button>
+                <button type="button" class="note-outline-item" style="padding-left: 16px;">03. Métricas Clave</button>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <div class="note-title-row">
+          <button type="button" class="note-icon-btn" title="Cambiar icono">🏗️</button>
+          <input type="text" class="note-title" value="Arquitectura del Sistema" aria-label="Título de la nota" />
+        </div>
+        <div class="note-meta">AUTOR: LUCIA · FECHA: 2026-10-30 · FORMATO: MARKDOWN</div>
+        <textarea class="note-description" rows="2" aria-label="Descripción de la nota">Documento maestro sobre el motor híbrido Markdown + SQLite y decisiones de diseño.</textarea>
+
+        <div id="note-body">
+          <div class="cm-content">
+            <div class="cm-line" style="margin-bottom: 12px;">
+              <span class="cm-mdm-h1"><span class="cm-mdm-mark">#</span>Arquitectura General</span>
+            </div>
+            <div class="cm-line" style="margin-bottom: 14px;">
+              El sistema <strong>MyDamnManagement</strong> almacena toda la verdad en ficheros <span class="cm-mdm-code">.md</span> con frontmatter YAML en el disco local, mientras mantiene un índice en <span class="cm-mdm-code">SQLite</span> para búsquedas rápidas (<span class="cm-mdm-code">FTS5</span>).
+            </div>
+            <div class="cm-line cm-mdm-line-quote">
+              La base de datos nunca es la fuente primaria; si el índice se borra, el vault reconstruye todo el estado en segundos.
+            </div>
+            <div class="cm-line" style="margin: 14px 0;">
+              Consulta también <span class="cm-mdm-wikilink-rendered">Guía de Despliegue</span> y <span class="cm-mdm-wikilink-rendered">Hoja de Ruta Q4</span>.
+            </div>
+            <div class="cm-line cm-mdm-line-code">def sync_vault(vault_path: Path, db_conn: Connection) -&gt; int:<br/>    return scan_and_index(vault_path, db_conn)</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VISTA 2: BASE DE DATOS (TABLA) -->
+      <section id="view-db-table" hidden>
+        <div class="db-header">
+          <input type="text" class="db-title" value="Plan de Producto Q4" aria-label="Título de la base de datos" />
+          <div class="btn-row">
+            <button type="button" class="btn">Propiedades</button>
+            <button type="button" class="btn">+ Vista</button>
+            <button type="button" class="btn btn-danger">Borrar base de datos</button>
+          </div>
+        </div>
+        <div class="db-schema-hint">ESQUEMA: ESTADO (SELECT) · PRIORIDAD (SELECT) · RESPONSABLE (TEXT) · FECHA LÍMITE (DATE) · HORAS (NUMBER)</div>
+
+        <div class="view-tabs">
+          <button type="button" class="view-tab active" data-switch="view-db-table">Todas (Tabla)</button>
+          <button type="button" class="view-tab" data-switch="view-db-board">Tablero por Estado (board)</button>
+          <button type="button" class="view-tab" data-switch="view-db-board">Por Prioridad (board)</button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="rows-table">
+            <thead>
+              <tr>
+                <th>Título</th>
+                <th>Estado</th>
+                <th>Prioridad</th>
+                <th>Responsable</th>
+                <th>Fecha límite</th>
+                <th>Horas</th>
+                <th>Etiquetas</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td tabindex="0">Auditoría de contraste y foco de teclado</td>
+                <td tabindex="0"><span class="tag-box high">En curso</span></td>
+                <td tabindex="0"><span class="tag-box high">Alta</span></td>
+                <td tabindex="0">Lucía M.</td>
+                <td tabindex="0">2026-10-30</td>
+                <td tabindex="0">6</td>
+                <td tabindex="0">ux, frontend</td>
+                <td><button type="button" class="row-del" title="Borrar fila">🗑</button></td>
+              </tr>
+              <tr>
+                <td tabindex="0">Rediseñar cabeceras y navegación lateral</td>
+                <td tabindex="0"><span class="tag-box">Pendiente</span></td>
+                <td tabindex="0"><span class="tag-box high">Alta</span></td>
+                <td tabindex="0">Lucía M.</td>
+                <td tabindex="0">2026-11-02</td>
+                <td tabindex="0">8</td>
+                <td tabindex="0">frontend, ux</td>
+                <td><button type="button" class="row-del" title="Borrar fila">🗑</button></td>
+              </tr>
+              <tr>
+                <td tabindex="0">Optimizar reindexado incremental FTS5</td>
+                <td tabindex="0"><span class="tag-box done">Hecho</span></td>
+                <td tabindex="0"><span class="tag-box">Media</span></td>
+                <td tabindex="0">Marco R.</td>
+                <td tabindex="0">2026-10-28</td>
+                <td tabindex="0">5</td>
+                <td tabindex="0">backend</td>
+                <td><button type="button" class="row-del" title="Borrar fila">🗑</button></td>
+              </tr>
+              <tr>
+                <td tabindex="0">Soporte de atajos de teclado en tablas</td>
+                <td tabindex="0"><span class="tag-box">Pendiente</span></td>
+                <td tabindex="0"><span class="tag-box">Media</span></td>
+                <td tabindex="0">Elena V.</td>
+                <td tabindex="0">2026-11-04</td>
+                <td tabindex="0">12</td>
+                <td tabindex="0">frontend</td>
+                <td><button type="button" class="row-del" title="Borrar fila">🗑</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VISTA 3: TABLERO KANBAN - ABIERTA POR DEFECTO EN DIRECCIÓN C -->
+      <section id="view-db-board">
+        <div class="db-header">
+          <input type="text" class="db-title" value="Plan de Producto Q4" aria-label="Título de la base de datos" />
+          <div class="btn-row">
+            <button type="button" class="btn">Propiedades</button>
+            <button type="button" class="btn">+ Vista</button>
+            <button type="button" class="btn btn-danger">Borrar base de datos</button>
+          </div>
+        </div>
+        <div class="db-schema-hint">RETÍCULA KANBAN · AGRUPADO POR: ESTADO · CLIC EN TARJETA PARA EDITAR</div>
+
+        <div class="view-tabs">
+          <button type="button" class="view-tab" data-switch="view-db-table">Todas (Tabla)</button>
+          <button type="button" class="view-tab active" data-switch="view-db-board">Tablero por Estado (board)</button>
+          <button type="button" class="view-tab" data-switch="view-db-board">Por Prioridad (board)</button>
+        </div>
+
+        <div class="board">
+          <div class="board-col">
+            <div class="board-col-head"><span>01 / Pendiente</span><span class="board-count">3</span></div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Rediseñar cabeceras y navegación lateral</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box high">Prioridad: Alta</span>
+                <span class="tag-box">8H</span>
+              </div>
+              <div class="board-card-prop">RESP: Lucía M. · 2026-11-02</div>
+            </div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Soporte de atajos de teclado en tablas</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box">Prioridad: Media</span>
+                <span class="tag-box">12H</span>
+              </div>
+              <div class="board-card-prop">RESP: Elena V. · BLOQUEADO: ✓</div>
+            </div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Backup automático del directorio vault</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box">Prioridad: Baja</span>
+                <span class="tag-box">7H</span>
+              </div>
+              <div class="board-card-prop">RESP: Marco R. · 2026-11-10</div>
+            </div>
+          </div>
+
+          <div class="board-col">
+            <div class="board-col-head"><span>02 / En curso</span><span class="board-count">2</span></div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Auditoría de contraste y foco de teclado</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box high">Prioridad: Alta</span>
+                <span class="tag-box">6H</span>
+              </div>
+              <div class="board-card-prop">RESP: Lucía M. · 2026-10-30</div>
+            </div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Corregir solapamiento del índice flotante a 1024px</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box high">Prioridad: Alta</span>
+                <span class="tag-box">4H</span>
+              </div>
+              <div class="board-card-prop">RESP: Lucía M. · 2026-10-31</div>
+            </div>
+          </div>
+
+          <div class="board-col">
+            <div class="board-col-head"><span>03 / En revisión</span><span class="board-count">1</span></div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Documentar formato de frontmatter en el vault</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box">Prioridad: Baja</span>
+                <span class="tag-box">3H</span>
+              </div>
+              <div class="board-card-prop">RESP: Diego S. · 2026-10-29</div>
+            </div>
+          </div>
+
+          <div class="board-col">
+            <div class="board-col-head"><span>04 / Hecho</span><span class="board-count">2</span></div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Optimizar reindexado incremental FTS5</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box done">Hecho</span>
+                <span class="tag-box">5H</span>
+              </div>
+              <div class="board-card-prop">RESP: Marco R. · 2026-10-28</div>
+            </div>
+            <div class="board-card" tabindex="0" role="button">
+              <div class="board-card-title">Pruebas de regresión en autoguardado keepalive</div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <span class="tag-box done">Hecho</span>
+                <span class="tag-box">6H</span>
+              </div>
+              <div class="board-card-prop">RESP: Elena V. · 2026-10-25</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="inline-form">
+          <div class="inline-form-grid">
+            <div class="field">
+              <label>+ Nueva fila (Título)</label>
+              <input type="text" placeholder="Escribe título…" />
+            </div>
+            <div class="field">
+              <label>Estado</label>
+              <select><option>Pendiente</option><option>En curso</option><option>Hecho</option></select>
+            </div>
+            <div class="field">
+              <label>Prioridad</label>
+              <select><option>Alta</option><option>Media</option><option>Baja</option></select>
+            </div>
+            <div class="field">
+              <label>Responsable</label>
+              <input type="text" placeholder="Nombre" />
+            </div>
+            <div class="field">
+              <label>Fecha</label>
+              <input type="date" value="2026-11-05" />
+            </div>
+            <button type="button" class="btn btn-primary">Añadir fila</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="dialog-row">
+    <h3>Editar fila // Plan de Producto Q4</h3>
+    <div class="field">
+      <label for="row-title">Título</label>
+      <input type="text" id="row-title" value="Auditoría de contraste y foco de teclado" />
+    </div>
+    <div class="dialog-grid">
+      <div class="field">
+        <label>Estado</label>
+        <select><option>En curso</option><option>Pendiente</option><option>Hecho</option></select>
+      </div>
+      <div class="field">
+        <label>Prioridad</label>
+        <select><option>Alta</option><option>Media</option><option>Baja</option></select>
+      </div>
+      <div class="field">
+        <label>Responsable</label>
+        <input type="text" value="Lucía M." />
+      </div>
+      <div class="field">
+        <label>Fecha límite</label>
+        <input type="date" value="2026-10-30" />
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="btn-cancel-row">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="btn-save-row">Guardar</button>
+    </div>
+  </dialog>
+
+  <script>
+    function showSection(targetId) {
+      ["view-note", "view-db-table", "view-db-board"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.hidden = id !== targetId;
+      });
+      document.querySelectorAll(".mockup-pill[data-target]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.target === targetId);
+      });
+    }
+
+    document.querySelectorAll("[data-target]").forEach((btn) => {
+      btn.addEventListener("click", () => showSection(btn.dataset.target));
+    });
+    document.querySelectorAll("[data-switch]").forEach((el) => {
+      el.addEventListener("click", () => showSection(el.dataset.switch));
+    });
+    document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
+      document.querySelector(".layout").classList.toggle("sidebar-collapsed");
+    });
+    document.getElementById("btn-toggle-theme").addEventListener("click", () => {
+      const html = document.documentElement;
+      html.dataset.theme = html.dataset.theme === "dark" ? "light" : "dark";
+    });
+    const dlg = document.getElementById("dialog-row");
+    document.getElementById("btn-open-modal").addEventListener("click", () => dlg.showModal());
+    document.querySelectorAll(".board-card").forEach((c) => c.addEventListener("click", () => dlg.showModal()));
+    document.getElementById("btn-cancel-row").addEventListener("click", () => dlg.close());
+    document.getElementById("btn-save-row").addEventListener("click", () => dlg.close());
+  </script>
+</body>
+</html>
