@@ -1082,21 +1082,28 @@
   .inline-form > .btn-primary { height: var(--control-size); align-self: end; justify-self: start; }
 
   /* ---------- dialogs ---------- */
+  /* 520 px (antes 440): con menos ancho las dos columnas de .prop-row
+     truncaban los inputs de clave y nombre visible. */
   dialog {
-    border: 1px solid var(--panel-border);
-    border-radius: 10px;
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-lg);
     padding: 20px;
-    background: var(--panel);
+    background: var(--surface-elevated);
     color: var(--ink);
-    width: min(440px, 92vw);
+    width: min(520px, 92vw);
+    box-shadow: var(--shadow-float);
   }
-  dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
-  dialog h3 { font-family: var(--font-mono); margin: 0 0 14px; font-size: 16px; }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+  dialog h3 { font-family: var(--font-body); font-weight: 700; margin: 0 0 14px; font-size: var(--text-lg); }
   .prop-row-wrap { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--panel-border); }
   .prop-row-wrap:last-child { border-bottom: none; }
-  .prop-row { display: grid; grid-template-columns: 1fr 1fr 100px auto; gap: 6px; align-items: center; }
-  .prop-row input, .prop-row select { padding: 5px 7px; border-radius: 5px; border: 1px solid var(--border-input); background: var(--bg); color: var(--ink); font-size: 12.5px; }
-  .prop-options-input { width: 100%; margin-top: 6px; padding: 5px 7px; border-radius: 5px; border: 1px solid var(--border-input); background: var(--bg); color: var(--ink); font-size: 12.5px; }
+  .prop-row { display: grid; grid-template-columns: 1fr 1fr 110px 28px; gap: 6px; align-items: center; }
+  .prop-row input, .prop-row select, .prop-options-input { padding: 5px 8px; min-height: var(--control-size); border-radius: var(--radius-sm); border: 1px solid var(--border-input); background: var(--panel); color: var(--ink); font-size: 12.5px; }
+  .prop-options-input { width: 100%; margin-top: 6px; }
+  /* Las listas de propiedades de los diálogos hacen su propio scroll: con
+     muchas filas el diálogo crecía más que la ventana y los botones de
+     acción se quedaban fuera de la pantalla. */
+  #prop-rows, #row-props { max-height: 55vh; overflow-y: auto; padding-right: 2px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
   /* ---------- avisos de error (toasts) ----------
