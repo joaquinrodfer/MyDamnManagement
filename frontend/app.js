@@ -2240,7 +2240,6 @@ function renderAddRowForm(database) {
 
   const head = document.createElement("div");
   head.className = "panel-head";
-  head.style.margin = "0 0 10px";
   head.innerHTML = `${svgIcon("i-plus")}Nueva fila`;
   wrap.appendChild(head);
 
