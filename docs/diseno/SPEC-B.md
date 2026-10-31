@@ -20,7 +20,7 @@ Está redactada para que el desarrollador la aplique directamente en `frontend/i
 > **Nota importante para el implementador:** Actualmente `frontend/index.html` solo tiene `@media (prefers-color-scheme: dark)` (línea 25) y **no existe todavía** el botón `#btn-toggle-theme` ni la lectura de `localStorage.getItem("mdm_theme")` en `frontend/app.js`. Para cumplir el requisito de tema oscuro por defecto con interruptor a claro funcional, el desarrollador debe añadir el marcado y el JS siguientes:
 
 1. **Etiqueta raíz (`frontend/index.html:2`):** Cambiar `<html lang="es">` por `<html lang="es" data-theme="dark">`.
-2. **Reemplazo de `@media (prefers-color-scheme: dark)` (`frontend/index.html:25-39`):** Eliminar el media query y pegar en su lugar el bloque `:root` (oscuro por defecto con `color-scheme: dark;`) y el bloque `html[data-theme="light"]` (con `color-scheme: light;`) de §1.2.
+2. **Sustitución de los tokens antiguos (`frontend/index.html:9-40`):** Sustituir el bloque `:root` actual (líneas 9-24, tokens claros con acento marrón) **y** el media query `@media (prefers-color-scheme: dark)` (líneas 25-40) por el bloque `:root` (oscuro por defecto con `color-scheme: dark;`) y el bloque `html[data-theme="light"]` (con `color-scheme: light;`) de §1.2. No debe quedar ningún `:root` antiguo compitiendo con el nuevo.
 3. **Marcado del botón `#btn-toggle-theme` a insertar en `header` (`frontend/index.html:907-910`, dentro de `.status-strip`, justo después de `<span class="status-item"><span class="dot" id="dot-db"></span>db</span>`):**
    ```html
    <div class="status-strip">
@@ -459,10 +459,10 @@ Ningún componente queda a la invención del desarrollador:
 ### Hallazgo #1 — Navegación por teclado en elementos interactivos con *roving tabindex* y ARIA válido (`frontend/app.js` + `frontend/index.html`)
 Para que toda la interfaz sea operable con `Tab`, flechas, `Enter` y `Espacio` sin generar `role="treeitem"` huérfanos ni decenas de paradas de `Tab` en el árbol o en las 72 celdas de una tabla:
 
-1. **Contenedores de árbol con `role="tree"` (`frontend/index.html:926` y `938`, y `frontend/app.js:464`):**
+1. **Contenedores de árbol con `role="tree"` (`frontend/index.html:926` y `938`):**
    - En `frontend/index.html:926`: `<div id="tree-container" role="tree" aria-label="Páginas"></div>`.
    - En `frontend/index.html:938`: `<div id="db-tree-container" role="tree" aria-label="Bases de datos"></div>`.
-   - En `frontend/app.js:464` (`renderTreeNode`, cuando el nodo tiene hijos): añadir `kids.setAttribute("role", "group");` a `<div class="tree-children" role="group">`.
+   - En `frontend/app.js:444-447` (`renderTreeNode`, cuando el nodo tiene hijos): la variable local se llama `childrenWrap` (no existe `kids`); tras `childrenWrap.className = "tree-children";` añadir `childrenWrap.setAttribute("role", "group");` para que quede `<div class="tree-children" role="group">`.
 2. **Helper de activación por teclado y *roving tabindex* en el árbol (`frontend/app.js`):**
    - Cada contenedor `[role="tree"]` expone **una única parada de `Tab` (`tabIndex = 0`)**: la fila `.tree-row.active` (o la primera `.tree-row` del contenedor si ninguna está activa); el resto de `.tree-row` llevan `tabIndex = -1` y se recorren con `ArrowDown` / `ArrowUp` / `Home` / `End`.
    ```js
@@ -508,14 +508,15 @@ Para que toda la interfaz sea operable con `Tab`, flechas, `Enter` y `Espacio` s
    }
    ```
    - En `renderTreeNode` (`app.js:372`): llamar a `makeKeyboardActivatable(row, "treeitem", -1)`.
-   - Al final de `loadTree()` (`app.js:353`, tras `markActive`) y dentro de `markActive()` (`app.js:474`): invocar `initTreeRovingTabIndex(treeContainer); initTreeRovingTabIndex(dbContainer);`.
+   - Tras poblar el árbol, en `loadTree()` (`app.js:353`, después de `updateNavButtons()`): invocar `initTreeRovingTabIndex(document.getElementById("tree-container")); initTreeRovingTabIndex(document.getElementById("db-tree-container"));`.
+   - Dentro de `markActive()` (`app.js:453-457`, función de ámbito de módulo): **no** usar `treeContainer`/`dbContainer` (son `const` locales de `loadTree()`, `app.js:340-341`, y no existen en ese ámbito). Al final del cuerpo, invocar `document.querySelectorAll('[role="tree"]').forEach(initTreeRovingTabIndex);` para re-aplicar el *roving tabindex* al cambiar la fila activa (p. ej. desde `selectNote`, `app.js:655`, que llama a `markActive` antes del `try`) sin lanzar `ReferenceError`.
 3. **Elementos tipo botón en vistas (`tabIndex = 0`, `role="button"`):**
    - `dashboardItem` (`app.js:220`): `makeKeyboardActivatable(item, "button", 0)` en cada `.dashboard-item`.
    - `renderOutline` (`app.js:736`): `makeKeyboardActivatable(item, "button", 0)` en cada `.note-outline-item`.
    - `renderNote` (`app.js:811`): `makeKeyboardActivatable(item, "button", 0)` en cada `.backlink-item`.
    - `runSearch` (`app.js:2493`): `makeKeyboardActivatable(el, "button", 0)` en cada `.search-hit`.
    - `renderBoardColumn` (`app.js:2042`): `makeKeyboardActivatable(card, "button", 0)` en cada `.board-card`.
-4. **Celdas editables en `.rows-table` con *roving tabindex* (`paintCell` y `renderTableView`, `app.js:1830-1896`):**
+4. **Celdas editables en `.rows-table` con *roving tabindex* (`paintCell` y `renderTable`, `app.js:1827-1896`):**
    - Para evitar 72 paradas de `Tab` en una tabla de 9×8, solo la **primera celda editable de la tabla** (`tbody tr:first-child td:first-child`) arranca con `tabIndex = 0`; todas las demás celdas editables tienen `tabIndex = -1` (los botones `.row-del` de cada fila conservan su foco nativo de `<button>`).
    - Dentro de la tabla, las flechas `ArrowRight` / `ArrowLeft` / `ArrowDown` / `ArrowUp` mueven el foco entre celdas editables (`td[data-editable="1"]`) actualizando el `tabIndex = 0` a la celda activa, y `Enter` o `Espacio` activan la edición (`td.click()`):
    ```js
@@ -551,7 +552,7 @@ Para que toda la interfaz sea operable con `Tab`, flechas, `Enter` y `Espacio` s
        }
      }
    };
-   // Y al final de renderTableView (app.js:1880), antes de return wrap:
+   // Y al final de renderTable (app.js:1883), justo antes de return wrap:
    const firstCell = tbody.querySelector('td[data-editable="1"]');
    if (firstCell) firstCell.tabIndex = 0;
    ```
@@ -569,7 +570,7 @@ Para que toda la interfaz sea operable con `Tab`, flechas, `Enter` y `Espacio` s
   1. **Tamaño:** `.cm-mdm-block-add, .cm-mdm-block-handle` pasan a **`width: 28px; height: 28px; min-width: 28px; min-height: 28px; opacity: 1;`** (cumple holgadamente WCAG 2.5.8 de $24\times24\text{ px}$ e iguala a `.icon-btn`).
   2. **Posición y margen:** `#note-body .cm-content` sube su `padding-left` de `44px` a `64px`, y `.cm-mdm-block-handle-wrap` se posiciona en `left: -60px; gap: 2px;` ($28 + 2 + 28 = 58\text{ px}$, quedando a $2\text{ px}$ del texto sin pisarlo jamás).
   3. **Teclado y `:focus-within`:** En `BlockHandleWidget.toDOM()` (`entry.js` o en el DOM del editor), `addBtn` y `handle` llevan `tabindex="0"`, `role="button"` y `aria-label` (`"Añadir bloque debajo"` y `"Acciones del bloque"`). En CSS, la regla `#note-body .cm-line:hover .cm-mdm-block-handle-wrap, #note-body .cm-line:focus-within .cm-mdm-block-handle-wrap, .cm-mdm-block-handle-wrap:focus-within, .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) { opacity: 1; }` garantiza que al enfocar cualquiera de los dos controles con `Tab`, el contenedor está a **`opacity: 1`** (100 %) y el anillo `:focus-visible` (`2px solid var(--accent)`) mide **3.74:1** en oscuro y **6.15:1** en claro.
-  4. **Acción de portada (`.note-header-remove`, `frontend/index.html:278` y `app.js:855`):** Sube a `min-height: 28px; padding: 4px 10px;` (nunca `22px` ni `15px`).
+  4. **Acción de portada (`.note-header-remove`, `frontend/index.html:348` —regla, con `:hover` en `356`— y `app.js:855`):** Sube a `min-height: 28px; padding: 4px 10px;` (nunca `22px` ni `15px`).
 
 ### Hallazgo #4 — Objetivos táctiles $\ge 28\times28\text{ px}$ en todos los botones de icono
 - `.icon-btn`: **`28×28 px`** (`width: 28px; height: 28px; min-width: 28px; min-height: 28px`), con `gap: 4px` en `.nav-history-controls`.
@@ -679,6 +680,7 @@ Capturas tomadas sobre `docs/diseno/direccion-b.html` con el tema oscuro por def
 
 | Captura | Pantalla y condición verificada |
 | :--- | :--- |
+| ![Vista general del mockup — Dirección B (Oscuro)](capturas/14-mockup-direccion-b.png) | `capturas/14-mockup-direccion-b.png` — **Vista general del mockup en tema oscuro por defecto** (`<html lang="es" data-theme="dark">`, 1280×800 px, sin scroll): barra lateral con árbol de páginas y bases de datos (`role="tree"`), topbar con navegación histórica, `.status-strip` con el interruptor `#btn-toggle-theme` (`#i-sun`, `aria-pressed="false"`) y la vista activa por defecto **Base de datos · Tabla** con el formulario `.inline-form` en rejilla compacta. |
 | ![Base de datos en vista Tabla (Oscuro)](capturas/16-b-tabla-oscuro.png) | `capturas/16-b-tabla-oscuro.png` — **Vista Tabla en tema oscuro por defecto**: iconos `#i-menu`, `#i-home`, `#i-arrow-*`, `#i-plus`, `#i-file-text`, `#i-database`, `#i-check`, `#i-trash`, interruptor `#btn-toggle-theme` en `.status-strip` y formulario `.inline-form` en rejilla compacta (`137 px` de alto frente a `541 px`, reducción del 74,7 %). |
 | ![Nota abierta (Oscuro)](capturas/17-b-nota-oscuro.png) | `capturas/17-b-nota-oscuro.png` — **Nota abierta en tema oscuro**: barra `.note-topbar` con `#i-check`, `#i-download` (`28×28 px`), `#i-chevron-right` en `Backlinks (3)` e `#i-list-tree` en `Índice (4)` sin colisión (`overlap: false`), y asas de bloque `#i-plus` + `#i-grip-vertical` a `28×28 px` con `:focus-within { opacity: 1 }`. |
 | ![Tablero Kanban (Oscuro)](capturas/18-b-tablero-oscuro.png) | `capturas/18-b-tablero-oscuro.png` — **Tablero Kanban en tema oscuro**: columnas `.board-col` con contenedor propio, insignias de estado e iconos `#i-calendar` y `#i-check`. |
