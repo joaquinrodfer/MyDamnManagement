@@ -2084,10 +2084,20 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
   // columna no acepta drops.
   if (groupKey) {
     col.addEventListener("dragover", (e) => {
-      if (boardDrag && boardDrag.databaseId === database.id) e.preventDefault();
+      if (!boardDrag || boardDrag.databaseId !== database.id) return;
+      e.preventDefault();
+      // Marca el destino para que se vea dónde va a caer la tarjeta.
+      col.classList.add("is-dragover");
+    });
+    col.addEventListener("dragleave", (e) => {
+      // Al pasar de la columna a una tarjeta hija también salta dragleave:
+      // solo se limpia si el puntero sale de la columna de verdad.
+      if (e.relatedTarget && col.contains(e.relatedTarget)) return;
+      col.classList.remove("is-dragover");
     });
     col.addEventListener("drop", (e) => {
       e.preventDefault();
+      col.classList.remove("is-dragover");
       const drag = boardDrag;
       boardDrag = null;
       if (!drag || drag.databaseId !== database.id) return;
@@ -2117,6 +2127,7 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
       card.draggable = true;
       card.addEventListener("dragstart", (e) => {
         boardDrag = { databaseId: database.id, row };
+        card.classList.add("is-dragging");
         if (e.dataTransfer) {
           e.dataTransfer.effectAllowed = "move";
           try {
@@ -2128,6 +2139,10 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
       });
       card.addEventListener("dragend", () => {
         boardDrag = null;
+        card.classList.remove("is-dragging");
+        // Si el arrastre se cancela (Esc, fuera de la ventana) el drop nunca
+        // llega: se limpian aquí los carriles que se quedaron marcados.
+        document.querySelectorAll(".board-col.is-dragover").forEach((c) => c.classList.remove("is-dragover"));
       });
     }
     // La tarjeta abre su fila: las propiedades se editan en el diálogo, con

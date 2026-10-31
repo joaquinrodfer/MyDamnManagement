@@ -971,28 +971,54 @@
   .table-wrap::-webkit-scrollbar-thumb { background: var(--border-input); border-radius: 5px; border: 2px solid var(--bg); }
   .table-wrap table { margin: 0; }
 
-  .board { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 8px; }
-  .board-col { flex: 0 0 240px; display: flex; flex-direction: column; gap: 8px; }
+  .board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; }
+  /* Cada carril es un contenedor visual propio (--bg sobre el --panel del
+     lienzo): así se ve dónde empieza y acaba la columna, no solo el hueco. */
+  .board-col {
+    flex: 0 0 256px;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-md);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color var(--dur-fast) var(--ease-std), background-color var(--dur-fast) var(--ease-std);
+  }
+  /* Destino del arrastre: se marca la columna entera (SPEC-B §3.7). */
+  .board-col.is-dragover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    outline: 1px dashed var(--accent);
+    outline-offset: -3px;
+  }
   .board-col-head {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--ink-muted);
-    padding: 4px 2px;
+    padding: 2px 4px 6px;
     display: flex;
     justify-content: space-between;
+    align-items: center;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
   .board-card {
-    background: var(--panel);
+    background: var(--surface-elevated);
     border: 1px solid var(--panel-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 10px 12px;
-    font-size: 13px;
+    font-size: 12.5px;
     cursor: pointer;
+    box-shadow: var(--shadow-card);
+    transition: border-color var(--dur-fast) var(--ease-std), transform var(--dur-fast) var(--ease-std);
   }
   .board-card:hover { border-color: var(--accent); }
-  .board-card-title { font-weight: 600; margin-bottom: 4px; }
-  .board-card-prop { color: var(--ink-muted); font-size: 12px; }
+  /* La tarjeta que se está arrastrando se queda "fantasma" en su sitio. */
+  .board-card.is-dragging { opacity: 0.45; border-style: dashed; }
+  .board-card-title { font-weight: 600; margin-bottom: 6px; color: var(--ink); line-height: 1.35; }
+  .board-card-prop { color: var(--ink-muted); font-size: var(--text-sm); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
   .row-del, .cell-del {
     color: var(--ink-muted);
