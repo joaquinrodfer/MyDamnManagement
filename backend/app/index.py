@@ -117,6 +117,14 @@ CREATE TABLE pages (
 );
 CREATE INDEX pages_parent ON pages(parent_id);
 CREATE INDEX pages_title ON pages(title COLLATE NOCASE);
+-- `GET /pages` ordena por `created_at DESC, rowid DESC` y el panel por
+-- `updated_at DESC ... LIMIT 8`: sin índice las dos hacían SCAN + TEMP
+-- B-TREE sobre `pages`. Medido con 12.200 páginas (vault de prueba): la
+-- lista baja de 173,6 ms a 17,4 ms (-90 %) y las recientes de 2,4 ms a
+-- 0,02 ms (-99 %); el coste son +0,05 ms por INSERT en `pages`
+-- (0,27 -> 0,32 ms, disparadores FTS incluidos).
+CREATE INDEX pages_created ON pages(created_at);
+CREATE INDEX pages_updated ON pages(updated_at);
 
 CREATE TABLE databases (
     id          TEXT PRIMARY KEY,
