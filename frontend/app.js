@@ -114,7 +114,7 @@ function showError(message) {
   close.className = "error-toast-close";
   close.title = "Descartar aviso";
   close.setAttribute("aria-label", "Descartar aviso");
-  close.textContent = "×";
+  close.innerHTML = svgIcon("i-x");
 
   let timer = setTimeout(dismiss, ERROR_TOAST_MS);
   function dismiss() {
@@ -149,8 +149,42 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function typeIcon(type) {
-  return type === "database" ? "🗄" : "📄";
+/** Icono del sprite SVG incrustado en index.html (docs/diseno/iconos.svg).
+ * Hereda el color del texto (currentColor) y el tamaño de .svg-icon. */
+function svgIcon(id, sizeClass = "") {
+  const cls = sizeClass ? `svg-icon ${sizeClass}` : "svg-icon";
+  return `<svg class="${cls}" aria-hidden="true" focusable="false"><use href="#${id}"/></svg>`;
+}
+
+// Icono por defecto de una página tal como lo guarda la API
+// (settings.default_icon) y de una base de datos. Son DATOS del usuario: se
+// siguen guardando y enviando tal cual (ver buildSaveBody), pero al pintarlos
+// en el DOM se cambian por el icono vectorial de su tipo (SPEC-B §6.1). Si el
+// usuario eligió otro emoji del selector, se pinta su carácter.
+const DEFAULT_ICON = "📄";
+const DEFAULT_ICON_BY_TYPE = { note: DEFAULT_ICON, database: "🗄" };
+
+function isDefaultIcon(type, icon) {
+  if (!icon) return true;
+  const fallback = DEFAULT_ICON_BY_TYPE[type] || DEFAULT_ICON;
+  // Una base creada por la API también arranca con el icono por defecto de página.
+  return icon === fallback || (type === "database" && icon === DEFAULT_ICON);
+}
+
+function typeIconId(type) {
+  return type === "database" ? "i-database" : "i-file-text";
+}
+
+/** Pinta el icono de una página/base en `el`: SVG de su tipo si lleva el de
+ * por defecto, el emoji del usuario si eligió otro. */
+function paintPageIcon(el, type, icon, sizeClass = "") {
+  if (isDefaultIcon(type, icon)) el.innerHTML = svgIcon(typeIconId(type), sizeClass);
+  else el.textContent = icon;
+}
+
+/** Props para dashboardItem: icono de tipo (SVG) o el emoji del usuario. */
+function pageIconProps(type, icon) {
+  return isDefaultIcon(type, icon) ? { iconType: typeIconId(type) } : { icon };
 }
 
 /** Limpia #main: fuerza cualquier autoguardado pendiente (para no perder los
@@ -216,13 +250,14 @@ function formatDueLabel(days) {
   return `hace ${Math.abs(days)} días`;
 }
 
-function dashboardItem({ icon, title, sub, meta, metaClass, onClick }) {
+function dashboardItem({ icon, iconType, title, sub, meta, metaClass, onClick }) {
   const item = document.createElement("div");
   item.className = "dashboard-item";
 
   const iconEl = document.createElement("span");
   iconEl.className = "dashboard-item-icon";
-  iconEl.textContent = icon;
+  if (iconType) iconEl.innerHTML = svgIcon(iconType, "icon-18");
+  else iconEl.textContent = icon;
 
   const titleEl = document.createElement("span");
   titleEl.className = "dashboard-item-title";
@@ -271,7 +306,7 @@ async function renderDashboard(main) {
     data.recent_pages.forEach((p) => {
       recentSection.appendChild(
         dashboardItem({
-          icon: p.icon || typeIcon(p.type),
+          ...pageIconProps(p.type, p.icon),
           title: p.title || "Sin título",
           meta: formatRelativeTime(p.updated_at),
           onClick: () => (p.type === "database" ? goTo("database", p.database_id) : goTo("note", p.id)),
@@ -292,7 +327,7 @@ async function renderDashboard(main) {
     data.upcoming_dates.forEach((u) => {
       dueSection.appendChild(
         dashboardItem({
-          icon: "📅",
+          iconType: "i-calendar",
           title: u.row_title || "Sin título",
           sub: `${u.database_title} · ${u.property_name}`,
           meta: formatDueLabel(u.days_from_today),
@@ -382,7 +417,7 @@ function renderTreeNode(node) {
 
   const icon = document.createElement("span");
   icon.className = "type-icon";
-  icon.textContent = node.icon || typeIcon(node.type);
+  paintPageIcon(icon, node.type, node.icon);
 
   const label = document.createElement("span");
   label.className = "tree-label";
@@ -753,7 +788,7 @@ function createOutlinePanel() {
   details.hidden = true; // hasta que renderOutline() confirme que hay encabezados
 
   const summary = document.createElement("summary");
-  summary.textContent = "Índice";
+  summary.innerHTML = `${svgIcon("i-list-tree")}Índice`;
 
   const list = document.createElement("div");
   list.className = "note-outline-list";
@@ -792,7 +827,7 @@ function renderNote(page, backlinks) {
       saveIcon.textContent = "!";
       saveLabel.textContent = "Error al guardar";
     } else {
-      saveIcon.textContent = "✓";
+      saveIcon.innerHTML = svgIcon("i-check");
       saveLabel.textContent = "Guardado";
     }
   }
@@ -801,7 +836,10 @@ function renderNote(page, backlinks) {
   const backDetails = document.createElement("details");
   backDetails.className = "note-backlinks-dropdown";
   const backSummary = document.createElement("summary");
-  backSummary.textContent = `Backlinks (${backlinks.length})`;
+  backSummary.innerHTML = `${svgIcon("i-chevron-right", "back-chevron-closed")}${svgIcon(
+    "i-chevron-down",
+    "back-chevron-open",
+  )}Backlinks (${backlinks.length})`;
   const backList = document.createElement("div");
   backList.className = "backlinks-list";
   if (backlinks.length === 0) {
@@ -819,8 +857,9 @@ function renderNote(page, backlinks) {
 
   const exportBtn = document.createElement("button");
   exportBtn.className = "icon-btn";
-  exportBtn.textContent = "⇩";
+  exportBtn.innerHTML = svgIcon("i-download");
   exportBtn.title = "Exportar como Markdown (.md)";
+  exportBtn.setAttribute("aria-label", "Exportar como Markdown (.md)");
   exportBtn.addEventListener("click", () => exportPageAsMarkdown(page, state.editor.getValue()));
 
   const topbarRight = document.createElement("div");
@@ -852,7 +891,7 @@ function renderNote(page, backlinks) {
 
       const removeBtn = document.createElement("button");
       removeBtn.className = "note-header-remove";
-      removeBtn.textContent = "× Quitar cabecera";
+      removeBtn.innerHTML = `${svgIcon("i-x")}Quitar cabecera`;
       removeBtn.addEventListener("click", async () => {
         const updated = await api(`/pages/${page.id}/header-image`, { method: "DELETE" });
         page.header_image_path = updated.header_image_path;
@@ -863,7 +902,7 @@ function renderNote(page, backlinks) {
     } else {
       const addBtn = document.createElement("button");
       addBtn.className = "btn";
-      addBtn.textContent = "+ Imagen de cabecera";
+      addBtn.innerHTML = `${svgIcon("i-plus")}Imagen de cabecera`;
       addBtn.addEventListener("click", () => fileInput.click());
       headerWrap.appendChild(addBtn);
     }
@@ -895,12 +934,13 @@ function renderNote(page, backlinks) {
   const iconBtn = document.createElement("button");
   iconBtn.type = "button";
   iconBtn.className = "note-icon-btn";
-  iconBtn.textContent = page.icon || "📄";
+  paintPageIcon(iconBtn, "note", page.icon, "icon-20");
   iconBtn.title = "Cambiar icono";
+  iconBtn.setAttribute("aria-label", "Cambiar icono de la página");
   iconBtn.addEventListener("click", () => {
     openEmojiPicker(iconBtn, (emoji) => {
       page.icon = emoji;
-      iconBtn.textContent = emoji;
+      paintPageIcon(iconBtn, "note", emoji, "icon-20");
       scheduleSave();
     });
   });
@@ -1431,7 +1471,9 @@ async function startLinkPreview(pageId, rect) {
 
   const title = document.createElement("div");
   title.className = "mdm-link-preview-title";
-  title.textContent = `${data.icon || "📄"} ${data.title}`;
+  const titleIcon = document.createElement("span");
+  paintPageIcon(titleIcon, data.type || "note", data.icon);
+  title.append(titleIcon, ` ${data.title}`);
 
   const body = document.createElement("div");
   body.className = "mdm-link-preview-body";
@@ -1651,7 +1693,7 @@ async function renderDatabase(database, views, activeViewId) {
 
   const newViewBtn = document.createElement("button");
   newViewBtn.className = "btn";
-  newViewBtn.textContent = "+ Vista";
+  newViewBtn.innerHTML = `${svgIcon("i-plus")}Vista`;
   newViewBtn.addEventListener("click", () => openViewDialog(database));
 
   const deleteDbBtn = document.createElement("button");
@@ -1713,6 +1755,16 @@ function formatPropValue(value, prop) {
   if (prop.type === "checkbox") return value ? "✓" : "—";
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
+}
+
+/** Igual que formatPropValue, pero listo para innerHTML: el "sí" de un
+ * checkbox es el icono de check del sprite (con texto para lectores de
+ * pantalla) y todo lo demás va escapado. */
+function formatPropValueHtml(value, prop) {
+  if (prop.type === "checkbox") {
+    return value ? `${svgIcon("i-check")}<span class="sr-only">Sí</span>` : "—";
+  }
+  return escapeHtml(formatPropValue(value, prop));
 }
 
 /** El valor que sale de un control, en la forma que espera la API.
@@ -1865,8 +1917,9 @@ function renderTable(database, rows) {
     const delTd = document.createElement("td");
     const delBtn = document.createElement("button");
     delBtn.className = "row-del";
-    delBtn.textContent = "🗑";
+    delBtn.innerHTML = svgIcon("i-trash");
     delBtn.title = "Borrar fila";
+    delBtn.setAttribute("aria-label", "Borrar fila");
     delBtn.addEventListener("click", async () => {
       if (!confirm(`¿Borrar "${row.title}"?`)) return;
       await api(`/databases/${database.id}/rows/${row.id}`, { method: "DELETE" });
@@ -1886,7 +1939,9 @@ function renderTable(database, rows) {
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
  * `prop === null` es la celda del título. */
 function paintCell(td, database, row, prop) {
-  td.textContent = prop ? formatPropValue(row.properties?.[prop.key], prop) : row.title || "Sin título";
+  td.innerHTML = prop
+    ? formatPropValueHtml(row.properties?.[prop.key], prop)
+    : escapeHtml(row.title || "Sin título");
   td.title = "Clic para editar";
   td.style.cursor = "pointer";
   td.onclick =
@@ -2052,7 +2107,7 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
       if (!propDef || v === null || v === "" || v === undefined) return;
       const line = document.createElement("div");
       line.className = "board-card-prop";
-      line.textContent = `${propDef.name}: ${formatPropValue(v, propDef)}`;
+      line.innerHTML = `${escapeHtml(propDef.name)}: ${formatPropValueHtml(v, propDef)}`;
       card.appendChild(line);
     });
 
@@ -2169,7 +2224,7 @@ function renderAddRowForm(database) {
   const head = document.createElement("div");
   head.className = "panel-head";
   head.style.margin = "0 0 10px";
-  head.textContent = "+ Nueva fila";
+  head.innerHTML = `${svgIcon("i-plus")}Nueva fila`;
   wrap.appendChild(head);
 
   const titleField = document.createElement("div");
@@ -2260,9 +2315,10 @@ function addPropertyRow(prop = null) {
 
   const removeBtn = document.createElement("button");
   removeBtn.type = "button";
-  removeBtn.textContent = "×";
+  removeBtn.innerHTML = svgIcon("i-x");
   removeBtn.className = "icon-btn";
   removeBtn.title = "Quitar esta propiedad";
+  removeBtn.setAttribute("aria-label", "Quitar esta propiedad");
   removeBtn.addEventListener("click", () => wrap.remove());
 
   row.append(keyInput, nameInput, typeSelect, removeBtn);
@@ -2492,7 +2548,10 @@ async function runSearch(q) {
     results.forEach((r) => {
       const el = document.createElement("div");
       el.className = "search-hit";
-      el.textContent = `${typeIcon(r.type)} ${r.title}`;
+      const hitIcon = document.createElement("span");
+      hitIcon.className = "type-icon";
+      paintPageIcon(hitIcon, r.type, r.icon);
+      el.append(hitIcon, ` ${r.title}`);
       el.addEventListener("click", () => {
         searchInput.value = "";
         searchResults.hidden = true;
