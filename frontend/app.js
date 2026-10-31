@@ -781,7 +781,7 @@ function renderOutline() {
   outlineEl.open = wasOpen; // reconstruir la lista no debe cerrar el desplegable si ya estaba abierto
 }
 
-function createOutlinePanel() {
+function createOutlinePanel(mountEl = document.body) {
   closeOutline();
   const details = document.createElement("details");
   details.className = "note-outline-dropdown";
@@ -794,7 +794,9 @@ function createOutlinePanel() {
   list.className = "note-outline-list";
 
   details.append(summary, list);
-  document.body.appendChild(details);
+  // El índice vive en la barra de la nota, junto a Exportar y Backlinks: con
+  // position:fixed tapaba los dos a 1280 y a 1024 px (SPEC-B §5, hallazgo #2).
+  mountEl.appendChild(details);
   outlineEl = details;
 }
 
@@ -1298,7 +1300,7 @@ function renderNote(page, backlinks) {
     }
   }
 
-  createOutlinePanel();
+  createOutlinePanel(topbarRight);
 
   state.editor = createNoteEditor({
     parent: bodyMount,
