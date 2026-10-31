@@ -929,7 +929,12 @@
   }
   .view-tab.active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
 
-  table.rows-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  /* min-width: max-content: la tabla nunca se comprime por debajo del ancho
+     natural de sus columnas. Sin esto, a 1024 px `width: 100%` la estrechaba
+     hasta 678 px y las celdas recortaban su texto con puntos suspensivos sin
+     que nada avisara; con él, quien no cabe es el contenedor, que entonces
+     desplaza (`.table-wrap` tiene scroll propio). */
+  table.rows-table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: 12.5px; }
   .rows-table th, .rows-table td {
     text-align: left;
     padding: 7px 11px;
@@ -959,6 +964,11 @@
      ~947 px de ancho natural contra los ~663 px útiles del panel, así que
      sin esto se recortaban columnas sin avisar (auditoría, §2.6). */
   .table-wrap {
+    /* position: relative: los textos .sr-only de la tabla (la casilla «Sí»,
+       la cabecera «Acciones») son position:absolute; sin un ancestro
+       posicionado su caja se mide contra el viewport y, cuando la tabla
+       desborda, alargan el scroll horizontal de TODA la página. */
+    position: relative;
     overflow-x: auto;
     border: 1px solid var(--panel-border);
     border-radius: var(--radius-md);
@@ -1233,7 +1243,9 @@
             <span>Páginas</span>
             <button class="icon-btn" id="btn-new-note" title="Nueva nota" aria-label="Nueva nota"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
           </div>
-          <div id="tree-container"></div>
+          <!-- role="tree": contenedor ARIA del árbol de páginas (SPEC-B §5 #1).
+               Las filas son treeitem y .tree-children es group. -->
+          <div id="tree-container" role="tree" aria-label="Páginas"></div>
         </div>
 
         <div class="sidebar-section">
@@ -1245,7 +1257,7 @@
               <button class="icon-btn" id="btn-new-database" title="Nueva base de datos en blanco" aria-label="Nueva base de datos en blanco"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
             </div>
           </div>
-          <div id="db-tree-container"></div>
+          <div id="db-tree-container" role="tree" aria-label="Bases de datos"></div>
         </div>
       </div>
     </aside>

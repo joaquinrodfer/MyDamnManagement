@@ -275,6 +275,7 @@ function dashboardItem({ icon, iconType, title, sub, meta, metaClass, onClick })
 
   item.append(iconEl, titleEl, metaEl);
   item.addEventListener("click", onClick);
+  makeKeyboardActivatable(item, "button", 0);
   return item;
 }
 
@@ -361,6 +362,72 @@ function setDot(name, ok) {
   el.classList.toggle("down", ok === false);
 }
 
+// ------------------------------------------------- accesibilidad de teclado
+// Un <div> con clic no es alcanzable con Tab ni se activa con el teclado: se
+// le da el role que le toca y un keydown que dispara el mismo clic. No se
+// pone role="treeitem" ni tabIndex=0 a lo loco: un treeitem huérfano (sin
+// contenedor role="tree") o una parada de Tab por cada fila dejan la
+// navegación peor de lo que estaba (SPEC-B §5, hallazgo #1).
+function makeKeyboardActivatable(el, role = "button", tabIndex = 0) {
+  el.tabIndex = tabIndex;
+  if (role) el.setAttribute("role", role);
+  el.addEventListener("keydown", (e) => {
+    // Enter/Espacio dentro de un <input>/<select> hijo (celda en edición) no
+    // son cosa nuestra.
+    if (e.target !== el) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      el.click();
+      return;
+    }
+    // Menú contextual por teclado (Mayús+F10 o la tecla Menú): sin esto, borrar
+    // una página o crear una subpágina solo se podía hacer con el botón derecho.
+    if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      el.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 12,
+          clientY: rect.bottom,
+        })
+      );
+    }
+  });
+  return el;
+}
+
+/** Un contenedor role="tree" expone UNA sola parada de Tab (roving tabindex):
+ * la fila activa, o la primera si no hay ninguna. El resto se alcanza con
+ * ArrowUp/ArrowDown/Home/End, que además mueven el tabIndex=0 con el foco. */
+function initTreeRovingTabIndex(container) {
+  if (!container) return;
+  const rows = [...container.querySelectorAll(".tree-row")];
+  if (!rows.length) return;
+  const active = rows.find((r) => r.classList.contains("active")) || rows[0];
+  rows.forEach((r) => {
+    r.tabIndex = r === active ? 0 : -1;
+    r.setAttribute("aria-selected", r.classList.contains("active") ? "true" : "false");
+  });
+  if (container.dataset.rovingBound) return;
+  container.dataset.rovingBound = "1";
+  container.addEventListener("keydown", (e) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const currentRows = [...container.querySelectorAll(".tree-row")];
+    const idx = currentRows.indexOf(document.activeElement);
+    if (idx === -1) return; // el foco está en un hijo de la fila, no en la fila
+    e.preventDefault();
+    let nextIdx = idx;
+    if (e.key === "ArrowDown") nextIdx = Math.min(currentRows.length - 1, idx + 1);
+    else if (e.key === "ArrowUp") nextIdx = Math.max(0, idx - 1);
+    else if (e.key === "Home") nextIdx = 0;
+    else if (e.key === "End") nextIdx = currentRows.length - 1;
+    currentRows.forEach((r, i) => { r.tabIndex = i === nextIdx ? 0 : -1; });
+    currentRows[nextIdx].focus();
+  });
+}
+
 // ------------------------------------------------------------------ árbol
 
 async function loadTree() {
@@ -386,6 +453,9 @@ async function loadTree() {
     if (state.current) markActive(state.current.id);
     applyPageSelectionClasses();
     updateNavButtons(); // "subir un nivel" depende de parent_id, que solo se sabe tras recargar el árbol
+    // Los contenedores ya tienen role="tree" (index.html): se les aplica el
+    // roving tabindex después de poblarlos.
+    document.querySelectorAll('[role="tree"]').forEach(initTreeRovingTabIndex);
   } catch (e) {
     // El árbol anterior (si lo había) se queda tal cual: solo se vacía
     // después de que la petición haya ido bien.
@@ -400,12 +470,18 @@ function indexTree(nodes) {
   }
 }
 
-function renderTreeNode(node) {
+function renderTreeNode(node, depth = 1) {
   const wrap = document.createElement("div");
   wrap.className = "tree-node";
+  // El envoltorio no aporta nada al árbol de accesibilidad: con role="none"
+  // sus hijos (treeitem y group) cuelgan directamente del role="tree".
+  wrap.setAttribute("role", "none");
 
   const row = document.createElement("div");
   row.className = "tree-row";
+  makeKeyboardActivatable(row, "treeitem", -1);
+  row.setAttribute("aria-level", String(depth));
+  if (node.children?.length) row.setAttribute("aria-expanded", "true");
   // El id de la `page` y el id de la fila `databases` que la describe son
   // dos UUID distintos -- para navegar hace falta el segundo. data-node-id
   // es siempre el id de página de verdad, el que se usa para selección
@@ -414,6 +490,7 @@ function renderTreeNode(node) {
   const navId = node.type === "database" ? node.database_id : node.id;
   row.dataset.id = navId;
   row.dataset.nodeId = node.id;
+  if (!node.title) row.setAttribute("aria-label", "Sin título");
 
   const icon = document.createElement("span");
   icon.className = "type-icon";
@@ -478,7 +555,8 @@ function renderTreeNode(node) {
   if (node.children && node.children.length) {
     const childrenWrap = document.createElement("div");
     childrenWrap.className = "tree-children";
-    node.children.forEach((c) => childrenWrap.appendChild(renderTreeNode(c)));
+    childrenWrap.setAttribute("role", "group");
+    node.children.forEach((c) => childrenWrap.appendChild(renderTreeNode(c, depth + 1)));
     wrap.appendChild(childrenWrap);
   }
 
@@ -489,6 +567,9 @@ function markActive(id) {
   document.querySelectorAll(".tree-row").forEach((el) => {
     el.classList.toggle("active", el.dataset.id === id);
   });
+  // El roving tabindex sigue a la fila activa también cuando markActive se
+  // llama fuera de loadTree() (p.ej. al navegar a una nota).
+  document.querySelectorAll('[role="tree"]').forEach(initTreeRovingTabIndex);
 }
 
 // -------------------------------------------------- selección múltiple de páginas
@@ -776,6 +857,7 @@ function renderOutline() {
       state.editor?.jumpTo(h.pos);
       outlineEl.open = false;
     });
+    makeKeyboardActivatable(item, "button", 0);
     list.appendChild(item);
   });
   outlineEl.open = wasOpen; // reconstruir la lista no debe cerrar el desplegable si ya estaba abierto
@@ -852,6 +934,7 @@ function renderNote(page, backlinks) {
       item.className = "backlink-item";
       item.textContent = b.title;
       item.addEventListener("click", () => goTo("note", b.id));
+      makeKeyboardActivatable(item, "button", 0);
       backList.appendChild(item);
     });
   }
@@ -1581,6 +1664,7 @@ function renderSlashMenu(menuState) {
 // de páginas en el árbol (ver más abajo).
 
 let currentContextMenu = null;
+let contextMenuOpener = null; // a quién devolver el foco al cerrar el menú
 
 function closeContextMenu() {
   if (currentContextMenu) {
@@ -1588,6 +1672,10 @@ function closeContextMenu() {
     currentContextMenu = null;
   }
   document.removeEventListener("keydown", onContextMenuKeydown);
+  // Abierto con el teclado, el foco se fue al menú: vuelve a quien lo abrió
+  // (la fila del árbol) en vez de quedarse en <body>.
+  if (contextMenuOpener?.isConnected) contextMenuOpener.focus();
+  contextMenuOpener = null;
 }
 
 function onContextMenuKeydown(e) {
@@ -1630,9 +1718,13 @@ function showContextMenu(x, y, sections) {
   if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
 
   currentContextMenu = menu;
+  contextMenuOpener = document.activeElement;
   setTimeout(() => {
     document.addEventListener("click", closeContextMenu, { once: true });
     document.addEventListener("keydown", onContextMenuKeydown);
+    // El primer elemento queda enfocado: el menú ya se maneja con Tab,
+    // Enter/Espacio y Escape (sus opciones son <button> de verdad).
+    menu.querySelector(".mdm-context-menu-item")?.focus();
   }, 0);
 }
 
@@ -1887,7 +1979,10 @@ function renderTable(database, rows) {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  headRow.innerHTML = "<th>Título</th>" + database.schema_def.map((p) => `<th>${escapeHtml(p.name)}</th>`).join("") + "<th></th>";
+  headRow.innerHTML =
+    '<th scope="col">Título</th>' +
+    database.schema_def.map((p) => `<th scope="col">${escapeHtml(p.name)}</th>`).join("") +
+    '<th scope="col"><span class="sr-only">Acciones</span></th>';
   thead.appendChild(headRow);
 
   const tbody = document.createElement("tbody");
@@ -1934,8 +2029,24 @@ function renderTable(database, rows) {
   });
 
   table.append(thead, tbody);
+  // Una sola parada de Tab en toda la tabla: la primera celda editable. Las
+  // flechas mueven el foco (y el tabIndex=0) entre celdas -- ver paintCell.
+  const firstCell = tbody.querySelector('td[data-editable="1"]');
+  if (firstCell) firstCell.tabIndex = 0;
   wrap.appendChild(table);
   return wrap;
+}
+
+/** Repinta una celda y, si el foco se quedó sin dueño al quitar el input
+ * (Enter/Escape con el teclado), lo devuelve a la celda: con roving tabindex
+ * esta es la única con tabIndex=0 y perderla es perder la posición. Si el
+ * usuario ya está en otro control (clic en otra celda), no se le roba. */
+function repaintCell(td, database, row, prop) {
+  paintCell(td, database, row, prop);
+  if (document.activeElement === document.body && td.isConnected) {
+    td.tabIndex = 0;
+    td.focus();
+  }
 }
 
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
@@ -1946,6 +2057,40 @@ function paintCell(td, database, row, prop) {
     : escapeHtml(row.title || "Sin título");
   td.title = "Clic para editar";
   td.style.cursor = "pointer";
+  td.dataset.editable = "1";
+  // Roving tabindex: las celdas no son 72 paradas de Tab, solo la que está en
+  // curso (renderTable deja tabIndex=0 en la primera). Enter/Espacio abren la
+  // edición, igual que el clic; las flechas mueven el foco como en una hoja.
+  td.tabIndex = -1;
+  td.onkeydown = (e) => {
+    if (e.target !== td) return; // el <input>/<select> de editCell() manda
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      td.click();
+      return;
+    }
+    if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(e.key)) return;
+    const tr = td.parentElement;
+    const tbody = tr.parentElement;
+    const allRows = [...tbody.querySelectorAll("tr")];
+    const rIdx = allRows.indexOf(tr);
+    const cells = [...tr.querySelectorAll('td[data-editable="1"]')];
+    const cIdx = cells.indexOf(td);
+    const editableIn = (rowIdx) =>
+      allRows[rowIdx] ? [...allRows[rowIdx].querySelectorAll('td[data-editable="1"]')] : [];
+    let target = null;
+    if (e.key === "ArrowRight") target = cells[cIdx + 1] || editableIn(rIdx + 1)[0] || null;
+    else if (e.key === "ArrowLeft") {
+      const prev = editableIn(rIdx - 1);
+      target = cells[cIdx - 1] || prev[prev.length - 1] || null;
+    } else if (e.key === "ArrowDown") target = editableIn(rIdx + 1)[cIdx] || null;
+    else if (e.key === "ArrowUp") target = editableIn(rIdx - 1)[cIdx] || null;
+    if (!target) return; // sin destino, la flecha sigue haciendo lo de siempre
+    e.preventDefault();
+    td.tabIndex = -1;
+    target.tabIndex = 0;
+    target.focus();
+  };
   td.onclick =
     prop && prop.type === "checkbox"
       ? () => toggleCheckbox(td, database, row, prop)
@@ -1960,7 +2105,7 @@ async function toggleCheckbox(td, database, row, prop) {
   } catch (e) {
     reportError("No se pudo guardar el cambio", e);
   }
-  paintCell(td, database, row, prop); // si falló, este es el valor del servidor
+  repaintCell(td, database, row, prop); // si falló, este es el valor del servidor
 }
 
 /** Edita una celda con el input de su tipo. Guarda al confirmar (Enter o salir
@@ -1979,12 +2124,18 @@ function editCell(td, database, row, prop) {
   // representar el valor (`number` con "A-12") se lee como vacío y lo borra.
   const seeded = input.value;
 
+  // Ver repaintCell(): repintar puede dejar el foco en <body> y con roving
+  // tabindex hay que devolverlo a la celda para no perder la posición.
+  function repaint() {
+    repaintCell(td, database, row, prop);
+  }
+
   async function commit() {
     if (finished) return;
     finished = true;
     if (input.value === seeded) {
       // Sin tocar el control no hay PATCH: el `.md` se queda como está.
-      paintCell(td, database, row, prop);
+      repaint();
       return;
     }
     let changes = null;
@@ -2003,7 +2154,7 @@ function editCell(td, database, row, prop) {
         reportError("No se pudo guardar el cambio", e);
       }
     }
-    paintCell(td, database, row, prop);
+    repaint();
   }
 
   input.addEventListener("keydown", (e) => {
@@ -2012,7 +2163,7 @@ function editCell(td, database, row, prop) {
       commit();
     } else if (e.key === "Escape") {
       finished = true;
-      paintCell(td, database, row, prop); // se sale sin guardar
+      repaint(); // se sale sin guardar
     }
   });
   input.addEventListener("blur", commit);
@@ -2148,6 +2299,8 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
     // La tarjeta abre su fila: las propiedades se editan en el diálogo, con
     // los mismos controles por tipo que la tabla.
     card.addEventListener("click", () => openRowDialog(database, row, refresh));
+    // Con teclado, Enter/Espacio abren la misma fila que el clic.
+    makeKeyboardActivatable(card, "button", 0);
 
     col.appendChild(card);
   });
@@ -2574,6 +2727,7 @@ async function runSearch(q) {
         navSections.hidden = false;
         navigateToPage(r.id);
       });
+      makeKeyboardActivatable(el, "button", 0);
       searchResults.appendChild(el);
     });
   } catch (e) {
