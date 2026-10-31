@@ -1107,8 +1107,12 @@
   dialog h3 { font-family: var(--font-body); font-weight: 700; margin: 0 0 14px; font-size: var(--text-lg); }
   .prop-row-wrap { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--panel-border); }
   .prop-row-wrap:last-child { border-bottom: none; }
-  .prop-row { display: grid; grid-template-columns: 1fr 1fr 110px 28px; gap: 6px; align-items: center; }
-  .prop-row input, .prop-row select, .prop-options-input { padding: 5px 8px; min-height: var(--control-size); border-radius: var(--radius-sm); border: 1px solid var(--border-input); background: var(--panel); color: var(--ink); font-size: 12.5px; }
+  /* minmax(0, 1fr) y no 1fr: las dos columnas de texto tienen un mínimo de
+     min-content (el ancho del <select> de tipo) y con el diálogo a 520 px la
+     rejilla medía 504 px dentro de 478 y sacaba una barra horizontal que no
+     hacía falta. */
+  .prop-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 110px 28px; gap: 6px; align-items: center; }
+  .prop-row input, .prop-row select, .prop-options-input { min-width: 0; padding: 5px 8px; min-height: var(--control-size); border-radius: var(--radius-sm); border: 1px solid var(--border-input); background: var(--panel); color: var(--ink); font-size: 12.5px; }
   .prop-options-input { width: 100%; margin-top: 6px; }
   /* Las listas de propiedades de los diálogos hacen su propio scroll: con
      muchas filas el diálogo crecía más que la ventana y los botones de
