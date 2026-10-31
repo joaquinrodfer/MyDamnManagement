@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # lee como vault vacío.
     vault_allow_empty: bool = False
 
+    # Documentación interactiva de la API (`/docs`, `/redoc` y
+    # `/openapi.json`). `DOCS_ENABLED=0` las apaga: esas tres rutas pasan a
+    # dar 404 y la app no publica el esquema OpenAPI. Solo hace eso — oculta
+    # rutas: NO protege nada por sí mismo, el resto de la API sigue igual de
+    # accesible. Por defecto encendida, porque en desarrollo la documentación
+    # es útil; en producción se apaga en `docker-compose.prod.yml`.
+    docs_enabled: bool = True
+
     # Dónde se sirve el panel. Configurable para poder arrancar la app en
     # tests sin /app. Los adjuntos ya no tienen carpeta propia: viven dentro
     # del vault (`_attachments/`, ver `app/vault/attachments.py`).

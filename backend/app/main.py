@@ -12,7 +12,15 @@ from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 
 log = logging.getLogger("mdm.main")
 
-app = FastAPI(title="MyDamnManagement API")
+app = FastAPI(
+    title="MyDamnManagement API",
+    # `DOCS_ENABLED=0` apaga la documentación interactiva: `/docs`, `/redoc`
+    # y `/openapi.json` dan 404 (ver `Settings.docs_enabled`). Con el ajuste
+    # por defecto (encendido) el comportamiento es el de siempre.
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
+)
 
 app.include_router(pages.router)
 app.include_router(databases.router)

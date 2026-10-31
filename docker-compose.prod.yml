@@ -29,6 +29,7 @@ services:
       INDEX_PATH: /data/index.sqlite
       VAULT_PATH: /data/vault
       DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
+      DOCS_ENABLED: "0" # apaga /docs, /redoc y /openapi.json en producción
     # Solo datos. Nada de `./backend/app` ni `./frontend`: el código ya está en
     # la imagen (`backend/Dockerfile` los copia) y montarlo encima reintroduciría
     # justo el hot-reload que este fichero existe para quitar.
