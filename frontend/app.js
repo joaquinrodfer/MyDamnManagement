@@ -2032,21 +2032,45 @@ function renderTable(database, rows) {
   // Una sola parada de Tab en toda la tabla: la primera celda editable. Las
   // flechas mueven el foco (y el tabIndex=0) entre celdas -- ver paintCell.
   const firstCell = tbody.querySelector('td[data-editable="1"]');
-  if (firstCell) firstCell.tabIndex = 0;
+  if (firstCell) setRovingCell(firstCell);
   wrap.appendChild(table);
   return wrap;
 }
 
-/** Repinta una celda y, si el foco se quedó sin dueño al quitar el input
- * (Enter/Escape con el teclado), lo devuelve a la celda: con roving tabindex
- * esta es la única con tabIndex=0 y perderla es perder la posición. Si el
- * usuario ya está en otro control (clic en otra celda), no se le roba. */
-function repaintCell(td, database, row, prop) {
-  paintCell(td, database, row, prop);
-  if (document.activeElement === document.body && td.isConnected) {
+/** Deja el testigo del roving tabindex en una sola celda de la tabla: la
+ * recibida se queda con tabIndex=0 y todas las demás con -1. Sin esta
+ * normalización el testigo se duplica (dos paradas de Tab) o se pierde del
+ * todo (la tabla deja de ser alcanzable por teclado) en cuanto una celda se
+ * repinta fuera del orden en que se pintó la tabla. */
+function setRovingCell(td) {
+  const table = td.closest("table");
+  if (!table) {
     td.tabIndex = 0;
-    td.focus();
+    return;
   }
+  table.querySelectorAll('td[data-editable="1"]').forEach((cell) => {
+    cell.tabIndex = cell === td ? 0 : -1;
+  });
+  td.tabIndex = 0;
+}
+
+/** Repinta una celda y normaliza el roving tabindex: siempre queda exactamente
+ * una celda con tabIndex=0, y esa es la repintada.
+ *
+ * `focus`: true devuelve el foco a la celda (Enter/Escape: el input que tenía
+ * el foco desaparece al repintar), false no lo toca nunca (blur: el usuario se
+ * ha ido a otro control y robarle el foco es perder lo que estaba haciendo).
+ * Sin valor decide por el estado: lo recupera si el foco era de la propia
+ * celda o se quedó huérfano en <body>. */
+function repaintCell(td, database, row, prop, focus) {
+  // Antes de repintar: el input de editCell() se destruye al reemplazar el
+  // innerHTML, así que "el foco era de la celda" hay que mirarlo ahora.
+  const ownedFocus = td.contains(document.activeElement);
+  paintCell(td, database, row, prop);
+  if (!td.isConnected) return;
+  setRovingCell(td);
+  const shouldFocus = focus === undefined ? ownedFocus || document.activeElement === document.body : focus;
+  if (shouldFocus) td.focus();
 }
 
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
@@ -2087,8 +2111,7 @@ function paintCell(td, database, row, prop) {
     else if (e.key === "ArrowUp") target = editableIn(rIdx - 1)[cIdx] || null;
     if (!target) return; // sin destino, la flecha sigue haciendo lo de siempre
     e.preventDefault();
-    td.tabIndex = -1;
-    target.tabIndex = 0;
+    setRovingCell(target);
     target.focus();
   };
   td.onclick =
@@ -2125,17 +2148,19 @@ function editCell(td, database, row, prop) {
   const seeded = input.value;
 
   // Ver repaintCell(): repintar puede dejar el foco en <body> y con roving
-  // tabindex hay que devolverlo a la celda para no perder la posición.
-  function repaint() {
-    repaintCell(td, database, row, prop);
+  // tabindex hay que devolverlo a la celda para no perder la posición, pero
+  // solo si el repintado lo provoca el propio control (Enter, cambio, Escape);
+  // al salir con blur el foco es del control al que el usuario se ha ido.
+  function repaint(focus) {
+    repaintCell(td, database, row, prop, focus);
   }
 
-  async function commit() {
+  async function commit(focus) {
     if (finished) return;
     finished = true;
     if (input.value === seeded) {
       // Sin tocar el control no hay PATCH: el `.md` se queda como está.
-      repaint();
+      repaint(focus);
       return;
     }
     let changes = null;
@@ -2154,20 +2179,20 @@ function editCell(td, database, row, prop) {
         reportError("No se pudo guardar el cambio", e);
       }
     }
-    repaint();
+    repaint(focus);
   }
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      commit();
+      commit(true); // el foco vuelve a la celda: la tabla sigue siendo navegable
     } else if (e.key === "Escape") {
       finished = true;
-      repaint(); // se sale sin guardar
+      repaint(true); // se sale sin guardar
     }
   });
-  input.addEventListener("blur", commit);
-  if (input.tagName === "SELECT") input.addEventListener("change", commit);
+  input.addEventListener("blur", () => commit(false));
+  if (input.tagName === "SELECT") input.addEventListener("change", () => commit(true));
 
   td.textContent = "";
   td.appendChild(input);
