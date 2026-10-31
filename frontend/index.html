@@ -217,7 +217,7 @@
     width: 100%;
     padding: 7px 10px;
     border-radius: 6px;
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--border-input);
     background: var(--bg);
     color: var(--ink);
   }
@@ -236,23 +236,27 @@
   .icon-btn {
     background: none;
     border: 1px solid transparent;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     color: var(--ink-muted);
-    width: 20px;
-    height: 20px;
+    width: var(--control-size);
+    height: var(--control-size);
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
     line-height: 1;
-    font-size: 14px;
-    display: flex;
+    font-size: 13.5px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
+    transition: background-color var(--dur-fast) var(--ease-std), color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
   }
-  .icon-btn:hover { background: var(--code-bg); color: var(--ink); }
-  .icon-btn:disabled { opacity: 0.3; cursor: default; }
+  .icon-btn:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
+  .icon-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
   .icon-btn:disabled:hover { background: none; color: var(--ink-muted); }
 
   /* ---------- navegación (atrás/adelante/subir), en la cabecera ---------- */
   .header-left { display: flex; align-items: center; gap: 14px; }
-  .nav-history-controls { display: flex; gap: 2px; }
+  .nav-history-controls { display: flex; gap: 4px; }
 
   .template-btn {
     background: none;
@@ -324,12 +328,12 @@
   }
   .btn:hover { border-color: var(--accent); color: var(--accent-ink); }
   .btn-primary {
-    background: var(--accent);
+    background: var(--accent-btn);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-contrast);
     font-weight: 600;
   }
-  .btn-primary:hover { opacity: 0.9; color: #fff; }
+  .btn-primary:hover { filter: brightness(1.1); background: var(--accent-btn); border-color: var(--accent); color: var(--accent-contrast); }
   .btn-danger { color: var(--down); border-color: transparent; background: none; }
   .btn-danger:hover { background: var(--down-bg); border-color: var(--down); }
   .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -484,14 +488,19 @@
     margin-bottom: 6px;
   }
   .note-header-remove {
-    background: none;
-    border: none;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-sm);
     color: var(--ink-muted);
     font-size: 12px;
     cursor: pointer;
-    padding: 0;
+    padding: 4px 10px;
+    min-height: var(--control-size);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
-  .note-header-remove:hover { color: var(--down); }
+  .note-header-remove:hover { color: var(--down); border-color: var(--down); background: var(--down-bg); }
 
   .note-title-row { display: flex; align-items: baseline; gap: 8px; }
   .note-icon-btn {
@@ -553,7 +562,7 @@
      #main, igual que el título. */
   #note-body .cm-editor { outline: none; background: transparent; }
   #note-body .cm-content {
-    padding: 4px 4px 220px 44px; /* la izquierda es donde "flota" el handle de bloque; el hueco de
+    padding: 4px 4px 220px 64px; /* la izquierda aloja las dos asas de bloque de 28x28 (28+2+28 = 58px) + 2px de aire; el hueco de
        abajo es a propósito -- clicar ahí (como en Notion) coloca el cursor al final del documento */
     font-family: var(--font-body); /* prosa con pinta de Notion; el código se fuerza aparte a --font-mono */
     font-size: 15px;
@@ -681,16 +690,20 @@
      (o por el propio asa, que sigue contando como parte de ella). */
   .cm-mdm-block-handle-wrap {
     position: absolute;
-    left: -40px;
+    left: -60px;
     top: 0;
     display: flex;
-    align-items: flex-start;
-    gap: 3px;
+    align-items: center;
+    gap: 2px;
     line-height: 1.6;
     opacity: 0;
-    transition: opacity 0.12s ease;
+    transition: opacity var(--dur-fast) var(--ease-std);
   }
+  /* Al recibir foco por teclado (:focus-within) el contenedor entero pasa a
+     opacity: 1, para que el anillo :focus-visible de 2px se pinte al 100 %. */
   #note-body .cm-line:hover .cm-mdm-block-handle-wrap,
+  #note-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
+  .cm-mdm-block-handle-wrap:focus-within,
   .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) {
     opacity: 1;
   }
@@ -702,18 +715,28 @@
   #note-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: 6px; }
   .cm-mdm-block-add,
   .cm-mdm-block-handle {
-    width: 18px;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: none;
     text-align: center;
     font-size: 15px;
-    line-height: 1.6;
+    line-height: 1;
     color: var(--ink-muted);
-    opacity: 0.55;
+    opacity: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
     user-select: none;
   }
   .cm-mdm-block-add:hover,
-  .cm-mdm-block-handle:hover { opacity: 1; }
-  .cm-mdm-block-handle-selected { opacity: 1; color: var(--accent-ink); }
+  .cm-mdm-block-handle:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
+  .cm-mdm-block-handle-selected { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent); opacity: 1; }
 
   /* ---------- menú contextual de bloques/páginas ---------- */
   .mdm-context-menu {
@@ -768,7 +791,7 @@
     padding: 6px 9px;
     margin-bottom: 8px;
     border-radius: 6px;
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--border-input);
     background: var(--bg);
     color: var(--ink);
   }
@@ -938,7 +961,22 @@
   .board-card-title { font-weight: 600; margin-bottom: 4px; }
   .board-card-prop { color: var(--ink-muted); font-size: 12px; }
 
-  .row-del, .cell-del { color: var(--down); background: none; border: none; cursor: pointer; font-size: 13px; }
+  .row-del, .cell-del {
+    color: var(--ink-muted);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    width: var(--control-size);
+    height: var(--control-size);
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .row-del:hover, .cell-del:hover { color: var(--down); background: var(--down-bg); border-color: var(--down); }
 
   /* ---------- formularios ---------- */
   .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
@@ -946,7 +984,7 @@
   .field input, .field select, .field textarea {
     padding: 6px 9px;
     border-radius: 6px;
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--border-input);
     background: var(--bg);
     color: var(--ink);
   }
@@ -972,8 +1010,8 @@
   .prop-row-wrap { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--panel-border); }
   .prop-row-wrap:last-child { border-bottom: none; }
   .prop-row { display: grid; grid-template-columns: 1fr 1fr 100px auto; gap: 6px; align-items: center; }
-  .prop-row input, .prop-row select { padding: 5px 7px; border-radius: 5px; border: 1px solid var(--panel-border); background: var(--bg); color: var(--ink); font-size: 12.5px; }
-  .prop-options-input { width: 100%; margin-top: 6px; padding: 5px 7px; border-radius: 5px; border: 1px solid var(--panel-border); background: var(--bg); color: var(--ink); font-size: 12.5px; }
+  .prop-row input, .prop-row select { padding: 5px 7px; border-radius: 5px; border: 1px solid var(--border-input); background: var(--bg); color: var(--ink); font-size: 12.5px; }
+  .prop-options-input { width: 100%; margin-top: 6px; padding: 5px 7px; border-radius: 5px; border: 1px solid var(--border-input); background: var(--bg); color: var(--ink); font-size: 12.5px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
   /* ---------- avisos de error (toasts) ----------
@@ -1012,16 +1050,20 @@
   .error-toast-text { flex: 1 1 auto; overflow-wrap: anywhere; }
   .error-toast-close {
     flex: 0 0 auto;
-    margin: -3px -2px 0 0;
-    padding: 0 3px;
-    border: none;
-    border-radius: 4px;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
     background: none;
     color: var(--ink-muted);
-    font-size: 15px;
-    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
-  .error-toast-close:hover { color: var(--down); }
+  .error-toast-close:hover { color: var(--down); background: var(--down-bg); border-color: var(--down); }
   /* En pantallas pequeñas ocupan el ancho útil en vez de una columna estrecha
      pegada a la derecha. */
   @media (max-width: 600px) {
