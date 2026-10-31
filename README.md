@@ -123,7 +123,7 @@ docker compose run --rm \
 
 El nombre del volumen es el del proyecto de compose que lo creó: `docker volume ls | grep attachments` dice cuál es si no es `mydamnmanagement`.
 
-Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas y bases de datos a la izquierda).
+Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs) (con `DOCS_ENABLED` encendido, el valor por defecto). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas y bases de datos a la izquierda).
 
 ## Panel visual
 
@@ -261,18 +261,11 @@ Lo que esto protege y lo que no, sin adornos:
 
 ### `/docs` y `/openapi.json`
 
-**Decisión: en v1.0 se quedan encendidos.** No hay variable de entorno que los apague — `backend/app/main.py` construye `FastAPI(title=...)` sin `docs_url=None`— y añadirla es un cambio de comportamiento de la app, fuera del alcance de este cambio (aquí solo se toca el empaquetado y la documentación). La protección es la misma que la del resto de la API: solo se alcanzan desde la propia máquina o desde el tailnet, y exponen lo mismo que ya expone la API sin auth. Si quieres apagarlos, el cambio es este, en `backend/app/main.py`:
+**En desarrollo siguen encendidas, y ese es también el valor por defecto** (`docs_enabled: bool = True` en `backend/app/config.py`): `backend/app/main.py` construye el `FastAPI` con `docs_url="/docs" if settings.docs_enabled else None` (y lo mismo con `redoc_url` y `openapi_url`), así que con el ajuste por defecto las tres rutas responden.
 
-```python
-app = FastAPI(
-    title="MyDamnManagement API",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
-)
-```
+`DOCS_ENABLED=0` en el entorno (o en el `.env`) las apaga: `/docs`, `/redoc` y `/openapi.json` dan 404 y la app no publica el esquema OpenAPI. `docker-compose.prod.yml` ya lo trae a `"0"`, así que en producción no se exponen y en el `.env` del servidor no hace falta tocar nada.
 
-(o el mismo ternario leyendo un ajuste de `app/config.py`, si se prefiere conmutable por `.env`). No está hecho aquí a propósito: P7 es empaquetado y documentación.
+Apagarlas **no es autenticación**: solo deja de publicar la documentación. El resto de la API sigue sin login y sigue accesible desde el tailnet (ver la sección «Exponerlo por Tailscale»): la frontera real sigue siendo la red.
 
 ### Logs
 
