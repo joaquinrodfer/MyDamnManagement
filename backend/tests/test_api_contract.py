@@ -34,7 +34,7 @@ def test_health_y_status(client):
     assert estado["services"]["api"]["ok"] is True
     assert estado["services"]["db"]["ok"] is True
     assert estado["services"]["db"]["engine"] == "sqlite"
-    assert estado["services"]["db"]["schema_version"] == 2
+    assert estado["services"]["db"]["schema_version"] == 3
     assert estado["services"]["db"]["counts"]["pages"] == 0
     assert estado["checked_at"].endswith("+00:00")
 

@@ -19,12 +19,12 @@ def _pagina(repo: Repository, titulo: str, cuerpo: str = ""):
 
 def test_esquema_versionado_y_fts5(index_path):
     info = ensure_index(str(index_path))
-    assert info.version == indice.SCHEMA_VERSION == 2
+    assert info.version == indice.SCHEMA_VERSION == 3
     assert info.recreated is True  # no existía
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
         tablas = {
@@ -247,7 +247,7 @@ def test_un_indice_de_la_version_1_migra_y_gana_la_tabla_meta(index_path):
 
     conn = open_index(str(index_path))
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == indice.SCHEMA_VERSION == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == indice.SCHEMA_VERSION == 3
         tablas = {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
