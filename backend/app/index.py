@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -88,6 +88,15 @@ MIGRATIONS: dict[int, list[str]] = {
     # (cuándo se reindexó por última vez, que es lo que `/status` necesita para
     # dar la deriva). Por eso queda fuera de la huella: ver `DUMP_EXCLUDED`.
     2: ["CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"],
+    # Índices de consulta (medidos; ver el comentario de `pages_created` más
+    # abajo). `IF NOT EXISTS` hace la migración inocua en un fichero creado ya
+    # con `SCHEMA_SQL`, así que el mismo SQL vale para los dos caminos: la
+    # migración es lo que lleva los índices a un fichero v2 existente, que es
+    # donde `_inspect()` no vuelve a ejecutar `SCHEMA_SQL`.
+    3: [
+        "CREATE INDEX IF NOT EXISTS pages_created ON pages(created_at)",
+        "CREATE INDEX IF NOT EXISTS pages_updated ON pages(updated_at)",
+    ],
 }
 
 SCHEMA_SQL = """
@@ -189,7 +198,7 @@ CREATE TABLE meta (
     value TEXT NOT NULL
 );
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")

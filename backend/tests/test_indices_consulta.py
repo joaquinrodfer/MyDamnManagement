@@ -5,9 +5,11 @@ created_at) y `list_recent_pages` del panel (ORDER BY updated_at LIMIT n)
 pasaban de SCAN + TEMP B-TREE a usar el índice, con 12.200 páginas: 173,6 ->
 17,4 ms y 2,4 -> 0,02 ms (medido; ver el comentario en `index.SCHEMA_SQL`).
 
-Comprueban que los dos índices existen tras un arranque en limpio y tras
-reconstruir borrando el fichero, y que el plan de las dos consultas los usa:
-que existan no sirve de nada si el optimizador no los elige.
+Comprueban que los dos índices existen tras un arranque en limpio, tras
+reconstruir borrando el fichero y —el caso de una instalación ya desplegada—
+que un fichero con el esquema antiguo (v2, sin los dos índices) los recibe por
+migración sin recrearse. Y que el plan de las consultas que los motivaron los
+usa: que existan no sirve de nada si el optimizador no los elige.
 """
 
 import sqlite3
@@ -80,11 +82,36 @@ def test_indices_de_consulta_se_reconstruyen_al_borrar_el_fichero(client, index_
     assert _existentes(index_path) == set(INDICES)
 
 
-def test_version_de_esquema_sin_migracion_para_los_indices(client, index_path):
-    """No hay migración que aplicar: los índices se describen en SCHEMA_SQL y
-    el fichero se puede rehacer desde el vault, así que `user_version` sigue
-    siendo 2 (subirlo obligaría a migrar índices existentes por un cambio que
-    es reconstruible)."""
+def test_fichero_v2_existente_gana_los_indices_por_migracion(client, index_path):
+    """Camino de actualización, no de arranque en limpio: una instalación ya
+    desplegada tiene un `indice.sqlite` en version 2 sin los dos índices, y
+    `_inspect()` no vuelve a ejecutar `SCHEMA_SQL`. La migración 3 es la que
+    se los tiene que poner sin recrear el fichero."""
+    assert _existentes(index_path) == set(INDICES)
+
+    # Dejo el fichero como lo dejó el esquema anterior: version 2 y sin
+    # `pages_created` ni `pages_updated`.
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("DROP INDEX pages_created")
+        conn.execute("DROP INDEX pages_updated")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    finally:
+        conn.close()
+    assert _existentes(index_path) == set()
+
     info = indice.ensure_index(str(index_path))
-    assert info.version == indice.SCHEMA_VERSION == 2
-    assert 3 not in indice.MIGRATIONS
+    assert info.recreated is False  # se migra, no se rehace desde cero
+
+    # (a) la version queda en 3 y (b) `sqlite_master` lista los dos índices.
+    assert info.version == indice.SCHEMA_VERSION == 3
+    assert _existentes(index_path) == set(INDICES)
+
+    # Y la consulta que motivó `pages_created` ya no ordena en un TEMP B-TREE.
+    paginas = _plan(
+        index_path,
+        "SELECT id FROM pages ORDER BY created_at DESC, rowid DESC",
+    )
+    assert any("pages_created" in paso for paso in paginas), paginas
+    assert not any("TEMP B-TREE" in paso for paso in paginas), paginas
