@@ -1077,6 +1077,12 @@
     <div class="status-strip">
       <span class="status-item"><span class="dot" id="dot-api"></span>api</span>
       <span class="status-item"><span class="dot" id="dot-db"></span>db</span>
+      <!-- Interruptor de tema (SPEC-B §1.1). El icono visible lo decide el
+           data-theme del <html>: sol en oscuro (pasar a claro) y luna en claro. -->
+      <button type="button" class="icon-btn" id="btn-toggle-theme" title="Cambiar a tema claro" aria-label="Cambiar entre tema oscuro y claro" aria-pressed="false">
+        <svg class="svg-icon theme-icon-light" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg>
+        <svg class="svg-icon theme-icon-dark" aria-hidden="true" focusable="false"><use href="#i-moon"/></svg>
+      </button>
     </div>
   </header>
 

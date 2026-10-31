@@ -2596,6 +2596,31 @@ document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
 
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
 
+// ------------------------------------------------------------------- tema
+// Oscuro por defecto; el interruptor de la cabecera conmuta a claro y la
+// elección se recuerda en localStorage (preferencia de pantalla, no dato del
+// workspace) -- SPEC-B §1.1.
+const THEME_KEY = "mdm_theme";
+const themeBtn = document.getElementById("btn-toggle-theme");
+
+function applyTheme(theme) {
+  const resolved = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = resolved;
+  localStorage.setItem(THEME_KEY, resolved);
+  if (themeBtn) {
+    const isLight = resolved === "light";
+    themeBtn.setAttribute("aria-pressed", isLight ? "true" : "false");
+    themeBtn.title = isLight ? "Cambiar a tema oscuro" : "Cambiar a tema claro";
+  }
+}
+
+themeBtn?.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  applyTheme(next);
+});
+
+applyTheme(localStorage.getItem(THEME_KEY) || "dark");
+
 // -------------------------------------------------------------------- arranque
 
 loadTree();
