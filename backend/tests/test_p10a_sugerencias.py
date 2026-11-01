@@ -397,3 +397,28 @@ def test_los_topes_de_tamano_dan_413(client):
     ).status_code == 413
     # Y una sugerencia que cabe se guarda.
     assert sugerir(client, nota["id"], old_text="texto", new_text="x" * 8000).status_code == 200
+
+
+def test_mover_la_nota_de_carpeta_se_lleva_sus_sugerencias(client, vault_path):
+    madre = crear_nota(client, title="Madre", body="")
+    hija = crear_nota(client, title="Hija", body="texto")
+    sugerencia = sugerir(client, hija["id"], old_text="texto", new_text="otro").json()
+
+    respuesta = client.patch(f"/pages/{hija['id']}", json={"parent_id": madre["id"]})
+    assert respuesta.status_code == 200, respuesta.text
+
+    movida = vault_path / "Notas" / "Madre" / "Hija.md.sugerencias"
+    assert not sidecar_de(vault_path, "Hija").exists()
+    assert (movida / f"{sugerencia['id']}.json").is_file()
+    assert [s["id"] for s in client.get(f"/pages/{hija['id']}/suggestions").json()] == [
+        sugerencia["id"]
+    ]
+
+
+def test_reject_sin_cuerpo_tambien_vale(client):
+    nota = crear_nota(client, body="texto")
+    sugerencia = sugerir(client, nota["id"], old_text="texto", new_text="otro").json()
+    respuesta = client.post(f"/suggestions/{sugerencia['id']}/reject")
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["status"] == "rejected"
+    assert respuesta.json()["reason"] is None
