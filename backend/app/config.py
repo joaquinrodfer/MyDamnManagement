@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     # es útil; en producción se apaga en `docker-compose.prod.yml`.
     docs_enabled: bool = True
 
+    # Vigilante del vault (P8): detecta los `.md` añadidos, modificados y
+    # borrados por fuera de la API y reindexa solo esos ficheros, avisando al
+    # navegador por `/events`. `WATCH_ENABLED=0` lo apaga del todo (hay
+    # despliegues con el vault en un volumen que no conviene recorrer cada dos
+    # segundos): entonces el vault se relee al arrancar y con `POST /reindex`,
+    # como antes. `WATCH_INTERVAL` son los segundos entre pasadas; cada pasada
+    # es un `scandir` con un `stat` por fichero, sin leer ningún cuerpo.
+    watch_enabled: bool = True
+    watch_interval: float = 2.0
+
     # Dónde se sirve el panel. Configurable para poder arrancar la app en
     # tests sin /app. Los adjuntos ya no tienen carpeta propia: viven dentro
     # del vault (`_attachments/`, ver `app/vault/attachments.py`).

@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -7,8 +8,18 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
-from app.routers import dashboard, databases, files, pages, search, status, trash
+from app.routers import (
+    dashboard,
+    databases,
+    events,
+    files,
+    pages,
+    search,
+    status,
+    trash,
+)
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
+from app.vault.watcher import VaultWatcher
 
 log = logging.getLogger("mdm.main")
 
@@ -32,6 +43,13 @@ app.include_router(dashboard.router)
 # del vault (`_attachments/`) y la URL es su ruta ahí, así que hay que resolver
 # el tipo por magic bytes y decidir qué se sirve inline en cada petición.
 app.include_router(files.router)
+# `/events` (SSE, P8): avisos de lo que cambia en el vault. Es una ruta y no
+# parte de `/pages` porque no habla de páginas sino del vault entero.
+app.include_router(events.router)
+
+# Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
+# los tests y el apagado puedan pararlo sin depender del objeto `app`.
+watcher: Optional[VaultWatcher] = None
 
 
 def _index_has_no_notes(conn) -> bool:
@@ -104,6 +122,45 @@ def on_startup() -> None:
         )
     finally:
         conn.close()
+
+    _start_watcher()
+
+
+def _start_watcher() -> None:
+    """Arranca el vigilante del vault si `WATCH_ENABLED` lo permite.
+
+    Se arranca **después** del reindexado de arranque: el vigilante sondea
+    contra un índice ya al día, así que su primera pasada no tiene nada que
+    reindexar y no llega ningún aviso por cambios que nadie ha hecho.
+    """
+    global watcher
+    if not settings.watch_enabled:
+        log.info(
+            "WATCH_ENABLED=0: no se vigila el vault; los cambios hechos en los "
+            "`.md` por fuera se recogen al arrancar y con POST /reindex"
+        )
+        return
+    watcher = VaultWatcher(
+        vault_path=settings.vault_path,
+        index_path=settings.index_path,
+        interval=settings.watch_interval,
+    )
+    watcher.start()
+    log.info(
+        "vigilando %s cada %s s (WATCH_INTERVAL); los avisos salen por /events",
+        settings.vault_path,
+        watcher.interval,
+    )
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    """Para el vigilante. Sin esto, el hilo seguiría sondeando tras cerrar."""
+    global watcher
+    if watcher is not None:
+        watcher.stop()
+        watcher = None
+        log.info("vigilante del vault detenido")
 
 
 @app.get("/health")

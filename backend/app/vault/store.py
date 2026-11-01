@@ -46,7 +46,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from app import index as index_mod
 from app.links import sync_wikilinks
@@ -1300,6 +1300,197 @@ class VaultStore:
         return cur.rowcount > 0
 
     # ------------------------------------------------------------ reindexar
+
+    # ------------------------------------------------- vigilante (P8)
+    #
+    # Lo que cambia por fuera de la API lo detecta `app.vault.drift`; aquí se
+    # aplica al índice **solo para esos ficheros**. No es un reindexado
+    # parcial a medias: cada fichero se lee con `reader.read_file` y se indexa
+    # con `_index_file`, el mismo camino que usa la API al guardar, así que el
+    # índice queda diciendo exactamente lo que diría `rebuild()` de ese
+    # fichero (título, tipo, propiedades, schema/views de una base, enlaces
+    # salientes). Lo que NO se recalcula es lo que depende de otros ficheros y
+    # solo `rebuild()` sabe (los backlinks de las páginas que enlazaban al
+    # renombrado): ver la nota de `sync_changes`.
+
+    def sync_changes(
+        self,
+        *,
+        added: Iterable[str] = (),
+        modified: Iterable[str] = (),
+        missing: Iterable[str] = (),
+        on_error: Optional[Callable[[str, BaseException], None]] = None,
+    ) -> list[dict[str, str]]:
+        """Reindexa los ficheros que han cambiado por fuera. Devuelve los eventos.
+
+        Cada evento es `{"type": "page", "action": ..., "page_id": ..., "path":
+        ...}`, el mismo JSON que se manda por `/events`. `page_id` sale del
+        índice: para un fichero modificado es el que ya tenía (aunque el
+        frontmatter traiga otro, la ruta manda y el id se reconcilia), para uno
+        nuevo el que le asigna el reindexado.
+
+        Los borrados van primero: si un fichero se ha renombrado por fuera
+        (`mv A.md B.md`), el índice tiene que soltar la ruta vieja antes de que
+        la nueva traiga el mismo `id`. Cada fichero tiene su transacción y su
+        `try`: uno que falle (permisos, un enlace roto, un fichero que
+        desaparece a mitad) no se lleva por delante el resto de la pasada, y
+        `on_error` recibe (ruta, excepción) para que el vigilante lo registre.
+
+        Limitación conocida y asumida: los enlaces **entrantes** de un fichero
+        renombrado o borrado por fuera solo se recalculan al reindexar entero
+        (los enlaces salientes del fichero tocado sí se recalculan aquí). Como
+        la resolución de wikilinks es por título y `sync_wikilinks` resuelve
+        contra las páginas del índice, un enlace a un título que ya no existe
+        tampoco lo dejaría `rebuild()`.
+        """
+        events: list[dict[str, str]] = []
+        leftover_folders: list[str] = []
+
+        for rel in missing:
+            try:
+                gone = self._forget_file(rel)
+            except Exception as exc:  # noqa: BLE001
+                self._fail(on_error, rel, exc)
+                continue
+            if gone is None:
+                continue
+            events.append(
+                {"type": "page", "action": "deleted", "page_id": gone["id"], "path": rel}
+            )
+            if gone["type"] == "database":
+                # Una base borrada por fuera deja su carpeta de filas sin base:
+                # `reader.load` las lee como notas (fila huérfana), así que se
+                # releen ahora en vez de dejarlas colgando de una tabla que ya
+                # no existe.
+                leftover_folders.append(rel[:-3])
+
+        pending: dict[str, str] = {rel: "added" for rel in added}
+        for rel in modified:
+            pending.setdefault(rel, "modified")
+        for folder in leftover_folders:
+            for rel in self._markdown_under(folder):
+                pending.setdefault(rel, "modified")
+        for rel in pending:
+            try:
+                event = self._reindex_file(rel)
+            except Exception as exc:  # noqa: BLE001
+                self._fail(on_error, rel, exc)
+                continue
+            if event is not None:
+                events.append(event)
+
+        return events
+
+    @staticmethod
+    def _fail(
+        on_error: Optional[Callable[[str, BaseException], None]],
+        rel: str,
+        exc: BaseException,
+    ) -> None:
+        if on_error is not None:
+            on_error(rel, exc)
+        else:  # pragma: no cover - sin callback, al log
+            log.warning("no se pudo reindexar %s: %s", rel, exc)
+
+    def _forget_file(self, rel: str) -> Optional[sqlite3.Row]:
+        """Quita del índice el fichero que ya no está. Devuelve su fila.
+
+        Los hijos no se van con él: sus `.md` siguen en el disco y el
+        reindexado les daría padre nulo (la carpeta se queda sin página). Se
+        sueltan **antes** del `DELETE` porque la cascada del esquema
+        (`parent_id ... ON DELETE CASCADE` con `recursive_triggers`) se los
+        llevaría, y durante una pasada la app los daría por inexistentes.
+        """
+        row = self.conn.execute(
+            "SELECT id, type FROM pages WHERE path = ?", (rel,)
+        ).fetchone()
+        if row is None:
+            return None
+        with self._tx():
+            self.conn.execute(
+                "UPDATE pages SET parent_id = NULL WHERE parent_id = ?", (row["id"],)
+            )
+            self.conn.execute("DELETE FROM pages WHERE id = ?", (row["id"],))
+        return row
+
+    def _parent_of_path(self, rel: str) -> Optional[str]:
+        """Padre que le toca a un fichero según su carpeta (regla de D4).
+
+        `Notas/Proyectos/x.md` cuelga de `Notas/Proyectos.md` si existe. Es la
+        misma deducción que hace `rebuild()` con `ids_by_path`, aquí contra el
+        índice para no releer el vault entero.
+        """
+        folder = os.path.dirname(rel)
+        if not folder:
+            return None
+        row = self.conn.execute(
+            "SELECT id, type FROM pages WHERE path = ?", (f"{folder}.md",)
+        ).fetchone()
+        if row is None or row["type"] != "note":
+            return None
+        return row["id"]
+
+    def _markdown_under(self, folder: str) -> list[str]:
+        """Rutas (relativas) de los `.md` de una carpeta y sus subcarpetas."""
+        base = self._abs(folder)
+        if not os.path.isdir(base):
+            return []
+        found: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames.sort()
+            for name in sorted(filenames):
+                if name.lower().endswith(".md"):
+                    full = os.path.join(dirpath, name)
+                    found.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
+        return found
+
+    def _reindex_file(self, rel: str) -> Optional[dict[str, str]]:
+        """Indexa un fichero del disco y devuelve su evento (o None).
+
+        `None` cuando no hay nada que contar: el fichero desapareció entre el
+        escaneo y esto, o su contenido es el que el índice ya tenía (un
+        `touch`, o el `mtime` que acaba de mover el guardado de la propia app).
+        La acción sale del índice, no de la lista que trajo el vigilante: un
+        fichero que ya estaba es «modified» y uno que no, «added»; y así una
+        fila huérfana que reaparece tras borrar su base cuenta como alta.
+        """
+        abs_path = self._abs(rel)
+        try:
+            os.stat(abs_path)
+        except OSError:
+            return None
+
+        previous = self.conn.execute(
+            "SELECT id, type, content_hash FROM pages WHERE path = ?", (rel,)
+        ).fetchone()
+        parent_id = self._parent_of_path(rel)
+
+        with self._tx():
+            page_id = self._index_file(rel, parent_id)
+            row = self.conn.execute(
+                "SELECT type, content_hash FROM pages WHERE id = ?", (page_id,)
+            ).fetchone()
+            if row is not None and previous is None and row["type"] == "note":
+                # La nota contenedora aparece después que sus hijos (un `.md`
+                # puesto a mano en una carpeta que ya tenía ficheros): los
+                # hijos sin padre pasan a colgar de ella, como en `rebuild()`.
+                prefix = rel[:-3] + "/"
+                self.conn.execute(
+                    "UPDATE pages SET parent_id = ?"
+                    " WHERE parent_id IS NULL AND substr(path, 1, ?) = ?",
+                    (page_id, len(prefix), prefix),
+                )
+            if previous is not None and row is not None and (
+                previous["content_hash"] == row["content_hash"]
+            ):
+                return None
+
+        return {
+            "type": "page",
+            "action": "modified" if previous is not None else "added",
+            "page_id": page_id,
+            "path": rel,
+        }
 
     def _refuse_suspicious_vault(
         self, hint: str = EMPTY_VAULT_HINT_HTTP

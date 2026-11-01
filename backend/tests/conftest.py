@@ -26,6 +26,13 @@ sys.path.insert(0, str(BACKEND_DIR))
 _SESSION_TMP = Path(tempfile.mkdtemp(prefix="mdm-tests-"))
 os.environ["FRONTEND_DIR"] = str(REPO_DIR / "frontend")
 os.environ["VAULT_PATH"] = str(_SESSION_TMP / "vault")
+# P8: el vigilante del vault se apaga por defecto en los tests. Encendido,
+# cada `TestClient` deja un hilo sondeando el vault temporal y emitiendo
+# avisos mientras el test hace sus propias cuentas (deriva, reindexado), que es
+# ruido que ningún test de esta suite quiere. Los tests del vigilante lo
+# encienden ellos mismos, con `WATCH_INTERVAL` bajo (ver
+# `test_p8_watcher_sse.py`).
+os.environ["WATCH_ENABLED"] = "0"
 
 
 @pytest.fixture(autouse=True)

@@ -19,10 +19,12 @@ def get_status():
     `services.db.ok`): lo que cambia es qué hay detrás — antes una conexión a
     Postgres, ahora el índice SQLite.
 
-    `drift` es la deriva entre el índice y el disco (ADR-0001): sin vigilante
-    de ficheros, editar un `.md` por fuera no se nota hasta que alguien
-    reindexa, y esto dice cuántos ficheros van por detrás y cuándo se reindexó
-    por última vez. Cuesta un `stat` por fichero y no lee ningún cuerpo.
+    `drift` es la deriva entre el índice y el disco (ADR-0001): desde P8 el
+    vigilante (`app/vault/watcher.py`) la resuelve solo cada `WATCH_INTERVAL`,
+    así que en condiciones normales esto es 0; con `WATCH_ENABLED=0` sigue
+    siendo lo único que la cuenta, y en los dos casos dice cuántos ficheros van
+    por detrás y cuándo se reindexó por última vez. Cuesta un `stat` por
+    fichero y no lee ningún cuerpo.
     """
     return {
         "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -70,10 +72,11 @@ def _check_drift() -> dict:
 def post_reindex(force: bool = False):
     """Reconstruye las notas del índice desde el vault (ADR-0001, D1).
 
-    Es la única forma de recoger cambios hechos en los `.md` por fuera: en v1.0
-    no hay vigilante de ficheros (D2). Devuelve recuentos, duración, la marca
-    del reindexado y los primeros avisos (ficheros raros que se han leído
-    igual).
+    Desde P8 el vigilante del vault recoge solo, cada `WATCH_INTERVAL`, lo que
+    cambia en los `.md` por fuera. Esto sigue siendo la salida completa: para
+    un vault tocado en masa (un `rsync`, restaurar un backup) o cuando
+    `WATCH_ENABLED=0`. Devuelve recuentos, duración, la marca del reindexado y
+    los primeros avisos (ficheros raros que se han leído igual).
 
     `?force=true` es la salida explícita cuando el vault está vacío a propósito:
     sin él, un vault inexistente o sin un solo `.md` devuelve 409 en vez de
