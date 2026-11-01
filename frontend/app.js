@@ -1073,6 +1073,11 @@ function renderNote(page, backlinks) {
   let saving = false;
   let saveAgain = false;
   let dirty = false; // hay cambios que el servidor todavía no ha confirmado
+  // Aviso de "esta nota cambió en disco" en pantalla (P8): mientras esté ahí,
+  // el autoguardado NO manda nada -- si mandara, escribiría lo de esta pestaña
+  // encima del cambio de disco y el aviso dejaría de tener sentido (el usuario
+  // ya no podría elegir el fichero). Se levanta con "Descartar" o al recargar.
+  let blocked = false;
   let changeSeq = 0; // sube con cada cambio: distingue "guardado" de "cambiado mientras guardaba"
   let lastSentBody = null; // último cuerpo ACEPTADO por el servidor
   let savingBody = null; // cuerpo del PATCH normal que va de camino (null: ninguno)
@@ -1098,6 +1103,7 @@ function renderNote(page, backlinks) {
     changeSeq += 1;
     setSaveState("dirty");
     clearTimeout(saveTimer);
+    if (blocked) return; // hay un cambio en disco sin decidir: no se pisa
     saveTimer = setTimeout(doSave, AUTOSAVE_DELAY_MS);
     state.flushPendingSave = () => {
       clearTimeout(saveTimer);
@@ -1307,6 +1313,9 @@ function renderNote(page, backlinks) {
   state.flushSaveBeacon = flushSaveBeacon;
 
   async function doSave() {
+    // Con el aviso de cambio en disco en pantalla no se escribe nada (tampoco
+    // con Ctrl+S): primero se decide recargar o quedarse con lo de aquí.
+    if (blocked) return;
     clearTimeout(saveTimer);
     if (saving) {
       saveAgain = true;
@@ -1447,6 +1456,24 @@ function renderNote(page, backlinks) {
   const session = {
     id: page.id,
     hasPendingWork: () => dirty || saving || beaconInFlight !== null,
+    /** Para el autoguardado mientras el usuario decide (no pisa el disco). */
+    suspendSave() {
+      blocked = true;
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      // Salir de la nota (navegar) sí guarda lo de esta pestaña: perder el
+      // texto en silencio sería peor. Para tirar lo pendiente está
+      // discardPending(), que es lo que usa "Recargar".
+      state.flushPendingSave = () => {
+        blocked = false;
+        doSave();
+      };
+    },
+    /** "Descartar": se queda con lo de esta pestaña y se guarda ya. */
+    resumeSave() {
+      blocked = false;
+      if (dirty) doSave();
+    },
     discardPending() {
       clearTimeout(saveTimer);
       dirty = false;
@@ -1488,7 +1515,7 @@ function renderNote(page, backlinks) {
 let vaultEvents = null;
 
 /** Aviso discreto dentro de #main: "esta nota cambió en disco". */
-function showRemoteBanner({ deleted = false, session, onReload }) {
+function showRemoteBanner({ deleted = false, session, onReload, onDismiss }) {
   const main = document.getElementById("main");
   if (!main) return;
   main.querySelector(".note-remote-banner")?.remove();
@@ -1521,7 +1548,11 @@ function showRemoteBanner({ deleted = false, session, onReload }) {
   dismissBtn.className = "btn";
   dismissBtn.textContent = "Descartar";
   dismissBtn.title = "Seguir con lo que hay en el editor";
-  dismissBtn.addEventListener("click", () => banner.remove());
+  dismissBtn.addEventListener("click", () => {
+    banner.remove();
+    if (state.noteSession !== session) return;
+    onDismiss?.();
+  });
 
   banner.append(text, reloadBtn, dismissBtn);
   main.prepend(banner);
@@ -1560,9 +1591,11 @@ async function reloadNoteFromDisk(id) {
   // Y pudo empezar a escribir en ese hueco: tampoco se pisa.
   if (state.noteSession?.hasPendingWork()) {
     const session = state.noteSession;
+    session.suspendSave();
     showRemoteBanner({
       session,
       onReload: () => reloadOpenNoteFromDisk(session),
+      onDismiss: () => session.resumeSave(),
     });
     return;
   }
@@ -1587,10 +1620,12 @@ function handleVaultEvent(data) {
 
   if (data.action === "deleted") {
     if (session.hasPendingWork()) {
+      session.suspendSave();
       showRemoteBanner({
         deleted: true,
         session,
         onReload: () => reloadOpenNoteFromDisk(session, { deleted: true }),
+        onDismiss: () => session.resumeSave(),
       });
     } else {
       showEmpty(); // ya no está: se vuelve al inicio, como al borrarla desde la app
@@ -1599,7 +1634,12 @@ function handleVaultEvent(data) {
   }
 
   if (session.hasPendingWork()) {
-    showRemoteBanner({ session, onReload: () => reloadOpenNoteFromDisk(session) });
+    session.suspendSave();
+    showRemoteBanner({
+      session,
+      onReload: () => reloadOpenNoteFromDisk(session),
+      onDismiss: () => session.resumeSave(),
+    });
     return;
   }
   reloadNoteFromDisk(session.id);
