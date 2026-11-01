@@ -1201,6 +1201,7 @@
   }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
+<link rel="stylesheet" href="/graph.css" />
 </head>
 <body>
   <!-- Set de iconos vectoriales (docs/diseno/iconos.svg, SPEC-B §6.5): 20
@@ -1229,6 +1230,9 @@
       <symbol id="i-list-tree" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></symbol>
       <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
       <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+      <!-- Grafo de nodos (P9): tres nodos y sus aristas. -->
+      <symbol id="i-graph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="6" r="2.5"/><circle cx="18.5" cy="8" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="m7.8 6.4 8.4 1.3"/><path d="m6.7 8.3 3.7 7.4"/><path d="m17.3 10.2-3.8 5.6"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 3 6 0 0 6"/><path d="M9 21H3v-6"/><path d="M21 3 14 10"/><path d="M3 21l7-7"/></symbol>
     </defs>
   </svg>
 
@@ -1241,6 +1245,7 @@
         <button class="icon-btn" id="btn-nav-back" title="Atrás" aria-label="Atrás" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-left"/></svg></button>
         <button class="icon-btn" id="btn-nav-forward" title="Adelante" aria-label="Adelante" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right"/></svg></button>
         <button class="icon-btn" id="btn-nav-up" title="Subir un nivel" aria-label="Subir un nivel" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-up"/></svg></button>
+        <button class="icon-btn" id="btn-graph" title="Grafo de la nota (G)" aria-label="Abrir el grafo de la nota"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-graph"/></svg></button>
       </div>
     </div>
     <div class="status-strip">

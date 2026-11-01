@@ -1,0 +1,149 @@
+/* Visor de nodos (P9). Fichero aparte para no engordar el <style> de
+   index.html, que es el del panel y el editor: aquí solo vive el grafo. */
+
+.graph-view {
+  position: fixed;
+  inset: 0;
+  z-index: 60; /* encima de la cabecera y los diálogos: es una vista completa */
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--font-body);
+}
+
+.graph-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  min-height: var(--header-height, 40px);
+  box-sizing: border-box;
+  background: var(--bg);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.graph-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: var(--text-md, 13.5px);
+}
+
+.graph-modes,
+.graph-depths {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md, 6px);
+  background: var(--panel);
+}
+
+.graph-depths > span {
+  padding: 0 6px;
+  font-size: var(--text-xs, 10.5px);
+  color: var(--ink-muted);
+}
+
+.graph-tab,
+.graph-depth {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: var(--text-sm, 11.5px);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.graph-depth { padding: 4px 8px; min-width: 26px; }
+
+.graph-tab:hover:not(:disabled),
+.graph-depth:hover:not(:disabled) { background: var(--code-bg); color: var(--ink); }
+
+.graph-tab.is-active,
+.graph-depth.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.graph-tab:disabled,
+.graph-depth:disabled { opacity: 0.45; cursor: default; }
+
+.graph-tab:focus-visible,
+.graph-depth:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.graph-stats {
+  font-size: var(--text-xs, 10.5px);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  text-align: right;
+}
+
+.graph-stats.is-warn { color: var(--warn); }
+
+.graph-actions { display: flex; gap: 2px; }
+
+#graph-canvas {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: block;
+  touch-action: none; /* el paneo y el arrastre los maneja el canvas, no el scroll */
+}
+
+.graph-empty {
+  position: absolute;
+  inset: 50% 0 auto;
+  transform: translateY(-50%);
+  margin: 0 auto;
+  max-width: 460px;
+  padding: 0 24px;
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: var(--text-base, 13px);
+  line-height: 1.5;
+}
+
+.graph-legend {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md, 6px);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  font-size: var(--text-xs, 10.5px);
+  color: var(--ink-muted);
+  pointer-events: none;
+}
+
+.graph-legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+.graph-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--accent-ink);
+}
+
+.graph-dot[data-type="database"] { background: var(--warn); }
+
+.graph-hint { opacity: 0.75; }
+
+@media (max-width: 720px) {
+  .graph-stats { order: 10; width: 100%; text-align: left; margin-left: 0; }
+  .graph-hint { display: none; }
+}

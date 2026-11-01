@@ -5,6 +5,7 @@
 // (/pages, /databases, /search, /status).
 
 import { createNoteEditor } from "/vendor/editor.bundle.js";
+import { openGraph } from "/graph.js";
 
 const state = {
   pagesById: new Map(), // id -> {id,title,type,icon,parent_id,children} (del árbol; para resolver [[wikilinks]])
@@ -3032,6 +3033,34 @@ document.getElementById("btn-nav-home").addEventListener("click", goHome);
 document.getElementById("btn-nav-back").addEventListener("click", goBack);
 document.getElementById("btn-nav-forward").addEventListener("click", goForward);
 document.getElementById("btn-nav-up").addEventListener("click", goUp);
+
+// --------------------------------------------------------------- grafo (P9)
+// El visor de nodos vive en graph.js (Canvas 2D, sin dependencias): aquí solo
+// se le pasa la página abierta y a dónde ir al pulsar un nodo. El grafo no
+// navega por su cuenta, y el id de una database abierta no es el id de su
+// página (ver database_id), así que se resuelve como en "subir un nivel".
+
+function currentGraphPageId() {
+  if (!state.current) return null;
+  if (state.current.kind === "note") return state.current.id;
+  const node = [...state.pagesById.values()].find((n) => n.database_id === state.current.id);
+  return node?.id ?? null;
+}
+
+function openGraphView() {
+  if (document.querySelector(".graph-view") || document.querySelector("dialog[open]")) return;
+  openGraph({ pageId: currentGraphPageId(), onOpenPage: navigateToPage });
+}
+
+document.getElementById("btn-graph").addEventListener("click", openGraphView);
+
+// "g" abre el grafo, salvo que estés escribiendo (el editor y los campos se
+// quedan con la tecla) o que ya haya un diálogo abierto.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "g" || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable='true']")) return;
+  openGraphView();
+});
 
 // -------------------------------------------------- colapsar la barra lateral
 // Se recuerda en localStorage (no en el servidor -- es preferencia de
