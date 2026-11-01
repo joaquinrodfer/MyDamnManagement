@@ -211,3 +211,88 @@ class TrashRestoreResult(BaseModel):
     reindexed: bool
     notes: int
     links: int
+
+
+# --- Sugerencias de agentes (P10a) -------------------------------------
+
+
+class SuggestionKind(str, Enum):
+    """`edit`: sustituye `old_text` por `new_text` dentro de la nota.
+
+    `new_page`: propone una nota nueva (`old_text` vacio, `new_text` es el
+    cuerpo y hace falta `title`).
+    """
+
+    edit = "edit"
+    new_page = "new_page"
+
+
+class SuggestionStatus(str, Enum):
+    """`pending` -> `accepted` | `rejected`; `orphaned` si el ancla se perdio."""
+
+    pending = "pending"
+    accepted = "accepted"
+    rejected = "rejected"
+    orphaned = "orphaned"
+
+
+class SuggestionCreate(BaseModel):
+    """Lo que manda un agente. `offset` es opcional: sin el, el ancla se
+    supone en la primera aparicion del texto, que es lo que elegiria aceptar."""
+
+    agent: str = "agente"
+    kind: SuggestionKind = SuggestionKind.edit
+    old_text: str = ""
+    new_text: str = ""
+    rationale: str = ""
+    title: Optional[str] = None
+    offset: Optional[int] = None
+
+
+class SuggestionReply(BaseModel):
+    """Una entrada del hilo: quien responde, que dice y cuando."""
+
+    author: str
+    text: str
+    at: str
+
+
+class SuggestionRead(BaseModel):
+    id: uuid.UUID
+    page_id: uuid.UUID
+    agent: str
+    created_at: datetime
+    status: SuggestionStatus
+    kind: SuggestionKind
+    old_text: str = ""
+    new_text: str = ""
+    rationale: str = ""
+    title: Optional[str] = None
+    base_revision: Optional[datetime] = None
+    offset: int = 0
+    replies: list[SuggestionReply] = []
+    decided_at: Optional[datetime] = None
+    reason: Optional[str] = None
+
+
+class SuggestionRejectRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class SuggestionReplyRequest(BaseModel):
+    text: str
+    author: Optional[str] = None
+
+
+class SuggestionAcceptRead(BaseModel):
+    """Resultado de aceptar: la sugerencia resuelta y la nota tocada.
+
+    `stale` avisa de que la nota cambio desde que el agente propuso (su
+    `base_revision` ya no es la actual); el parche se aplico igual porque el
+    `old_text` seguia estando. `created` distingue la nota nueva de `new_page`.
+    """
+
+    suggestion: SuggestionRead
+    page_id: uuid.UUID
+    created: bool = False
+    stale: bool = False

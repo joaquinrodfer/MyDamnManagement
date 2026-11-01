@@ -17,6 +17,7 @@ from app.routers import (
     pages,
     search,
     status,
+    suggestions,
     trash,
 )
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
@@ -49,6 +50,10 @@ app.include_router(files.router)
 app.include_router(events.router)
 # `/graph` (P9): la tabla `links` servida como nodos y aristas para el visor.
 app.include_router(graph.router)
+# `/pages/{id}/suggestions` y `/suggestions/{sid}/...` (P10a): los parches que
+# proponen los agentes, en el sidecar de la nota. Solo backend: la interfaz va
+# en su propia tarjeta.
+app.include_router(suggestions.router)
 
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
 # los tests y el apagado puedan pararlo sin depender del objeto `app`.

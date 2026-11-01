@@ -50,7 +50,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 
 from app import index as index_mod
 from app.links import sync_wikilinks
-from app.vault import fm, names, reader, vaultfs, writer
+from app.vault import fm, names, reader, suggestions, vaultfs, writer
 
 log = logging.getLogger("mdm.vault")
 
@@ -836,6 +836,8 @@ class VaultStore:
         abs_new = os.path.join(self.root, new_rel)
         if new_rel != old_rel:
             vaultfs.move(abs_old, abs_new)
+            # Las sugerencias de la nota viajan con ella (P10a).
+            self._move_sidecar(old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -954,6 +956,10 @@ class VaultStore:
                 continue
             vaultfs.move(src, os.path.join(stamp, rel_file))
         _prune_empty_dirs(abs_folder)
+        # Las sugerencias de la nota se van a la papelera con ella (P10a).
+        sidecar = suggestions.sidecar_abs(self.root, rel)
+        if os.path.isdir(sidecar):
+            vaultfs.move(sidecar, os.path.join(stamp, suggestions.sidecar_rel(rel)))
 
         with self._tx():
             self.conn.execute("DELETE FROM pages WHERE id = ?", (str(page_id),))
@@ -1002,7 +1008,62 @@ class VaultStore:
         ocupada; aquí se deja subir, que la API lo traduzca a 409 con el motivo.
         """
         dst = vaultfs.restore(self.root, trash_rel)
-        return os.path.relpath(dst, self.root).replace(os.sep, "/")
+        rel = os.path.relpath(dst, self.root).replace(os.sep, "/")
+        self._restore_sidecar(trash_rel, rel)
+        return rel
+
+    # ----------------------------------------------- sugerencias (P10a)
+
+    def _move_sidecar(self, old_rel: str, new_rel: str) -> None:
+        """Las sugerencias de una nota viajan con ella al renombrar/mover.
+
+        Es la misma operacion del vault: si el `.md` cambia de nombre o de
+        carpeta, su carpeta `<nota>.md.sugerencias/` se mueve con el. Si el
+        destino ya existe --dos sidecars con el mismo nombre solo pueden
+        venir de un `mv` a mano-- no se pisa nada: se avisa y se dejan donde
+        estan, que es preferible a mezclar hilos de dos notas.
+        """
+        old_dir = suggestions.sidecar_abs(self.root, old_rel)
+        if not os.path.isdir(old_dir):
+            return
+        new_dir = suggestions.sidecar_abs(self.root, new_rel)
+        if os.path.exists(new_dir):
+            log.warning(
+                "ya existe %s: las sugerencias de %s no se mueven",
+                suggestions.sidecar_rel(new_rel), old_rel,
+            )
+            return
+        vaultfs.move(old_dir, new_dir)
+
+    def _restore_sidecar(self, trash_rel: str, rel: str) -> None:
+        """Devuelve las sugerencias que se borraron con la nota.
+
+        Borrar una nota mueve su `.md` **y** su carpeta de sugerencias al mismo
+        sello de `.trash/`; restaurar solo el `.md` dejaria el hilo del agente
+        huerfano en la papelera sin decirlo. Si la carpeta destino ya existe no
+        se pisa: la nota vuelve y las sugerencias se quedan en la papelera
+        (mejor dos copias separadas que dos hilos mezclados).
+        """
+        if not rel.lower().endswith(".md"):
+            return
+        try:
+            src = os.path.join(
+                self.root, vaultfs.safe_rel(self.root, suggestions.sidecar_rel(trash_rel))
+            )
+        except vaultfs.PathEscape:      # pragma: no cover - ruta del usuario
+            return
+        if not os.path.isdir(src):
+            return
+        dst = suggestions.sidecar_abs(self.root, rel)
+        if os.path.exists(dst):
+            log.warning(
+                "%s ya tiene sugerencias: las de la papelera se quedan ahi", rel
+            )
+            return
+        try:
+            vaultfs.move(src, dst)
+        except OSError as exc:      # pragma: no cover - disco/permisos
+            log.warning("no se pudieron devolver las sugerencias de %s: %s", rel, exc)
 
     # ------------------------------------------------------- bases de datos
 

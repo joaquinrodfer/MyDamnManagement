@@ -22,9 +22,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import fm
+from .suggestions import SIDECAR_MARK
 
 IGNORED_DIRS = {".trash", "_attachments", ".git", ".obsidian", ".stversions"}
 SKIP_FILES = {".DS_Store", "Thumbs.db"}
+
+# Las sugerencias de agentes (P10a) viven en una carpeta hermana de la nota
+# (`Notas/X.md.sugerencias/`), con un `.json` por sugerencia. No son notas y no
+# se indexan: el recorrido no entra ahi. Aunque solo contiene `.json` --y el
+# recorrido solo recoge `.md`-- se excluye por nombre (`SIDECAR_MARK`, de
+# `app.vault.suggestions`), para que el dia que algo escriba un `.md` dentro no
+# aparezca como pagina suelta en el arbol.
 
 # Carpeta de las bases de datos en la raíz del vault (ADR: `Bases/`). El lector
 # la necesita para reconocer una fila huérfana (`Bases/X/y.md` sin
@@ -413,7 +421,8 @@ def walk_markdown(root: str) -> list[tuple[str, os.stat_result]]:
         for entry in entries:
             rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
             if entry.is_dir(follow_symlinks=False):
-                if entry.name in IGNORED_DIRS:
+                # Las carpetas de sugerencias no se recorren (P10a): no son notas.
+                if entry.name in IGNORED_DIRS or entry.name.endswith(SIDECAR_MARK):
                     continue
                 scan(entry.path, rel)
             elif entry.name.lower().endswith(".md") and entry.name not in SKIP_FILES:

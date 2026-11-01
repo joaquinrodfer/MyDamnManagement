@@ -27,7 +27,15 @@ from app import index as index_mod
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
+from app.vault import suggestions
 from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultError, VaultStore
+from app.vault.suggestions import (
+    Suggestion,
+    SuggestionError,
+    SuggestionNotFound,
+    SuggestionResolved,
+    SuggestionUnanchored,
+)
 
 
 def _now() -> datetime:
@@ -408,6 +416,198 @@ class Repository:
             (str(page_id), LinkKind.wikilink.value),
         ).fetchall()
         return [_page(r) for r in rows]
+
+    # ------------------------------------------------ sugerencias (P10a)
+
+    def page_path(self, page_id: uuid.UUID | str) -> Optional[str]:
+        """Ruta del `.md` de una página en el vault (o None si no está)."""
+        row = self.conn.execute(
+            "SELECT path FROM pages WHERE id = ?", (str(page_id),)
+        ).fetchone()
+        return row["path"] if row is not None else None
+
+    def create_suggestion(
+        self,
+        page_id: uuid.UUID,
+        *,
+        agent: str,
+        kind: str = "edit",
+        old_text: str = "",
+        new_text: str = "",
+        rationale: str = "",
+        title: Optional[str] = None,
+        offset: Optional[int] = None,
+    ) -> Optional[Suggestion]:
+        """Guarda una sugerencia en el sidecar de la nota. None si no hay nota.
+
+        `old_text` se comprueba **contra el cuerpo de ahora**: si ya no está, la
+        sugerencia no se rechaza —el agente pudo basarse en una versión
+        anterior— sino que nace `orphaned`, que es lo que la interfaz necesita
+        para enseñarla como «ya no encaja» sin perderla ni mentir sobre ella.
+        """
+        page = self.get_page(page_id)
+        if page is None:
+            return None
+        note_rel = self.page_path(page_id)
+        if note_rel is None:        # pragma: no cover - una nota siempre tiene ruta
+            raise VaultError(f"la nota {page_id} no tiene ruta en el índice")
+        if kind not in suggestions.KINDS:
+            raise SuggestionError(f"kind desconocido: {kind!r}")
+
+        body = page.body_markdown or ""
+        status = "pending"
+        if kind == "edit":
+            if not old_text:
+                raise SuggestionError("una sugerencia 'edit' necesita old_text")
+            positions = suggestions.occurrences(body, old_text)
+            if offset is None:
+                # Sin pista del agente, el ancla empieza en la primera
+                # aparición: el mismo sitio que elegiría aceptar sin offset.
+                offset = positions[0] if positions else 0
+            if not positions:
+                status = "orphaned"
+        else:
+            if not (title or "").strip():
+                raise SuggestionError("una sugerencia 'new_page' necesita title")
+            old_text = ""
+            offset = 0
+
+        suggestion = suggestions.Suggestion(
+            id=str(uuid.uuid4()),
+            page_id=str(page.id),
+            agent=agent,
+            created_at=_iso(_now()),
+            status=status,
+            kind=kind,
+            old_text=old_text,
+            new_text=new_text,
+            rationale=rationale,
+            title=title,
+            base_revision=_iso(page.updated_at) if page.updated_at else None,
+            offset=max(int(offset or 0), 0),
+        )
+        suggestions.write(self.vault.root, suggestion, note_rel)
+        return suggestion
+
+    def list_suggestions(
+        self, page_id: uuid.UUID, status: Optional[str] = None
+    ) -> Optional[list[Suggestion]]:
+        """Sugerencias de una nota, las más recientes primero. None si no hay nota."""
+        if self.get_page(page_id) is None:
+            return None
+        if status is not None and status not in suggestions.STATUSES:
+            raise SuggestionError(f"status desconocido: {status!r}")
+        note_rel = self.page_path(page_id)
+        if note_rel is None:        # pragma: no cover
+            return []
+        return suggestions.list_for(self.vault.root, note_rel, status)
+
+    def get_suggestion(self, suggestion_id: str) -> Optional[Suggestion]:
+        found = suggestions.find(self.vault.root, suggestion_id)
+        return found[0] if found is not None else None
+
+    def accept_suggestion(self, suggestion_id: str) -> dict[str, Any]:
+        """Aplica el parche si el ancla sigue estando.
+
+        - `edit`: busca `old_text` en el cuerpo **actual**; si aparece varias
+          veces elige la más cercana a `offset`; si no aparece, deja la
+          sugerencia `orphaned` y lanza `SuggestionUnanchored`.
+        - `new_page`: crea la nota con el título y el cuerpo propuestos.
+
+        La escritura va por `update_page`/`create_page`, que es la ruta de un
+        guardado normal: `.md` atómico, índice al día y el fichero nuevo donde
+        el reindexado lo volvería a encontrar. Devuelve `{suggestion, page,
+        created, stale}`.
+        """
+        found = suggestions.find(self.vault.root, suggestion_id)
+        if found is None:
+            raise SuggestionNotFound(suggestion_id)
+        suggestion, note_rel = found
+        if suggestion.status in ("accepted", "rejected"):
+            raise SuggestionResolved(suggestion.status)
+
+        stale = False
+        if suggestion.kind == "new_page":
+            page = self.create_page(
+                title=(suggestion.title or "Sin título").strip() or "Sin título",
+                icon=settings.default_icon,
+                created_by=suggestion.agent or None,
+                body_markdown=suggestion.new_text,
+            )
+            created = True
+        else:
+            page = self.get_page(suggestion.page_id)
+            if page is None or self.page_path(suggestion.page_id) is None:
+                self._orphan(suggestion, note_rel)
+                raise SuggestionUnanchored(suggestion_id)
+            stale = bool(suggestion.base_revision) and (
+                _iso(page.updated_at) != suggestion.base_revision
+            )
+            applied = suggestions.apply(
+                page.body_markdown or "",
+                suggestion.old_text,
+                suggestion.new_text,
+                suggestion.offset,
+            )
+            if applied is None:
+                self._orphan(suggestion, note_rel)
+                raise SuggestionUnanchored(suggestion_id)
+            new_body, _position = applied
+            page = self.update_page(
+                uuid.UUID(suggestion.page_id), body_markdown=new_body
+            )
+            created = False
+
+        suggestion.status = "accepted"
+        suggestion.decided_at = _iso(_now())
+        suggestions.write(self.vault.root, suggestion, note_rel)
+        return {
+            "suggestion": suggestion,
+            "page": page,
+            "created": created,
+            "stale": stale,
+        }
+
+    def reject_suggestion(
+        self, suggestion_id: str, reason: Optional[str] = None
+    ) -> Suggestion:
+        """Marca `rejected`, con el motivo si lo hay. El `.md` no se toca."""
+        found = suggestions.find(self.vault.root, suggestion_id)
+        if found is None:
+            raise SuggestionNotFound(suggestion_id)
+        suggestion, note_rel = found
+        if suggestion.status in ("accepted", "rejected"):
+            raise SuggestionResolved(suggestion.status)
+        suggestion.status = "rejected"
+        suggestion.decided_at = _iso(_now())
+        suggestion.reason = reason or None
+        suggestions.write(self.vault.root, suggestion, note_rel)
+        return suggestion
+
+    def reply_to_suggestion(
+        self, suggestion_id: str, *, text: str, author: Optional[str] = None
+    ) -> Suggestion:
+        """Añade una entrada al hilo del dueño (el canal de vuelta al agente)."""
+        if not (text or "").strip():
+            raise SuggestionError("la respuesta no puede estar vacía")
+        found = suggestions.find(self.vault.root, suggestion_id)
+        if found is None:
+            raise SuggestionNotFound(suggestion_id)
+        suggestion, note_rel = found
+        suggestion.replies.append(
+            {
+                "author": author or settings.default_user_name,
+                "text": text,
+                "at": _iso(_now()),
+            }
+        )
+        suggestions.write(self.vault.root, suggestion, note_rel)
+        return suggestion
+
+    def _orphan(self, suggestion: Suggestion, note_rel: str) -> None:
+        """Deja escrito que el ancla ya no está, antes de contarlo por error."""
+        suggestion.status = "orphaned"
+        suggestions.write(self.vault.root, suggestion, note_rel)
 
     # ---------------------------------------------------------- databases
 
