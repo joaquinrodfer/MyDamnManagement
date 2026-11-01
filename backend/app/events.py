@@ -13,6 +13,12 @@ un hilo al otro sin que ninguno espere al otro:
 - Un cliente que deja de leer no bloquea al vigilante ni se lleva la conexión:
   su cola tiene tope y, si se llena, se descarta el aviso más viejo (para una
   pantalla que se ha quedado atrás, el último estado es el que importa).
+- El conjunto de colas lo tocan dos hilos (el bucle da de alta y de baja, el
+  vigilante reparte), así que alta, baja y snapshot van bajo un `threading.Lock`.
+  Sin él, `list(self._queues)` en `publish` puede caer en mitad de una
+  mutación con `RuntimeError: Set changed size during iteration`: los clientes
+  restantes se quedarían sin el aviso y la pasada entera se anotaría como
+  fallida aunque el reindexado fuera bien.
 
 El bus no guarda estado ni historial: un cliente que conecta recibe los avisos
 a partir de ese momento y carga el estado por la API, que es la que manda.
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
 log = logging.getLogger("mdm.events")
@@ -39,36 +46,43 @@ class EventBus:
         self._maxsize = maxsize
         self._queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Alta/baja en el bucle, snapshot en el hilo del vigilante.
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------ suscripción
 
     @property
     def subscribers(self) -> int:
         """Clientes conectados (para comprobar que una desconexión no deja cola)."""
-        return len(self._queues)
+        with self._lock:
+            return len(self._queues)
 
     def subscribe(self) -> asyncio.Queue:
         """Cola nueva para un cliente. Se llama desde el bucle de eventos."""
         loop = asyncio.get_running_loop()
-        self._loop = loop
         queue: asyncio.Queue = asyncio.Queue(maxsize=self._maxsize)
-        self._queues.add(queue)
+        with self._lock:
+            self._loop = loop
+            self._queues.add(queue)
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         """Suelta la cola del cliente que se ha ido. Idempotente."""
-        self._queues.discard(queue)
+        with self._lock:
+            self._queues.discard(queue)
 
     # --------------------------------------------------------------- entrega
 
     def publish(self, event: dict[str, Any]) -> None:
         """Entrega un evento a todos los clientes. Seguro desde cualquier hilo."""
-        loop = self._loop
+        with self._lock:
+            loop = self._loop
+            queues = tuple(self._queues)
         if loop is None or loop.is_closed():
             # Nadie ha abierto `/events` todavía, o el bucle ya se ha cerrado:
             # no hay a quién avisar y no es un error.
             return
-        for queue in list(self._queues):
+        for queue in queues:
             try:
                 loop.call_soon_threadsafe(self._deliver, queue, event)
             except RuntimeError:

@@ -649,10 +649,60 @@ class VaultStore:
         ).fetchone()
         return row["id"] if row is not None else None
 
+    def _page_id_for(self, page: reader.Page) -> str:
+        """Id con el que se indexa un fichero, con la regla del id duplicado.
+
+        `reader._merge_page` documenta la regla del reindexado entero: copiar un
+        `.md` con `cp` no puede hacer que un fichero desaparezca del índice, así
+        que el `id` del frontmatter se queda en un fichero y el otro se indexa
+        con un id derivado de su ruta.
+
+        Aquí se aplica la mitad que necesita un solo fichero: si el `id` del
+        frontmatter ya es de **otra** ruta del índice, el fichero que llega se
+        indexa con `derived_id(ruta)` y la fila que ya existía no se toca. Sin
+        esto, `UPSERT_PAGE` (`ON CONFLICT(id) DO UPDATE ... path = excluded.path`)
+        movería la misma fila de ruta en ruta: el título del árbol alternando, un
+        evento `added` por pasada para siempre y `/status` con deriva permanente
+        con un simple `cp` (P8, ronda 1).
+
+        Diferencia conocida con `_merge_page`: el reindexado entero se queda con
+        el `id` del frontmatter para el fichero que ordena **primero** por ruta
+        (que puede ser la copia); el camino incremental, no —quien ya estaba
+        indexado conserva su `id`—. Los dos estados son estables, no se pierde
+        ningún fichero y un `rebuild()` solo cambiaría cuál de los dos lleva el
+        `id` original. Se prefiere así porque la alternativa es reasignar el `id`
+        de una fila que ya existe (con sus hijas, vistas, filas y enlaces) por la
+        llegada de una copia.
+        """
+        candidate = _as_uuid(page.id) or derived_id(page.path)
+        row = self.conn.execute(
+            "SELECT path FROM pages WHERE id = ?", (candidate,)
+        ).fetchone()
+        if row is None or row["path"] == page.path:
+            return candidate
+        derived = derived_id(page.path)
+        log.info(
+            "id %s ya es de %s: %s se indexa con el id derivado de su ruta",
+            candidate, row["path"], page.path,
+        )
+        return derived
+
     def _index_file(
-        self, rel: str, parent_id: Optional[str], *, database_id: Optional[str] = None
+        self,
+        rel: str,
+        parent_id: Optional[str],
+        *,
+        database_id: Optional[str] = None,
+        dedupe: bool = False,
     ) -> str:
-        """Lee el fichero recién escrito y deja el índice diciendo lo mismo."""
+        """Lee el fichero recién escrito y deja el índice diciendo lo mismo.
+
+        `dedupe` resuelve el `id` con `_page_id_for` (regla del `cp`). Va solo en
+        el camino del vigilante: al **guardar** desde la app la fila todavía
+        puede estar en la ruta vieja —un renombrado mueve el fichero y reindexa
+        antes de soltar la fila antigua— y derivar ahí le cambiaría el `id` a la
+        página en cada renombrado.
+        """
         abs_path = os.path.join(self.root, vaultfs.safe_rel(self.root, rel))
         page = reader.read_file(abs_path, rel)
         if database_id is None:
@@ -660,6 +710,7 @@ class VaultStore:
         workspace_id = self._workspace()
         record = self._record_from_page(
             page, workspace_id, parent_id,
+            page_id=self._page_id_for(page) if dedupe else None,
             page_type="database_row" if database_id else None,
         )
         self._upsert(record)
@@ -1307,11 +1358,15 @@ class VaultStore:
     # aplica al índice **solo para esos ficheros**. No es un reindexado
     # parcial a medias: cada fichero se lee con `reader.read_file` y se indexa
     # con `_index_file`, el mismo camino que usa la API al guardar, así que el
-    # índice queda diciendo exactamente lo que diría `rebuild()` de ese
-    # fichero (título, tipo, propiedades, schema/views de una base, enlaces
-    # salientes). Lo que NO se recalcula es lo que depende de otros ficheros y
-    # solo `rebuild()` sabe (los backlinks de las páginas que enlazaban al
-    # renombrado): ver la nota de `sync_changes`.
+    # índice queda diciendo lo que diría `rebuild()` de ese fichero (título,
+    # tipo, propiedades, schema/views de una base, enlaces salientes). Lo que
+    # NO se recalcula es lo que depende de otros ficheros y solo `rebuild()`
+    # sabe (los backlinks de las páginas que enlazaban al renombrado): ver la
+    # nota de `sync_changes`.
+    #
+    # La única diferencia con `rebuild()` es cuál de dos `.md` con el mismo `id`
+    # se queda el `id` del frontmatter (aquí lo conserva el que ya estaba
+    # indexado; ver `_page_id_for`); los dos ficheros quedan en el índice.
 
     def sync_changes(
         self,
@@ -1453,6 +1508,11 @@ class VaultStore:
         La acción sale del índice, no de la lista que trajo el vigilante: un
         fichero que ya estaba es «modified» y uno que no, «added»; y así una
         fila huérfana que reaparece tras borrar su base cuenta como alta.
+
+        Un `.md` copiado a mano trae el `id` del original: el `id` se resuelve
+        con `_page_id_for` y, si el del frontmatter ya es de otra ruta, este
+        fichero se queda con el derivado de la suya (dos páginas, como en
+        `rebuild()`, y la segunda pasada no tiene nada que contar).
         """
         abs_path = self._abs(rel)
         try:
@@ -1466,7 +1526,7 @@ class VaultStore:
         parent_id = self._parent_of_path(rel)
 
         with self._tx():
-            page_id = self._index_file(rel, parent_id)
+            page_id = self._index_file(rel, parent_id, dedupe=True)
             row = self.conn.execute(
                 "SELECT type, content_hash FROM pages WHERE id = ?", (page_id,)
             ).fetchone()

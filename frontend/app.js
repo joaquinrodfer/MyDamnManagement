@@ -1603,13 +1603,30 @@ async function reloadNoteFromDisk(id) {
   markActive(id);
 }
 
+/**
+ * Refresco del árbol agrupado: un `rsync`/restore de 2.000 ficheros son 2.000
+ * eventos y no 2.000 `GET /pages` por pestaña. El árbol se repinta una vez con
+ * el estado final, que es el único que se llega a ver.
+ */
+const TREE_REFRESH_MS = 200;
+let treeRefreshTimer = null;
+
+function scheduleTreeRefresh() {
+  if (treeRefreshTimer !== null) return;
+  treeRefreshTimer = setTimeout(() => {
+    treeRefreshTimer = null;
+    loadTree();
+  }, TREE_REFRESH_MS);
+}
+
 /** Un evento `page` de `/events`: `{action, page_id, path}`. */
 function handleVaultEvent(data) {
   if (!data || data.type !== "page") return;
 
-  // El árbol primero, siempre: quitar o añadir un `.md` cambia qué cuelga de
-  // qué, y eso se ve en la barra lateral aunque no se toque el editor.
-  loadTree();
+  // El árbol siempre, pero agrupado: quitar o añadir un `.md` cambia qué
+  // cuelga de qué, y eso se ve en la barra lateral aunque no se toque el
+  // editor.
+  scheduleTreeRefresh();
 
   const session = state.noteSession;
   if (!session || session.id !== data.page_id) {

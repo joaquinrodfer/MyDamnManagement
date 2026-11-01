@@ -24,6 +24,7 @@ evidencia de la tarjeta.
 import asyncio
 import logging
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -35,6 +36,60 @@ import pytest
 # poder afirmar sobre ellos.
 ID_EXTERNA = "11111111-1111-4111-8111-111111111111"
 ID_OTRO = "22222222-2222-4222-8222-222222222222"
+ID_BASE = "44444444-4444-4444-8444-444444444444"
+ID_FILA = "55555555-5555-4555-8555-555555555555"
+
+# El formato del ADR, escrito a mano: una base con su schema y su vista, y una
+# fila en la carpeta hermana (sin `type`: lo dice su sitio).
+BASE_MD = """---
+id: {id}
+type: database
+schema:
+  - key: empresa
+    name: Empresa
+    type: text
+  - key: fase
+    name: Fase
+    type: select
+    options: [Lead, Cerrada]
+views:
+  - id: v1
+    name: Tablero
+    type: board
+    group_by: fase
+---
+"""
+
+BASE_MD_AMPLIADA = """---
+id: {id}
+type: database
+schema:
+  - key: empresa
+    name: Empresa
+    type: text
+  - key: fase
+    name: Fase
+    type: select
+    options: [Lead, Cerrada]
+  - key: nota
+    name: Nota
+    type: text
+views:
+  - id: v1
+    name: Tablero
+    type: board
+    group_by: fase
+---
+"""
+
+FILA_MD = """---
+id: {id}
+empresa: {empresa}
+fase: {fase}
+---
+
+Notas libres de la fila.
+"""
 
 
 def escribir(vault: Path, rel: str, *, id_: str, cuerpo: str) -> Path:
@@ -303,3 +358,221 @@ def test_una_pasada_lenta_avisa_una_sola_vez(tmp_path, caplog):
     avisos = [r for r in caplog.records if "tardó" in r.getMessage()]
     assert len(avisos) == 1, [r.getMessage() for r in caplog.records]
     assert "WATCH_INTERVAL" in avisos[0].getMessage()
+
+
+# --------------------------------------------------------------------------
+# 6. regresión de la ronda 1: copiar un `.md` a mano no puede oscilar
+# --------------------------------------------------------------------------
+
+
+def test_cp_de_una_nota_no_hace_oscilar_el_indice(tmp_path: Path, index_path: Path):
+    """`cp Notas/X.md Notas/X-copia.md` deja dos páginas, no una ruleta.
+
+    El `id` del frontmatter viaja con la copia. Si el reindexado del vigilante
+    lo aplicara tal cual, `UPSERT_PAGE` movería la MISMA fila de ruta en ruta en
+    cada pasada: título alternando en el árbol, un `added` por pasada para
+    siempre, una transacción por pasada y `/status` con deriva permanente. La
+    regla es la de `reader._merge_page`: el fichero que llega se indexa con el
+    `id` derivado de su ruta.
+    """
+    from app import index as index_mod
+    from app.vault import drift
+    from app.vault.store import VaultStore, derived_id
+    from app.vault.watcher import VaultWatcher
+
+    vault = tmp_path / "vault"
+    original = escribir(vault, "Notas/Revisor.md", id_=ID_EXTERNA, cuerpo="original")
+    watcher = VaultWatcher(
+        str(vault), str(index_path), interval=0.2, publish=lambda evento: None
+    )
+    assert [e["action"] for e in watcher.run_once()] == ["added"]
+
+    # La copia, por fuera de la app y con el `id` del original dentro.
+    copia = vault / "Notas" / "Revisor-copia.md"
+    shutil.copyfile(original, copia)
+
+    primera = watcher.run_once()
+    assert [(e["action"], e["path"]) for e in primera] == [
+        ("added", "Notas/Revisor-copia.md")
+    ], primera
+    assert primera[0]["page_id"] == derived_id("Notas/Revisor-copia.md"), (
+        "la copia se quedó con el id del original: la fila va a saltar de ruta"
+    )
+
+    conn = index_mod.open_index(str(index_path))
+    try:
+        filas = conn.execute("SELECT id, path, title FROM pages ORDER BY path").fetchall()
+        paginas = [(fila["path"], fila["title"]) for fila in filas]
+        ids = {fila["path"]: fila["id"] for fila in filas}
+        assert paginas == [
+            ("Notas/Revisor-copia.md", "Revisor-copia"),
+            ("Notas/Revisor.md", "Revisor"),
+        ], paginas
+        assert len(set(ids.values())) == 2, f"dos ficheros con el mismo id: {ids}"
+        assert ids["Notas/Revisor.md"] == ID_EXTERNA, "quien ya estaba perdió su id"
+        assert drift.diff(str(vault), conn).changed == 0, "el índice no refleja el disco"
+    finally:
+        conn.close()
+
+    # Segunda y tercera pasada: nada que indexar, ni un evento, ni deriva.
+    assert watcher.run_once() == []
+    assert watcher.run_once() == [], "el índice sigue teniendo algo que reindexar"
+
+    # Y lo que dice el índice es lo que diría un reindexado entero: dos páginas,
+    # mismas rutas y mismos títulos (el `id` del frontmatter se lo queda uno de
+    # los dos; el reindexado entero se lo da al primero por ruta, ver
+    # `VaultStore._page_id_for`).
+    conn = index_mod.open_index(str(tmp_path / "rebuild.sqlite"))
+    try:
+        VaultStore(str(vault), conn).rebuild()
+        reconstruido = [
+            (fila["path"], fila["title"])
+            for fila in conn.execute("SELECT path, title FROM pages ORDER BY path")
+        ]
+    finally:
+        conn.close()
+    assert reconstruido == paginas
+
+
+def test_cp_de_una_base_no_tumba_el_vigilante(tmp_path: Path, index_path: Path):
+    """Copiar el `.md` de una base trae `id`s de vistas repetidos: igual de estable."""
+    from app import index as index_mod
+    from app.vault import drift
+    from app.vault.watcher import VaultWatcher
+
+    vault = tmp_path / "vault"
+    base = vault / "Bases" / "Contactos.md"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_text(BASE_MD.format(id=ID_BASE), encoding="utf-8")
+    watcher = VaultWatcher(
+        str(vault), str(index_path), interval=0.2, publish=lambda evento: None
+    )
+    assert [e["action"] for e in watcher.run_once()] == ["added"]
+
+    shutil.copyfile(base, base.with_name("Contactos copia.md"))
+    eventos = watcher.run_once()
+    assert [(e["action"], e["path"]) for e in eventos] == [
+        ("added", "Bases/Contactos copia.md")
+    ], eventos
+
+    conn = index_mod.open_index(str(index_path))
+    try:
+        assert conn.execute("SELECT count(*) FROM pages").fetchone()[0] == 2
+        assert conn.execute("SELECT count(*) FROM databases").fetchone()[0] == 2
+        assert drift.diff(str(vault), conn).changed == 0
+    finally:
+        conn.close()
+
+    assert watcher.run_once() == [], "la base copiada se reindexa en cada pasada"
+
+
+# --------------------------------------------------------------------------
+# 7. bases y filas tocadas por fuera (sin `POST /reindex`)
+# --------------------------------------------------------------------------
+
+
+def _escribir_base_y_fila(vault_path: Path) -> tuple[Path, Path]:
+    base = vault_path / "Bases" / "Contactos.md"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_text(BASE_MD.format(id=ID_BASE), encoding="utf-8")
+    carpeta = vault_path / "Bases" / "Contactos"
+    carpeta.mkdir()
+    fila = carpeta / "Acme.md"
+    fila.write_text(
+        FILA_MD.format(id=ID_FILA, empresa="Acme", fase="Lead"), encoding="utf-8"
+    )
+    return base, fila
+
+
+def test_una_base_tocada_por_fuera_se_indexa_se_edita_y_se_borra(vigilante, vault_path):
+    base, _fila = _escribir_base_y_fila(vault_path)
+
+    def base_indexada():
+        return next(
+            (b for b in vigilante.get("/databases").json() if b["id"] == ID_BASE), None
+        )
+
+    assert esperar(base_indexada), "la base escrita por fuera no llegó al índice"
+
+    # Modificada por fuera: el schema es el del fichero, sin reindexar a mano.
+    base.write_text(BASE_MD_AMPLIADA.format(id=ID_BASE), encoding="utf-8")
+    assert esperar(
+        lambda: [p["key"] for p in base_indexada()["schema_def"]]
+        == ["empresa", "fase", "nota"]
+    ), "el schema nuevo de la base no llegó al índice"
+
+    # Borrada por fuera: sale del índice y su fila sigue viva (el fichero manda).
+    base.unlink()
+    assert esperar(lambda: base_indexada() is None), "la base borrada sigue en /databases"
+    assert vigilante.get(f"/pages/{ID_BASE}").status_code == 404
+    assert esperar(lambda: vigilante.get(f"/pages/{ID_FILA}").status_code == 200), (
+        "borrar la base por fuera se llevó por delante el fichero de su fila"
+    )
+
+
+def test_una_fila_tocada_por_fuera_se_indexa_se_edita_y_se_borra(vigilante, vault_path):
+    _base, fila = _escribir_base_y_fila(vault_path)
+
+    def filas():
+        respuesta = vigilante.get(f"/databases/{ID_BASE}/rows")
+        return respuesta.json() if respuesta.status_code == 200 else []
+
+    assert esperar(lambda: [f["title"] for f in filas()] == ["Acme"]), (
+        "la fila escrita por fuera no llegó a la tabla de su base"
+    )
+
+    # Modificada por fuera: las propiedades se releen del fichero.
+    fila.write_text(
+        FILA_MD.format(id=ID_FILA, empresa="Acme Renombrada", fase="Cerrada"),
+        encoding="utf-8",
+    )
+    assert esperar(
+        lambda: [f["properties"] for f in filas()]
+        == [{"empresa": "Acme Renombrada", "fase": "Cerrada"}]
+    ), "las propiedades de la fila no se releeron del fichero"
+
+    # Borrada por fuera: fuera de la tabla y fuera del índice.
+    fila.unlink()
+    assert esperar(lambda: filas() == []), "la fila borrada sigue en la tabla"
+    assert vigilante.get(f"/pages/{ID_FILA}").status_code == 404
+
+
+# --------------------------------------------------------------------------
+# 8. el bus: `publish` en el hilo del vigilante con altas y bajas en el bucle
+# --------------------------------------------------------------------------
+
+
+def test_el_bus_reparte_con_altas_y_bajas_concurrentes():
+    """Sin candado, `list(self._queues)` puede caer a mitad de una mutación."""
+    from app.events import EventBus
+
+    bus = EventBus()
+    errores: list[BaseException] = []
+
+    async def escenario():
+        detener = threading.Event()
+
+        def publicar():
+            try:
+                while not detener.is_set():
+                    bus.publish({"type": "page"})
+                    time.sleep(0.0005)
+            except BaseException as exc:  # noqa: BLE001 - se afirma abajo
+                errores.append(exc)
+
+        hilo = threading.Thread(target=publicar, name="p8-publica")
+        cola_fija = bus.subscribe()
+        hilo.start()
+        try:
+            for _ in range(500):
+                bus.unsubscribe(bus.subscribe())
+                await asyncio.sleep(0)
+        finally:
+            detener.set()
+            hilo.join(5)
+            bus.unsubscribe(cola_fija)
+
+    asyncio.run(escenario())
+
+    assert errores == [], f"publish reventó con altas y bajas concurrentes: {errores}"
+    assert bus.subscribers == 0
