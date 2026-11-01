@@ -202,7 +202,11 @@ function createView({ pageId, onOpenPage }) {
     const dx = n.x - cell.cx, dy = n.y - cell.cy;
     let d2 = dx * dx + dy * dy;
     // Un cuadrante lejano se trata como una masa puntual; uno cercano se abre.
-    if (cell.leaf || (cell.size * cell.size) / d2 < THETA2) {
+    // Una celda que ha tocado el tope de profundidad o de tamaño (`kids: null`,
+    // ver `quad()`) tampoco tiene hijos que abrir: se trata como masa. Sin esta
+    // condición el recorrido revienta con `cell.kids is not iterable` en cuanto
+    // un nodo cae cerca del centro de una de esas celdas (con 400 nodos pasa).
+    if (cell.leaf || !cell.kids || (cell.size * cell.size) / d2 < THETA2) {
       if (d2 < 25) d2 = 25; // dos nodos en el mismo píxel: no dividas por ~0
       const d = Math.sqrt(d2);
       const f = (CHARGE * cell.mass) / d2;
@@ -228,14 +232,19 @@ function createView({ pageId, onOpenPage }) {
     if (!view) return;
     tick();
     state.alpha += (0 - state.alpha) * ALPHA_DECAY;
+    // El layout arranca compacto y se expande: encuadrar solo al final deja
+    // nodos cortados durante los primeros segundos (lo que se ve al abrir o al
+    // cambiar de modo/saltos). Se reencuadra en cada fotograma mientras corre
+    // la simulación; en cuanto el usuario panea, hace zoom o arrastra, manda
+    // su cámara.
+    if (!state.userMoved && !state.dragging) {
+      const t = fitTransform();
+      if (t) state.transform = t;
+    }
     draw();
     if (state.alpha < ALPHA_MIN && !state.dragging) {
       // Se acabó: el último fotograma ya está pintado y no se pide otro.
       state.alpha = 0;
-      // Encuadre final con el layout ya asentado -- el `fit()` inicial se hace
-      // sobre la espiral de arranque y el grafo crece al separarse los nodos.
-      // Si el usuario ha paneado o hecho zoom, manda su vista.
-      if (!state.userMoved) fit();
       return;
     }
     state.raf = requestAnimationFrame(frame);
@@ -312,29 +321,44 @@ function createView({ pageId, onOpenPage }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  function fit() {
+  /** Transformación que mete todo el grafo en el lienzo con margen.
+   *
+   * La caja incluye el radio de cada nodo (y el aire de la etiqueta, que se
+   * pinta encima) para que el encuadre sea de lo **pintado**, no de los
+   * centros: si no, el nodo del borde queda cortado. Devuelve `null` si aún no
+   * hay nada que encuadrar.
+   */
+  function fitTransform() {
     const { nodes } = state;
     const rect = canvas.getBoundingClientRect();
-    if (!nodes.length || !rect.width) return;
+    if (!nodes.length || !rect.width || !rect.height) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of nodes) {
-      minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+      const r = nodeRadius(n) + 14; // radio + etiqueta por encima
+      minX = Math.min(minX, n.x - r); maxX = Math.max(maxX, n.x + r);
+      minY = Math.min(minY, n.y - r); maxY = Math.max(maxY, n.y + r);
     }
-    const pad = 80;
+    const pad = 48;
+    const ancho = Math.max(1, maxX - minX);
+    const alto = Math.max(1, maxY - minY);
     const k = Math.min(
       MAX_ZOOM,
       Math.max(MIN_ZOOM, Math.min(
-        (rect.width - pad * 2) / Math.max(1, maxX - minX),
-        (rect.height - pad * 2) / Math.max(1, maxY - minY)
+        (rect.width - pad * 2) / ancho,
+        (rect.height - pad * 2) / alto
       ))
     );
-    state.transform = {
+    return {
       k,
       x: rect.width / 2 - ((minX + maxX) / 2) * k,
-      // 12 px de aire arriba: las etiquetas se pintan por encima del nodo.
-      y: rect.height / 2 - ((minY + maxY) / 2) * k + 12,
+      y: rect.height / 2 - ((minY + maxY) / 2) * k,
     };
+  }
+
+  function fit() {
+    const t = fitTransform();
+    if (!t) return;
+    state.transform = t;
     draw();
   }
 
@@ -438,12 +462,18 @@ function createView({ pageId, onOpenPage }) {
     draw();
   }, { passive: false });
 
-  canvas.addEventListener("dblclick", () => fit());
+  canvas.addEventListener("dblclick", () => {
+    state.userMoved = false; // vuelve a seguir el encuadre automático
+    fit();
+  });
   canvas.addEventListener("pointerleave", () => {
     if (state.hover) { state.hover = null; draw(); }
   });
 
-  el.querySelector("#graph-fit").addEventListener("click", fit);
+  el.querySelector("#graph-fit").addEventListener("click", () => {
+    state.userMoved = false; // el usuario pide encuadrar: seguimos encuadrando
+    fit();
+  });
   el.querySelector("#graph-close").addEventListener("click", () => close());
 
   for (const tab of tabs) {
