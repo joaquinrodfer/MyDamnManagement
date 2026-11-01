@@ -45,6 +45,47 @@ class PageRead(PageBase):
     body_markdown: Optional[str] = None
 
 
+# --- Grafo de nodos (P9) ------------------------------------------------
+
+
+class GraphNode(BaseModel):
+    """Un nodo del grafo: una página del índice y su grado.
+
+    `degree` es el número de enlaces (filas de `links`) que tocan la página en
+    cualquier dirección -- entrantes más salientes, sin contar dos veces el
+    mismo par. Es el mismo número en los dos modos, así que el tamaño del nodo
+    no cambia al pasar de local a global.
+    """
+
+    id: uuid.UUID
+    title: str
+    type: PageType
+    degree: int
+    updated_at: datetime
+
+
+class GraphEdge(BaseModel):
+    """Una arista resuelta. `source` y `target` son ids de página."""
+
+    source: uuid.UUID
+    target: uuid.UUID
+    kind: str
+
+
+class GraphRead(BaseModel):
+    """Respuesta de `GET /graph`.
+
+    - `truncated`: había más nodos que el tope y se ha cortado (global).
+    - `broken`: wikilinks de los nodos devueltos que no resuelven a ninguna
+      página. No se pintan como nodos fantasma: solo se cuentan.
+    """
+
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+    truncated: bool = False
+    broken: int = 0
+
+
 # --- Motor de database/view (Fase 2) -----------------------------------
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")

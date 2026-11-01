@@ -13,6 +13,7 @@ from app.routers import (
     databases,
     events,
     files,
+    graph,
     pages,
     search,
     status,
@@ -46,6 +47,8 @@ app.include_router(files.router)
 # `/events` (SSE, P8): avisos de lo que cambia en el vault. Es una ruta y no
 # parte de `/pages` porque no habla de páginas sino del vault entero.
 app.include_router(events.router)
+# `/graph` (P9): la tabla `links` servida como nodos y aristas para el visor.
+app.include_router(graph.router)
 
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
 # los tests y el apagado puedan pararlo sin depender del objeto `app`.
