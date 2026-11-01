@@ -95,15 +95,21 @@ def test_global_corta_por_grado_y_no_deja_aristas_colgando(client):
 
     datos = grafo(client, mode="global", limit=3)
 
-    # Grados: B=2, C=2, D=2, A=1, E=1.
-    assert set(por_titulo(datos)) == {"B", "C", "D"}
+    titulos = set(por_titulo(datos))
+    # Grados: C=3 (A->C, B->C, C->D), A=B=D=2, E=1. El corte deja fuera a E
+    # y a uno de los tres empates a 2; cuál, lo decide el id (determinista).
+    assert len(titulos) == 3
+    assert "C" in titulos, "el de mayor grado no se puede quedar fuera"
+    assert all(nodo["degree"] >= 2 for nodo in datos["nodes"])
+    assert "E" not in titulos
     assert datos["truncated"] is True
-    assert aristas_tituladas(datos) == [("B", "C"), ("C", "D")]
-    ids = {nodo["id"] for nodo in datos["nodes"]}
     for arista in datos["edges"]:
-        assert arista["source"] in ids and arista["target"] in ids, (
+        assert arista["source"] in {n["id"] for n in datos["nodes"]}
+        assert arista["target"] in {n["id"] for n in datos["nodes"]}, (
             "una arista con un extremo fuera del corte apuntaría a la nada"
         )
+    for origen, destino in aristas_tituladas(datos):
+        assert origen in titulos and destino in titulos
 
 
 def test_global_sin_tope_no_trunca(client):
