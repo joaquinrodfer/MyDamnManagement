@@ -22,6 +22,7 @@ evidencia de la tarjeta.
 """
 
 import asyncio
+import logging
 import os
 import threading
 import time
@@ -272,3 +273,33 @@ def test_watch_enabled_0_no_arranca_el_vigilante(client):
         hilo.name for hilo in threading.enumerate() if hilo.name == "mdm-vault-watcher"
     ]
     assert not vivos, f"hay hilos del vigilante sin `WATCH_ENABLED`: {vivos}"
+
+# --------------------------------------------------------------------------
+# 5. el coste: una pasada lenta avisa (una vez) y el bucle sigue
+# --------------------------------------------------------------------------
+
+
+def test_una_pasada_lenta_avisa_una_sola_vez(tmp_path, caplog):
+    """En un vault caro (un `stat` de red) el log lo dice sin inundar.
+
+    No es un cambio de comportamiento -- una pasada lenta ya no puede parar el
+    bucle -- sino la señal para quien despliega: subir `WATCH_INTERVAL` o
+    apagar el vigilante.
+    """
+    from app.vault.watcher import VaultWatcher
+
+    watcher = VaultWatcher(
+        vault_path=str(tmp_path / "vault"),
+        index_path=str(tmp_path / "index.sqlite"),
+        interval=0.2,
+        publish=lambda event: None,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="mdm.watch"):
+        watcher._note_slow_pass(5.0)   # 5 s con intervalo 0,2 s: lenta
+        watcher._note_slow_pass(5.0)   # otra igual: no repite (throttle de 60 s)
+        watcher._note_slow_pass(0.01)  # rápida: ni una línea
+
+    avisos = [r for r in caplog.records if "tardó" in r.getMessage()]
+    assert len(avisos) == 1, [r.getMessage() for r in caplog.records]
+    assert "WATCH_INTERVAL" in avisos[0].getMessage()

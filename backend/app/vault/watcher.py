@@ -9,13 +9,16 @@ avisando al navegador por el bus de `/events`.
 Decisiones, y por qué:
 
 - **Sondeo, no inotify.** El recorrido ya existía para `/status`
-  (`app.vault.drift`): un `scandir` con un `stat` por fichero. Medido con 2.000
-  ficheros, una pasada cuesta ~9 ms en este contenedor (WSL sobre 9p, que es el
-  peor caso: rehace el `stat`); con el intervalo por defecto de 2 s es ~0,5 % de
-  un núcleo y no lee ni un byte de contenido. `watchdog` habría añadido una
-  dependencia y una API de eventos que, en un volumen de red (donde el vault
-  suele vivir en producción), ni siquiera es fiable. Con 2.000 ficheros no hay
-  nada que justifique el cambio.
+  (`app.vault.drift`): un `scandir` con un `stat` por fichero, sin leer ningún
+  cuerpo. Medido con 2.000 ficheros (20 pasadas, mediana): **~11 ms por pasada**
+  sobre el sistema de ficheros nativo del contenedor, es decir ~0,6 % de un
+  núcleo con el intervalo de 2 s. Sobre un montaje **9p de WSL** (la copia de
+  desarrollo vive en `C:`) el mismo recorrido cuesta **~4,1 s por pasada**:
+  allí el `stat` es caro y el sondeo no compensa — para eso está
+  `WATCH_ENABLED=0`, y el aviso de pasada lenta lo dice en el log. En un FS
+  normal `watchdog` habría añadido una dependencia y una API de eventos que, en
+  un volumen de red (donde el vault suele vivir en producción), ni siquiera es
+  fiable.
 - **Un hilo, no el bucle de eventos.** El recorrido y `sqlite3` son síncronos:
   en el hilo del vigilante no bloquean ni una petición. La conexión al índice
   es propia (una por pasada, `check_same_thread=False`), así que no compite con
@@ -36,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 from app import index as index_mod
@@ -75,6 +79,8 @@ class VaultWatcher:
         # Último error por fichero: un `.md` que no se puede leer no debe
         # escribir una línea de log cada dos segundos para siempre.
         self._errors: dict[str, str] = {}
+        # Cuándo se avisó por última vez de una pasada lenta (para no inundar).
+        self._last_slow_log = 0.0
 
     # --------------------------------------------------------------- ciclo
 
@@ -100,12 +106,35 @@ class VaultWatcher:
 
     def _loop(self) -> None:
         while not self._stop.wait(self.interval):
+            started = time.monotonic()
             try:
                 self.run_once()
             except Exception:  # noqa: BLE001 - el bucle nunca se cae
                 log.exception(
                     "la pasada del vigilante falló; se reintenta en %s s", self.interval
                 )
+            self._note_slow_pass(time.monotonic() - started)
+
+    def _note_slow_pass(self, elapsed: float) -> None:
+        """Avisa si una pasada tarda más que el intervalo: el sondeo se come el hilo.
+
+        No cambia nada (una pasada lenta no puede parar el bucle ni la app),
+        pero en un vault sobre un volumen de red —donde un `stat` es caro— es
+        la señal de que toca `WATCH_ENABLED=0` o un `WATCH_INTERVAL` mayor. Se
+        registra como mucho una vez por minuto.
+        """
+        if elapsed <= max(self.interval * 5, 1.0):
+            return
+        now = time.monotonic()
+        if now - self._last_slow_log < 60:
+            return
+        self._last_slow_log = now
+        log.warning(
+            "una pasada del vigilante tardó %.2f s (intervalo %.2f s): este vault "
+            "es caro de recorrer; sube WATCH_INTERVAL o pon WATCH_ENABLED=0",
+            elapsed,
+            self.interval,
+        )
 
     # ------------------------------------------------------------- pasadas
 
