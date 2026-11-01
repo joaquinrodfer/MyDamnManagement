@@ -391,6 +391,27 @@
     margin-bottom: 18px;
     min-height: 22px;
   }
+
+  /* ---------- aviso de cambio en disco (P8) ----------
+     Discreto y dentro del flujo de la nota: no tapa el editor ni el árbol, y
+     desaparece al recargar o al descartarlo. Se pinta solo cuando la nota
+     abierta cambió por fuera CON cambios sin guardar (ver app.js). */
+  .note-remote-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+    padding: 8px 10px;
+    border: 1px solid var(--panel-border);
+    border-left: 3px solid var(--warn);
+    border-radius: var(--radius-md);
+    background: var(--surface-elevated);
+    color: var(--ink);
+    font-size: 12.5px;
+  }
+  .note-remote-banner-text { flex: 1 1 180px; }
+  .note-remote-banner .btn { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
   .note-savestatus {
     display: flex;
     align-items: center;

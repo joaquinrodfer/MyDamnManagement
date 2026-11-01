@@ -16,6 +16,7 @@ const state = {
   lastClickedRowId: null, // para el rango de Mayús+clic
   history: [], // [{kind, id}, ...] -- pila de navegación para los botones atrás/adelante
   historyPos: -1, // índice de "dónde estamos" dentro de state.history
+  noteSession: null, // nota abierta: qué queda sin guardar y cómo refrescarla (P8, /events)
 };
 
 // ---------------------------------------------------------------- helpers
@@ -200,6 +201,9 @@ function clearMain() {
   // El guardado de emergencia es de la nota que se está dejando atrás: en
   // cuanto se navega, ya no queda nada suyo que pueda estar pendiente.
   state.flushSaveBeacon = null;
+  // La sesión de la nota (cambios pendientes, refresco en vivo) es de la nota
+  // que se deja atrás: renderNote() pone la suya al terminar.
+  state.noteSession = null;
   if (state.editor) {
     state.editor.destroy();
     state.editor = null;
@@ -920,16 +924,21 @@ function renderNote(page, backlinks) {
   const backDetails = document.createElement("details");
   backDetails.className = "note-backlinks-dropdown";
   const backSummary = document.createElement("summary");
-  backSummary.innerHTML = `${svgIcon("i-chevron-right", "back-chevron-closed")}${svgIcon(
-    "i-chevron-down",
-    "back-chevron-open",
-  )}Backlinks (${backlinks.length})`;
   const backList = document.createElement("div");
   backList.className = "backlinks-list";
-  if (backlinks.length === 0) {
-    backList.innerHTML = '<div class="search-empty">Ninguna página enlaza aquí todavía.</div>';
-  } else {
-    backlinks.forEach((b) => {
+  // P8: aparte, porque un cambio en OTRA nota puede cambiar los enlaces
+  // entrantes de esta y entonces solo se repinta esto, sin tocar el editor.
+  function paintBacklinks(fresh) {
+    backSummary.innerHTML = `${svgIcon("i-chevron-right", "back-chevron-closed")}${svgIcon(
+      "i-chevron-down",
+      "back-chevron-open",
+    )}Backlinks (${fresh.length})`;
+    backList.innerHTML = "";
+    if (fresh.length === 0) {
+      backList.innerHTML = '<div class="search-empty">Ninguna página enlaza aquí todavía.</div>';
+      return;
+    }
+    fresh.forEach((b) => {
       const item = document.createElement("div");
       item.className = "backlink-item";
       item.textContent = b.title;
@@ -938,6 +947,7 @@ function renderNote(page, backlinks) {
       backList.appendChild(item);
     });
   }
+  paintBacklinks(backlinks);
   backDetails.append(backSummary, backList);
 
   const exportBtn = document.createElement("button");
@@ -1430,6 +1440,199 @@ function renderNote(page, backlinks) {
   });
 
   renderOutline(); // población inicial -- onChange solo dispara con ediciones, no al montar
+
+  // P8: lo que `/events` necesita saber de esta nota -- si hay algo sin
+  // guardar (para no pisarlo), cómo se tira lo pendiente si el usuario pide
+  // recargar, y cómo se refrescan los backlinks sin tocar el editor.
+  const session = {
+    id: page.id,
+    hasPendingWork: () => dirty || saving || beaconInFlight !== null,
+    discardPending() {
+      clearTimeout(saveTimer);
+      dirty = false;
+      state.flushPendingSave = null;
+      if (state.flushSaveBeacon === flushSaveBeacon) state.flushSaveBeacon = null;
+    },
+    /** Resuelve cuando no queda ninguna escritura en vuelo (o al agotarse). */
+    whenQuiet(maxMs = 3000) {
+      if (!saving && beaconInFlight === null) return Promise.resolve();
+      return new Promise((resolve) => {
+        const started = Date.now();
+        const tick = setInterval(() => {
+          if ((!saving && beaconInFlight === null) || Date.now() - started > maxMs) {
+            clearInterval(tick);
+            resolve();
+          }
+        }, 40);
+      });
+    },
+    refreshBacklinks() {
+      api(`/pages/${page.id}/backlinks`)
+        .then((fresh) => {
+          if (state.noteSession === session) paintBacklinks(fresh);
+        })
+        .catch((e) => console.error("No se pudieron refrescar los backlinks:", e));
+    },
+  };
+  state.noteSession = session;
+}
+
+// ------------------------------------------------- cambios en disco (P8, SSE)
+// El backend vigila VAULT_PATH y cuenta por `/events` cada `.md` que cambia
+// por fuera de la aplicación, ya reindexado. Aquí se escucha ese flujo: el
+// árbol se refresca siempre (un alta o un borrado puede cambiar qué cuelga de
+// qué), los backlinks de la nota abierta también, y el editor solo se recarga
+// si la nota que se está mirando es la que cambió y NO hay nada sin guardar.
+// Con cambios pendientes no se pisa nada: sale un aviso y decide el usuario.
+
+let vaultEvents = null;
+
+/** Aviso discreto dentro de #main: "esta nota cambió en disco". */
+function showRemoteBanner({ deleted = false, session, onReload }) {
+  const main = document.getElementById("main");
+  if (!main) return;
+  main.querySelector(".note-remote-banner")?.remove();
+
+  const banner = document.createElement("div");
+  banner.className = "note-remote-banner";
+  banner.setAttribute("role", "status");
+
+  const text = document.createElement("span");
+  text.className = "note-remote-banner-text";
+  text.textContent = deleted
+    ? "Esta nota se ha borrado en disco. Tienes cambios sin guardar."
+    : "Esta nota cambió en disco. Tienes cambios sin guardar.";
+
+  const reloadBtn = document.createElement("button");
+  reloadBtn.type = "button";
+  reloadBtn.className = "btn";
+  reloadBtn.textContent = "Recargar";
+  reloadBtn.title = deleted
+    ? "Cerrar la nota y perder lo que no has guardado"
+    : "Recargar desde el disco y perder lo que no has guardado";
+  reloadBtn.addEventListener("click", () => {
+    banner.remove();
+    if (state.noteSession !== session) return; // mientras tanto se navegó
+    onReload();
+  });
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.type = "button";
+  dismissBtn.className = "btn";
+  dismissBtn.textContent = "Descartar";
+  dismissBtn.title = "Seguir con lo que hay en el editor";
+  dismissBtn.addEventListener("click", () => banner.remove());
+
+  banner.append(text, reloadBtn, dismissBtn);
+  main.prepend(banner);
+}
+
+/** El usuario ha aceptado perder lo suyo: se tira lo pendiente y se relee. */
+function reloadOpenNoteFromDisk(session, { deleted = false } = {}) {
+  session.discardPending();
+  session.whenQuiet().then(() => {
+    if (state.noteSession !== session) return; // ya no es la nota abierta
+    if (deleted) {
+      showEmpty();
+      return;
+    }
+    reloadNoteFromDisk(session.id);
+  });
+}
+
+/** Relee la nota del disco y la repinta, sin tocar historial ni selección. */
+async function reloadNoteFromDisk(id) {
+  let page;
+  let backlinks;
+  try {
+    [page, backlinks] = await Promise.all([
+      api(`/pages/${id}`),
+      api(`/pages/${id}/backlinks`),
+    ]);
+  } catch (e) {
+    // 404: se borró entre el aviso y esta lectura.
+    if (state.current?.kind === "note" && state.current.id === id) showEmpty();
+    else console.error("No se pudo recargar la nota desde el disco:", e);
+    return;
+  }
+  // El usuario pudo navegar mientras llegaba la respuesta.
+  if (state.current?.kind !== "note" || state.current.id !== id) return;
+  // Y pudo empezar a escribir en ese hueco: tampoco se pisa.
+  if (state.noteSession?.hasPendingWork()) {
+    const session = state.noteSession;
+    showRemoteBanner({
+      session,
+      onReload: () => reloadOpenNoteFromDisk(session),
+    });
+    return;
+  }
+  renderNote(page, backlinks);
+  markActive(id);
+}
+
+/** Un evento `page` de `/events`: `{action, page_id, path}`. */
+function handleVaultEvent(data) {
+  if (!data || data.type !== "page") return;
+
+  // El árbol primero, siempre: quitar o añadir un `.md` cambia qué cuelga de
+  // qué, y eso se ve en la barra lateral aunque no se toque el editor.
+  loadTree();
+
+  const session = state.noteSession;
+  if (!session || session.id !== data.page_id) {
+    // Otra nota: sus wikilinks pueden ser backlinks de la que está abierta.
+    session?.refreshBacklinks();
+    return;
+  }
+
+  if (data.action === "deleted") {
+    if (session.hasPendingWork()) {
+      showRemoteBanner({
+        deleted: true,
+        session,
+        onReload: () => reloadOpenNoteFromDisk(session, { deleted: true }),
+      });
+    } else {
+      showEmpty(); // ya no está: se vuelve al inicio, como al borrarla desde la app
+    }
+    return;
+  }
+
+  if (session.hasPendingWork()) {
+    showRemoteBanner({ session, onReload: () => reloadOpenNoteFromDisk(session) });
+    return;
+  }
+  reloadNoteFromDisk(session.id);
+}
+
+function connectVaultEvents() {
+  if (typeof EventSource === "undefined") return; // sin SSE, sin avisos en vivo
+  try {
+    vaultEvents = new EventSource("/events");
+  } catch (e) {
+    console.error("No se pudo abrir /events:", e);
+    return;
+  }
+  // `event: page` llega por su propio nombre, no por `onmessage`.
+  vaultEvents.addEventListener("page", (ev) => {
+    let data;
+    try {
+      data = JSON.parse(ev.data);
+    } catch {
+      return; // un evento que no es JSON se ignora: el siguiente sí vale
+    }
+    handleVaultEvent(data);
+  });
+  // El navegador reconecta solo; esto solo deja constancia de que se cayó.
+  let reconnecting = false;
+  vaultEvents.addEventListener("error", () => {
+    if (reconnecting) return;
+    reconnecting = true;
+    console.warn("/events caído; el navegador reintenta solo");
+  });
+  vaultEvents.addEventListener("open", () => {
+    reconnecting = false;
+  });
 }
 
 function findPageByTitle(title) {
@@ -2822,6 +3025,8 @@ loadTree();
 showEmpty(); // landing con páginas recientes + fechas cercanas, en vez del hueco estático de index.html
 pollStatus();
 setInterval(pollStatus, 4000);
+// P8: avisos de lo que cambia en el vault (los `.md` editados por fuera).
+connectVaultEvents();
 
 // Red de seguridad: si cierras/recargas la pestaña con cambios pendientes
 // del autoguardado (< 2s desde la última pulsación), los manda ya -- con
