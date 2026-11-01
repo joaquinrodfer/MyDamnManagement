@@ -321,22 +321,45 @@ function createView({ pageId, onOpenPage }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
+  /** Media anchura **de mundo** de la etiqueta de un nodo.
+   *
+   * La fuente se fija a 11 px dentro del contexto ya escalado por `k`, así que
+   * `measureText` devuelve el ancho en las mismas unidades que el layout: vale
+   * tal cual para la caja del encuadre y crece con el zoom igual que el texto.
+   * Se mide una vez por título porque `fitTransform()` corre en cada fotograma.
+   */
+  const labelWidths = new Map();
+  function labelHalfWidth(title) {
+    let w = labelWidths.get(title);
+    if (w === undefined) {
+      ctx.font = `11px ${bodyFont}`;
+      w = ctx.measureText(title).width / 2;
+      labelWidths.set(title, w);
+    }
+    return w;
+  }
+
   /** Transformación que mete todo el grafo en el lienzo con margen.
    *
-   * La caja incluye el radio de cada nodo (y el aire de la etiqueta, que se
-   * pinta encima) para que el encuadre sea de lo **pintado**, no de los
-   * centros: si no, el nodo del borde queda cortado. Devuelve `null` si aún no
-   * hay nada que encuadrar.
+   * La caja es la de lo **pintado**, no la de los centros: incluye el radio de
+   * cada nodo y la etiqueta que se pinta encima (11 px, centrada). El ancho de
+   * la etiqueta cuenta en X (media anchura a cada lado) y su altura en Y. Sin
+   * el ancho, un grafo diminuto con un título largo se encuadraba por el
+   * círculo, subía a `MAX_ZOOM` y el texto se salía por los dos lados. Devuelve
+   * `null` si aún no hay nada que encuadrar.
    */
   function fitTransform() {
     const { nodes } = state;
     const rect = canvas.getBoundingClientRect();
     if (!nodes.length || !rect.width || !rect.height) return null;
+    const labelThreshold = labelCutoff(nodes);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of nodes) {
-      const r = nodeRadius(n) + 14; // radio + etiqueta por encima
-      minX = Math.min(minX, n.x - r); maxX = Math.max(maxX, n.x + r);
-      minY = Math.min(minY, n.y - r); maxY = Math.max(maxY, n.y + r);
+      const r = nodeRadius(n);
+      const labeled = n.degree >= labelThreshold;
+      const half = labeled ? Math.max(r, labelHalfWidth(n.title)) : r;
+      minX = Math.min(minX, n.x - half); maxX = Math.max(maxX, n.x + half);
+      minY = Math.min(minY, n.y - (labeled ? r + 16 : r)); maxY = Math.max(maxY, n.y + r);
     }
     const pad = 48;
     const ancho = Math.max(1, maxX - minX);
