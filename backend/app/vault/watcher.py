@@ -80,7 +80,11 @@ class VaultWatcher:
         # escribir una línea de log cada dos segundos para siempre.
         self._errors: dict[str, str] = {}
         # Cuándo se avisó por última vez de una pasada lenta (para no inundar).
-        self._last_slow_log = 0.0
+        # -inf y no 0.0: `time.monotonic()` cuenta desde el arranque de la
+        # máquina, así que en un servidor recién encendido vale menos de 60
+        # y el primer aviso de pasada lenta se lo comía el throttle. Lo
+        # destapó el CI, que corre en runners recién arrancados.
+        self._last_slow_log = float("-inf")
 
     # --------------------------------------------------------------- ciclo
 
