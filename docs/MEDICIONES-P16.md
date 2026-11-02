@@ -58,12 +58,23 @@ Ese reparto no lo cambia P16 (no se ha tocado el reindexado): es la deuda que
 queda a la vista. El enlazado es lo que hace que 12.000 notas tarden minutos, no
 la lectura de los `.md`.
 
+Ojo al leer «empieza en»: son marcas de reloj de esta ejecución, no cortes
+exactos de fase, y la máquina estaba cargada de otras cosas (en la ronda 2 el
+volcado acabó a los 35 s y el enlazado empezó ahí). El **porcentaje** que
+publica `/health` mientras tanto se mide en la sección 3.
+
 ## 2. `/pages` y `/pages/tree` con el índice ya construido
 
 | Ruta | Bytes | Servidor | Navegador |
 |---|---|---|---|
-| `GET /pages` (todas las páginas **con cuerpo**) | 16.416.895 (16,4 MB) | 0,46 s (antes 1,39 s) | no lo usa el panel |
-| `GET /pages/tree` (id, título, tipo, icono, padre) | 1.740.001 (1,7 MB) | 0,19 s (antes 0,15 s) | 356 ms de descarga |
+| `GET /pages` (todas las páginas **con cuerpo**) | 16.416.895 (16,4 MB) | 0,46 s | no lo usa el panel |
+| `GET /pages/tree` (id, título, tipo, icono, padre) | 1.740.001 (1,7 MB) | 0,19 s | 356 ms de descarga |
+
+Las dos rutas se han medido dos veces (0,46 s y 0,19 s en la tabla; 1,39 s y
+0,15 s en la primera pasada) y **ninguna se ha tocado en P16**: la diferencia
+entre pasadas es varianza de esta máquina, no una mejora. En la ronda 2, con el
+mismo vault: `/pages` 16.417.250 B / 0,45 s y `/pages/tree` 1.740.140 B / 0,15 s,
+12.001 elementos cada una.
 
 El panel **no pide `/pages`**: desde antes de P16 dibuja el árbol con
 `/pages/tree` (`frontend/app.js`, `loadTree()`), que ya devuelve solo lo que
@@ -119,7 +130,65 @@ alrededor. Eso es lo que no escala, y es interfaz, no API.
 Por tanto: `/pages` se queda como está (paginarlo rompería el contrato con los
 scripts y no ahorra nada al panel) y `/pages/tree` también.
 
-## 3. El `healthcheck` del compose, ejecutado de verdad
+## 3. El porcentaje de `/health` mientras indexa (ronda 2)
+
+La primera versión publicaba el progreso de la escritura como
+`progress("escribiendo el índice", total, total)` **antes** de abrir la
+transacción del volcado, así que `percent` valía **100 desde el primer
+segundo** y el número caía a 0 al pasar a `enlazando`. Reproducido en la
+revisión con 3.000 notas: 100 % de t=6,7 s a t=13,5 s de un indexado que
+terminaba a t=21,3 s, y luego 7 %. Con 12.000 notas el 100 % duraba los ~150 s
+del indexado y el `healthcheck` del compose lo imprimía tal cual
+(`indexando: escribiendo el índice (100%), 1.1 s en marcha`).
+
+Ahora el porcentaje es del reindexado **entero**, no de la fase: cada página se
+toca en cuatro pasadas —leer, preparar, escribir y enlazar— y cada una ocupa un
+cuarto de la barra (`done`/`total` van en unidades de trabajo, cuatro por
+página). El volcado se hace a lotes de `PROGRESS_EVERY` dentro de la **misma**
+transacción, así que el número avanza con las filas escritas y el vigilante de
+«atascado» sigue viendo vida durante la escritura, que es lo que más tarda. Y
+`starting` nunca dice 100: el 100 % es de `ok` (queda cerrar la transacción y
+marcar el índice), así que `/health` se queda en 99 como mucho mientras arranca.
+
+Serie medida con el vault de 12.000 notas, índice de cero, sondeo cada 200 ms
+(1.170 muestras con progreso):
+
+| t (s) | Fase | `done`/`total` | `percent` |
+|---|---|---|---|
+| 4,24 | `leyendo el vault` | 200/48.004 | 0 |
+| 5,18 | `leyendo el vault` | 5.000/48.004 | 10 |
+| 6,19 | `escribiendo el índice` | 24.202/48.004 | 50 |
+| 8,14 | `escribiendo el índice` | 25.002/48.004 | 52 |
+| 15,02 | `escribiendo el índice` | 27.802/48.004 | 58 |
+| 25,15 | `escribiendo el índice` | 31.802/48.004 | 66 |
+| 34,06 | `escribiendo el índice` | 35.402/48.004 | 74 |
+| 35,07 | `escribiendo el índice` | 36.003/48.004 | 75 |
+| 37,21 | `enlazando` | 36.003/48.004 | 75 |
+| 60,04 | `enlazando` | 37.403/48.004 | 78 |
+| 120,00 | `enlazando` | 40.803/48.004 | 85 |
+| 180,00 | `enlazando` | 44.203/48.004 | 92 |
+| 240,05 | `enlazando` | 47.603/48.004 | 99 |
+| 243,80 | `enlazando` | 48.003/48.004 | 99 |
+| 244,0 | `ok` | — | — |
+
+- **0 retrocesos** en las 1.170 muestras y **ninguna** con `percent == 100`
+  mientras `status` era `starting` (máximo 99). En la misma prueba con 400
+  notas sobre el código anterior la serie era `[0, 50, 100, 50, 100, 100, 50,
+  100]`: el 100 % sobre trabajo pendiente, y luego para abajo.
+- Fases de esta ejecución: `leyendo` 4,2-6,0 s (0→24 %), `escribiendo`
+  6,2-35,1 s (50→75 %, 29 s de volcado: por eso el número ahora se mueve),
+  `enlazando` 35,3-243,8 s (75→99 %). `preparando páginas` dura menos que el
+  intervalo de sondeo y no aparece en la tabla; sus muestras están en el test.
+- El `503` de `/pages` durante todo ese rato dice el mismo número que `/health`
+  (`el índice se está construyendo (54 %): escribiendo el índice. Vuelve en
+  unos segundos.`) y nunca una lista a medias: 119 peticiones, 205-231 B,
+  1-4 ms cada una.
+- El `healthcheck` del compose, en esa misma ejecución mientras indexaba:
+  `indexando: leyendo el vault (4%), 0.5 s en marcha; 12001 ficheros del vault`
+  → **0**. El número depende del instante del chequeo (el de la sección 4, en
+  otra ejecución, pilló el 12 %); lo que importa es que ya no dice 100.
+
+## 4. El `healthcheck` del compose, ejecutado de verdad
 
 El script se extrae de `docker-compose.prod.yml` (el que se despliega) y se
 lanza con `python -c` contra `uvicorn` real, cambiando solo el puerto:
@@ -136,7 +205,7 @@ tienen que fallar (tests automáticos, `backend/tests/test_p16_healthcheck.py`):
 con `.md` en el vault → 1 `el índice está vacío (0 páginas) pero hay 1 ficheros
 en el vault …`; y sin nada escuchando → 1 `la API no responde en /health: …`.
 
-## 4. Lo que no se ha podido comprobar
+## 5. Lo que no se ha podido comprobar
 
 - **Docker no está disponible aquí**: no se ha ejecutado `docker compose
   config` ni el ciclo `healthy`/`unhealthy` del daemon. El script del

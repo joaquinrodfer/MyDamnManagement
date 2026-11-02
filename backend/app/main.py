@@ -618,7 +618,9 @@ def health():
     - `200 {"status": "starting", "progress": {...}}`: se está construyendo.
       Sigue siendo `200` porque el proceso está vivo y haciendo lo que tiene
       que hacer --el `healthcheck` del compose lo acepta--, pero dice que no
-      está listo, así que nadie puede confundirlo con el caso anterior.
+      está listo, así que nadie puede confundirlo con el caso anterior. El
+      `percent` es del reindexado entero (cuatro pasadas por página) y **nunca
+      marca 100 mientras el estado sea `starting`**: el 100 % es de `ok`.
     - `503 {"status": "error", "detail": ...}`: el reindexado falló o lleva
       `STARTUP_STALL_SECONDS` sin avanzar. El `healthcheck` falla y
       `docker inspect` enseña el motivo.
