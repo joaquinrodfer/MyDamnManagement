@@ -13,6 +13,12 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
+import {
+  autocompletion,
+  acceptCompletion,
+  closeCompletion,
+  moveCompletionSelection,
+} from "@codemirror/autocomplete";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -1680,6 +1686,204 @@ function suggestionPlugin() {
   );
 }
 
+// ---------------------------------------------- autocompletado de wikilinks
+//
+// Al escribir "[[" se abre la lista de páginas del vault y se filtra según lo
+// que se va escribiendo; <flechas> mueven, Enter inserta "[[Título]]" y Esc
+// cierra sin insertar nada. Si lo escrito no coincide exactamente con ninguna
+// página, la PRIMERA opción es "Crear «…»": la app crea la nota (llamada a la
+// API, vía onCreateLink) y aquí se inserta el enlace con el título REAL que
+// devuelve el servidor -- puede haber cambiado al normalizar el nombre.
+//
+// Se apoya en @codemirror/autocomplete a propósito: el popup, el teclado
+// (flechas/Enter/Esc), el posicionamiento y el cierre al perder el foco ya
+// vienen hechos y probados; escribirlos a mano aquí sería reimplementar una
+// lista con foco, scroll y aria peor que la oficial. Lo propio es solo la
+// fuente de opciones (linkCompletionSource), donde vive el disparador "[[",
+// el filtro sin acentos y el orden.
+
+const setLinkTargetsEffect = StateEffect.define();
+
+// Los destinos viven en un StateField, no en la instancia del plugin: la app
+// los reemplaza enteros cuando recarga el árbol (setLinkTargets) y así el
+// siguiente disparo de la lista ya ve el vault al día, sin recrear el editor.
+const linkTargetsField = StateField.define({
+  create: () => [],
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setLinkTargetsEffect)) return effect.value;
+    }
+    return value;
+  },
+});
+
+/** Minúsculas y sin acentos ("Año" -> "ano"): buscar "ano" tiene que
+ * encontrar "año" -- es lo que espera quien escribe rápido y sin tilde. */
+function foldText(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+const LINK_OPEN = "[[";
+// Cualquier corchete (o un salto de línea) entre "[[" y el cursor cancela la
+// lista: con "[[foo]]" ya escrito y el cursor detrás del cierre, lo que hay
+// delante no es una consulta sino un enlace terminado.
+const LINK_BREAK_RE = /[\[\]\n]/;
+
+/** ¿Toca abrir la lista en `pos`? Devuelve {from, typed} -- `from` es la
+ * posición del "[[", `typed` lo escrito detrás -- o null. */
+function linkTrigger(state, pos) {
+  const line = state.doc.lineAt(pos);
+  const before = state.doc.sliceString(line.from, pos);
+  const open = before.lastIndexOf(LINK_OPEN);
+  if (open < 0) return null;
+  const typed = before.slice(open + LINK_OPEN.length);
+  if (LINK_BREAK_RE.test(typed)) return null;
+  const from = line.from + open;
+  // Dentro de un bloque de código no salta: "[[i]]" en un array de verdad no
+  // es un enlace (mismo criterio que las flechas tipográficas, más arriba).
+  if (isInsideCodeBlock(state, from)) return null;
+  return { from, typed };
+}
+
+/** Sustituye lo tecleado desde "[[" por "[[título]]" y deja el cursor detrás
+ * del cierre. */
+function applyLink(view, from, to, title) {
+  const insert = `${LINK_OPEN}${title}]]`;
+  view.dispatch({
+    changes: { from, to, insert },
+    selection: { anchor: from + insert.length },
+    userEvent: "input.complete",
+  });
+  view.focus();
+}
+
+/** Opción "Crear «…»": la nota la crea la app (es ella la que habla con la
+ * API) y el título que se escribe es el que devuelve el servidor.
+ *
+ * Si la creación falla -- la app ya avisó por su cuenta -- no se inserta
+ * NADA: lo tecleado se queda tal cual para poder corregirlo y reintentar. */
+async function applyCreateLink(view, from, to, typedTitle, onCreateLink) {
+  closeCompletion(view);
+  let created = null;
+  try {
+    created = await onCreateLink?.(typedTitle);
+  } catch (e) {
+    created = null;
+  }
+  if (!created || !created.title) {
+    view.focus();
+    return;
+  }
+  // Mientras se creaba, el usuario pudo seguir escribiendo (o cambiar de
+  // nota, y entonces este editor ya no pinta nada): si bajo "[[" ya no está
+  // lo que se tecleó, no se toca el documento.
+  const expected = `${LINK_OPEN}${typedTitle}`;
+  const stillThere = from <= view.state.doc.length && view.state.doc.sliceString(from, to) === expected;
+  if (!stillThere) return;
+  applyLink(view, from, to, created.title);
+}
+
+function linkCompletionSource(onCreateLink) {
+  return (context) => {
+    const { state, pos } = context;
+    const trigger = linkTrigger(state, pos);
+    if (!trigger) return null;
+    const { from, typed } = trigger;
+    const query = foldText(typed.trim());
+
+    const matches = [];
+    let exact = false;
+    for (const target of state.field(linkTargetsField)) {
+      const title = String(target.title || "").trim();
+      if (!title) continue;
+      const folded = foldText(title);
+      const at = query ? folded.indexOf(query) : 0;
+      if (query && at < 0) continue;
+      if (folded === query) exact = true;
+      // 0 = empieza por lo escrito, 1 = solo lo contiene: es el orden que se
+      // pidió (primero las que empiezan), y dentro de cada grupo, alfabético.
+      matches.push({ title, type: target.type, rank: at === 0 ? 0 : 1 });
+    }
+    matches.sort(
+      (a, b) => a.rank - b.rank || a.title.localeCompare(b.title, "es", { sensitivity: "base" })
+    );
+
+    const writable = typed.trim();
+    const options = [];
+    if (writable && !exact) {
+      options.push({
+        label: `Crear «${writable}»`,
+        detail: "nota nueva",
+        class: "cm-mdm-link-create",
+        apply: (view, _completion, applyFrom, applyTo) =>
+          applyCreateLink(view, applyFrom, applyTo, writable, onCreateLink),
+      });
+    }
+    for (const m of matches) {
+      options.push({
+        label: m.title,
+        detail: m.type === "database" ? "base de datos" : "nota",
+        apply: (view, _completion, applyFrom, applyTo) => applyLink(view, applyFrom, applyTo, m.title),
+      });
+    }
+
+    // `filter: false`: el filtro y el orden son los de arriba (sin acentos,
+    // primero las que empiezan), no el difuso por defecto del paquete, que
+    // reordenaría por su cuenta y no entiende de tildes.
+    if (!options.length) {
+      // Sin lista no hay nada que enseñar, pero tampoco una caja vacía muda:
+      // una línea que dice por qué (y Enter/Esc la cierran sin insertar).
+      return {
+        from,
+        filter: false,
+        options: [
+          {
+            label: state.field(linkTargetsField).length ? "Sin coincidencias" : "Aún no hay notas",
+            class: "cm-mdm-link-empty",
+            apply: (view) => closeCompletion(view),
+          },
+        ],
+      };
+    }
+    return { from, options, filter: false };
+  };
+}
+
+// El keymap del paquete entra con Prec.highest y se queda con Enter, las
+// flechas y Escape por delante de todo lo demás -- incluido el menú "/", que
+// vive en su propio keymap y cerraba con Escape solo si llegaba hasta él. Un
+// Escape se lo tragaba el autocompletado (closeCompletion devuelve true si
+// queda alguna fuente sin cerrar), así que el menú "/" no se cerraba a la
+// primera. Este keymap hace lo mismo pero se registra donde toca (después del
+// menú "/", antes del keymap general y del de las flechas verticales): con
+// las dos listas cerradas todos sus comandos devuelven false y no se nota.
+const linkKeymap = keymap.of([
+  { key: "ArrowDown", run: moveCompletionSelection(true) },
+  { key: "ArrowUp", run: moveCompletionSelection(false) },
+  { key: "PageDown", run: moveCompletionSelection(true, "page") },
+  { key: "PageUp", run: moveCompletionSelection(false, "page") },
+  { key: "Enter", run: acceptCompletion },
+  { key: "Escape", run: closeCompletion },
+]);
+
+function linkCompletion(onCreateLink) {
+  return [
+    linkTargetsField,
+    autocompletion({
+      // Solo esta fuente: el autocompletado de palabras del documento no
+      // aporta nada en una nota y competiría por el mismo popup.
+      override: [linkCompletionSource(onCreateLink)],
+      icons: false, // sin hueco de icono: el tipo de destino va en `detail`
+      // El keymap lo pone linkKeymap, más abajo (ver el porqué ahí).
+      defaultKeymap: false,
+      // activateOnTyping (por defecto) es lo que abre la lista al teclear.
+    }),
+  ];
+}
+
 /**
  * @param {Object} opts
  * @param {HTMLElement} opts.parent
@@ -1692,6 +1896,8 @@ function suggestionPlugin() {
  * @param {() => void} [opts.onWikilinkHoverEnd]
  * @param {(state: object|null) => void} [opts.onSlashMenu]
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreatePage]
+ * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreateLink]
+ * @param {(list: {id: string, title: string, type: string}[]) => void} [opts.linkTargets]
  */
 export function createNoteEditor({
   parent,
@@ -1704,17 +1910,28 @@ export function createNoteEditor({
   onWikilinkHoverEnd,
   onSlashMenu,
   onCreatePage,
+  onCreateLink,
+  linkTargets,
 }) {
   const view = new EditorView({
     parent,
     state: EditorState.create({
       doc: doc || "",
       extensions: [
+        // El autocompletado de "[[" va el PRIMERO, antes que cualquier otro
+        // keymap: con la lista abierta sus flechas/Enter/Esc tienen que
+        // ganar (si no, Enter insertaría un salto de línea y las flechas
+        // moverían el cursor en vez de la selección). Cerrada la lista, sus
+        // comandos devuelven false y todo cae al keymap normal.
+        ...linkCompletion(onCreateLink),
         // El menú "/" y Mayús+Enter van ANTES del keymap general: sus
         // combinaciones (Enter/flechas/Escape mientras el menú está activo)
         // deben ganar; cuando no hacen nada (devuelven false) caen al
         // keymap normal sin más.
         ...slashMenuExtension(onSlashMenu ?? (() => {}), onCreatePage),
+        // El del autocompletado, justo detrás: primero el menú "/" (que solo
+        // consume teclas mientras está abierto) y luego la lista de "[[".
+        linkKeymap,
         shiftEnterKeymap,
         ...verticalMoveExtension(),
         history(),
@@ -1748,6 +1965,20 @@ export function createNoteEditor({
 
   return {
     getValue: () => view.state.doc.toString(),
+    /** Destinos posibles de un wikilink -- `[{id, title, type}]` con todas
+     * las notas y bases de datos del vault. La app la llama al cargar el
+     * árbol y cada vez que el árbol cambia; con la lista vacía el
+     * autocompletado de "[[" ofrece solo "Crear «…»". */
+    setLinkTargets(list) {
+      const clean = (Array.isArray(list) ? list : [])
+        .filter((t) => t && t.title)
+        .map((t) => ({
+          id: t.id == null ? "" : String(t.id),
+          title: String(t.title),
+          type: t.type || "note",
+        }));
+      view.dispatch({ effects: setLinkTargetsEffect.of(clean) });
+    },
     setValue(text) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || "" } });
     },
