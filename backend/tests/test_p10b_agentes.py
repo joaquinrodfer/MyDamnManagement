@@ -15,6 +15,7 @@ Lo que se fija aquí:
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -429,6 +430,25 @@ def test_since_filtra_por_la_ultima_actividad(client, monkeypatch):
 
 def test_status_desconocido_es_422(client):
     assert client.get("/agent/suggestions?status=inventado", headers=HITOS).status_code == 422
+
+
+def test_el_logging_json_del_arranque_configura_mdm():
+    """El `--log-config` del contenedor tiene que dar handler al logger `mdm`.
+
+    Sin él, `log.info` de la app no lo ve nadie (solo queda el `lastResort` de
+    la librería, WARNING+). Se comprueba el fichero tal cual, sin aplicarlo:
+    `dictConfig` aquí añadiría un handler y ensuciaría la captura de pytest.
+    """
+    datos = json.loads(
+        (Path(__file__).resolve().parents[1] / "logging.json").read_text(encoding="utf-8")
+    )
+    assert datos["disable_existing_loggers"] is False
+    app_logger = datos["loggers"]["mdm"]
+    assert app_logger["level"] == "INFO"
+    [handler_name] = app_logger["handlers"]
+    assert handler_name in datos["handlers"]
+    # Y los de uvicorn siguen existiendo: esto se suma, no los sustituye.
+    assert {"uvicorn", "uvicorn.access"} <= set(datos["loggers"])
 
 
 def test_un_sidecar_roto_no_tumba_el_contexto(client, vault_path):
