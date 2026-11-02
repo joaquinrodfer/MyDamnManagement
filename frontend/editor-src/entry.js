@@ -19,7 +19,13 @@ import {
   closeCompletion,
   moveCompletionSelection,
 } from "@codemirror/autocomplete";
-import { LINK_OPEN, createLinkTitle, linkMarkup, resolveCreatedLinkTitle } from "./link-create.js";
+import {
+  LINK_OPEN,
+  createLinkTitle,
+  isLinkableTitle,
+  linkMarkup,
+  resolveCreatedLinkTitle,
+} from "./link-create.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -1813,6 +1819,9 @@ function linkCompletionSource(onCreateLink) {
     for (const target of state.field(linkTargetsField)) {
       const title = String(target.title || "").trim();
       if (!title) continue;
+      // Un título con `]` o `|` no se puede enlazar (ver isLinkableTitle): se
+      // queda fuera de la lista en vez de ofrecer lo que saldría roto.
+      if (!isLinkableTitle(title)) continue;
       const folded = foldText(title);
       const at = query ? folded.indexOf(query) : 0;
       if (query && at < 0) continue;

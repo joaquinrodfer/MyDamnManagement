@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 
 import {
   createLinkTitle,
+  isLinkableTitle,
   linkMarkup,
   resolveCreatedLinkTitle,
 } from "../link-create.js";
@@ -57,6 +58,21 @@ test("sin título del servidor no se inserta nada", () => {
   assert.equal(resolveCreatedLinkTitle("[[Mi nota ", "Mi nota ", ""), null);
   assert.equal(resolveCreatedLinkTitle("[[Mi nota ", "Mi nota ", null), null);
   assert.equal(resolveCreatedLinkTitle("[[Mi nota ", "Mi nota ", "   "), null);
+});
+
+test("un título que el formato no puede representar no es enlazable", () => {
+  // `]` corta el wikilink en el primer cierre: [[Notas [2026]]] se lee como
+  // [[Notas [2026. Por eso la lista no debe ofrecerlo (entry.js lo filtra).
+  assert.equal(isLinkableTitle("Notas [2026]"), false);
+  // `|` convierte lo que sigue en alias: [[a|b]] enlaza con "a".
+  assert.equal(isLinkableTitle("A|B"), false);
+  // Un `[` suelto sí resuelve: el corte es el cierre.
+  assert.equal(isLinkableTitle("Notas [2026"), true);
+  assert.equal(isLinkableTitle("Notas (2026)"), true);
+  // Ni vacío ni solo espacios: no hay título que insertar.
+  assert.equal(isLinkableTitle(""), false);
+  assert.equal(isLinkableTitle("   "), false);
+  assert.equal(isLinkableTitle(null), false);
 });
 
 test("el enlace no arrastra los espacios sobrantes del título del servidor", () => {
