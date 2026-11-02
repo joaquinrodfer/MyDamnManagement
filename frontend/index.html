@@ -1735,6 +1735,8 @@
     /* Tocar una página del árbol con el dedo necesita alto de sobra. */
     .tree-row { min-height: 44px; padding: 10px 8px; }
     .inbox-open { min-height: 44px; }
+    /* Un resultado de búsqueda también se elige con el dedo: estaba en 28. */
+    .search-hit { min-height: 44px; padding: 10px 8px; }
     .sidebar-section-toggle { min-height: 44px; }
     .template-btn { min-height: 36px; padding: 6px 10px; }
 
@@ -1787,6 +1789,11 @@
     /* ✓/✗ de las sugerencias dentro del texto: en el móvil se tocan con el
        dedo, así que el widget crece (la línea que lo lleva, también). */
     .cm-sug-btn { width: 44px; height: 44px; font-size: 15px; }
+
+    /* El inicio es la primera pantalla que ve el dueño y sus filas se tocan
+       para abrir la nota: 37 de alto es poco. El subtítulo (autor y ruta) va
+       dentro del título, que ya recorta con puntos suspensivos. */
+    .dashboard-item { min-height: 44px; }
 
     /* --- tablas y tableros ---
        La tabla desplaza dentro de su caja (.table-wrap ya lo hacía); lo que
