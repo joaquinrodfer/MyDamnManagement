@@ -296,6 +296,36 @@ def test_la_cookie_sale_secure_detras_de_https(client):
     assert "Secure" in respuesta.headers["set-cookie"]
 
 
+def test_la_cookie_dura_el_tope_absoluto_y_la_base_corta_la_sesion(client, index_path):
+    """El navegador no tira una sesión viva: el `Max-Age` es el tope de 90 días.
+
+    La vida real la impone `sessions.expires_at` (30 días deslizantes). Si la
+    cookie llevara 30 días fijos, entrar el 1 de enero y usar la app a diario
+    acabaría en el login el día 31 con la sesión todavía válida en la base; y
+    si durara menos que el tope, el tope absoluto no se podría alcanzar nunca.
+    """
+    client.cookies.clear()
+    respuesta = client.post(
+        "/auth/login", json={"username": USUARIO_PRUEBA, "password": CONTRASENA_PRUEBA}
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    assert f"Max-Age={auth.ABSOLUTE_DAYS * 86400}" in respuesta.headers["set-cookie"]
+
+    # La fila de la sesión, que es la que manda, caduca a los 30 días.
+    conn = _abrir(index_path)
+    try:
+        expires_at = datetime.fromisoformat(
+            conn.execute(
+                "SELECT expires_at FROM sessions WHERE token_hash = ?",
+                (_token_hash(_cookie(client)),),
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+    ahora = datetime.now(timezone.utc)
+    assert ahora + timedelta(days=29) < expires_at <= ahora + timedelta(days=30)
+
+
 def test_login_malo_y_usuario_inexistente_responden_igual(client):
     client.cookies.clear()
     mala = client.post(

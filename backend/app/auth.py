@@ -24,7 +24,10 @@ Decisiones que importan:
 - **Caducidad deslizante de 30 días con tope absoluto de 90.** Cada petición
   autenticada empuja `expires_at` a `ahora + SESSION_DAYS`, pero nunca más allá
   de `created_at + 90 días`: una sesión que se usa todas las semanas no dura
-  para siempre.
+  para siempre. Quien impone ese plazo es **la base**: la cookie del navegador
+  lleva el tope absoluto como `Max-Age` (ver `app.routers.auth._cookie_kwargs`),
+  así que no tira por su cuenta una sesión que la base todavía acepta, y una
+  sesión inactiva 30 días deja de valer aunque el navegador siga mandándola.
 - **El límite de intentos es en memoria** (usuario+IP, 10 por minuto). No
   sobrevive a un reinicio y no se comparte entre workers; para una app personal
   en un solo proceso es el coste correcto. Lo que evita es el relleno de

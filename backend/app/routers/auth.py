@@ -105,7 +105,18 @@ def cookie_secure(request: Request) -> bool:
 
 
 def _cookie_kwargs(request: Request) -> dict:
-    days = config.settings.session_days
+    """Atributos de la cookie. El `Max-Age` es el tope **absoluto**, no `SESSION_DAYS`.
+
+    La vida de una sesión la decide `sessions.expires_at` en la base (ver
+    `app.auth.user_for_token`): 30 días deslizantes desde el último uso, sin
+    pasar nunca de 90 desde que se abrió. La cookie no puede caducar antes que
+    eso —con 30 días fijos, el navegador la tiraría el día 31 aunque la sesión
+    siguiera viva y se usara a diario— ni debe durar más que el tope absoluto.
+    Por eso lleva el tope (90 días) y quien corta de verdad es la fila de
+    `sessions`: pasados 30 días sin usar la sesión, el servidor responde 401
+    aunque el navegador todavía presente la cookie.
+    """
+    days = auth.ABSOLUTE_DAYS
     return {
         "key": auth.COOKIE_NAME,
         "httponly": True,

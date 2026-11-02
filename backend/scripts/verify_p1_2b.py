@@ -45,6 +45,7 @@ settings.vault_path = str(VAULT)
 settings.index_path = str(INDEX)
 
 from app.main import app  # noqa: E402
+from _sesion import abrir_sesion  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"imagen-de-cabecera" * 8
 
@@ -62,6 +63,8 @@ def main() -> int:
     print(f"Índice         : {INDEX}\n")
 
     with TestClient(app) as client:
+        abrir_sesion(client)
+
         # ---- 1. adjunto dentro del vault --------------------------------
         nota = client.post(
             "/pages",
@@ -106,6 +109,7 @@ def main() -> int:
     settings.vault_path = str(BACKUP)
     settings.index_path = str(INDEX_COPIA)
     with TestClient(app) as client:
+        abrir_sesion(client)
         paginas = client.get("/pages").json()
         check("el arranque reindexa la copia sin tocar nada más", len(paginas) == 1,
               f"{len(paginas)} notas")
@@ -122,6 +126,7 @@ def main() -> int:
     settings.vault_path = str(VAULT)
     settings.index_path = str(INDEX)
     with TestClient(app) as client:
+        abrir_sesion(client)
         client.delete(f"/pages/{nota['id']}")
         basura = client.get("/trash").json()
         entrada = next((e for e in basura if e["original_path"] == "Notas/Reunión con Acme.md"), None)

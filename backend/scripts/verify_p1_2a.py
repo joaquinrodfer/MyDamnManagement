@@ -41,6 +41,7 @@ settings.index_path = str(INDEX)
 
 from app.index import dump_hash  # noqa: E402
 from app.main import app  # noqa: E402
+from _sesion import abrir_sesion  # noqa: E402
 
 ok = True
 
@@ -56,6 +57,8 @@ def main() -> int:
     print(f"Índice         : {INDEX}\n")
 
     with TestClient(app) as client:
+        abrir_sesion(client)
+
         # ---- 1. crear una nota escribe el fichero -------------------------
         padre = client.post(
             "/pages", json={"title": "Proyectos", "body_markdown": "Raíz del proyecto"}
@@ -115,6 +118,7 @@ def main() -> int:
     check("índice borrado del disco", not INDEX.exists())
 
     with TestClient(app) as client:
+        abrir_sesion(client)
         paginas = client.get("/pages").json()
 
     hash_despues, cuentas_despues = dump_hash(str(INDEX))
@@ -124,6 +128,7 @@ def main() -> int:
     check("misma huella de volcado", hash_antes == hash_despues)
 
     with TestClient(app) as client:
+        abrir_sesion(client)
         leida = client.get(f"/pages/{hija['id']}").json()
         check("el id sobrevive al borrado del índice", leida["title"] == "MyDamnManagement")
         check("y el cuerpo editado por fuera sigue ahí", "2027" in leida["body_markdown"])

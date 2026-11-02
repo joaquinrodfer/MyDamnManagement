@@ -108,8 +108,15 @@ services:
           if not os.path.isdir(vault):
               fail("no existe el vault " + vault + " (¿volumen sin montar?)")
 
+          # `os.walk` sin `onerror` se traga los `PermissionError` y seguiría
+          # contando 0 ficheros: un vault ilegible parecería vacío y el
+          # contenedor quedaría `healthy` con la app sin leer una sola nota.
+          def vault_error(exc):
+              fail("el vault no se puede recorrer: " + repr(exc))
+
+
           en_vault = 0
-          for raiz, dirs, ficheros in os.walk(vault):
+          for raiz, dirs, ficheros in os.walk(vault, onerror=vault_error):
               # `.trash` no son notas: las borradas no cuentan como contenido.
               dirs[:] = [d for d in dirs if d != ".trash"]
               en_vault += sum(1 for f in ficheros if f.endswith(".md"))

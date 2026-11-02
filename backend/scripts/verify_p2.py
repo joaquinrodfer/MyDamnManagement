@@ -48,6 +48,7 @@ settings.index_path = str(INDEX)
 
 from app import index as indice  # noqa: E402
 from app.main import app  # noqa: E402
+from _sesion import abrir_sesion  # noqa: E402
 
 ok = True
 
@@ -75,7 +76,14 @@ def huella() -> tuple[str, dict]:
 
 
 def sin_solo_indice() -> list[str]:
-    """Escrituras del índice fuera del puente del vault (`app/vault/store.py`)."""
+    """Escrituras del contenido del vault fuera de su puente (`app/vault/store.py`).
+
+    Se buscan escrituras a las tablas que salen del vault (`pages`, `databases`,
+    `views`, `rows`), no cualquier `execute(`: desde P11a hay routers con SQL
+    propio que no toca el contenido —`/auth` escribe `users`/`sessions`, que no
+    viven en el vault, y `/graph` solo lee `links`— y señalarlos sería ruido que
+    esconde la comprobación que importa.
+    """
     patrones = re.compile(
         r"(INSERT INTO (pages|databases|views|rows)\b"
         r"|UPDATE (pages|databases|views|rows)\b"
@@ -86,10 +94,6 @@ def sin_solo_indice() -> list[str]:
         if path.name == "store.py":      # el único que escribe y escribe ficheros
             continue
         relativo = path.relative_to(REPO_DIR)
-        if path.parent.name == "routers":
-            if "execute(" in texto(path):
-                culpables.append(f"{relativo} (router con SQL propio)")
-            continue
         for numero, linea in enumerate(texto(path).splitlines(), start=1):
             if patrones.search(linea) and "CREATE TRIGGER" not in linea:
                 culpables.append(f"{relativo}:{numero}: {linea.strip()[:70]}")
@@ -101,6 +105,8 @@ def main() -> int:
     print(f"Índice         : {INDEX}\n")
 
     with TestClient(app) as client:
+        abrir_sesion(client)
+
         # ---- 1. la base es un fichero -------------------------------------
         print("1. crear una base desde la plantilla CRM")
         base = client.post("/databases/from-template", json={"template": "crm"}).json()
@@ -181,6 +187,7 @@ def main() -> int:
 
     before_hash = antes
     with TestClient(app) as otro:
+        abrir_sesion(otro)
         base_otra = otro.get(f"/databases/{base['id']}")
         check("la base sigue (404 si no)", base_otra.status_code == 200)
         check("con su título", base_otra.json()["title"] == "Contactos")
@@ -208,6 +215,7 @@ def main() -> int:
     # ---- 6. un fichero de base copiado a mano --------------------------
     print("\n6. copiar Bases/Contactos.md a mano (cp, no la app)")
     with TestClient(app) as copia_client:
+        abrir_sesion(copia_client)
         shutil.copyfile(VAULT / "Bases" / "Contactos.md", VAULT / "Bases" / "Contactos copia.md")
         shutil.copytree(VAULT / "Bases" / "Contactos", VAULT / "Bases" / "Contactos copia")
         respuesta = copia_client.post("/reindex")
@@ -241,6 +249,7 @@ def main() -> int:
     for sufijo in ("", "-wal", "-shm"):
         Path(str(INDEX) + sufijo).unlink(missing_ok=True)
     with TestClient(app) as otro:                  # arranque con la copia en el vault
+        abrir_sesion(otro)
         titulos = {b["title"] for b in otro.get("/databases").json()}
         check("el arranque levanta con la copia y las dos bases",
               titulos == {"Contactos", "Contactos copia"}, str(sorted(titulos)))
