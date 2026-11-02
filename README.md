@@ -284,6 +284,25 @@ curl -s -H "X-Agent-Token: token1" \
 
 **Lo que un agente NO puede hacer**, y es deliberado: con el token puesto, no edita (`PATCH /pages/{id}`), no borra (`DELETE /pages/{id}`, `/trash`), no acepta ni rechaza sus propias sugerencias y no puede firmar como otro agente; el guardia responde **403** en cualquier ruta que no sea `/agent/...`. Aceptar y rechazar siguen siendo rutas del dueño. El token **no autentica al dueño ni sustituye a una sesión**: desde v1.3 las rutas del dueño piden sesión (`/auth/login`) y un `X-Agent-Token` válido fuera de `/agent/...` sigue dando **403**. Las decisiones de diseño están en [`docs/ADR-0004-puerta-para-agentes.md`](docs/ADR-0004-puerta-para-agentes.md).
 
+### Un agente de verdad: los hitos del proyecto, por cron (P15)
+
+`tools/agent/hitos.py` es el primer agente que vive dentro de esa puerta: un
+programa que se ejecuta desde `cron` una vez al día, lee **su brief**
+(`Agentes/agente-hitos.md`), lee las notas que el brief marca y deja una
+sugerencia por hito en el sidecar de cada una. No escribe en las notas y no
+necesita nada más que la biblioteca estándar: habla con `/agent/*` y con el
+modelo por HTTP, con `urllib`.
+
+- **El brief dice qué mirar**: una ruta `.md` por línea (`- Notas/Proyectos/Web.md`) o un `[[wikilink]]`, que se busca en `Notas/<título>.md`. Sin notas no adivina: sale con `1` y lo dice.
+- **Ancla literal o nada**: el `old_text` que cita el modelo tiene que estar en la nota tal cual. Si no está, la sugerencia **no se crea** —una huérfana es peor que cero— y el motivo sale en el resumen.
+- **Idempotente**: la misma nota con el mismo ancla y el mismo texto nuevo no se propone dos veces, en ningún estado. Un cron diario no llena el panel de clones.
+- `--dry-run` imprime el prompt y lo que propondría sin crear nada; es lo que se mira cuando no aparecen sugerencias.
+- Códigos de salida honestos —`0` bien, `1` configuración, `2` servidor caído, `3` modelo falló, `70` fallo interno— y ni una traza de Python en la cara del usuario.
+
+Cómo programarlo (la línea exacta de `crontab`, dónde va el token fuera del
+repo, el formato del brief y qué mirar cuando no aparecen sugerencias):
+[`tools/agent/LEEME.md`](tools/agent/LEEME.md).
+
 ## Usuarios y acceso
 
 Desde v1.3 la API **no está abierta**: quien no tiene sesión no lee, no escribe y no borra. Usuarios y sesiones viven en el **índice** (`users`, `sessions`, esquema 4), no en el vault — el vault sigue siendo solo de las notas. El «creador» de cada nota deja de ser un literal: `created_by` es el `display_name` del usuario de la sesión, en el índice y en el frontmatter del `.md`. Las páginas que devuelve la API llevan además `created_by_color`: el color del usuario resuelto **en el servidor** contra `users` (una consulta por respuesta), o `null` si ese nombre no es de nadie (notas antiguas con «Tú»). Así el panel pinta el punto del autor sin que el navegador tenga que conocer la tabla de usuarios.
