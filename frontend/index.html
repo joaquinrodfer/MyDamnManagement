@@ -822,12 +822,21 @@
     font-family: var(--font-mono);
     font-size: 24px;
     font-weight: 600;
+    line-height: 1.25;
     border: none;
     background: none;
     color: var(--ink);
     width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
     padding: 4px 0;
     margin-bottom: 4px;
+    /* <textarea> desde P14 (ver renderNote en app.js): el alto lo pone
+       autoResizeTitle() y no tiene asa de redimensionar ni scroll propio --
+       un título se lee entero, partido en las líneas que haga falta. */
+    resize: none;
+    overflow: hidden;
+    display: block;
   }
   .note-description {
     width: 100%;
@@ -1655,6 +1664,230 @@
   @media (max-width: 600px) {
     .error-toasts { right: 10px; left: 10px; bottom: 10px; align-items: stretch; max-width: none; }
   }
+
+  /* ============================ móvil (P14) ============================
+     La app se pensó a 1280 px. A 580 px la cabecera desbordaba y por debajo
+     de ~768 la barra lateral seguía ocupando 280 px de una pantalla de 375:
+     quedaban 95 px para la nota (que es lo que se viene a leer y a escribir).
+     Aquí, y solo aquí, la barra lateral deja de ser una columna y pasa a ser
+     un cajón encima del contenido, la nota ocupa el ancho con 16 px de margen
+     y las zonas que se tocan a diario llegan a 44×44.
+
+     Todo esto vive en media queries NUEVAS: los bloques de 720/520/400 px de
+     arriba siguen siendo los que mandan en la cabecera estrecha de escritorio
+     y no se tocan; lo que haga falta corregir en móvil se corrige aquí abajo,
+     donde gana por orden de lectura. Nada de !important. */
+  @media (max-width: 768px) {
+    /* La cabecera se queda en un alto fijo y legible: el cajón empieza justo
+       debajo, así el botón de menú sigue a la vista (y a la mano) con el cajón
+       abierto. 56 px = 44 del botón + 6 de aire arriba y abajo. */
+    :root { --header-height: 56px; }
+    header {
+      height: var(--header-height);
+      padding: 0 8px;
+      gap: 6px;
+    }
+    .header-left { gap: 6px; min-width: 0; }
+    /* Los cinco botones de navegación se leen como un solo grupo, no como
+       cinco iconos sueltos repartidos por la fila. */
+    .nav-history-controls {
+      gap: 0;
+      padding: 2px;
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      background: var(--bg);
+    }
+    .nav-history-controls .icon-btn { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
+    .status-strip { gap: 8px; }
+    .status-item-label { display: none; }
+
+    /* --- barra lateral = cajón --- */
+    .layout { position: relative; }
+    /* El colapso de escritorio (display:none) se neutraliza en móvil: aquí
+       quien decide es el cajón, y la preferencia guardada en localStorage no
+       tiene por qué esconderlo. */
+    .layout.sidebar-collapsed > aside:not(.note-suggestions-panel) { display: flex; }
+    .layout > aside:not(.note-suggestions-panel) {
+      position: fixed;
+      top: var(--header-height);
+      bottom: 0;
+      left: 0;
+      z-index: 60;
+      width: min(86vw, 320px);
+      transform: translateX(-100%);
+      visibility: hidden; /* cerrado no coge ni clics ni foco */
+      box-shadow: var(--shadow-float);
+      transition: transform var(--dur-normal) var(--ease-out), visibility var(--dur-normal);
+    }
+    .layout.sidebar-drawer-open > aside:not(.note-suggestions-panel) {
+      transform: translateX(0);
+      visibility: visible;
+    }
+    .sidebar-scrim {
+      position: fixed;
+      inset: var(--header-height) 0 0 0;
+      z-index: 55;
+      background: rgba(0, 0, 0, 0.55);
+    }
+    .sidebar-scrim[hidden] { display: none; }
+    .sidebar-search { padding: 10px 12px; }
+    .sidebar-search input { min-height: 44px; font-size: 16px; }
+    /* Tocar una página del árbol con el dedo necesita alto de sobra. */
+    .tree-row { min-height: 44px; padding: 10px 8px; }
+    .inbox-open { min-height: 44px; }
+    /* Un resultado de búsqueda también se elige con el dedo: estaba en 28. */
+    .search-hit { min-height: 44px; padding: 10px 8px; }
+    .sidebar-section-toggle { min-height: 44px; }
+    .template-btn { min-height: 36px; padding: 6px 10px; }
+
+    /* --- lienzo y nota --- */
+    main { padding: 14px 16px 40px; }
+    .note-topbar { flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .note-topbar-right { flex-wrap: wrap; gap: 6px; }
+    .note-title-row { gap: 4px; align-items: center; }
+    .note-title { font-size: 21px; min-width: 0; min-height: 44px; }
+    .note-icon-btn { font-size: 20px; width: 44px; height: 44px; }
+    .note-description { font-size: 16px; }
+    .note-meta { margin-bottom: 12px; }
+    .note-backlinks-dropdown summary,
+    .note-outline-dropdown summary,
+    .note-suggestions-counter { min-height: 44px; padding: 4px 8px; }
+    /* El desplegable del índice flota: en un ancho de 375 no cabe a la
+       derecha de su botón (se salía por la izquierda y quedaba cortado). Se
+       ancla al ancho de la pantalla, justo debajo de la cabecera. */
+    .note-outline-dropdown .note-outline-list {
+      position: fixed;
+      top: var(--header-height);
+      left: 8px;
+      right: 8px;
+      width: auto;
+      max-height: 60dvh;
+    }
+    /* 16 px de texto y un hueco inferior grande: con el teclado del móvil
+       abierto hay que poder seguir viendo lo que se escribe sin que la barra
+       de sugerencias del sistema tape el cursor. El hueco de la izquierda (48)
+       es el del asa de bloque de 44 + 4 de aire, y deja el cuerpo alineado con
+       el título (que empieza a 64: 16 de margen + 44 del icono + 4). */
+    #note-body .cm-editor { min-height: 55dvh; }
+    #note-body .cm-content {
+      padding: 4px 2px 40vh 48px;
+      font-size: 16px;
+      line-height: 1.65;
+    }
+    /* Asas de bloque: 44×44 en el hueco de 48 px. En móvil el «+» se oculta
+       porque el hueco del asa es ancho de lectura y Enter ya crea un bloque
+       debajo; el asa (seleccionar/convertir/borrar) sí se queda. */
+    .cm-mdm-block-handle-wrap { left: -48px; gap: 0; }
+    .cm-mdm-block-add { display: none; }
+    .cm-mdm-block-handle {
+      width: 44px;
+      height: 44px;
+      min-width: 44px;
+      min-height: 44px;
+      font-size: 16px;
+    }
+    /* ✓/✗ de las sugerencias dentro del texto: en el móvil se tocan con el
+       dedo, así que el widget crece (la línea que lo lleva, también). */
+    .cm-sug-btn { width: 44px; height: 44px; font-size: 15px; }
+
+    /* El inicio es la primera pantalla que ve el dueño y sus filas se tocan
+       para abrir la nota: 37 de alto es poco. El subtítulo (autor y ruta) va
+       dentro del título, que ya recorta con puntos suspensivos. */
+    .dashboard-item { min-height: 44px; }
+
+    /* --- tablas y tableros ---
+       La tabla desplaza dentro de su caja (.table-wrap ya lo hacía); lo que
+       no puede pasar es que la página entera se mueva. El tablero se ve a una
+       columna: cuatro carriles de 256 px no caben en 375. */
+    .table-wrap { max-width: 100%; }
+    .rows-table th,
+    .rows-table td { padding: 10px 12px; }
+    .board { flex-direction: column; overflow-x: visible; }
+    .board-col { flex: 1 1 auto; width: 100%; }
+    .db-title { min-width: 0; width: 100%; }
+    .view-tab { min-height: 40px; padding: 8px 14px; }
+
+    /* --- diálogos: ancho completo y botones al alcance del pulgar --- */
+    dialog {
+      width: calc(100vw - 16px);
+      max-width: none;
+      max-height: calc(100dvh - 16px);
+      padding: 16px;
+    }
+    .dialog-actions { flex-direction: column-reverse; gap: 8px; }
+    .dialog-actions .btn { width: 100%; min-height: 44px; }
+    .btn { min-height: 44px; }
+    .field input, .field select, .field textarea { font-size: 16px; min-height: 44px; }
+    .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 92px 44px; }
+    .prop-row input, .prop-row select, .prop-options-input { font-size: 16px; min-height: 44px; }
+    #prop-rows, #row-props { max-height: 50dvh; }
+
+    /* --- panel de sugerencias: hoja inferior a todo el ancho --- */
+    .note-suggestions-panel {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: auto;
+      max-height: 62dvh;
+      margin: 0;
+      padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+      border-radius: 14px 14px 0 0;
+      z-index: 70;
+    }
+    .sug-actions { gap: 8px; }
+    .sug-actions .btn { flex: 1 1 0; }
+    .sug-reply-input { font-size: 16px; min-height: 44px; }
+    /* El asa de cerrar el panel y las entradas del índice se tocan con el dedo:
+       la X estaba en 28×28 (la esquina de arriba, la peor para el pulgar) y las
+       entradas del índice en 25 de alto. */
+    .sug-panel-close { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+    .note-outline-item { min-height: 44px; padding: 10px 12px; }
+    .note-description { min-height: 44px; }
+
+    /* --- zonas táctiles de los controles de cada día --- */
+    #btn-toggle-sidebar,
+    #btn-new-note,
+    #btn-new-database,
+    .note-topbar .icon-btn,
+    dialog .icon-btn,
+    .note-header-remove,
+    .row-del,
+    .cell-del {
+      width: 44px;
+      height: 44px;
+      min-width: 44px;
+      min-height: 44px;
+    }
+    .user-menu-item { min-height: 44px; padding: 10px 12px; }
+  }
+
+  /* Cabecera muy estrecha / móvil pequeño: el nombre de usuario se queda en su
+     punto de color (sigue en el title y en el aria-label del chip, así que no
+     se pierde nada para quien use lector de pantalla) y la fila respira. */
+  @media (max-width: 640px) {
+    .user-chip-name { display: none; }
+    .user-chip {
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      justify-content: center;
+      gap: 0;
+      border-radius: 50%;
+    }
+    .user-dot { width: 12px; height: 12px; }
+    .user-menu { min-width: 200px; max-width: calc(100vw - 20px); }
+    header .brand { display: none; }
+  }
+
+  /* Móvil pequeño: las cuatro columnas de una propiedad (clave, nombre, tipo,
+     quitar) no caben legibles en 375 px. Clave y nombre arriba, el tipo debajo
+     a lo ancho y la X a su lado. */
+  @media (max-width: 480px) {
+    .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
+    .prop-row .prop-type { grid-column: 1 / 3; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .error-toast { animation: none; }
   }
@@ -1740,7 +1973,7 @@
   </header>
 
   <div class="layout">
-    <aside>
+    <aside id="sidebar-aside">
       <div class="sidebar-search">
         <input type="search" id="search-input" placeholder="Buscar…" />
       </div>
@@ -1783,6 +2016,10 @@
         </div>
       </div>
     </aside>
+
+    <!-- Fondo del cajón en móvil (P14): tapa el contenido y, al tocarlo, cierra
+         la barra. En escritorio este div no está (lo esconde el CSS). -->
+    <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
 
     <main id="main">
       <div class="empty-state">Elige una página o crea una nueva.</div>

@@ -19,6 +19,8 @@ const state = {
   historyPos: -1, // índice de "dónde estamos" dentro de state.history
   noteSession: null, // nota abierta: qué queda sin guardar y cómo refrescarla (P8, /events)
   repaintAuthor: null, // repinta «Creado por …» de la nota abierta cuando llega /auth/me (P11b)
+  refitNoteText: null, // remide el alto de título/descripción de la nota abierta (P14, cambio de ancho)
+  noteWidthObserver: null, // ResizeObserver del ancho de la nota abierta (P14); se corta al navegar
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
 };
@@ -248,6 +250,13 @@ function clearMain() {
   // que se deja atrás: renderNote() pone la suya al terminar.
   state.noteSession = null;
   state.repaintAuthor = null;
+  // El vigilante del ancho de la nota es de la nota que se deja atrás: si
+  // siguiera vivo, remidiría unos <textarea> que ya no están en el documento.
+  if (state.noteWidthObserver) {
+    state.noteWidthObserver.disconnect();
+    state.noteWidthObserver = null;
+  }
+  state.refitNoteText = null;
   if (state.editor) {
     state.editor.destroy();
     state.editor = null;
@@ -1870,9 +1879,26 @@ function renderNote(page, backlinks) {
     });
   });
 
-  const titleInput = document.createElement("input");
+  // El título es un <textarea> de una sola línea lógica y no un <input>
+  // (P14): en un móvil de 375 px un título normal no cabe y el <input> lo
+  // recorta sin más (no hay dónde leer el final). Con un textarea el título
+  // ocupa las líneas que necesite y se lee entero; Enter no mete salto, quita
+  // el foco (un título no tiene saltos de línea).
+  const titleInput = document.createElement("textarea");
   titleInput.className = "note-title";
+  titleInput.rows = 1;
   titleInput.value = page.title;
+  titleInput.setAttribute("aria-label", "Título de la página");
+  titleInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      titleInput.blur();
+    }
+  });
+  function autoResizeTitle() {
+    titleInput.style.height = "auto";
+    titleInput.style.height = `${titleInput.scrollHeight}px`;
+  }
 
   titleRow.append(iconBtn, titleInput);
 
@@ -2187,9 +2213,13 @@ function renderNote(page, backlinks) {
       // pero `sanitize()` cambia el título por más motivos —vacío, espacios de
       // más, nombre ya cogido, truncado— y ahí el aviso no puede culpar a los
       // caracteres ni inventarse un porqué.
-      if (updated.title !== sentTitle && changeSeq === seqAtSave) {
+      // Desde P14 el título es un <textarea>: repintarlo cambia el número de
+      // líneas, así que hay que volver a medir el alto. Y también cubre pegar
+      // un título con saltos, que en disco se guarda saneado.
+      if (changeSeq === seqAtSave && titleInput.value !== updated.title) {
         titleInput.value = updated.title;
-        showError(
+        autoResizeTitle();
+        if (updated.title !== sentTitle) showError(
           /\[|\]/.test(sentTitle)
             ? `El título se ha guardado como «${updated.title}»: los corchetes rompen los enlaces [[…]].`
             : `El título se ha guardado como «${updated.title}».`,
@@ -2226,7 +2256,10 @@ function renderNote(page, backlinks) {
     }
   }
 
-  titleInput.addEventListener("input", scheduleSave);
+  titleInput.addEventListener("input", () => {
+    autoResizeTitle();
+    scheduleSave();
+  });
   descInput.addEventListener("input", () => {
     autoResizeDesc();
     scheduleSave();
@@ -2234,6 +2267,28 @@ function renderNote(page, backlinks) {
 
   main.append(topbar, headerWrap, fileInput, titleRow, meta, descInput, bodyMount);
   autoResizeDesc();
+  autoResizeTitle();
+
+  // El alto del título y de la descripción sale de su ancho, y ese ancho cambia
+  // sin que haya `resize` de ventana: al girar el móvil, al estrechar la ventana
+  // y también al plegar la barra lateral en escritorio. Sin volver a medir, el
+  // <textarea> (overflow: hidden, sin asa ni scroll) se queda con el alto de
+  // antes y el texto que no cabe no se puede leer de ninguna manera. Se vigila
+  // el ancho del propio campo: al medir el alto cambia el alto, no el ancho, así
+  // que comparar el ancho evita que el observador se dispare a sí mismo.
+  let anchoTitulo = titleInput.clientWidth;
+  function refitNoteText() {
+    if (!titleInput.isConnected) return;
+    const ancho = titleInput.clientWidth;
+    if (ancho === anchoTitulo) return;
+    anchoTitulo = ancho;
+    autoResizeTitle();
+    autoResizeDesc();
+  }
+  const noteWidthObserver = new ResizeObserver(refitNoteText);
+  noteWidthObserver.observe(titleInput);
+  state.refitNoteText = refitNoteText;
+  state.noteWidthObserver = noteWidthObserver;
 
   // Ctrl/Cmd+S fuerza el guardado ya, sin esperar el debounce (y sin pasar
   // por el diálogo del navegador). Delegado en #main: pulsarlo desde
@@ -4375,10 +4430,66 @@ function setSidebarCollapsed(collapsed) {
 }
 
 document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
+  if (esMovil()) return setCajonAbierto(!cajonAbierto());
   setSidebarCollapsed(!layoutEl.classList.contains("sidebar-collapsed"));
 });
 
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+
+// ------------------------------------------------- cajón lateral en móvil (P14)
+// Por debajo de 768 px la barra lateral no ocupa columna: es un cajón encima
+// del contenido (ver el bloque «móvil» del CSS). Aquí solo se abre y se cierra,
+// y se cierra solo al elegir una página o al tocar el fondo oscurecido. Es un
+// estado de un momento, no una preferencia de pantalla: NO se guarda en
+// localStorage ni toca `sidebar-collapsed`, así que abrir el cajón en el móvil
+// no deja la barra colapsada la próxima vez que abras la app en el escritorio.
+const DRAWER_QUERY = "(max-width: 768px)";
+const drawerQuery = window.matchMedia(DRAWER_QUERY);
+const sidebarEl = document.getElementById("sidebar-aside");
+const scrimEl = document.getElementById("sidebar-scrim");
+const toggleSidebarBtn = document.getElementById("btn-toggle-sidebar");
+
+function esMovil() {
+  return drawerQuery.matches;
+}
+function cajonAbierto() {
+  return layoutEl.classList.contains("sidebar-drawer-open");
+}
+function setCajonAbierto(open) {
+  const abierto = Boolean(open) && esMovil();
+  layoutEl.classList.toggle("sidebar-drawer-open", abierto);
+  if (scrimEl) scrimEl.hidden = !abierto;
+  if (!toggleSidebarBtn) return;
+  // aria-expanded solo tiene sentido en el cajón: en escritorio el botón no
+  // despliega nada, colapsa la columna.
+  if (esMovil()) toggleSidebarBtn.setAttribute("aria-expanded", abierto ? "true" : "false");
+  else toggleSidebarBtn.removeAttribute("aria-expanded");
+}
+
+scrimEl?.addEventListener("click", () => setCajonAbierto(false));
+
+// Elegir una página (o procesar una captura) cierra el cajón: ya no hace falta.
+sidebarEl?.addEventListener("click", (e) => {
+  if (!cajonAbierto()) return;
+  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process")) setCajonAbierto(false);
+});
+
+// Escape cierra el cajón. En captura, porque el editor y los diálogos también
+// escuchan Escape y aquí se llega antes.
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key === "Escape" && cajonAbierto()) setCajonAbierto(false);
+  },
+  true,
+);
+
+// Al pasar a escritorio el cajón deja de existir: se cierra y se quita el fondo.
+drawerQuery.addEventListener("change", (e) => {
+  if (!e.matches) setCajonAbierto(false);
+});
+
+setCajonAbierto(false);
 
 // ------------------------------------------------------------------- tema
 // Oscuro por defecto; el interruptor de la cabecera conmuta a claro y la
@@ -4440,3 +4551,17 @@ window.addEventListener("beforeunload", () => flushOnExit(false));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flushOnExit(true);
 });
+
+// Giro del móvil o cambio de tamaño de la ventana: el alto del título y de la
+// descripción de la nota abierta se midió con el ancho anterior y hay que
+// volver a medirlo (lo que no quepa queda invisible en un <textarea> sin
+// scroll). El plegado de la barra lateral en escritorio no pasa por aquí: lo
+// cubre el ResizeObserver que monta renderNote().
+for (const evento of ["resize", "orientationchange"]) {
+  window.addEventListener(evento, () => {
+    state.refitNoteText?.();
+    // `orientationchange` puede llegar antes de que el navegador rehaga el
+    // layout; el segundo intento, ya con el ancho nuevo, no cuesta nada.
+    requestAnimationFrame(() => state.refitNoteText?.());
+  });
+}
