@@ -19,6 +19,8 @@ const state = {
   historyPos: -1, // índice de "dónde estamos" dentro de state.history
   noteSession: null, // nota abierta: qué queda sin guardar y cómo refrescarla (P8, /events)
   repaintAuthor: null, // repinta «Creado por …» de la nota abierta cuando llega /auth/me (P11b)
+  refitNoteText: null, // remide el alto de título/descripción de la nota abierta (P14, cambio de ancho)
+  noteWidthObserver: null, // ResizeObserver del ancho de la nota abierta (P14); se corta al navegar
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
 };
@@ -248,6 +250,13 @@ function clearMain() {
   // que se deja atrás: renderNote() pone la suya al terminar.
   state.noteSession = null;
   state.repaintAuthor = null;
+  // El vigilante del ancho de la nota es de la nota que se deja atrás: si
+  // siguiera vivo, remidiría unos <textarea> que ya no están en el documento.
+  if (state.noteWidthObserver) {
+    state.noteWidthObserver.disconnect();
+    state.noteWidthObserver = null;
+  }
+  state.refitNoteText = null;
   if (state.editor) {
     state.editor.destroy();
     state.editor = null;
@@ -2186,6 +2195,15 @@ function renderNote(page, backlinks) {
       const updated = await api(`/pages/${page.id}`, { method: "PATCH", body });
       page.updated_at = updated.updated_at;
       page.title = updated.title;
+      // El título es de una sola línea lógica: si se pega algo con saltos, el
+      // fichero se guarda con el nombre saneado (sin saltos) y el campo seguía
+      // mostrando dos líneas que no existen en disco -- la pantalla mentía
+      // hasta recargar. Se repinta con lo guardado, pero solo si no se siguió
+      // escribiendo mientras el PATCH iba de camino.
+      if (changeSeq === seqAtSave && titleInput.value !== updated.title) {
+        titleInput.value = updated.title;
+        autoResizeTitle();
+      }
       // Solo queda "nada pendiente" si no se ha escrito nada mientras se
       // guardaba: si se escribió, `dirty` sigue puesto y el guardado de
       // emergencia mandará el contenido nuevo en vez de darlo por guardado.
@@ -2229,6 +2247,27 @@ function renderNote(page, backlinks) {
   main.append(topbar, headerWrap, fileInput, titleRow, meta, descInput, bodyMount);
   autoResizeDesc();
   autoResizeTitle();
+
+  // El alto del título y de la descripción sale de su ancho, y ese ancho cambia
+  // sin que haya `resize` de ventana: al girar el móvil, al estrechar la ventana
+  // y también al plegar la barra lateral en escritorio. Sin volver a medir, el
+  // <textarea> (overflow: hidden, sin asa ni scroll) se queda con el alto de
+  // antes y el texto que no cabe no se puede leer de ninguna manera. Se vigila
+  // el ancho del propio campo: al medir el alto cambia el alto, no el ancho, así
+  // que comparar el ancho evita que el observador se dispare a sí mismo.
+  let anchoTitulo = titleInput.clientWidth;
+  function refitNoteText() {
+    if (!titleInput.isConnected) return;
+    const ancho = titleInput.clientWidth;
+    if (ancho === anchoTitulo) return;
+    anchoTitulo = ancho;
+    autoResizeTitle();
+    autoResizeDesc();
+  }
+  const noteWidthObserver = new ResizeObserver(refitNoteText);
+  noteWidthObserver.observe(titleInput);
+  state.refitNoteText = refitNoteText;
+  state.noteWidthObserver = noteWidthObserver;
 
   // Ctrl/Cmd+S fuerza el guardado ya, sin esperar el debounce (y sin pasar
   // por el diálogo del navegador). Delegado en #main: pulsarlo desde
@@ -4491,3 +4530,17 @@ window.addEventListener("beforeunload", () => flushOnExit(false));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flushOnExit(true);
 });
+
+// Giro del móvil o cambio de tamaño de la ventana: el alto del título y de la
+// descripción de la nota abierta se midió con el ancho anterior y hay que
+// volver a medirlo (lo que no quepa queda invisible en un <textarea> sin
+// scroll). El plegado de la barra lateral en escritorio no pasa por aquí: lo
+// cubre el ResizeObserver que monta renderNote().
+for (const evento of ["resize", "orientationchange"]) {
+  window.addEventListener(evento, () => {
+    state.refitNoteText?.();
+    // `orientationchange` puede llegar antes de que el navegador rehaga el
+    // layout; el segundo intento, ya con el ancho nuevo, no cuesta nada.
+    requestAnimationFrame(() => state.refitNoteText?.());
+  });
+}
