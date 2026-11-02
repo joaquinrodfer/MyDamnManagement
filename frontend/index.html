@@ -506,6 +506,111 @@
   }
   .note-outline-item:hover { background: var(--code-bg); }
 
+  /* ---------- sugerencias: contador y panel lateral (P10c) ----------
+     El contador vive en .note-topbar-right, en fila con Índice, Exportar y
+     Backlinks. El panel cuelga de body porque es lateral (position:fixed) y
+     solo enseña lo que el editor no puede pintar en su sitio: las
+     sugerencias que ya no encajan en el texto y las ya decididas, con su
+     hilo de respuestas. */
+  .note-suggestions-counter {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ink-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: 3px 7px;
+    cursor: pointer;
+  }
+  .note-suggestions-counter:hover { color: var(--ink); background: var(--code-bg); border-color: var(--panel-border); }
+  .note-suggestions-counter[aria-expanded="true"] { color: var(--accent-ink); background: var(--accent-soft); }
+
+  .note-suggestions-panel {
+    position: fixed;
+    top: 56px;
+    right: 16px;
+    bottom: 16px;
+    z-index: 850;
+    width: min(380px, calc(100vw - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+    padding: 12px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-float);
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+  /* display:flex del bloque de arriba pisaría el [hidden] del agente de
+     usuario, así que se repite aquí con más especificidad. */
+  .note-suggestions-panel[hidden] { display: none; }
+  .sug-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .sug-panel-title { font-size: 13px; font-weight: 600; }
+  .sug-panel-note { color: var(--ink-muted); font-size: 11.5px; }
+  .sug-section { display: flex; flex-direction: column; gap: 8px; }
+  .sug-section-head {
+    margin: 10px 0 0;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-muted);
+  }
+  .sug-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+  }
+  .sug-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+  .sug-agent { font-weight: 600; color: var(--ink); }
+  .sug-when { color: var(--ink-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+  .sug-status {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--panel-border);
+    color: var(--ink-muted);
+  }
+  .sug-status-pending, .sug-status-orphaned { border-color: var(--warn); color: var(--warn); }
+  .sug-status-accepted { border-color: var(--ok); color: var(--ok); }
+  .sug-status-rejected { border-color: var(--down); color: var(--down); }
+  .sug-diff { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; font-size: 12px; }
+  .sug-old { text-decoration: line-through; text-decoration-color: var(--down); color: var(--ink-muted); }
+  .sug-new { color: var(--ok); }
+  .sug-arrow { color: var(--ink-muted); }
+  .sug-rationale { color: var(--ink); opacity: 0.85; font-size: 12px; white-space: pre-wrap; }
+  .sug-reason { color: var(--down); font-size: 11.5px; }
+  .sug-actions { display: flex; gap: 6px; }
+  .sug-actions .btn { padding: 3px 9px; font-size: 11.5px; }
+  .sug-accept:hover { border-color: var(--ok); color: var(--ok); }
+  .sug-reject:hover { border-color: var(--down); color: var(--down); }
+  .sug-thread { display: flex; flex-direction: column; gap: 3px; padding-left: 8px; border-left: 2px solid var(--panel-border); }
+  .sug-reply-entry { font-size: 11.5px; color: var(--ink); }
+  .sug-reply-author { color: var(--ink-muted); font-weight: 600; }
+  .sug-reply-row { display: flex; gap: 6px; }
+  .sug-reply-input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 7px;
+    font-size: 12px;
+    color: var(--ink);
+    background: var(--code-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm);
+  }
+  .sug-reply-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .sug-reply-send { padding: 3px 9px; font-size: 11.5px; }
+
   .note-header-image-wrap { margin-bottom: 16px; }
   .note-header-image {
     display: block;
@@ -658,6 +763,50 @@
   .cm-mdm-glyph { color: var(--ink); }
   /* Línea horizontal ("---"): widget de bloque cuando no se edita (ver HRWidget) */
   .cm-mdm-hr { border: none; border-top: 1px solid var(--panel-border); margin: 12px 0; height: 0; }
+
+  /* ---------- sugerencias de agentes (P10c) ----------
+     El parche se ve en su sitio: el texto viejo tachado y, justo detrás, el
+     propuesto con los dos botones. Las clases las pone entry.js
+     (SuggestionWidget / suggestionDecorations); aquí solo el aspecto. */
+  .cm-sug-del {
+    text-decoration: line-through;
+    text-decoration-color: var(--down);
+    text-decoration-thickness: 1.5px;
+    color: var(--ink-muted);
+    background: var(--down-bg);
+    border-radius: 2px;
+  }
+  .cm-sug-widget {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0 2px;
+    padding: 1px 4px 1px 5px;
+    border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
+    vertical-align: baseline;
+  }
+  .cm-sug-ins { color: var(--ok); white-space: pre-wrap; }
+  .cm-sug-actions { display: inline-flex; gap: 2px; }
+  .cm-sug-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    font-size: 11px;
+    line-height: 1;
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-xs);
+    background: var(--surface-elevated);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .cm-sug-btn:hover { border-color: var(--accent); color: var(--accent-ink); }
+  .cm-sug-accept:hover { border-color: var(--ok); color: var(--ok); }
+  .cm-sug-reject:hover { border-color: var(--down); color: var(--down); }
 
   /* fondo de línea para bloques de código/lista (calculado por bloques, ver
      frontend/editor-src/entry.js -- blockLineDecorations). El código fuerza

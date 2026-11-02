@@ -40,7 +40,13 @@ async function api(path, opts = {}) {
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error((data && data.detail) || `HTTP ${res.status}`);
+    // `status` y el cuerpo viajan dentro del error: quien llama puede
+    // distinguir un 409 de un 500 sin mirar el texto del mensaje (las
+    // sugerencias usan el 409 para "desanclada" y "ya resuelta").
+    const err = new Error((data && data.detail) || (data && data.error) || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -215,6 +221,7 @@ function clearMain() {
   stopLinkPreview();
   closeSlashMenu();
   closeOutline();
+  closeSuggestionsPanel();
   const main = document.getElementById("main");
   main.innerHTML = "";
   return main;
@@ -887,6 +894,32 @@ function createOutlinePanel(mountEl = document.body) {
   outlineEl = details;
 }
 
+// ------------------------------------------- sugerencias de agentes (P10c)
+// El parche se pinta DENTRO del editor (frontend/editor-src, setSuggestions):
+// el texto viejo tachado y el propuesto al lado, con ✓ y ✗. Aquí se piden, se
+// deciden y se conversa. El panel lateral es solo para lo que el editor no
+// puede poner en su sitio -- las que ya no encajan en el texto y las ya
+// decididas -- más el hilo de respuestas (el canal de vuelta al agente).
+
+const SUGGESTION_STATUS_LABEL = {
+  pending: "pendiente",
+  accepted: "aceptada",
+  rejected: "rechazada",
+  orphaned: "desanclada",
+};
+
+let suggestionsPanelEl = null;
+
+/** El panel es `position:fixed` y cuelga de body, así que no se va con
+ * #main: al cambiar de página hay que quitarlo a mano (o se quedaría
+ * flotando, apuntando a la nota anterior). */
+function closeSuggestionsPanel() {
+  if (suggestionsPanelEl) {
+    suggestionsPanelEl.remove();
+    suggestionsPanelEl = null;
+  }
+}
+
 function renderNote(page, backlinks) {
   const main = clearMain();
 
@@ -1449,6 +1482,331 @@ function renderNote(page, backlinks) {
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
   });
 
+  // ---- sugerencias de agentes (P10c) ----
+  // El contador de la cabecera abre el panel; el editor pinta las pendientes
+  // en su sitio y devuelve cuáles pudo anclar (setSuggestions: {placed,
+  // unplaced}). Nada de esto existe para una nota sin sugerencias: el botón
+  // nace oculto y el editor no recibe lista.
+  const sugBtn = document.createElement("button");
+  sugBtn.type = "button";
+  sugBtn.className = "note-suggestions-counter";
+  sugBtn.hidden = true;
+  sugBtn.setAttribute("aria-expanded", "false");
+  sugBtn.setAttribute("aria-controls", "note-suggestions-panel");
+  topbarRight.prepend(sugBtn);
+
+  const panel = document.createElement("aside");
+  panel.id = "note-suggestions-panel";
+  panel.className = "note-suggestions-panel";
+  panel.hidden = true;
+  panel.setAttribute("aria-label", "Sugerencias de agentes");
+  document.body.appendChild(panel);
+  suggestionsPanelEl = panel;
+
+  sugBtn.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    sugBtn.setAttribute("aria-expanded", panel.hidden ? "false" : "true");
+  });
+
+  let suggestionItems = []; // todas las de esta nota: pendientes y decididas
+  let placedIds = new Set(); // las que el editor ha podido anclar en el texto
+
+  function paintSuggestions() {
+    if (state.noteSession !== session) return; // ya se navegó a otra nota
+    const pending = suggestionItems.filter((s) => s.status === "pending");
+    const result = state.editor?.setSuggestions?.(pending, {
+      onAccept: (id) => acceptSuggestion(id),
+      onReject: (id) => rejectSuggestion(id),
+    });
+    placedIds = new Set(result?.placed ?? []);
+    sugBtn.hidden = suggestionItems.length === 0;
+    sugBtn.textContent = `Sugerencias (${pending.length})`;
+    sugBtn.title = pending.length
+      ? `${pending.length} sugerencia${pending.length > 1 ? "s" : ""} por decidir`
+      : "Sugerencias ya decididas";
+    paintSuggestionsPanel();
+  }
+
+  function paintSuggestionsPanel() {
+    // Lo que el dueño esté escribiendo en una respuesta no se pierde al
+    // repintar (un rechazo, una respuesta enviada, una sugerencia nueva...).
+    const drafts = new Map();
+    panel.querySelectorAll(".sug-reply-input").forEach((input) => {
+      if (input.value.trim()) drafts.set(input.dataset.suggestionId, input.value);
+    });
+
+    panel.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "sug-panel-head";
+    const headTitle = document.createElement("span");
+    headTitle.className = "sug-panel-title";
+    headTitle.textContent = "Sugerencias de agentes";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "icon-btn sug-panel-close";
+    closeBtn.innerHTML = svgIcon("i-x");
+    closeBtn.title = "Cerrar el panel de sugerencias";
+    closeBtn.setAttribute("aria-label", "Cerrar el panel de sugerencias");
+    closeBtn.addEventListener("click", () => {
+      panel.hidden = true;
+      sugBtn.setAttribute("aria-expanded", "false");
+    });
+    head.append(headTitle, closeBtn);
+    panel.appendChild(head);
+
+    const pending = suggestionItems.filter((s) => s.status === "pending");
+    const blocked = pending.filter((s) => !placedIds.has(s.id));
+    const decided = suggestionItems.filter((s) => s.status !== "pending");
+    const anchored = pending.length - blocked.length;
+
+    const summary = document.createElement("div");
+    summary.className = "sug-panel-note";
+    if (suggestionItems.length === 0) {
+      summary.textContent = "Ningún agente ha propuesto nada en esta nota.";
+      panel.appendChild(summary);
+    } else if (anchored) {
+      summary.textContent = `${anchored} pendiente${anchored > 1 ? "s" : ""} dentro del texto; aquí está el resto.`;
+      panel.appendChild(summary);
+    } else if (blocked.length) {
+      // Ninguna encaja ya en el texto: el editor no pinta nada y todo lo que
+      // hay que decidir está aquí.
+      summary.textContent = "Las pendientes ya no encajan en el texto; están aquí abajo.";
+      panel.appendChild(summary);
+    } else {
+      summary.textContent = "No queda nada pendiente.";
+      panel.appendChild(summary);
+    }
+
+    if (blocked.length) {
+      panel.appendChild(suggestionSection("No se pueden pintar en el texto", blocked, true));
+    }
+    if (decided.length) {
+      panel.appendChild(suggestionSection("Ya decididas", decided, false));
+    }
+
+    panel.querySelectorAll(".sug-reply-input").forEach((input) => {
+      const draft = drafts.get(input.dataset.suggestionId);
+      if (draft) input.value = draft;
+    });
+  }
+
+  function suggestionSection(heading, items, decidable) {
+    const section = document.createElement("section");
+    section.className = "sug-section";
+    const title = document.createElement("h3");
+    title.className = "sug-section-head";
+    title.textContent = `${heading} (${items.length})`;
+    section.appendChild(title);
+    items.forEach((s) => section.appendChild(suggestionItemEl(s, decidable)));
+    return section;
+  }
+
+  /** Una sugerencia en el panel: quién, cuándo, qué cambia, por qué, su hilo
+   * y el campo para responderle. */
+  function suggestionItemEl(s, decidable) {
+    const item = document.createElement("div");
+    item.className = "sug-item";
+    item.dataset.suggestionId = s.id;
+
+    const head = document.createElement("div");
+    head.className = "sug-head";
+    const agent = document.createElement("span");
+    agent.className = "sug-agent";
+    agent.textContent = s.agent || "agente";
+    const when = document.createElement("span");
+    when.className = "sug-when";
+    // formatted relative (además del title exacto): lo mismo que el resto de
+    // fechas de la app.
+    when.textContent = s.created_at ? formatRelativeTime(s.created_at) : "";
+    if (s.created_at) when.title = s.created_at;
+    const status = document.createElement("span");
+    status.className = `sug-status sug-status-${s.status}`;
+    status.textContent = SUGGESTION_STATUS_LABEL[s.status] || s.status;
+    head.append(agent, when, status);
+
+    const diff = document.createElement("div");
+    diff.className = "sug-diff";
+    if (s.kind === "new_page") {
+      const proposedTitle = document.createElement("span");
+      proposedTitle.className = "sug-new";
+      proposedTitle.textContent = s.title || "(sin título)";
+      const kind = document.createElement("span");
+      kind.className = "sug-when";
+      kind.textContent = " · nota nueva";
+      diff.append(proposedTitle, kind);
+    } else {
+      const before = document.createElement("span");
+      before.className = "sug-old";
+      before.textContent = s.old_text;
+      const arrow = document.createElement("span");
+      arrow.className = "sug-arrow";
+      arrow.textContent = "→";
+      const after = document.createElement("span");
+      after.className = "sug-new";
+      after.textContent = s.new_text;
+      diff.append(before, arrow, after);
+    }
+    item.append(head, diff);
+
+    if (s.rationale) {
+      const why = document.createElement("div");
+      why.className = "sug-rationale";
+      why.textContent = s.rationale;
+      item.appendChild(why);
+    }
+    if (s.reason) {
+      const reason = document.createElement("div");
+      reason.className = "sug-reason";
+      reason.textContent = `Motivo del rechazo: ${s.reason}`;
+      item.appendChild(reason);
+    }
+
+    if (decidable) {
+      const actions = document.createElement("div");
+      actions.className = "sug-actions";
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.className = "btn sug-accept";
+      accept.textContent = "Aceptar";
+      accept.addEventListener("click", () => acceptSuggestion(s.id));
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.className = "btn sug-reject";
+      reject.textContent = "Rechazar";
+      reject.addEventListener("click", () => rejectSuggestion(s.id));
+      actions.append(accept, reject);
+      item.appendChild(actions);
+    }
+
+    const replies = Array.isArray(s.replies) ? s.replies : [];
+    if (replies.length) {
+      const thread = document.createElement("div");
+      thread.className = "sug-thread";
+      replies.forEach((r) => {
+        const entry = document.createElement("div");
+        entry.className = "sug-reply-entry";
+        const who = document.createElement("span");
+        who.className = "sug-reply-author";
+        who.textContent = `${r.author || "—"}:`;
+        const text = document.createElement("span");
+        text.className = "sug-reply-text";
+        text.textContent = r.text;
+        entry.append(who, " ", text);
+        thread.appendChild(entry);
+      });
+      item.appendChild(thread);
+    }
+
+    const replyRow = document.createElement("div");
+    replyRow.className = "sug-reply-row";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "sug-reply-input";
+    input.dataset.suggestionId = s.id;
+    input.placeholder = "Responder al agente…";
+    input.maxLength = 1000;
+    input.setAttribute("aria-label", "Responder al agente sobre esta sugerencia");
+    const send = document.createElement("button");
+    send.type = "button";
+    send.className = "btn sug-reply-send";
+    send.textContent = "Enviar";
+    send.addEventListener("click", () => sendReply(s.id, input, send));
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      sendReply(s.id, input, send);
+    });
+    replyRow.append(input, send);
+    item.appendChild(replyRow);
+
+    return item;
+  }
+
+  async function loadSuggestions() {
+    try {
+      const found = await api(`/pages/${page.id}/suggestions`);
+      if (state.noteSession !== session) return; // ya se navegó
+      suggestionItems = Array.isArray(found) ? found : [];
+      paintSuggestions();
+    } catch (e) {
+      reportError("No se pudieron cargar las sugerencias", e);
+    }
+  }
+
+  /** Aceptar = el servidor aplica el parche al `.md`. Aquí no basta con
+   * quitar la marca: la nota se relee del servidor y se repinta con el texto
+   * nuevo. Antes se fuerza el guardado pendiente, para que el parche se
+   * aplique sobre el mismo texto que se está viendo. */
+  async function acceptSuggestion(id) {
+    if (state.noteSession !== session) return;
+    if (dirty) {
+      state.flushPendingSave?.();
+      await session.whenQuiet();
+      if (state.noteSession !== session) return;
+    }
+    try {
+      await api(`/suggestions/${id}/accept`, { method: "POST" });
+    } catch (e) {
+      if (e.status === 409) {
+        // 409: el ancla ya no está (o ya estaba decidida). No se ha tocado el
+        // .md: se avisa y se recarga la lista, que ahora la traerá desanclada.
+        showError(
+          e.data?.error === "ya_resuelta"
+            ? "Esa sugerencia ya estaba decidida. Se ha recargado la lista."
+            : "La sugerencia ya no encaja en el texto (el ancla desapareció). Se ha recargado la lista.",
+        );
+        await loadSuggestions();
+        return;
+      }
+      reportError("No se pudo aceptar la sugerencia", e);
+      return;
+    }
+    if (state.noteSession !== session) return;
+    await reloadNoteFromDisk(page.id);
+  }
+
+  /** Rechazar no toca el `.md`: basta con que el editor deje de pintarla y
+   * el panel la mueva a "ya decididas". */
+  async function rejectSuggestion(id) {
+    if (state.noteSession !== session) return;
+    try {
+      await api(`/suggestions/${id}/reject`, { method: "POST" });
+    } catch (e) {
+      if (e.status === 409) {
+        showError("Esa sugerencia ya estaba decidida. Se ha recargado la lista.");
+        await loadSuggestions();
+        return;
+      }
+      reportError("No se pudo rechazar la sugerencia", e);
+      return;
+    }
+    await loadSuggestions();
+  }
+
+  async function sendReply(id, input, button) {
+    const text = input.value.trim();
+    if (!text) return;
+    button.disabled = true;
+    try {
+      const updated = await api(`/suggestions/${id}/reply`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      const index = suggestionItems.findIndex((s) => s.id === id);
+      if (index >= 0) suggestionItems[index] = updated;
+      // Se vacía ANTES de repintar: el repintado conserva los borradores que
+      // encuentre en el DOM, y si no, la respuesta ya enviada volvería al
+      // campo como si estuviera sin mandar.
+      input.value = "";
+      paintSuggestions();
+    } catch (e) {
+      button.disabled = false;
+      reportError("No se pudo responder a la sugerencia", e);
+    }
+  }
+
+
   renderOutline(); // población inicial -- onChange solo dispara con ediciones, no al montar
 
   // P8: lo que `/events` necesita saber de esta nota -- si hay algo sin
@@ -1503,6 +1861,7 @@ function renderNote(page, backlinks) {
     },
   };
   state.noteSession = session;
+  loadSuggestions(); // pendientes en el editor + panel (si no hay, no se pinta nada)
 }
 
 // ------------------------------------------------- cambios en disco (P8, SSE)
