@@ -1477,6 +1477,165 @@ function verticalMoveExtension() {
   return [plugin, moveKeymap];
 }
 
+// ------------------------------------------------------------- sugerencias
+// Una sugerencia de agente es un parche `old_text -> new_text` (ADR-0003).
+// Aquí solo se PINTA: el texto viejo se tacha y justo detrás aparece el
+// propuesto, con un ✓ y un ✗. Aceptar y rechazar son llamadas a la API, así
+// que las ejecuta la app mediante los callbacks que llegan en
+// setSuggestions() -- el editor no habla con la red.
+//
+// El conjunto de sugerencias no forma parte del documento (no se deshace ni
+// se guarda en el .md): vive en un StateField que solo cambia con el efecto
+// setSuggestionSet, y un ViewPlugin recalcula las decoraciones cuando cambia
+// el documento o el conjunto. Con la lista vacía no se pinta ni una
+// decoración: el editor se comporta exactamente igual que sin esto.
+
+const setSuggestionSet = StateEffect.define();
+
+const NO_SUGGESTIONS = { list: [], callbacks: {} };
+
+const suggestionField = StateField.define({
+  create: () => NO_SUGGESTIONS,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setSuggestionSet)) return effect.value;
+    }
+    return value;
+  },
+});
+
+/** Localiza cada sugerencia pendiente en el documento ACTUAL.
+ *
+ * - Se marca la PRIMERA aparición del `old_text` y no se adivina cuál de
+ *   varias era: el agente pudo proponer sobre un texto repetido, y elegir por
+ *   él sería peor que enseñarlo en el panel.
+ * - Si el texto no está (la nota cambió, o la sugerencia nació `orphaned`) no
+ *   se pinta: sale en `unplaced` para que la app lo enseñe aparte.
+ * - Dos sugerencias que se pisan en el mismo rango: se pinta la primera y la
+ *   otra pasa al panel (CodeMirror no admite dos marcas idénticas).
+ */
+function locateSuggestions(state) {
+  const { list } = state.field(suggestionField);
+  const placed = [];
+  const unplaced = [];
+  const taken = [];
+  if (!list.length) return { placed, unplaced };
+  const text = state.doc.toString();
+  for (const suggestion of list) {
+    // Solo las pendientes: una aceptada o rechazada ya no es una propuesta.
+    if (!suggestion.old_text || (suggestion.status && suggestion.status !== "pending")) continue;
+    const from = text.indexOf(suggestion.old_text);
+    const to = from < 0 ? -1 : from + suggestion.old_text.length;
+    if (from < 0 || taken.some(([a, b]) => from < b && to > a)) {
+      unplaced.push(suggestion.id);
+      continue;
+    }
+    taken.push([from, to]);
+    placed.push({ suggestion, from, to });
+  }
+  return { placed, unplaced };
+}
+
+// El texto propuesto, pegado al final del rango tachado, con los dos botones.
+// Un widget (no un reemplazo) porque el texto viejo TIENE que seguir viéndose:
+// la gracia es comparar el de antes con el de después en el mismo sitio.
+class SuggestionWidget extends WidgetType {
+  constructor(suggestion, callbacks) {
+    super();
+    this.suggestion = suggestion;
+    this.callbacks = callbacks;
+  }
+  eq(other) {
+    return (
+      other.suggestion.id === this.suggestion.id &&
+      other.suggestion.old_text === this.suggestion.old_text &&
+      other.suggestion.new_text === this.suggestion.new_text &&
+      other.suggestion.agent === this.suggestion.agent &&
+      other.callbacks === this.callbacks
+    );
+  }
+  toDOM() {
+    const wrap = document.createElement("span");
+    wrap.className = "cm-sug-widget";
+    wrap.dataset.suggestionId = this.suggestion.id;
+
+    const proposed = document.createElement("span");
+    proposed.className = "cm-sug-ins";
+    proposed.textContent = this.suggestion.new_text;
+    if (this.suggestion.agent) proposed.title = `Propuesta de ${this.suggestion.agent}`;
+
+    const actions = document.createElement("span");
+    actions.className = "cm-sug-actions";
+
+    const accept = document.createElement("button");
+    accept.type = "button";
+    accept.className = "cm-sug-btn cm-sug-accept";
+    accept.textContent = "✓";
+    accept.setAttribute("aria-label", "Aceptar sugerencia");
+    accept.title = "Aceptar sugerencia";
+    // mousedown (no click) con preventDefault: el clic no mueve el cursor
+    // dentro del texto ni roba la selección, así que decidir sobre la
+    // sugerencia no toca el documento que se está revisando.
+    accept.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.callbacks.onAccept?.(this.suggestion.id);
+    });
+
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.className = "cm-sug-btn cm-sug-reject";
+    reject.textContent = "✗";
+    reject.setAttribute("aria-label", "Rechazar sugerencia");
+    reject.title = "Rechazar sugerencia";
+    reject.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.callbacks.onReject?.(this.suggestion.id);
+    });
+
+    actions.append(accept, reject);
+    wrap.append(proposed, actions);
+    return wrap;
+  }
+  ignoreEvent() {
+    return false; // que los clics de los botones lleguen a sus listeners
+  }
+}
+
+function suggestionDecorations(state) {
+  const { placed } = locateSuggestions(state);
+  if (!placed.length) return Decoration.none;
+  const { callbacks } = state.field(suggestionField);
+  const ranges = [];
+  for (const { suggestion, from, to } of placed) {
+    ranges.push(Decoration.mark({ class: "cm-sug-del" }).range(from, to));
+    ranges.push(
+      Decoration.widget({ widget: new SuggestionWidget(suggestion, callbacks), side: 1 }).range(to)
+    );
+  }
+  return Decoration.set(ranges, true);
+}
+
+function suggestionPlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = suggestionDecorations(view.state);
+      }
+      update(update) {
+        if (
+          update.docChanged ||
+          update.state.field(suggestionField) !== update.startState.field(suggestionField)
+        ) {
+          this.decorations = suggestionDecorations(update.state);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
 /**
  * @param {Object} opts
  * @param {HTMLElement} opts.parent
@@ -1527,6 +1686,8 @@ export function createNoteEditor({
         blankLinePlugin(),
         syntaxMarkPlugin(),
         hrField,
+        suggestionField,
+        suggestionPlugin(),
         wikilinkPlugin(resolvePage),
         wikilinkClickHandler(onNavigate),
         wikilinkHoverHandler(onWikilinkHover, onWikilinkHoverEnd),
@@ -1548,6 +1709,32 @@ export function createNoteEditor({
     },
     focus: () => view.focus(),
     destroy: () => view.destroy(),
+    /** Pinta las sugerencias pendientes de esta nota, en su sitio.
+     *
+     * `list` es `[{id, old_text, new_text, status}]` (lo que devuelve
+     * `GET /pages/{id}/suggestions`) y `callbacks` trae `onAccept(id)` y
+     * `onReject(id)`, que la app conecta a la API. Devuelve qué se pudo
+     * anclar en el texto y qué no -- `{placed: [id...], unplaced: [id...]}` --
+     * para que la app enseñe aparte lo que aquí no cabe (desancladas, o dos
+     * propuestas sobre el mismo texto).
+     */
+    setSuggestions(list, callbacks = {}) {
+      const clean = (Array.isArray(list) ? list : [])
+        .filter((s) => s && s.id && s.old_text)
+        .map((s) => ({
+          id: String(s.id),
+          old_text: String(s.old_text),
+          new_text: s.new_text == null ? "" : String(s.new_text),
+          status: s.status || "pending",
+          agent: s.agent || "",
+        }));
+      view.dispatch({ effects: setSuggestionSet.of({ list: clean, callbacks: callbacks || {} }) });
+      const { placed, unplaced } = locateSuggestions(view.state);
+      return { placed: placed.map((p) => p.suggestion.id), unplaced };
+    },
+    clearSuggestions() {
+      view.dispatch({ effects: setSuggestionSet.of(NO_SUGGESTIONS) });
+    },
     // Índice de la página (H1-H5), para el desplegable flotante de app.js --
     // se apoya en el mismo blockField que ya clasifica los bloques para
     // todo lo demás (seleccionar/convertir/asa), así que un "encabezado"
