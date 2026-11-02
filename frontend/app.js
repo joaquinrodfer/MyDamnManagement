@@ -890,6 +890,9 @@ async function loadTree() {
     // Los contenedores ya tienen role="tree" (index.html): se les aplica el
     // roving tabindex después de poblarlos.
     document.querySelectorAll('[role="tree"]').forEach(initTreeRovingTabIndex);
+    // El árbol acaba de cambiar (arranque, crear, borrar, evento del
+    // vigilante...): los destinos que ofrece el "[[" del editor son estos.
+    syncLinkTargets();
   } catch (e) {
     // El árbol anterior (si lo había) se queda tal cual: solo se vacía
     // después de que la petición haya ido bien.
@@ -1866,6 +1869,28 @@ function renderNote(page, backlinks) {
     }
   }
 
+  // Comando "Crear «…»" del autocompletado de "[[" (entry.js): la nota nueva
+  // cuelga de ésta -- igual que "/page" -- y se refresca el árbol aquí mismo,
+  // sin esperar al evento del vigilante (el SSE puede llegar después, o no
+  // llegar si está desconectado). Devuelve {id, title} para que el editor
+  // escriba el enlace con el título que haya quedado DE VERDAD en el
+  // servidor: el nombre se normaliza al crearlo y "Lo que sea" puede acabar
+  // siendo otra cosa.
+  async function createLinkedPage(title) {
+    try {
+      const created = await api("/pages", {
+        method: "POST",
+        body: JSON.stringify({ title, parent_id: page.id, body_markdown: "" }),
+      });
+      await loadTree();
+      return { id: created.id, title: created.title };
+    } catch (e) {
+      if (e?.status === 401) return null; // ya se está yendo al login
+      reportError(`No se pudo crear la nota «${title}»`, e);
+      return null; // el editor no inserta nada si no hay título
+    }
+  }
+
   createOutlinePanel(topbarRight);
 
   state.editor = createNoteEditor({
@@ -1878,6 +1903,7 @@ function renderNote(page, backlinks) {
       renderOutline();
     },
     onCreatePage: createChildPage,
+    onCreateLink: createLinkedPage,
     onBlockContextMenu: (payload) => {
       const n = payload.count;
       const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
@@ -1911,6 +1937,11 @@ function renderNote(page, backlinks) {
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
   });
+
+  // El árbol ya está cargado cuando se abre una nota (lo pide el arranque y
+  // cada navegación), pero setLinkTargets es un efecto sobre el estado del
+  // editor: hay que dárselo a ESTA instancia, que acaba de nacer.
+  syncLinkTargets();
 
   // ---- sugerencias de agentes (P10c) ----
   // El contador de la cabecera abre el panel; el editor pinta las pendientes
@@ -2539,6 +2570,29 @@ function connectVaultEvents() {
   vaultEvents.addEventListener("open", () => {
     reconnecting = false;
   });
+}
+
+/** Destinos posibles de un wikilink, tal como los quiere el autocompletado
+ * de "[[" (`setLinkTargets`): {id, title, type} de todas las páginas y bases
+ * de datos del vault. Sale del mismo `state.pagesById` que ya usa
+ * resolvePage(), así que lo que ofrece la lista es exactamente lo que un
+ * wikilink puede resolver después -- ni más ni menos.
+ *
+ * `id` es el de la PÁGINA (no el `database_id`): es el que espera
+ * navigateToPage, y es el que el enlace necesita para tener vista previa. */
+function linkTargets() {
+  const list = [];
+  for (const p of state.pagesById.values()) {
+    if (!p.title) continue;
+    list.push({ id: p.id, title: p.title, type: p.type || "note" });
+  }
+  return list;
+}
+
+/** Mantiene la lista del autocompletado al día con el árbol. La app la llama
+ * desde loadTree() (una sola vez por recarga, no una por nodo). */
+function syncLinkTargets() {
+  state.editor?.setLinkTargets?.(linkTargets());
 }
 
 function findPageByTitle(title) {

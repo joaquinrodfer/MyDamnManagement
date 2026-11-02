@@ -869,6 +869,63 @@
   /* Línea horizontal ("---"): widget de bloque cuando no se edita (ver HRWidget) */
   .cm-mdm-hr { border: none; border-top: 1px solid var(--panel-border); margin: 12px 0; height: 0; }
 
+  /* ---------- autocompletado de wikilinks (P12) ----------
+     El popup lo pinta @codemirror/autocomplete (clases .cm-tooltip*); aquí
+     solo el aspecto, con el mismo lenguaje que el resto de menús flotantes.
+     La lista la llena entry.js: una opción por página, «Crear «…»» delante
+     cuando no hay coincidencia exacta. */
+  #note-body .cm-tooltip-autocomplete {
+    background: var(--surface-elevated);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+    z-index: 40;
+  }
+  #note-body .cm-tooltip-autocomplete > ul {
+    max-height: 240px;
+    min-width: 220px;
+    padding: 4px;
+    margin: 0;
+    list-style: none;
+    font-family: var(--font-body);
+    font-size: var(--text-md);
+  }
+  #note-body .cm-tooltip-autocomplete > ul > li {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 5px 8px;
+    border-radius: 5px;
+    color: var(--ink);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  /* aria-selected es la opción activa (la que se lleva Enter). El ratón
+     también la marca: el paquete escucha mousemove sobre la lista. */
+  #note-body .cm-tooltip-autocomplete > ul > li[aria-selected] {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+  #note-body .cm-tooltip-autocomplete .cm-completionLabel { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+  #note-body .cm-tooltip-autocomplete .cm-completionMatchedText {
+    color: var(--accent-ink);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  /* El tipo de destino ("nota" / "base de datos") o "nota nueva" en «Crear». */
+  #note-body .cm-tooltip-autocomplete .cm-completionDetail {
+    color: var(--ink-muted);
+    font-size: var(--text-sm);
+    font-style: normal;
+    margin-left: 12px;
+  }
+  /* «Crear «…»» (la primera opción cuando no hay coincidencia exacta). */
+  #note-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-create .cm-completionLabel { color: var(--accent-ink); }
+  /* Sin notas / sin coincidencias: un aviso, no una fila que parezca elegible. */
+  #note-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-empty { color: var(--ink-muted); cursor: default; }
+
   /* ---------- sugerencias de agentes (P10c) ----------
      El parche se ve en su sitio: el texto viejo tachado y, justo detrás, el
      propuesto con los dos botones. Las clases las pone entry.js
