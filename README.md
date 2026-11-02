@@ -440,10 +440,11 @@ de la bandeja (o un cuadro de error). El atajo se asigna de dos formas: la
 **PowerToys → Teclado → Remapear un atajo → Abrir una aplicación**. Detalle en
 `tools/capture/windows/LEEME.md`.
 
-**Linux.** `captura.sh` usa `zenity`, `kdialog` o `rofi` para pedir el texto y,
-si no hay ninguno, lee de la entrada estándar (`printf 'idea' | captura.sh`),
-hace el `POST` con `curl` (el JSON se escapa con `awk`, sin `jq`) y avisa con
-`notify-send`/`zenity`/`kdialog`. Para el atajo, en GNOME:
+**Linux.** `captura.sh` toma el texto del argumento, de la entrada estándar si
+trae algo (`printf 'idea' | captura.sh`) o, si no hay ninguna de las dos, de un
+cuadro con `zenity`, `kdialog` o `rofi`; hace el `POST` con `curl` (el JSON se
+escapa con `awk`, sin `jq`) y avisa con `notify-send`/`zenity`/`kdialog`. Para
+el atajo, en GNOME:
 
 ```bash
 gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/']"
@@ -451,6 +452,23 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/or
 gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ command "$HOME/.local/bin/captura.sh"
 gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ binding '<Control><Alt>n'
 ```
+
+Y el token, que es donde se tropieza: un atajo del escritorio **no hereda la
+sesión del terminal**, así que un `export MDM_TOKEN=…` en `~/.bashrc` no llega
+y el primer intento contesta «Falta MDM_TOKEN». Va en `~/.profile` (lo leen las
+sesiones gráficas de GNOME) y se vuelve a entrar en la sesión:
+
+```bash
+printf 'export MDM_TOKEN="%s"\n' 'el-token-de-captura' >> ~/.profile
+```
+
+`~/.profile` se lee al iniciar sesión, así que hasta cerrar y volver a entrar
+no está. La otra vía es `Environment=MDM_TOKEN=…` en el `.desktop`, y ahí conviene
+saber lo que se hace: el secreto queda en un fichero de tu `$HOME` que cualquier
+proceso tuyo puede leer — justo lo que el token de captura evita al no ser una
+llave maestra. Vale para una máquina de un solo dueño; en una compartida, no.
+Y el script pregunta con `zenity`/`kdialog`/`rofi` aunque lo lance el atajo sin
+terminal (la entrada llega en `/dev/null`, que no es «texto»: se abre el cuadro).
 
 ### La bandeja, en el panel
 

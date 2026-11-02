@@ -19,6 +19,11 @@ Comment=Apunta algo en la bandeja de MyDamnManagement
 Comment[en]=Send a note to the MyDamnManagement inbox
 Exec=/home/TU_USUARIO/.local/bin/captura.sh
 Icon=accessories-text-editor
+# El token no lo hereda un lanzador gráfico: expórtalo en ~/.profile (lo leen las
+# sesiones de GNOME; ver README, «Capturar desde fuera»). Si prefieres no tocar
+# ~/.profile, descomenta la línea de abajo — sabiendo que deja el secreto en un
+# fichero legible de tu $HOME.
+#Environment=MDM_TOKEN=el-token-de-captura
 Terminal=false
 Categories=Utility;
 Keywords=captura;capture;nota;note;mdm;
