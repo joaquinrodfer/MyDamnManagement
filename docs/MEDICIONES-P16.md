@@ -83,24 +83,38 @@ Medido con Chrome (CDP) sobre el panel real: se entra, se navega a `/` y un
 | Filas en el DOM | 3.732,8 ms | 2.100 ms |
 | **Árbol pintado** (rAF después) | **3.733,4 ms** | ~2.100 ms |
 
-Lectura: de los 3,7 s, unos 2,2 s son la carga del propio panel (su JS y el del
-editor, servidos desde el `9p` de Windows en esta máquina) y **~1,5 s son las
-12.000 filas**: 0,36 s de descarga + parseo del JSON y ~0,35 s de crear 12.000
-nodos (`renderTreeNode` construye el subárbol entero, esté plegado o no). Con 12
-notas el árbol aparece en 2,1 s: el coste fijo del panel es la mitad del total.
+Lectura, y hay que separar dos cosas que se suman en la misma cifra:
+
+- **Carga del panel** (su `app.js` y el del editor, servidos desde el `9p` de
+  Windows en esta máquina): 2,3 s con 12.001 notas y 1,1 s con 12. No depende
+  del número de notas — depende del montaje y de la máquina —, y es la mitad
+  larga del total.
+- **Lo que cuesta tener 12.000 notas**, medido entre las dos ejecuciones:
+  la petición del árbol pasa de 288 ms a 356 ms (1,7 MB frente a 2 KB) y, desde
+  que llega la respuesta hasta que las 12.000 filas están en el DOM, ~0,35 s
+  (con 12 filas es inapreciable). En total, **entre 0,4 y 0,7 s** atribuibles a
+  las notas; el resto de la diferencia entre 3,7 s y 2,1 s es que la carga del
+  panel salió más lenta en la ejecución grande.
+
+`renderTreeNode` construye el subárbol entero, esté plegado o no: con 12.000
+notas hay 12.000 `<div class="tree-row">` en el DOM y otros tantos nodos
+alrededor. Eso es lo que no escala, y es interfaz, no API.
 
 ### Decisión: **no se pagina `/pages` ni el árbol**
 
 - La respuesta del árbol son **1,7 MB**, no "unos pocos MB"; el endpoint ligero
   que la tarjeta proponía como salida ya existe y es el que usa el panel.
 - El tiempo hasta pintar (3,7 s) supera los 2 s de la tarjeta, pero **paginar no
-  lo arregla**: el coste está en los nodos del DOM y en la carga del panel, no
-  en el JSON. Paginar el árbol obligaría a reescribir la navegación entera
-  (mover una nota a una rama que aún no se ha cargado, plegar/desplegar, el
-  buscador del árbol, el arrastrar y soltar) para ahorrar 0,36 s de red.
-- Lo que sí arreglaría el medio segundo largo del pintado es el renderizado
-  (virtualizar filas o pintar solo las ramas desplegadas), y eso es un cambio
-  del panel, no de la API. Queda como deuda anotada, no como parte de P16.
+  lo arregla**: de esos 3,7 s, 2,3 s son la carga del panel (igual con 12 notas)
+  y lo atribuible a las 12.000 notas son 0,4-0,7 s, de los que 0,36 s son la
+  descarga del JSON. Paginar el árbol obligaría a reescribir la navegación
+  entera (mover una nota a una rama que aún no se ha cargado, plegar/desplegar,
+  el buscador del árbol, el arrastrar y soltar) para ahorrar una fracción de
+  segundo.
+- Lo que sí arreglaría el renderizado es virtualizar las filas o pintar solo
+  las ramas desplegadas, y eso es un cambio del panel, no de la API. Queda como
+  deuda anotada, no como parte de P16: la tarjeta pedía medir antes de tocar, y
+  la medida dice que el problema no está en `/pages`.
 
 Por tanto: `/pages` se queda como está (paginarlo rompería el contrato con los
 scripts y no ahorra nada al panel) y `/pages/tree` también.
