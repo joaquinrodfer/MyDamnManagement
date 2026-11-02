@@ -19,8 +19,12 @@ Los tests se autentican por HTTP (ver `iniciar_sesion` en `conftest.py`): nada
 de saltarse el middleware, ni siquiera para hablar del middleware.
 """
 
+import json
+import os
 import re
+import subprocess
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -441,3 +445,142 @@ def test_los_iconos_publicos_no_abren_el_panel(client):
         assert client.get(ruta).status_code == 401, ruta
     # Un icono que no existe sí es público: 404, nunca el panel.
     assert client.get("/icons/no-existe.png").status_code == 404
+
+
+# --------------------------------------------------------------------------
+# 10. el script de Linux, ejecutado como lo lanza el escritorio
+# --------------------------------------------------------------------------
+#
+# Los dos defectos que se arreglaron aquí solo se ven ejecutando el script tal y
+# como lo lanza un atajo: la entrada en /dev/null (no hay terminal) y una
+# `MDM_URL` copiada del navegador, con barra final. Se ejecuta sin red: `curl`,
+# `zenity` y `notify-send` son dobles en un PATH temporal que lo apuntan todo.
+
+SCRIPT_LINUX = (
+    Path(__file__).resolve().parents[2] / "tools" / "capture" / "linux" / "captura.sh"
+)
+
+
+def _doble(carpeta, nombre, cuerpo):
+    ruta = carpeta / nombre
+    ruta.write_text("#!/bin/sh\n" + cuerpo, encoding="utf-8")
+    ruta.chmod(0o755)
+    return ruta
+
+
+def _correr_captura(tmp_path, *, entorno, entrada=None):
+    """Lanza `captura.sh` con dobles. Devuelve (resultado, llamadas, enviado)."""
+    bin_falso = tmp_path / "bin"
+    bin_falso.mkdir()
+    registro = tmp_path / "llamadas.log"
+    cuerpo = tmp_path / "cuerpo.json"
+
+    _doble(
+        bin_falso,
+        "notify-send",
+        'printf "notify-send %s\\n" "$*" >> "@REGISTRO@"\n'.replace(
+            "@REGISTRO@", str(registro)
+        ),
+    )
+    _doble(
+        bin_falso,
+        "zenity",
+        "\n".join(
+            [
+                'printf "zenity %s\\n" "$*" >> "@REGISTRO@"',
+                'for arg in "$@"; do',
+                '  if [ "$arg" = "--entry" ]; then printf "una idea del cuadro"; fi',
+                "done",
+                "",
+            ]
+        ).replace("@REGISTRO@", str(registro)),
+    )
+    _doble(
+        bin_falso,
+        "curl",
+        "\n".join(
+            [
+                'printf "curl %s\\n" "$*" >> "@REGISTRO@"',
+                'cat > "@CUERPO@"',
+                "echo '{\"id\":\"x\",\"title\":\"Captura de prueba\",\"path\":\"Bandeja/Captura de prueba.md\"}'",
+                "echo 201",
+                "",
+            ]
+        )
+        .replace("@REGISTRO@", str(registro))
+        .replace("@CUERPO@", str(cuerpo)),
+    )
+
+    medio = {"PATH": str(bin_falso) + ":" + os.environ.get("PATH", "/usr/bin:/bin")}
+    medio.update(entorno)
+    if entrada is None:
+        resultado = subprocess.run(
+            ["sh", str(SCRIPT_LINUX)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(tmp_path),
+            env=medio,
+        )
+    else:
+        resultado = subprocess.run(
+            ["sh", str(SCRIPT_LINUX)],
+            input=entrada,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(tmp_path),
+            env=medio,
+        )
+
+    llamadas = registro.read_text(encoding="utf-8") if registro.exists() else ""
+    enviado = json.loads(cuerpo.read_text(encoding="utf-8")) if cuerpo.exists() else None
+    return resultado, llamadas, enviado
+
+
+def test_el_script_de_linux_pregunta_aunque_la_entrada_llegue_en_dev_null(tmp_path):
+    """El atajo de GNOME y `mdm-captura.desktop` (Terminal=false) dan stdin en
+    `/dev/null`: con `[ -t 0 ]` el script leía `cat` vacío y contestaba «No hay
+    nada que apuntar» **sin abrir nunca el cuadro**, así que el atajo no servía
+    para nada. La condición es «¿hay texto?», no «¿es un terminal?»."""
+    resultado, llamadas, enviado = _correr_captura(
+        tmp_path,
+        entorno={"MDM_TOKEN": "token-de-prueba", "MDM_URL": "http://127.0.0.1:9"},
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    assert "zenity --entry" in llamadas, llamadas
+    assert enviado == {"text": "una idea del cuadro", "source": "cli"}
+    assert "http://127.0.0.1:9/capture" in llamadas
+
+
+def test_el_script_de_linux_sigue_leyendo_la_tuberia_sin_abrir_el_cuadro(tmp_path):
+    """`printf 'idea' | captura.sh` no tiene que abrir ninguna ventana."""
+    resultado, llamadas, enviado = _correr_captura(
+        tmp_path,
+        entorno={"MDM_TOKEN": "token-de-prueba", "MDM_URL": "http://127.0.0.1:9"},
+        entrada="desde una tubería\n",
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    assert "zenity --entry" not in llamadas, llamadas
+    assert enviado == {"text": "desde una tubería", "source": "cli"}
+
+
+def test_el_script_de_linux_normaliza_las_barras_finales_de_mdm_url(tmp_path):
+    """Copiar `http://localhost:8000/` no puede acabar en `//capture`.
+
+    El middleware contesta 403 «ese token solo sirve para /capture» y el aviso
+    culpaba al token: el usuario revocaba uno bueno y seguía igual.
+    """
+    resultado, llamadas, _ = _correr_captura(
+        tmp_path,
+        entorno={"MDM_TOKEN": "token-de-prueba", "MDM_URL": "http://127.0.0.1:8000///"},
+        entrada="con barra final",
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    assert "http://127.0.0.1:8000/capture" in llamadas, llamadas
+    assert "//capture" not in llamadas, llamadas
+

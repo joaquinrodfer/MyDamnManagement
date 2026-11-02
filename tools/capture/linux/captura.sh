@@ -14,7 +14,7 @@
 #   MDM_URL    opcional. Por defecto http://127.0.0.1:8000
 #
 # Uso:
-#   captura.sh                  # cuadro de texto (o stdin si no hay ninguno)
+#   captura.sh                  # cuadro de texto (o stdin si trae texto)
 #   printf 'idea' | captura.sh  # desde una tubería
 #   captura.sh "idea"           # el texto como argumento
 #
@@ -25,6 +25,13 @@ set -u
 
 URL="${MDM_URL:-http://127.0.0.1:8000}"
 TOKEN="${MDM_TOKEN:-}"
+
+# La URL del navegador se copia con barra final: «$URL/capture» saldría
+# «//capture», que el middleware no reconoce como `/capture` y contesta 403 con
+# un mensaje que culpa al token. Se quitan las barras finales.
+while [ -n "$URL" ] && [ "${URL%/}" != "$URL" ]; do
+  URL="${URL%/}"
+done
 
 # ---------------------------------------------------------------- avisos
 # Un fallo no se puede quedar en la consola: cuando esto lo lanza un atajo, no
@@ -103,14 +110,26 @@ campo_json() {
 }
 
 # ------------------------------------------------------------------ el texto
+# De dónde sale, en este orden: el argumento, la entrada estándar y, si no hay
+# ni una cosa ni la otra, el cuadro de texto.
+#
+# No se pregunta «¿es la entrada un terminal?» sino «¿trae texto?»: un atajo de
+# GNOME y `mdm-captura.desktop` (Terminal=false) lanzan el script con la entrada
+# en /dev/null, así que con la condición del terminal no había ni cuadro ni
+# texto: solo «No hay nada que apuntar» y la sensación de que el atajo no va.
 if [ "$#" -gt 0 ]; then
   texto=$*
-elif [ -t 0 ]; then
-  texto=$(pedir_texto)
-  estado=$?
-  [ "$estado" -eq 0 ] || exit "$estado"    # cancelar (1) no es un fallo
 else
-  texto=$(cat)
+  if [ -t 0 ]; then
+    texto=''                # un terminal se quedaría esperando; se pregunta
+  else
+    texto=$(cat 2>/dev/null)  # tubería, fichero… y /dev/null, que vuelve vacío
+  fi
+  if [ -z "$texto" ]; then
+    texto=$(pedir_texto)
+    estado=$?
+    [ "$estado" -eq 0 ] || exit "$estado"    # cancelar (1) no es un fallo
+  fi
 fi
 
 if [ -z "$(printf '%s' "$texto" | tr -d '[:space:]')" ]; then
