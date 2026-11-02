@@ -1545,8 +1545,15 @@ function locateSuggestions(state) {
  * y no pasaba nada. Por eso Enter y Espacio se atienden aquí mismo, con
  * `preventDefault()` + `stopPropagation()`: la acción sale una sola vez y
  * es la misma con ratón que con teclado.
+ *
+ * El callback recibe `(id, { hadFocus })`: `hadFocus` es true cuando el botón
+ * era el elemento activo (teclado). La app lo usa para devolver el foco al
+ * editor después de decidir, porque el widget entero se destruye y el foco se
+ * caía a BODY. Con ratón el botón nunca llega a enfocarse (el `mousedown` de
+ * arriba se neutraliza), así que `hadFocus` es false y el foco no se toca.
  */
 function wireSuggestionButton(button, callback, id) {
+  const decide = () => callback?.(id, { hadFocus: document.activeElement === button });
   // El mousedown solo se neutraliza: así el clic no mueve el cursor dentro
   // del texto ni roba la selección, y el documento que se revisa no cambia.
   button.addEventListener("mousedown", (event) => {
@@ -1557,12 +1564,12 @@ function wireSuggestionButton(button, callback, id) {
     if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
     event.preventDefault();
     event.stopPropagation();
-    callback?.(id);
+    decide();
   });
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    callback?.(id);
+    decide();
   });
 }
 

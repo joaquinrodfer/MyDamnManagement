@@ -910,9 +910,9 @@ const SUGGESTION_STATUS_LABEL = {
 
 let suggestionsPanelEl = null;
 
-/** El panel es `position:fixed` y cuelga de body, así que no se va con
- * #main: al cambiar de página hay que quitarlo a mano (o se quedaría
- * flotando, apuntando a la nota anterior). */
+/** El panel es una columna de .layout, fuera de #main: al cambiar de página
+ * hay que quitarlo a mano (si no, seguiría ahí, apuntando a la nota
+ * anterior). */
 function closeSuggestionsPanel() {
   if (suggestionsPanelEl) {
     suggestionsPanelEl.remove();
@@ -1500,7 +1500,9 @@ function renderNote(page, backlinks) {
   panel.className = "note-suggestions-panel";
   panel.hidden = true;
   panel.setAttribute("aria-label", "Sugerencias de agentes");
-  document.body.appendChild(panel);
+  // Dentro de .layout (a la derecha de #main y desplazándolo), no colgando de
+  // body: así el panel reserva su sitio en vez de tapar el texto.
+  (document.querySelector(".layout") || document.body).appendChild(panel);
   suggestionsPanelEl = panel;
 
   sugBtn.addEventListener("click", () => {
@@ -1515,8 +1517,10 @@ function renderNote(page, backlinks) {
   // por identidad (SuggestionWidget.eq) para no reconstruir los widgets en
   // cada repintado.
   const suggestionCallbacks = {
-    onAccept: (id) => acceptSuggestion(id),
-    onReject: (id) => rejectSuggestion(id),
+    // `meta.hadFocus` dice si quien decidió era el propio botón (Tab/Enter o
+    // Espacio); ver wireSuggestionButton en entry.js.
+    onAccept: (id, meta) => acceptSuggestion(id, meta),
+    onReject: (id, meta) => rejectSuggestion(id, meta),
     // El editor avisa cuando es una EDICIÓN la que desancla algo. Sin esto,
     // `placedIds` era la foto de cuando se cargó la nota: si el `old_text`
     // desaparecía del texto, la marca se iba (bien) pero el panel seguía
@@ -1755,11 +1759,29 @@ function renderNote(page, backlinks) {
     }
   }
 
+  /** Devuelve el foco al editor cuando la decisión se tomó desde un botón
+   * del texto y el widget que lo tenía se ha destruido por el camino.
+   *
+   * Al aceptar la nota entera se repinta (editor nuevo) y al rechazar se
+   * recalculan las decoraciones: en los dos casos el ✓/✗ enfocado desaparece y
+   * `document.activeElement` se caía a BODY, así que el siguiente Tab
+   * aterrizaba en el contador del panel en vez de seguir en el texto. Solo se
+   * devuelve si el botón tenía el foco de verdad (con ratón no lo tiene: el
+   * `mousedown` del widget se neutraliza) y si nadie más se lo ha llevado
+   * mientras se decidía. */
+  function restoreEditorFocus(meta) {
+    if (!meta?.hadFocus) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    if (state.current?.kind !== "note" || state.current.id !== page.id) return;
+    state.editor?.focus?.();
+  }
+
   /** Aceptar = el servidor aplica el parche al `.md`. Aquí no basta con
    * quitar la marca: la nota se relee del servidor y se repinta con el texto
    * nuevo. Antes se fuerza el guardado pendiente, para que el parche se
    * aplique sobre el mismo texto que se está viendo. */
-  async function acceptSuggestion(id) {
+  async function acceptSuggestion(id, meta) {
     if (state.noteSession !== session) return;
     if (dirty) {
       state.flushPendingSave?.();
@@ -1778,6 +1800,7 @@ function renderNote(page, backlinks) {
             : "La sugerencia ya no encaja en el texto (el ancla desapareció). Se ha recargado la lista.",
         );
         await loadSuggestions();
+        restoreEditorFocus(meta);
         return;
       }
       reportError("No se pudo aceptar la sugerencia", e);
@@ -1785,11 +1808,12 @@ function renderNote(page, backlinks) {
     }
     if (state.noteSession !== session) return;
     await reloadNoteFromDisk(page.id);
+    restoreEditorFocus(meta);
   }
 
   /** Rechazar no toca el `.md`: basta con que el editor deje de pintarla y
    * el panel la mueva a "ya decididas". */
-  async function rejectSuggestion(id) {
+  async function rejectSuggestion(id, meta) {
     if (state.noteSession !== session) return;
     try {
       await api(`/suggestions/${id}/reject`, { method: "POST" });
@@ -1797,12 +1821,14 @@ function renderNote(page, backlinks) {
       if (e.status === 409) {
         showError("Esa sugerencia ya estaba decidida. Se ha recargado la lista.");
         await loadSuggestions();
+        restoreEditorFocus(meta);
         return;
       }
       reportError("No se pudo rechazar la sugerencia", e);
       return;
     }
     await loadSuggestions();
+    restoreEditorFocus(meta);
   }
 
   async function sendReply(id, input, button) {

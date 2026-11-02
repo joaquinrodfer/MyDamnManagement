@@ -201,8 +201,10 @@
   }
   /* Colapsar del todo (display:none) en vez de width:0 -- así no hay que
      lidiar con que el contenido interno (búsqueda, árbol) se reajuste o se
-     desborde durante la transición; solo aparece/desaparece. */
-  .layout.sidebar-collapsed aside { display: none; }
+     desborde durante la transición; solo aparece/desaparece.
+     El :not() es por el panel de sugerencias, que también es un <aside> pero
+     es una columna propia (ver más abajo): colapsar la barra no lo esconde. */
+  .layout.sidebar-collapsed > aside:not(.note-suggestions-panel) { display: none; }
 
   main {
     flex: 1;
@@ -508,10 +510,9 @@
 
   /* ---------- sugerencias: contador y panel lateral (P10c) ----------
      El contador vive en .note-topbar-right, en fila con Índice, Exportar y
-     Backlinks. El panel cuelga de body porque es lateral (position:fixed) y
-     solo enseña lo que el editor no puede pintar en su sitio: las
-     sugerencias que ya no encajan en el texto y las ya decididas, con su
-     hilo de respuestas. */
+     Backlinks. El panel es una columna más de .layout y solo enseña lo que el
+     editor no puede pintar en su sitio: las sugerencias que ya no encajan en
+     el texto y las ya decididas, con su hilo de respuestas. */
   .note-suggestions-counter {
     font-family: var(--font-mono);
     font-size: 11.5px;
@@ -526,12 +527,15 @@
   .note-suggestions-counter[aria-expanded="true"] { color: var(--accent-ink); background: var(--accent-soft); }
 
   .note-suggestions-panel {
-    position: fixed;
-    top: 56px;
-    right: 16px;
-    bottom: 16px;
-    z-index: 850;
-    width: min(380px, calc(100vw - 32px));
+    /* Columna del layout, no flotante. Con position:fixed se pintaba ENCIMA
+       de #main y tapaba los ✓/✗ de las sugerencias que caen cerca del margen
+       derecho: a 1280 px, los cuatro botones de una nota con dos propuestas, y
+       el clic en esas coordenadas acababa en el panel. Ocupando su sitio en
+       .layout el texto se recoloca a su izquierda y no queda ningún widget
+       debajo a ningún ancho. */
+    flex: 0 0 auto;
+    width: clamp(280px, 26vw, 360px);
+    margin: 8px 16px 16px 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
