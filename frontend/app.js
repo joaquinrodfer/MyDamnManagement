@@ -19,6 +19,8 @@ const state = {
   historyPos: -1, // índice de "dónde estamos" dentro de state.history
   noteSession: null, // nota abierta: qué queda sin guardar y cómo refrescarla (P8, /events)
   repaintAuthor: null, // repinta «Creado por …» de la nota abierta cuando llega /auth/me (P11b)
+  inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
+  inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
 };
 
 // ---------------------------------------------------------------- helpers
@@ -614,6 +616,10 @@ function initUserChip() {
     closeMenu();
     openUsersDialog();
   });
+  menu.querySelector('[data-action="tokens"]').addEventListener("click", () => {
+    closeMenu();
+    openTokensDialog();
+  });
   menu.querySelector('[data-action="logout"]').addEventListener("click", () => {
     closeMenu();
     logOut();
@@ -862,15 +868,379 @@ document.getElementById("btn-close-users")?.addEventListener("click", () => {
   usersDialog.close();
 });
 
+// ------------------------------------------------- bandeja de capturas (P13)
+//
+// Lo que entra por un atajo del sistema (`POST /capture`, ver tools/capture/)
+// cae en `Bandeja/` y no es todavía una página del wiki. La sección de arriba
+// de la barra lateral lo enseña solo si hay algo —«Bandeja (0)» sería ruido— y
+// cada nota tiene su «Procesar»: elegir carpeta (o crear una) y moverla, que es
+// el PATCH de `parent_id` de siempre. El árbol no repite estas notas.
+
+/** Pide la bandeja y la pinta. La llama `loadTree()`, así que un evento del
+ * vigilante (una captura desde fuera) la refresca sola. */
+async function loadInbox() {
+  let bandeja;
+  try {
+    bandeja = await api("/inbox");
+  } catch (e) {
+    if (e?.status === 401) return; // ya se está yendo al login
+    reportError("No se pudo cargar la bandeja", e);
+    return;
+  }
+  state.inbox = bandeja;
+  state.inboxIds = new Set((bandeja.pages || []).map((p) => p.id));
+  paintInbox();
+}
+
+function paintInbox() {
+  const section = document.getElementById("inbox-section");
+  const list = document.getElementById("inbox-list");
+  const label = document.getElementById("inbox-label");
+  if (!section || !list || !label) return;
+
+  const { count = 0, pages = [] } = state.inbox || {};
+  // Vacía: la sección no existe (ni un «Bandeja (0)» que no dice nada).
+  section.hidden = count === 0;
+  if (count === 0) {
+    list.textContent = "";
+    list.hidden = true;
+    return;
+  }
+
+  label.textContent = `Bandeja (${count})`;
+  list.textContent = "";
+  pages.forEach((page) => list.appendChild(inboxRow(page)));
+  list.hidden = !inboxAbierta;
+}
+
+let inboxAbierta = false;
+
+function inboxRow(page) {
+  const row = document.createElement("div");
+  row.className = "inbox-item";
+  row.setAttribute("role", "listitem");
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "inbox-open";
+  open.title = `Abrir «${page.title}»`;
+  const icon = document.createElement("span");
+  icon.className = "type-icon";
+  paintPageIcon(icon, "note", page.icon);
+  const title = document.createElement("span");
+  title.className = "inbox-title";
+  title.textContent = page.title || "Sin título";
+  open.append(icon, title);
+  open.addEventListener("click", () => goTo("note", page.id));
+
+  const process = document.createElement("button");
+  process.type = "button";
+  process.className = "inbox-process";
+  process.textContent = "Procesar";
+  process.setAttribute("aria-label", `Procesar «${page.title}»`);
+  process.addEventListener("click", () => openProcesarDialog(page));
+
+  row.append(open, process);
+  return row;
+}
+
+function initInbox() {
+  const toggle = document.getElementById("btn-inbox");
+  const list = document.getElementById("inbox-list");
+  if (!toggle || !list) return;
+  toggle.addEventListener("click", () => {
+    inboxAbierta = !inboxAbierta;
+    list.hidden = !inboxAbierta;
+    toggle.setAttribute("aria-expanded", inboxAbierta ? "true" : "false");
+  });
+  // Elegir una página o escribir una nueva son excluyentes: lo último que se
+  // toca es lo que manda, y el otro campo se vacía para que no parezca que se
+  // van a hacer las dos cosas.
+  procesarNew?.addEventListener("input", () => {
+    if (procesarNew.value.trim()) procesarSelect.value = "";
+  });
+  procesarSelect?.addEventListener("change", () => {
+    if (procesarSelect.value) procesarNew.value = "";
+  });
+}
+
+// ------------------------------------------------------- diálogo: procesar
+
+const procesarDialog = document.getElementById("dialog-procesar");
+const procesarTitle = document.getElementById("proc-title");
+const procesarSelect = document.getElementById("proc-parent");
+const procesarNew = document.getElementById("proc-new");
+const procesarNote = document.getElementById("proc-note");
+const PROCESAR_NOTE = procesarNote?.textContent || "";
+let procesarPage = null;
+
+/** ¿`id` cuelga (a cualquier profundidad) de `ancestro`? */
+function esDescendiente(id, ancestro) {
+  let node = state.pagesById.get(id);
+  const seen = new Set();
+  while (node?.parent_id && !seen.has(node.id)) {
+    if (node.parent_id === ancestro) return true;
+    seen.add(node.id);
+    node = state.pagesById.get(node.parent_id);
+  }
+  return false;
+}
+
+/** Las páginas que pueden hacer de carpeta: notas (no bases ni filas), sin la
+ * que se mueve, sin sus descendientes —el backend rechaza el ciclo— y sin las
+ * otras notas de la bandeja, que tampoco están clasificadas todavía. Por
+ * título, que es como se busca en la lista. */
+function carpetasPosibles(pageId) {
+  return [...state.pagesById.values()]
+    .filter(
+      (n) =>
+        n.type === "note" &&
+        n.id !== pageId &&
+        !state.inboxIds.has(n.id) &&
+        !esDescendiente(n.id, pageId),
+    )
+    .sort((a, b) => (a.title || "").localeCompare(b.title || "", "es"));
+}
+
+function openProcesarDialog(page) {
+  if (!procesarDialog) return;
+  procesarPage = page;
+  procesarTitle.textContent = page.title || "Sin título";
+  procesarSelect.textContent = "";
+  const empezar = document.createElement("option");
+  empezar.value = "";
+  empezar.textContent = "— elige una página —";
+  procesarSelect.appendChild(empezar);
+  carpetasPosibles(page.id).forEach((node) => {
+    const option = document.createElement("option");
+    option.value = node.id;
+    option.textContent = node.title || "Sin título";
+    procesarSelect.appendChild(option);
+  });
+  procesarNew.value = "";
+  setFormNote(procesarNote, PROCESAR_NOTE);
+  const boton = document.getElementById("btn-do-procesar");
+  if (boton) boton.disabled = false;
+  procesarDialog.showModal();
+  procesarSelect.focus();
+}
+
+async function procesarNota() {
+  const page = procesarPage;
+  if (!page) return;
+  const nueva = procesarNew.value.trim();
+  let parentId = procesarSelect.value || null;
+  if (!nueva && !parentId) {
+    return setFormNote(
+      procesarNote,
+      "Elige una página o escribe el nombre de una nueva.",
+      "error",
+    );
+  }
+
+  const boton = document.getElementById("btn-do-procesar");
+  if (boton) boton.disabled = true;
+  setFormNote(procesarNote, "Moviendo…");
+  try {
+    if (nueva) {
+      // Una carpeta nueva es una página nueva en la raíz: su carpeta de hijas
+      // es donde acaba la nota (la jerarquía del vault son carpetas).
+      const creada = await api("/pages", {
+        method: "POST",
+        body: JSON.stringify({ title: nueva }),
+      });
+      parentId = creada.id;
+    }
+    await api(`/pages/${page.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ parent_id: parentId }),
+    });
+    procesarDialog.close();
+    // El árbol refrescado (incluida la bandeja, que pierde esta nota) y
+    // después la nota abierta, ya en su sitio.
+    await loadTree();
+    goTo("note", page.id);
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(procesarNote, describeError(e), "error");
+  } finally {
+    if (boton) boton.disabled = false;
+  }
+}
+
+// --------------------------------------------------- diálogo: tokens (P13)
+
+const tokensDialog = document.getElementById("dialog-tokens");
+const tokensNote = document.getElementById("tokens-note");
+const tokensList = document.getElementById("tokens-list");
+const newTokenForm = document.getElementById("form-new-token");
+const newTokenName = document.getElementById("nt-name");
+const newTokenNote = document.getElementById("nt-note");
+const NEW_TOKEN_NOTE = newTokenNote?.textContent || "";
+const tokenReveal = document.getElementById("token-reveal");
+const TOKENS_NOTE = tokensNote?.textContent || "";
+
+/** Fecha legible de un `last_used_at`, o «nunca usado». */
+function formatWhen(iso) {
+  if (!iso) return "nunca usado";
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return iso;
+  return when.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
+}
+
+function renderTokens(tokens) {
+  if (!tokensList) return;
+  tokensList.textContent = "";
+  if (!tokens.length) {
+    const vacio = document.createElement("div");
+    vacio.className = "search-empty";
+    vacio.textContent = "Todavía no hay ningún token de captura.";
+    tokensList.appendChild(vacio);
+    return;
+  }
+  tokens.forEach((token) => {
+    const row = document.createElement("div");
+    row.className = "token-row";
+
+    const name = document.createElement("span");
+    name.className = "token-name";
+    name.textContent = token.name || "Sin nombre";
+
+    const meta = document.createElement("span");
+    meta.className = "token-meta";
+    meta.textContent = `Último uso: ${formatWhen(token.last_used_at)}`;
+    meta.title = `Creado el ${formatWhen(token.created_at)}`;
+
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "btn token-revoke";
+    revoke.textContent = "Revocar";
+    revoke.setAttribute("aria-label", `Revocar el token «${token.name || "sin nombre"}»`);
+    revoke.addEventListener("click", () => revocarToken(token, revoke));
+
+    row.append(name, meta, revoke);
+    tokensList.appendChild(row);
+  });
+}
+
+async function loadTokens() {
+  try {
+    renderTokens(await api("/auth/tokens"));
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(tokensNote, describeError(e), "error");
+  }
+}
+
+async function openTokensDialog() {
+  if (!tokensDialog) return;
+  if (tokenReveal) tokenReveal.hidden = true;
+  if (newTokenForm) newTokenForm.reset();
+  setFormNote(tokensNote, TOKENS_NOTE);
+  setFormNote(newTokenNote, NEW_TOKEN_NOTE);
+  tokensDialog.showModal();
+  await loadTokens();
+}
+
+async function revocarToken(token, boton) {
+  boton.disabled = true;
+  try {
+    await api(`/auth/tokens/${token.id}`, { method: "DELETE" });
+    // El secreto que había en pantalla ya no vale para nada: fuera.
+    if (tokenReveal) {
+      tokenReveal.hidden = true;
+      const input = document.getElementById("token-value");
+      if (input) input.value = "";
+    }
+    setFormNote(
+      tokensNote,
+      `Token «${token.name || "sin nombre"}» revocado: el atajo que lo usaba deja de funcionar.`,
+      "ok",
+    );
+    await loadTokens();
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(tokensNote, describeError(e), "error");
+    boton.disabled = false;
+  }
+}
+
+newTokenForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const boton = document.getElementById("btn-create-token");
+  if (boton) boton.disabled = true;
+  setFormNote(newTokenNote, "Creando…");
+  try {
+    const creado = await api("/auth/tokens", {
+      method: "POST",
+      body: JSON.stringify({ name: newTokenName.value.trim() || null }),
+    });
+    // El secreto se enseña UNA vez: en la base solo queda su SHA-256, así que
+    // esta pantalla es la única ocasión de copiarlo.
+    if (tokenReveal) {
+      const input = document.getElementById("token-value");
+      if (input) input.value = creado.token;
+      tokenReveal.hidden = false;
+      input?.select();
+    }
+    newTokenForm.reset();
+    setFormNote(newTokenNote, NEW_TOKEN_NOTE);
+    await loadTokens();
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(newTokenNote, describeError(e), "error");
+  } finally {
+    if (boton) boton.disabled = false;
+  }
+});
+
+document.getElementById("btn-copy-token")?.addEventListener("click", async (event) => {
+  const input = document.getElementById("token-value");
+  const boton = event.currentTarget;
+  if (!input) return;
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch {
+    // Sin permiso de portapapeles (o sin contexto seguro): se selecciona para
+    // que un ⌘C/Ctrl+C a mano siga sirviendo.
+    input.select();
+    document.execCommand?.("copy");
+  }
+  boton.textContent = "Copiado";
+  setTimeout(() => {
+    boton.textContent = "Copiar";
+  }, 1500);
+});
+
+document.getElementById("btn-close-tokens")?.addEventListener("click", () => {
+  tokensDialog.close();
+});
+
+document.getElementById("btn-cancel-procesar")?.addEventListener("click", () => {
+  procesarDialog.close();
+});
+
+document.getElementById("btn-do-procesar")?.addEventListener("click", procesarNota);
+
+initInbox();
+
 // ------------------------------------------------------------------ árbol
 
 async function loadTree() {
   try {
+    // La bandeja (P13) se refresca con el árbol: es el mismo momento en el que
+    // puede haber cambiado (un `.md` nuevo, una captura desde un atajo).
+    await loadInbox();
     const tree = await api("/pages/tree");
     state.pagesById.clear();
     indexTree(tree);
 
-    const notes = tree.filter((n) => n.type !== "database");
+    // Las notas de la bandeja no se repiten aquí: ya están en su sección. Una
+    // que tenga hijas se queda en el árbol —esconderla se llevaría por delante
+    // su subárbol— y entonces sale en los dos sitios, que es lo menos malo.
+    const notes = tree.filter(
+      (n) => n.type !== "database" && !(state.inboxIds.has(n.id) && !n.children?.length),
+    );
     const dbs = tree.filter((n) => n.type === "database");
 
     const treeContainer = document.getElementById("tree-container");
