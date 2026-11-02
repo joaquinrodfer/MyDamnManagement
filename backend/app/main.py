@@ -11,6 +11,9 @@ from app import agent_auth, auth, capture_tokens, login_page
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
+from app.startup import ERROR as STARTUP_ERROR
+from app.startup import STARTING as STARTUP_STARTING
+from app.startup import startup_index
 from app.routers import (
     agent,
     capture,
@@ -272,9 +275,105 @@ async def user_token_is_scoped(request: Request, call_next):
     return await call_next(request)
 
 
+def _es_puerta_o_estatico(path: str) -> bool:
+    """¿Esta ruta se puede servir con el índice todavía a medias?
+
+    Solo lo que no lee ni escribe el índice: `/health` (que es el que dice
+    cómo va), `/login` (la pantalla de entrada, que se pide justo cuando no
+    hay nada que enseñar) y los ficheros del panel --sus `.js`, `.css`,
+    iconos y el `index.html` de `/`--, que son estáticos puros. El resto de
+    rutas de la API tocan el índice y esperan.
+
+    La comprobación es «¿existe ese fichero en `frontend/`?», no una lista de
+    nombres: una lista se queda corta en cuanto se añade un asset, y lo que
+    sobra (una ruta nueva que no es un fichero) cae del lado seguro —503
+    hasta que el índice esté listo--.
+    """
+    if path in ("/", "/health", "/login"):
+        return True
+    rel = path.lstrip("/")
+    partes = Path(rel).parts
+    if not rel or ".." in partes:
+        return False
+    return (Path(settings.frontend_dir) / rel).is_file()
+
+
+def _no_listo(foto: dict) -> JSONResponse:
+    """`503` con el progreso, mientras el índice se construye (o si falló).
+
+    Se elige `503` y no esperar dentro de la petición: con un vault de 12.000
+    notas el reindexado dura minutos, y sujetar un hilo del pool por petición
+    (el panel pide varias al abrirse) acaba agotando los workers de uvicorn
+    para no servir nada mejor. Y nunca se devuelve lo que hay: la lista de
+    páginas de un índice a medio construir está vacía o falta por la mitad, y
+    eso el panel no lo puede distinguir de un vault vacío.
+    """
+    if foto["status"] == STARTUP_STARTING:
+        percent = foto["percent"]
+        donde = f" ({percent} %)" if percent is not None else ""
+        detalle = (
+            f"el índice se está construyendo{donde}: {foto['phase']}. "
+            "Vuelve en unos segundos."
+        )
+    else:
+        # Un índice que no se pudo construir no se arregla con un reintento de
+        # la petición: el arranque siguiente lo vuelve a intentar desde cero.
+        detalle = (
+            "el índice no está disponible: "
+            + (foto["error"] or "el arranque del índice falló")
+            + " (reinicia el contenedor para reintentar el indexado)"
+        )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": foto["status"],
+            "detail": detalle,
+            "progress": {
+                "phase": foto["phase"],
+                "done": foto["done"],
+                "total": foto["total"],
+                "percent": foto["percent"],
+                "elapsed_seconds": foto["elapsed_seconds"],
+            },
+        },
+        # En la cabecera, que es donde lo mira un cliente HTTP: son los
+        # segundos que puede tardar en volver a preguntar sin martillear.
+        headers={"Retry-After": "5"},
+    )
+
+
+@app.middleware("http")
+async def index_is_ready(request: Request, call_next):
+    """Mientras el índice se construye (P16), la API responde `503`.
+
+    Es el middleware de MÁS FUERA a propósito: declarado el último, Starlette
+    lo envuelve por fuera de los demás, así que el 503 no depende de la
+    sesión, ni del token de agente, ni de que el índice se pueda ni abrir.
+
+    Antes de P16 el servidor no escuchaba hasta terminar el reindexado: la
+    petición del `healthcheck` de Docker ni siquiera conectaba y el contenedor
+    parecía caído. Ahora escucha desde el primer segundo, dice la verdad por
+    `/health` y, en las rutas que no pueden contestar bien todavía, contesta
+    que no puede --con el progreso y un `Retry-After`-- en vez de una lista a
+    medias.
+    """
+    foto = startup_index.snapshot(stall_seconds=settings.startup_stall_seconds)
+    if foto["status"] in (STARTUP_STARTING, STARTUP_ERROR):
+        if _es_puerta_o_estatico(request.url.path):
+            return await call_next(request)
+        return _no_listo(foto)
+    return await call_next(request)
+
+
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
 # los tests y el apagado puedan pararlo sin depender del objeto `app`.
 watcher: Optional[VaultWatcher] = None
+
+# El reindexado de arranque va en un hilo (P16): si el proceso se apaga antes
+# de que termine, el hilo puede terminar después y llamar a `_start_watcher`.
+# Esta bandera es lo que evita que un vigilante nazca en un proceso que ya se
+# está apagando (y que sondee un vault que ya no le toca).
+_shutting_down = False
 
 
 def _index_has_no_notes(conn) -> bool:
@@ -285,16 +384,34 @@ def _index_has_no_notes(conn) -> bool:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    # No hay Alembic ni Postgres: el esquema del índice se crea o se migra
-    # aquí mismo (`PRAGMA user_version`), y un fichero ilegible se aparta y se
-    # rehace en vez de impedir el arranque.
-    #
-    # Desde P1.2a el índice es derivado y se reconstruye desde el vault en
-    # CADA arranque (ADR-0001 D2, ROADMAP §1 D2), no solo cuando se ha tenido
-    # que recrear. No es un lujo: si el proceso murió entre escribir el `.md` y
-    # actualizar el índice, el índice sirve el cuerpo viejo y el autoguardado
-    # del panel lo escribe encima del fichero, que era el único que tenía el
-    # último guardado. Coste medido en el spike P0: 0,32 s con 5.033 notas.
+    """Arranque en dos fases (P16): lo rápido aquí, el reindexado en un hilo.
+
+    Antes de P16 esto reindexaba el vault entero **antes** de que uvicorn
+    empezara a escuchar: con 12.000 notas son minutos con el socket cerrado,
+    que para Docker es indistinguible de un contenedor muerto (y con
+    `restart: unless-stopped` es un bucle de reinicios).
+
+    La fase que se queda aquí es la que tiene que pasar antes de aceptar una
+    sola petición: el esquema del índice (no hay Alembic ni Postgres: se crea
+    o se migra aquí, `PRAGMA user_version`), el workspace, la estructura del
+    vault vacío, el administrador de `ADMIN_USER` y las comprobaciones que
+    significan «no arranques» (un vault que no está donde dice, un índice
+    ilegible). Cuesta milisegundos y sus errores siguen siendo un
+    `RuntimeError` que mata el arranque, con el mismo texto que antes.
+
+    El reindexado --lo que tardaba minutos-- se va a `app.startup`: el
+    servidor contesta desde el primer segundo, `/health` dice `starting` con
+    el progreso y las rutas del índice devuelven `503` hasta que termina.
+    Sigue reindexando en CADA arranque: es el precio de D1 (los ficheros son
+    la verdad) y no cambia con esto.
+    """
+    # Un proceso que vuelve a arrancar (en los tests la app arranca una vez por
+    # `TestClient`, en el mismo proceso) no está apagándose: la bandera que
+    # frena al vigilante se limpia aquí.
+    global _shutting_down
+    _shutting_down = False
+    startup_index.reset()
+
     info = ensure_index(settings.index_path)
     if info.recreated:
         log.warning("índice creado de cero en %s (%s)", info.path, info.reason)
@@ -307,8 +424,8 @@ def on_startup() -> None:
             # Instalación nueva (el índice no tiene notas): se crea la
             # estructura del vault, que es lo que espera el primer POST /pages.
             # Con notas en el índice no se crea nada: si el vault no está,
-            # `rebuild()` se niega a vaciarlas y el arranque falla en claro en
-            # vez de servir datos sin fichero detrás.
+            # `check_can_rebuild()` se niega a vaciarlas y el arranque falla en
+            # claro en vez de servir datos sin fichero detrás.
             repo.vault.ensure_structure()
         elif settings.vault_allow_empty and not Path(settings.vault_path).is_dir():
             # `VAULT_ALLOW_EMPTY` vale para un vault que existe y está vacío
@@ -321,7 +438,12 @@ def on_startup() -> None:
                 "arrancar."
             )
         try:
-            stats = repo.reindex(
+            # La comprobación de `rebuild`, sin indexar: un vault que no está
+            # donde dice (o vacío con páginas en el índice) sigue parando el
+            # arranque aquí, en la fase bloqueante. Es un error de
+            # configuración, no un reindexado lento, y un `503` lo haría
+            # parecer un problema pasajero.
+            repo.check_can_rebuild(
                 force=settings.vault_allow_empty,
                 empty_hint=EMPTY_VAULT_HINT_STARTUP,
             )
@@ -330,6 +452,44 @@ def on_startup() -> None:
                 f"no se puede arrancar: {exc} "
                 "(el índice no se puede reconstruir desde el vault)"
             ) from exc
+    finally:
+        conn.close()
+
+    _admin_from_env()
+
+    # Fase lenta: hilo propio (daemon). `on_shutdown` no lo espera: el índice
+    # es derivado y el arranque siguiente lo reconstruye.
+    startup_index.start(_rebuild_index_in_background)
+
+
+def _rebuild_index_in_background(job) -> None:
+    """El reindexado de arranque, ya con el servidor aceptando peticiones.
+
+    Cualquier fallo se apunta en `job` (`/health` pasa a `503` con el motivo)
+    en vez de tumbar el proceso: el contenedor tiene que poder contarlo. El
+    vigilante del vault arranca **después**, contra un índice ya al día (si no,
+    su primera pasada vería el vault entero como cambiado y llenaría `/events`
+    de avisos que nadie ha provocado).
+    """
+    try:
+        conn = open_index(settings.index_path)
+    except Exception as exc:  # noqa: BLE001 - se cuenta por /health
+        job.fail(
+            "el índice no se puede abrir para reconstruirlo: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return
+    try:
+        repo = Repository(conn)
+        try:
+            stats = repo.reindex(
+                force=settings.vault_allow_empty,
+                empty_hint=EMPTY_VAULT_HINT_STARTUP,
+                progress=job.progress,
+            )
+        except VaultError as exc:
+            job.fail(f"el vault no se puede leer: {exc}")
+            return
         if settings.vault_allow_empty:
             log.warning(
                 "VAULT_ALLOW_EMPTY=1: se acepta un vault vacío a propósito; "
@@ -345,10 +505,18 @@ def on_startup() -> None:
             stats.seconds,
             len(stats.warnings),
         )
+        job.succeed(
+            f"{stats.notes} notas y {stats.links} enlaces en {stats.seconds:.2f} s"
+        )
+    except Exception as exc:  # noqa: BLE001 - se cuenta por /health
+        job.fail(
+            "el índice no se pudo reconstruir: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return
     finally:
         conn.close()
 
-    _admin_from_env()
     _start_watcher()
 
 
@@ -402,6 +570,12 @@ def _start_watcher() -> None:
     reindexar y no llega ningún aviso por cambios que nadie ha hecho.
     """
     global watcher
+    if _shutting_down:
+        log.warning(
+            "el índice terminó de construirse durante el apagado: no se arranca "
+            "el vigilante"
+        )
+        return
     if not settings.watch_enabled:
         log.info(
             "WATCH_ENABLED=0: no se vigila el vault; los cambios hechos en los "
@@ -424,7 +598,8 @@ def _start_watcher() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     """Para el vigilante. Sin esto, el hilo seguiría sondeando tras cerrar."""
-    global watcher
+    global watcher, _shutting_down
+    _shutting_down = True
     if watcher is not None:
         watcher.stop()
         watcher = None
@@ -433,7 +608,47 @@ def on_shutdown() -> None:
 
 @app.get("/health")
 def health():
+    """Estado honesto del proceso y del índice (P7 y P16).
+
+    Tres respuestas y ninguna mentira:
+
+    - `200 {"status": "ok"}`: el índice está reconstruido. Es lo único que
+      significa «listo»; hasta P16 esto era un literal, y durante un
+      reindexado de minutos el contenedor se declaraba sano sin tener índice.
+    - `200 {"status": "starting", "progress": {...}}`: se está construyendo.
+      Sigue siendo `200` porque el proceso está vivo y haciendo lo que tiene
+      que hacer --el `healthcheck` del compose lo acepta--, pero dice que no
+      está listo, así que nadie puede confundirlo con el caso anterior. El
+      `percent` es del reindexado entero (cuatro pasadas por página) y **nunca
+      marca 100 mientras el estado sea `starting`**: el 100 % es de `ok`.
+    - `503 {"status": "error", "detail": ...}`: el reindexado falló o lleva
+      `STARTUP_STALL_SECONDS` sin avanzar. El `healthcheck` falla y
+      `docker inspect` enseña el motivo.
+    """
+    foto = startup_index.snapshot(stall_seconds=settings.startup_stall_seconds)
+    if foto["status"] == STARTUP_STARTING:
+        return {"status": "starting", "progress": _progreso(foto)}
+    if foto["status"] == STARTUP_ERROR:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "detail": foto["error"] or "el índice no se pudo construir",
+                "stalled": foto["stalled"],
+                "progress": _progreso(foto),
+            },
+        )
     return {"status": "ok"}
+
+
+def _progreso(foto: dict) -> dict:
+    return {
+        "phase": foto["phase"],
+        "done": foto["done"],
+        "total": foto["total"],
+        "percent": foto["percent"],
+        "elapsed_seconds": foto["elapsed_seconds"],
+    }
 
 
 @app.get("/manifest.webmanifest", include_in_schema=False)

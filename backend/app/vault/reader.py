@@ -27,6 +27,11 @@ from .suggestions import SIDECAR_MARK
 IGNORED_DIRS = {".trash", "_attachments", ".git", ".obsidian", ".stversions"}
 SKIP_FILES = {".DS_Store", "Thumbs.db"}
 
+# Cada cuántos ficheros avisa el lector de su progreso (P16). Ni uno por
+# fichero --el aviso sería más caro que leer un `.md` pequeño-- ni tan espaciado
+# que `/health` parezca congelado entre aviso y aviso.
+PROGRESS_EVERY = 200
+
 # Las sugerencias de agentes (P10a) viven en una carpeta hermana de la nota
 # (`Notas/X.md.sugerencias/`), con un `.json` por sugerencia. No son notas y no
 # se indexan: el recorrido no entra ahi. Aunque solo contiene `.json` --y el
@@ -433,12 +438,25 @@ def walk_markdown(root: str) -> list[tuple[str, os.stat_result]]:
     return found
 
 
-def load(root: str) -> Vault:
+def load(root: str, progress=None) -> Vault:
+    """Lee el vault entero en memoria.
+
+    `progress(phase, done, total)` es opcional y solo lo usa el arranque
+    (P16): con un vault de miles de notas, la lectura de los cuerpos es la
+    parte lenta del indexado y `/health` necesita poder decir por dónde va.
+    Se llama al empezar y cada `PROGRESS_EVERY` ficheros, nunca por fichero:
+    lo que cuesta la llamada no puede notarse en el bucle.
+    """
     vault = Vault(root=root)
     candidates: list[tuple[str, os.stat_result]] = walk_markdown(root)
+    total = len(candidates)
+    if progress is not None:
+        progress("leyendo el vault", 0, total)
 
     # 1) páginas y bases
-    for rel, st in candidates:
+    for leidos, (rel, st) in enumerate(candidates, 1):
+        if progress is not None and leidos % PROGRESS_EVERY == 0:
+            progress("leyendo el vault", leidos, total)
         page = read_file(os.path.join(root, rel), rel, st)
         for w in page.warnings:
             vault.warnings.append(f"{rel}: {w}")

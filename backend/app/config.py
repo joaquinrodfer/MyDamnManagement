@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     default_user_name: str = "Tú"
     default_icon: str = "📄"
 
+    # --- Arranque del índice (P16) ---------------------------------------
+    # El índice se construye en segundo plano al arrancar. `/health` responde
+    # `starting` mientras tanto, y este es el plazo sin progreso a partir del
+    # cual eso se considera un fallo (`503`): un reindexado que lleva N
+    # segundos sin avanzar no está lento, está atascado (disco lleno, un
+    # montaje que no responde), y el `healthcheck` del compose tiene que
+    # fallar en vez de esperar eternamente. Con 12.000 notas el reindexado
+    # entero tarda minutos, pero entre aviso y aviso hay décimas de segundo
+    # (`PROGRESS_EVERY` ficheros en `app.vault.reader`), así que 300 s es
+    # margen de sobra para un disco lento de verdad.
+    startup_stall_seconds: float = 300.0
+
     # --- Usuarios y sesiones (P11a) -------------------------------------
     # `ADMIN_USER`/`ADMIN_PASSWORD` son opcionales y SOLO se usan en el primer
     # arranque, cuando el índice no tiene ningún usuario: si están, se crea ese

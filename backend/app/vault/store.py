@@ -1647,8 +1647,25 @@ class VaultStore:
             f"{hint}"
         )
 
-    def rebuild(
+    def check_can_rebuild(
         self, *, allow_empty: bool = False, empty_hint: str = EMPTY_VAULT_HINT_HTTP
+    ) -> None:
+        """La comprobación de `rebuild`, sola y sin tocar el índice (P16).
+
+        El arranque la hace en la fase rápida (bloqueante, antes de soltar el
+        reindexado en segundo plano): así un `VAULT_PATH` equivocado sigue
+        parando el arranque con un mensaje claro en vez de ser un `503` que
+        parece un problema de red.
+        """
+        if not allow_empty:
+            self._refuse_suspicious_vault(empty_hint)
+
+    def rebuild(
+        self,
+        *,
+        allow_empty: bool = False,
+        empty_hint: str = EMPTY_VAULT_HINT_HTTP,
+        progress=None,
     ) -> RebuildStats:
         """Reconstruye el índice entero desde el vault (ADR D1).
 
@@ -1662,12 +1679,44 @@ class VaultStore:
         el vault no existe o no tiene ni un `.md`. La salida explícita depende
         del llamador y la nombra `empty_hint`: `POST /reindex?force=true` con el
         servicio vivo, `VAULT_ALLOW_EMPTY=1` en el arranque.
+
+        `progress(phase, done, total)` es opcional y solo lo pasa el arranque
+        (P16): con miles de notas esto tarda minutos y `/health` tiene que
+        poder decir por dónde va (y el `healthcheck` distinguir «lento» de
+        «atascado»). No cambia nada de lo que se escribe, solo informa. El
+        `done`/`total` va en unidades de trabajo --cuatro pasadas por página:
+        leer, preparar, escribir y enlazar--, así que el porcentaje no vuelve a
+        cero al cambiar de fase y el 100 % es el final de verdad.
         """
         started = time.perf_counter()
         stats = RebuildStats()
         if not allow_empty:
             self._refuse_suspicious_vault(empty_hint)
-        vault = reader.load(self.root)
+        # El porcentaje que ve `/health` es del reindexado ENTERO, no de la
+        # fase (P16, ronda 2): cada página se toca en cuatro pasadas --leer,
+        # preparar, escribir, enlazar-- y cada una se lleva un cuarto de la
+        # barra. Por eso `total` son unidades de trabajo (cuatro por página),
+        # no páginas. Antes se publicaba `done == total` justo antes de abrir
+        # la transacción del volcado: `100 %` con todo el trabajo por delante,
+        # y al pasar a `enlazando` el número retrocedía a 0. Un porcentaje que
+        # dice 100 y luego baja no informa de nada (y el `healthcheck` del
+        # compose lo imprime tal cual).
+        PASADAS = 4
+
+        def avance(fase: str, hechas: int, total: int = 0, tramo: int = 0) -> None:
+            """Publica `hechas` de la pasada `tramo` sobre `total` páginas."""
+            if progress is not None:
+                progress(fase, tramo * total + hechas, total * PASADAS)
+
+        def avance_lectura(fase: str, hechas: int, total: int) -> None:
+            # La lectura cuenta ficheros, que es lo que tiene en la mano, y es
+            # el mismo número de páginas: su pasada acaba igual en el 25 %.
+            avance(fase, hechas, total, 0)
+
+        avance("comprobando el vault", 0)   # sin total: `/health` da percent None
+        vault = reader.load(
+            self.root, progress=avance_lectura if progress is not None else None
+        )
         stats.warnings.extend(vault.warnings)
 
         pages = list(vault.pages.values())
@@ -1707,21 +1756,44 @@ class VaultStore:
                     "(se indexa igual: el fichero manda)"
                 )
         workspace_id = self._workspace()
-        records = [
-            self._record_from_page(
-                page, workspace_id,
-                None if page.type == "database_row" else parent_of(page),
-                ids_by_path[page.path],
+        total = len(pages)
+        avance("preparando páginas", 0, total, 1)
+        records = []
+        for hechas, page in enumerate(pages, 1):
+            records.append(
+                self._record_from_page(
+                    page, workspace_id,
+                    None if page.type == "database_row" else parent_of(page),
+                    ids_by_path[page.path],
+                )
             )
-            for page in pages
-        ]
+            if hechas % reader.PROGRESS_EVERY == 0:
+                avance("preparando páginas", hechas, total, 1)
         by_path = {record.path: record for record in records}
+        # El volcado va en UNA transacción (o el índice está entero o no está:
+        # quien lea mientras tanto ve la foto de antes, y el arranque además
+        # contesta 503 hasta que esto acaba). Se escribe a lotes para que el
+        # porcentaje avance con las filas de verdad y para que el vigilante de
+        # «atascado» sepa que el hilo sigue trabajando durante el volcado, que
+        # es lo que más tarda; el troceado no cambia lo que se escribe, la
+        # transacción es la misma.
+        avance("escribiendo el índice", 0, total, 2)
 
         with self._tx():
             # Todas las páginas están en ficheros: se rehace el árbol entero y
             # las cascadas del esquema se llevan bases, vistas, filas y enlaces.
             self.conn.execute("DELETE FROM pages")
-            self.conn.executemany(UPSERT_PAGE, [r.values() for r in records])
+            valores = [record.values() for record in records]
+            for desde in range(0, len(valores), reader.PROGRESS_EVERY):
+                self.conn.executemany(
+                    UPSERT_PAGE, valores[desde:desde + reader.PROGRESS_EVERY]
+                )
+                avance(
+                    "escribiendo el índice",
+                    min(desde + reader.PROGRESS_EVERY, total),
+                    total,
+                    2,
+                )
             # FTS5 con `content='pages'`: se regenera desde la tabla de
             # contenido para que dos reindexados den el mismo índice.
             self.conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('rebuild')")
@@ -1755,8 +1827,11 @@ class VaultStore:
             # Enlaces: se recalculan enteros desde los cuerpos (los de una fila
             # también: el `.md` de una fila puede llevar `[[wikilinks]]`).
             self.conn.execute("DELETE FROM links")
-            for record in records:
+            avance("enlazando", 0, total, 3)
+            for hechas, record in enumerate(records, 1):
                 sync_wikilinks(self.conn, record.id, workspace_id, record.body)
+                if hechas % reader.PROGRESS_EVERY == 0:
+                    avance("enlazando", hechas, total, 3)
 
             # Marca del último reindexado. `GET /status` compara el índice con
             # el disco y dice cuánto ha cambiado por fuera desde aquí.
