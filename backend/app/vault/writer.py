@@ -6,7 +6,7 @@ import enum
 import os
 import uuid
 
-from . import fm, names, reader, vaultfs
+from . import fm, names, reader, suggestions, vaultfs
 
 
 def new_id() -> str:
@@ -139,8 +139,8 @@ def rename_page(vault_root: str, page: reader.Page, new_title: str
     if collided:
         notes.append(f"colisión: nombre final '{stem}'")
     new_rel = vaultfs.safe_rel(vault_root, rel_dir, f"{stem}.md")
-    vaultfs.move(os.path.join(vault_root, vaultfs.safe_rel(vault_root, page.path)),
-                 os.path.join(vault_root, new_rel))
+    # Con el fichero viajan sus sugerencias: nadie mueve un `.md` a mano.
+    suggestions.move_with_note(vault_root, page.path, new_rel)
     page.path = new_rel
     page.title = stem
     return page, notes
@@ -148,7 +148,13 @@ def rename_page(vault_root: str, page: reader.Page, new_title: str
 
 def delete_page(vault_root: str, page: reader.Page) -> str:
     """Mueve a `.trash/<fecha>/<ruta original>`. Devuelve la ruta nueva."""
-    return vaultfs.to_trash(vault_root, page.path)
+    stamp = os.path.relpath(
+        vaultfs.trash_dir_for(vault_root), vault_root
+    ).replace(os.sep, "/")
+    dst = f"{stamp}/{page.path}"
+    # El `.md` y sus sugerencias, juntos también al borrar.
+    suggestions.move_with_note(vault_root, page.path, dst)
+    return dst
 
 
 # --------------------------------------------------------------------------

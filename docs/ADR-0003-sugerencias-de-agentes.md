@@ -65,11 +65,34 @@ frontmatter. Eso es deliberado:
 Consecuencia directa: el sidecar **no es una nota**. El recorrido del vault
 (`reader.walk_markdown`, que usan el reindexado y el vigilante) solo recoge `.md`
 y además excluye por nombre las carpetas `*.md.sugerencias/`; la carpeta contiene
-solo `.json`, así que ni `/pages` ni la deriva de `/status` la ven. Si la nota se
-renombra o se mueve, `VaultStore.save` mueve su carpeta de sugerencias con ella
-(la misma operación del vault); lo mismo `save_row` y `save_database` al
-renombrar una fila o una base. Si se borra, se van con ella a la papelera, y
-restaurar la nota devuelve también sus sugerencias.
+solo `.json`, así que ni `/pages` ni la deriva de `/status` la ven.
+
+Y la otra mitad de esa frase, que costó tres rondas de revisión: **la nota y su
+sidecar son una sola cosa en disco**. No puede existir un `Notas/X.md.sugerencias/`
+sin su `Notas/X.md`. Toda operación del vault que saca un `.md` de su ruta pasa por
+`suggestions.move_with_note` —o por `suggestions.remove_with_note` si algun día
+hay purga definitiva—, que mueve el fichero y su carpeta juntos:
+
+| Operación | Punto | El sidecar viaja |
+| --- | --- | --- |
+| renombrar / mover de carpeta una nota | `VaultStore.save` | sí |
+| renombrar una fila | `VaultStore.save_row` | sí |
+| renombrar una base | `VaultStore.save_database` | sí |
+| borrar una nota | `VaultStore.delete` | sí, al sello de la papelera |
+| borrar una nota con subpáginas | `VaultStore.delete` | sí, **cada hija con el suyo** |
+| borrar una fila | `VaultStore.delete_row` | sí |
+| borrar una base | `VaultStore.delete_database` | sí (la base y sus filas) |
+| restaurar desde la papelera | `VaultStore.restore` | sí, vuelve con su nota |
+| renombrar / borrar por la vía vieja | `writer.rename_page`, `writer.delete_page` | sí |
+| purga definitiva (sin endpoint todavía) | `suggestions.remove_with_note` | sí |
+
+No es una tabla de buenas intenciones: hay un helper único y un test que la
+recorre. Después de **cada** operación de la lista, el test barre el vault y
+`.trash/` y falla si alguna carpeta `*.md.sugerencias/` no tiene su `.md` al lado.
+Es lo que faltaba en la cascada del borrado: al borrar una nota madre, los `.md`
+de las hijas iban a la papelera y sus `.json` se quedaban en el vault. El
+directorio de la madre sobrevivía a la poda (la siguiente nota con ese título
+nacía «Otra (2)») y la sugerencia seguía viva por `sid` sin verse en ningún sitio.
 
 La papelera respeta esa distinción: `GET /trash` **no** lista los `.json` del
 sidecar como entradas sueltas (una nota con dos sugerencias es una entrada, no

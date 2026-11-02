@@ -835,9 +835,8 @@ class VaultStore:
 
         abs_new = os.path.join(self.root, new_rel)
         if new_rel != old_rel:
-            vaultfs.move(abs_old, abs_new)
-            # Las sugerencias de la nota viajan con ella (P10a).
-            self._move_sidecar(old_rel, new_rel)
+            # La nota y sus sugerencias son una sola cosa: se mueven juntas.
+            suggestions.move_with_note(self.root, old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -948,18 +947,16 @@ class VaultStore:
                         files.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
 
         stamp = vaultfs.trash_dir_for(self.root)
+        stamp_rel = os.path.relpath(stamp, self.root).replace(os.sep, "/")
         for rel_file in files:
-            src = os.path.join(self.root, vaultfs.safe_rel(self.root, rel_file))
-            if not os.path.exists(src):
-                # Se borró por fuera y el índice aún no lo sabe: no hay nada que
-                # mover, pero la fila sí se va (borrar es idempotente).
-                continue
-            vaultfs.move(src, os.path.join(stamp, rel_file))
+            # El `.md` y sus sugerencias van juntos: también las de las
+            # subpáginas que la cascada se lleva por delante. Si se queda el
+            # `.json`, `Notas/<madre>/` sobrevive a la poda y una nota nueva
+            # con ese título nace como «Madre (2)».
+            suggestions.move_with_note(
+                self.root, rel_file, f"{stamp_rel}/{rel_file}"
+            )
         _prune_empty_dirs(abs_folder)
-        # Las sugerencias de la nota se van a la papelera con ella (P10a).
-        sidecar = suggestions.sidecar_abs(self.root, rel)
-        if os.path.isdir(sidecar):
-            vaultfs.move(sidecar, os.path.join(stamp, suggestions.sidecar_rel(rel)))
 
         with self._tx():
             self.conn.execute("DELETE FROM pages WHERE id = ?", (str(page_id),))
@@ -1031,54 +1028,22 @@ class VaultStore:
 
     # ----------------------------------------------- sugerencias (P10a)
 
-    def _move_sidecar(self, old_rel: str, new_rel: str) -> None:
-        """Las sugerencias de una nota viajan con ella al renombrar/mover.
-
-        Es la misma operacion del vault: si el `.md` cambia de nombre o de
-        carpeta, su carpeta `<nota>.md.sugerencias/` se mueve con el. Si el
-        destino ya existe --dos sidecars con el mismo nombre solo pueden
-        venir de un `mv` a mano-- no se pisa nada: se avisa y se dejan donde
-        estan, que es preferible a mezclar hilos de dos notas.
-        """
-        old_dir = suggestions.sidecar_abs(self.root, old_rel)
-        if not os.path.isdir(old_dir):
-            return
-        new_dir = suggestions.sidecar_abs(self.root, new_rel)
-        if os.path.exists(new_dir):
-            log.warning(
-                "ya existe %s: las sugerencias de %s no se mueven",
-                suggestions.sidecar_rel(new_rel), old_rel,
-            )
-            return
-        vaultfs.move(old_dir, new_dir)
-
     def _restore_sidecar(self, trash_rel: str, rel: str) -> None:
         """Devuelve las sugerencias que se borraron con la nota.
 
         Borrar una nota mueve su `.md` **y** su carpeta de sugerencias al mismo
         sello de `.trash/`; restaurar solo el `.md` dejaria el hilo del agente
-        huerfano en la papelera sin decirlo. Si la carpeta destino ya existe no
-        se pisa: la nota vuelve y las sugerencias se quedan en la papelera
-        (mejor dos copias separadas que dos hilos mezclados).
+        huerfano en la papelera sin decirlo. Es el mismo movimiento que hace
+        `move_with_note`, con la ruta de la papelera como origen: una sola
+        pieza para todas las idas y venidas del sidecar.
         """
         if not rel.lower().endswith(".md"):
             return
         try:
-            src = os.path.join(
-                self.root, vaultfs.safe_rel(self.root, suggestions.sidecar_rel(trash_rel))
-            )
+            # `move_sidecar` recibe rutas de **nota**: el sufijo lo pone ella.
+            suggestions.move_sidecar(self.root, trash_rel, rel)
         except vaultfs.PathEscape:      # pragma: no cover - ruta del usuario
             return
-        if not os.path.isdir(src):
-            return
-        dst = suggestions.sidecar_abs(self.root, rel)
-        if os.path.exists(dst):
-            log.warning(
-                "%s ya tiene sugerencias: las de la papelera se quedan ahi", rel
-            )
-            return
-        try:
-            vaultfs.move(src, dst)
         except OSError as exc:      # pragma: no cover - disco/permisos
             log.warning("no se pudieron devolver las sugerencias de %s: %s", rel, exc)
 
@@ -1218,8 +1183,8 @@ class VaultStore:
         if folder_moved:
             vaultfs.move(self._abs(old_children), self._abs(new_children))
         if new_rel != old_rel:
-            vaultfs.move(abs_old, self._abs(new_rel))
-            self._move_sidecar(old_rel, new_rel)
+            # La base y sus sugerencias, juntas: mismo helper que la nota.
+            suggestions.move_with_note(self.root, old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -1272,18 +1237,12 @@ class VaultStore:
                             full = os.path.join(dirpath, name)
                             files.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
             stamp = vaultfs.trash_dir_for(self.root)
+            stamp_rel = os.path.relpath(stamp, self.root).replace(os.sep, "/")
             for rel_file in files:
-                src = self._abs(rel_file)
-                if not os.path.exists(src):
-                    continue
-                vaultfs.move(src, os.path.join(stamp, rel_file))
                 # Las sugerencias de la base o de una fila se van con ella.
-                sidecar = suggestions.sidecar_abs(self.root, rel_file)
-                if os.path.isdir(sidecar):
-                    vaultfs.move(
-                        sidecar,
-                        os.path.join(stamp, suggestions.sidecar_rel(rel_file)),
-                    )
+                suggestions.move_with_note(
+                    self.root, rel_file, f"{stamp_rel}/{rel_file}"
+                )
             _prune_empty_dirs(self._abs(folder))
 
         with self._tx():
@@ -1393,8 +1352,8 @@ class VaultStore:
             final_stem, _collided = names.unique_stem(self._abs(folder), desired_stem)
         new_rel = f"{folder}/{final_stem}.md"
         if new_rel != old_rel:
-            vaultfs.move(abs_old, self._abs(new_rel))
-            self._move_sidecar(old_rel, new_rel)
+            # La fila y sus sugerencias, juntas (mismo helper que la nota).
+            suggestions.move_with_note(self.root, old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -1429,17 +1388,12 @@ class VaultStore:
         if row is None or row["type"] != "database_row":
             return False
         if row["path"]:
-            src = self._abs(row["path"])
-            if os.path.exists(src):
-                stamp = vaultfs.trash_dir_for(self.root)
-                vaultfs.move(src, os.path.join(stamp, row["path"]))
-                # El sidecar de la fila se va con ella (y vuelve al restaurarla).
-                sidecar = suggestions.sidecar_abs(self.root, row["path"])
-                if os.path.isdir(sidecar):
-                    vaultfs.move(
-                        sidecar,
-                        os.path.join(stamp, suggestions.sidecar_rel(row["path"])),
-                    )
+            stamp = vaultfs.trash_dir_for(self.root)
+            stamp_rel = os.path.relpath(stamp, self.root).replace(os.sep, "/")
+            # El sidecar de la fila se va con ella (y vuelve al restaurarla).
+            suggestions.move_with_note(
+                self.root, row["path"], f"{stamp_rel}/{row['path']}"
+            )
         with self._tx():
             cur = self.conn.execute("DELETE FROM pages WHERE id = ?", (row["id"],))
         return cur.rowcount > 0

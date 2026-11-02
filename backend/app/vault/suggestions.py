@@ -30,6 +30,7 @@ por la ruta normal del vault.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -42,6 +43,8 @@ from app.vault import vaultfs
 # vault (un `.md` con ese sufijo no es una nota).
 SIDECAR_SUFFIX = ".sugerencias"
 SIDECAR_MARK = f".md{SIDECAR_SUFFIX}"
+
+log = logging.getLogger("mdm.vault")
 
 STATUSES = frozenset({"pending", "accepted", "rejected", "orphaned"})
 KINDS = frozenset({"edit", "new_page"})
@@ -191,6 +194,75 @@ def note_rel_of(sidecar_rel_path: str) -> Optional[str]:
     if not rel.endswith(SIDECAR_SUFFIX):
         return None
     return rel[: -len(SIDECAR_SUFFIX)]
+
+
+# --------------------------------------------------------------------------
+# mover y borrar: la nota y su sidecar son una sola cosa
+# --------------------------------------------------------------------------
+#
+# Un `.md` con sugerencias son dos entradas en disco, y toda operación que saca
+# el `.md` de su ruta tiene que llevarse la carpeta `<nota>.md.sugerencias/`.
+# Eso se olvidó tres veces en P10a --renombrar la nota, renombrar una fila, la
+# cascada de una nota con subpáginas--, así que las operaciones del vault pasan
+# por `move_with_note` / `remove_with_note` y no mueven `.md` a mano. La
+# invariante que sostienen: **no puede existir un sidecar sin su nota**.
+
+
+def move_sidecar(root: str, old_rel: str, new_rel: str) -> bool:
+    """Mueve la carpeta de sugerencias de `old_rel` a la de `new_rel`.
+
+    Devuelve True si había algo que mover. Si el destino ya existe no se pisa
+    --dos sidecars con el mismo nombre solo pueden venir de un `mv` a mano--:
+    se avisa y se queda donde estaba, que es preferible a mezclar dos hilos.
+    Las dos rutas pueden vivir bajo `.trash/` (restaurar y mandar a la papelera
+    también mueven el sidecar).
+    """
+    old_dir = sidecar_abs(root, old_rel)
+    if not os.path.isdir(old_dir):
+        return False
+    new_dir = sidecar_abs(root, new_rel)
+    if os.path.exists(new_dir):
+        log.warning(
+            "ya existe %s: las sugerencias de %s no se mueven",
+            sidecar_rel(new_rel), old_rel,
+        )
+        return False
+    vaultfs.move(old_dir, new_dir)
+    return True
+
+
+def move_with_note(root: str, src_rel: str, dst_rel: str) -> bool:
+    """Mueve el `.md` de `src_rel` a `dst_rel` **y** su sidecar con él.
+
+    Es el único sitio por donde se mueve un `.md` del vault: renombrar, mover
+    de carpeta, mandarlo a la papelera y sacarlo de ella. Devuelve True si el
+    `.md` estaba. El sidecar se mueve aunque el `.md` no esté: es un fichero
+    aparte, y dejarlo atrás es exactamente el sidecar huérfano que esto evita
+    (el `.md` se borró por fuera y el índice aún no lo sabe).
+    """
+    src = os.path.join(root, vaultfs.safe_rel(root, src_rel))
+    moved = os.path.exists(src)
+    if moved:
+        vaultfs.move(src, os.path.join(root, vaultfs.safe_rel(root, dst_rel)))
+    move_sidecar(root, src_rel, dst_rel)
+    return moved
+
+
+def remove_with_note(root: str, rel: str) -> bool:
+    """Borra del disco un `.md` y su sidecar (purga definitiva).
+
+    Hoy no hay purga de la papelera en la API; existe para que el día que la
+    haya no se borre el `.md` y se quede el `.json` dentro. Devuelve True si
+    borró el `.md`.
+    """
+    src = os.path.join(root, vaultfs.safe_rel(root, rel))
+    removed = os.path.isfile(src)
+    if removed:
+        os.unlink(src)
+    folder = sidecar_abs(root, rel)
+    if os.path.isdir(folder):
+        vaultfs.rmtree(folder)
+    return removed
 
 
 # --------------------------------------------------------------------------

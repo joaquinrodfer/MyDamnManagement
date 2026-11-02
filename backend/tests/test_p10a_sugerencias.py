@@ -15,7 +15,7 @@ Los tres casos que deciden la aceptación:
 
 from pathlib import Path
 
-from app.vault import fm
+from app.vault import fm, reader, suggestions, writer
 
 
 # --------------------------------------------------------------------------
@@ -564,3 +564,237 @@ def test_los_topes_valen_en_cualquier_kind_y_para_agent_y_reason(client):
         f"/suggestions/{sugerencia['id']}/reject",
         json={"reason": "x" * (4 * 1024)},
     ).status_code == 200
+
+
+# --------------------------------------------------------------------------
+# ronda 3: todas las operaciones que mueven o borran un `.md`
+# --------------------------------------------------------------------------
+
+
+def sidecars_huerfanos(vault_path: Path) -> list[str]:
+    """Carpetas `*.md.sugerencias/` cuyo `.md` no está a su lado.
+
+    Es el invariante de P10a: el sidecar no es una nota, así que no puede
+    sobrevivir a la suya. Se recorre el vault **y** `.trash/`: también en la
+    papelera el `.json` tiene que estar junto al `.md` del que salió.
+    """
+    huerfanos: list[str] = []
+    for carpeta in sorted(vault_path.rglob("*.md.sugerencias")):
+        if not carpeta.is_dir():
+            continue
+        nota = carpeta.with_name(carpeta.name[: -len(".sugerencias")])
+        if not nota.is_file():
+            huerfanos.append(carpeta.relative_to(vault_path).as_posix())
+    return huerfanos
+
+
+# Una función por operación: crea su propio mundo, la ejecuta y comprueba
+# dónde quedó el sidecar. Todas se pasan por la tabla de arriba abajo.
+
+def _op_renombrar_nota(client, vault_path):
+    nota = crear_nota(client, title="OpRenombra", body="texto")
+    sugerencia = sugerir(client, nota["id"], old_text="texto", new_text="otro").json()
+    respuesta = client.patch(f"/pages/{nota['id']}", json={"title": "OpRenombra dos"})
+    assert respuesta.status_code == 200, respuesta.text
+    assert (sidecar_de(vault_path, "OpRenombra dos") / f"{sugerencia['id']}.json").is_file()
+
+
+def _op_mover_nota_de_carpeta(client, vault_path):
+    madre = crear_nota(client, title="OpMadre", body="")
+    hija = crear_nota(client, title="OpHija", body="texto")
+    sugerencia = sugerir(client, hija["id"], old_text="texto", new_text="otro").json()
+    respuesta = client.patch(f"/pages/{hija['id']}", json={"parent_id": madre["id"]})
+    assert respuesta.status_code == 200, respuesta.text
+    movido = vault_path / "Notas" / "OpMadre" / "OpHija.md.sugerencias"
+    assert (movido / f"{sugerencia['id']}.json").is_file()
+
+
+def _op_renombrar_fila(client, vault_path):
+    database, fila = crear_fila(client, titulo="OpFila", base="OpBase")
+    sugerencia = sugerir(
+        client, fila["id"], kind="new_page", title="Nueva", new_text="cuerpo"
+    ).json()
+    respuesta = client.patch(
+        f"/databases/{database['id']}/rows/{fila['id']}", json={"title": "OpFila dos"}
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    movido = vault_path / "Bases" / "OpBase" / "OpFila dos.md.sugerencias"
+    assert (movido / f"{sugerencia['id']}.json").is_file()
+
+
+def _op_renombrar_base(client, vault_path):
+    base = client.post("/databases", json={"title": "OpBase dos", "schema_def": []}).json()
+    sugerencia = sugerir(
+        client, base["id"], kind="new_page", title="Nueva", new_text="cuerpo"
+    ).json()
+    respuesta = client.patch(f"/databases/{base['id']}", json={"title": "OpBase tres"})
+    assert respuesta.status_code == 200, respuesta.text
+    movido = vault_path / "Bases" / "OpBase tres.md.sugerencias"
+    assert (movido / f"{sugerencia['id']}.json").is_file()
+
+
+def _op_borrar_nota(client, vault_path):
+    nota = crear_nota(client, title="OpBorra", body="texto")
+    sugerir(client, nota["id"], old_text="texto", new_text="otro")
+    assert client.delete(f"/pages/{nota['id']}").status_code == 204
+    assert list(vault_path.glob(".trash/*/Notas/OpBorra.md.sugerencias/*.json"))
+
+
+def _op_borrar_nota_con_subarbol(client, vault_path):
+    madre = crear_nota(client, title="OpMadreBorra", body="")
+    hija = crear_nota(client, title="OpHijaBorra", body="texto")
+    assert client.patch(
+        f"/pages/{hija['id']}", json={"parent_id": madre["id"]}
+    ).status_code == 200
+    sugerir(client, hija["id"], old_text="texto", new_text="otro")
+    assert client.delete(f"/pages/{madre['id']}").status_code == 204
+    assert list(
+        vault_path.glob(".trash/*/Notas/OpMadreBorra/OpHijaBorra.md.sugerencias/*.json")
+    )
+
+
+def _op_borrar_fila(client, vault_path):
+    database, fila = crear_fila(client, titulo="OpFilaBorra", base="OpBaseBorra")
+    sugerir(client, fila["id"], kind="new_page", title="Nueva", new_text="cuerpo")
+    assert client.delete(f"/databases/{database['id']}/rows/{fila['id']}").status_code == 204
+    assert list(vault_path.glob(".trash/*/Bases/OpBaseBorra/OpFilaBorra.md.sugerencias/*.json"))
+
+
+def _op_borrar_base(client, vault_path):
+    database, fila = crear_fila(client, titulo="OpFilaBase", base="OpBaseBorraDos")
+    sugerir(client, fila["id"], kind="new_page", title="Nueva", new_text="cuerpo")
+    assert client.delete(f"/databases/{database['id']}").status_code == 204
+    assert list(
+        vault_path.glob(".trash/*/Bases/OpBaseBorraDos/OpFilaBase.md.sugerencias/*.json")
+    )
+
+
+def _op_restaurar_nota(client, vault_path):
+    nota = crear_nota(client, title="OpRestaura", body="texto")
+    sugerencia = sugerir(client, nota["id"], old_text="texto", new_text="otro").json()
+    assert client.delete(f"/pages/{nota['id']}").status_code == 204
+    entrada = next(
+        e for e in client.get("/trash").json() if e["original_path"].endswith("OpRestaura.md")
+    )
+    assert client.post("/trash/restore", json={"path": entrada["path"]}).status_code == 200
+    assert (sidecar_de(vault_path, "OpRestaura") / f"{sugerencia['id']}.json").is_file()
+
+
+def _op_restaurar_subpagina(client, vault_path):
+    madre = crear_nota(client, title="OpMadreRestaura", body="")
+    hija = crear_nota(client, title="OpHijaRestaura", body="texto")
+    assert client.patch(
+        f"/pages/{hija['id']}", json={"parent_id": madre["id"]}
+    ).status_code == 200
+    sugerencia = sugerir(client, hija["id"], old_text="texto", new_text="otro").json()
+    assert client.delete(f"/pages/{madre['id']}").status_code == 204
+    entrada = next(
+        e for e in client.get("/trash").json()
+        if e["original_path"] == "Notas/OpMadreRestaura/OpHijaRestaura.md"
+    )
+    assert client.post("/trash/restore", json={"path": entrada["path"]}).status_code == 200
+    vuelto = vault_path / "Notas" / "OpMadreRestaura" / "OpHijaRestaura.md.sugerencias"
+    assert (vuelto / f"{sugerencia['id']}.json").is_file()
+
+
+def _op_renombrar_con_writer(client, vault_path):
+    """La vía vieja (`writer.rename_page`), que nadie llama pero existe."""
+    nota = crear_nota(client, title="OpWriter", body="texto")
+    sugerencia = sugerir(client, nota["id"], old_text="texto", new_text="otro").json()
+    rel = "Notas/OpWriter.md"
+    pagina = reader.read_file(str(vault_path / rel), rel)
+    writer.rename_page(str(vault_path), pagina, "OpWriter dos")
+    assert (sidecar_de(vault_path, "OpWriter dos") / f"{sugerencia['id']}.json").is_file()
+
+
+def _op_borrar_con_writer(client, vault_path):
+    nota = crear_nota(client, title="OpWriterBorra", body="texto")
+    sugerir(client, nota["id"], old_text="texto", new_text="otro")
+    rel = "Notas/OpWriterBorra.md"
+    pagina = reader.read_file(str(vault_path / rel), rel)
+    destino = writer.delete_page(str(vault_path), pagina)
+    assert (vault_path / f"{destino}.sugerencias").is_dir()
+
+
+def _op_purgar_con_el_helper(client, vault_path):
+    """Purga definitiva: hoy no hay endpoint, pero el helper ya la cubre."""
+    nota = crear_nota(client, title="OpPurga", body="texto")
+    sugerir(client, nota["id"], old_text="texto", new_text="otro")
+    assert suggestions.remove_with_note(str(vault_path), "Notas/OpPurga.md") is True
+    assert not (vault_path / "Notas" / "OpPurga.md").exists()
+    assert not sidecar_de(vault_path, "OpPurga").exists()
+
+
+def test_ninguna_operacion_del_vault_deja_un_sidecar_sin_su_nota(client, vault_path):
+    """La lista completa, y el barrido del vault después de cada una."""
+    operaciones = [
+        ("renombrar la nota (save)", _op_renombrar_nota),
+        ("mover la nota de carpeta (save)", _op_mover_nota_de_carpeta),
+        ("renombrar una fila (save_row)", _op_renombrar_fila),
+        ("renombrar una base (save_database)", _op_renombrar_base),
+        ("borrar una nota (delete)", _op_borrar_nota),
+        ("borrar una nota con subárbol (delete)", _op_borrar_nota_con_subarbol),
+        ("borrar una fila (delete_row)", _op_borrar_fila),
+        ("borrar una base (delete_database)", _op_borrar_base),
+        ("restaurar una nota (restore)", _op_restaurar_nota),
+        ("restaurar una subpágina (restore)", _op_restaurar_subpagina),
+        ("renombrar por writer.rename_page", _op_renombrar_con_writer),
+        ("borrar por writer.delete_page", _op_borrar_con_writer),
+        ("purgar con remove_with_note", _op_purgar_con_el_helper),
+    ]
+    for nombre, operacion in operaciones:
+        operacion(client, vault_path)
+        huerfanos = sidecars_huerfanos(vault_path)
+        assert huerfanos == [], f"«{nombre}» dejó un sidecar sin su nota: {huerfanos}"
+
+
+def test_borrar_una_nota_madre_se_lleva_las_sugerencias_de_sus_hijas(client, vault_path):
+    """La cascada del borrado: el `.json` de la hija va con su `.md` y no deja carpeta."""
+    madre = crear_nota(client, title="Otra", body="")
+    hija = crear_nota(client, title="Hija", body="texto")
+    assert client.patch(
+        f"/pages/{hija['id']}", json={"parent_id": madre["id"]}
+    ).status_code == 200
+    sugerencia = sugerir(client, hija["id"], old_text="texto", new_text="otro").json()
+
+    assert client.delete(f"/pages/{madre['id']}").status_code == 204
+
+    # El sidecar de la hija, en la papelera y junto a su `.md`.
+    en_papelera = list(
+        vault_path.glob(".trash/*/Notas/Otra/Hija.md.sugerencias/*.json")
+    )
+    assert [p.name for p in en_papelera] == [f"{sugerencia['id']}.json"]
+    assert sorted(e["original_path"] for e in client.get("/trash").json()) == [
+        "Notas/Otra.md",
+        "Notas/Otra/Hija.md",
+    ]
+    # La carpeta de la madre no sobrevive: sin sidecar huérfano, se poda.
+    assert not (vault_path / "Notas" / "Otra").exists()
+    # Y una nota nueva con ese título se llama «Otra», no «Otra (2)».
+    crear_nota(client, title="Otra")
+    assert (vault_path / "Notas" / "Otra.md").is_file()
+    assert not (vault_path / "Notas" / "Otra (2).md").exists()
+    # La sugerencia se fue con su nota: ya no se sirve por sid.
+    assert client.get(f"/suggestions/{sugerencia['id']}").status_code == 404
+    assert sidecars_huerfanos(vault_path) == []
+
+
+def test_restaurar_una_subpagina_devuelve_sus_sugerencias(client, vault_path):
+    madre = crear_nota(client, title="Madre", body="")
+    hija = crear_nota(client, title="Hija suelta", body="texto")
+    assert client.patch(
+        f"/pages/{hija['id']}", json={"parent_id": madre["id"]}
+    ).status_code == 200
+    sugerencia = sugerir(client, hija["id"], old_text="texto", new_text="otro").json()
+    assert client.delete(f"/pages/{madre['id']}").status_code == 204
+
+    entrada = next(
+        e for e in client.get("/trash").json()
+        if e["original_path"] == "Notas/Madre/Hija suelta.md"
+    )
+    assert client.post("/trash/restore", json={"path": entrada["path"]}).status_code == 200
+
+    vuelto = vault_path / "Notas" / "Madre" / "Hija suelta.md.sugerencias"
+    assert (vuelto / f"{sugerencia['id']}.json").is_file()
+    assert client.get(f"/suggestions/{sugerencia['id']}").status_code == 200
+    assert sidecars_huerfanos(vault_path) == []
