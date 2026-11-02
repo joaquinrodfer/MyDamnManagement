@@ -207,18 +207,35 @@ class Repository:
         ).fetchall()
         return {row["display_name"]: row["color"] for row in rows}
 
-    def reindex(self, force: bool = False, empty_hint: str | None = None):
+    def reindex(
+        self, force: bool = False, empty_hint: str | None = None, progress=None
+    ):
         """Reconstruye las notas del índice desde el vault (ADR D1).
 
         `force=True` permite que un vault ausente o vacío deje el índice a
         cero: es la salida explícita cuando el vaciado es intencionado, no el
         camino normal (ver `VaultStore.rebuild`). `empty_hint` es el texto que
         nombra esa salida en el mensaje de error, porque no es la misma con el
-        servicio en marcha que durante el arranque.
+        servicio en marcha que durante el arranque. `progress` solo lo pasa el
+        arranque en segundo plano (P16): informa del avance, no cambia nada.
         """
         return self.vault.rebuild(
             allow_empty=force,
             empty_hint=empty_hint or EMPTY_VAULT_HINT_HTTP,
+            progress=progress,
+        )
+
+    def check_can_rebuild(
+        self, *, force: bool = False, empty_hint: str | None = None
+    ) -> None:
+        """Lo que `reindex` comprueba antes de tocar nada, sin indexar (P16).
+
+        El arranque lo llama en su fase rápida: un vault que no está donde
+        dice (o vacío con páginas en el índice) sigue abortando el arranque en
+        claro, como antes, en vez de quedarse en segundo plano como un `503`.
+        """
+        self.vault.check_can_rebuild(
+            allow_empty=force, empty_hint=empty_hint or EMPTY_VAULT_HINT_HTTP
         )
 
     # ----------------------------------------------------------- workspace

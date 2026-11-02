@@ -1647,8 +1647,25 @@ class VaultStore:
             f"{hint}"
         )
 
-    def rebuild(
+    def check_can_rebuild(
         self, *, allow_empty: bool = False, empty_hint: str = EMPTY_VAULT_HINT_HTTP
+    ) -> None:
+        """La comprobación de `rebuild`, sola y sin tocar el índice (P16).
+
+        El arranque la hace en la fase rápida (bloqueante, antes de soltar el
+        reindexado en segundo plano): así un `VAULT_PATH` equivocado sigue
+        parando el arranque con un mensaje claro en vez de ser un `503` que
+        parece un problema de red.
+        """
+        if not allow_empty:
+            self._refuse_suspicious_vault(empty_hint)
+
+    def rebuild(
+        self,
+        *,
+        allow_empty: bool = False,
+        empty_hint: str = EMPTY_VAULT_HINT_HTTP,
+        progress=None,
     ) -> RebuildStats:
         """Reconstruye el índice entero desde el vault (ADR D1).
 
@@ -1662,12 +1679,19 @@ class VaultStore:
         el vault no existe o no tiene ni un `.md`. La salida explícita depende
         del llamador y la nombra `empty_hint`: `POST /reindex?force=true` con el
         servicio vivo, `VAULT_ALLOW_EMPTY=1` en el arranque.
+
+        `progress(phase, done, total)` es opcional y solo lo pasa el arranque
+        (P16): con miles de notas esto tarda minutos y `/health` tiene que
+        poder decir por dónde va (y el `healthcheck` distinguir «lento» de
+        «atascado»). No cambia nada de lo que se escribe, solo informa.
         """
         started = time.perf_counter()
         stats = RebuildStats()
         if not allow_empty:
             self._refuse_suspicious_vault(empty_hint)
-        vault = reader.load(self.root)
+        if progress is not None:
+            progress("comprobando el vault", 0, 0)
+        vault = reader.load(self.root, progress=progress)
         stats.warnings.extend(vault.warnings)
 
         pages = list(vault.pages.values())
@@ -1707,15 +1731,27 @@ class VaultStore:
                     "(se indexa igual: el fichero manda)"
                 )
         workspace_id = self._workspace()
-        records = [
-            self._record_from_page(
-                page, workspace_id,
-                None if page.type == "database_row" else parent_of(page),
-                ids_by_path[page.path],
+        total = len(pages)
+        records = []
+        for hechas, page in enumerate(pages, 1):
+            records.append(
+                self._record_from_page(
+                    page, workspace_id,
+                    None if page.type == "database_row" else parent_of(page),
+                    ids_by_path[page.path],
+                )
             )
-            for page in pages
-        ]
+            if progress is not None and hechas % reader.PROGRESS_EVERY == 0:
+                progress("preparando páginas", hechas, total)
         by_path = {record.path: record for record in records}
+        if progress is not None:
+            # El volcado va en UNA transacción (o el índice está entero o no
+            # está: quien lea mientras tanto ve la foto de antes, y el arranque
+            # además contesta 503 hasta que esto acaba). Mientras dure, el
+            # progreso no puede avanzar --escribir ES el paso--, así que se
+            # avisa justo antes para que el vigilante de «atascado» no confunda
+            # escribir con colgarse.
+            progress("escribiendo el índice", total, total)
 
         with self._tx():
             # Todas las páginas están en ficheros: se rehace el árbol entero y
@@ -1755,8 +1791,10 @@ class VaultStore:
             # Enlaces: se recalculan enteros desde los cuerpos (los de una fila
             # también: el `.md` de una fila puede llevar `[[wikilinks]]`).
             self.conn.execute("DELETE FROM links")
-            for record in records:
+            for hechas, record in enumerate(records, 1):
                 sync_wikilinks(self.conn, record.id, workspace_id, record.body)
+                if progress is not None and hechas % reader.PROGRESS_EVERY == 0:
+                    progress("enlazando", hechas, total)
 
             # Marca del último reindexado. `GET /status` compara el índice con
             # el disco y dice cuánto ha cambiado por fuera desde aquí.
