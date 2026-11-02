@@ -422,3 +422,145 @@ def test_reject_sin_cuerpo_tambien_vale(client):
     assert respuesta.status_code == 200, respuesta.text
     assert respuesta.json()["status"] == "rejected"
     assert respuesta.json()["reason"] is None
+
+
+# --------------------------------------------------------------------------
+# ronda 2: la papelera, las filas y los topes en cualquier `kind`
+# --------------------------------------------------------------------------
+
+
+def crear_fila(client, titulo="Fila", base="Base") -> tuple[dict, dict]:
+    database = client.post("/databases", json={"title": base, "schema_def": []})
+    assert database.status_code == 200, database.text
+    fila = client.post(
+        f"/databases/{database.json()['id']}/rows", json={"title": titulo}
+    )
+    assert fila.status_code == 200, fila.text
+    return database.json(), fila.json()
+
+
+def test_la_papelera_lista_la_nota_una_vez_y_no_restaura_un_sidecar_suelto(client, vault_path):
+    """Nota + 2 sugerencias borradas = **una** entrada, y el `.json` no se restaura solo."""
+    nota = crear_nota(client, title="ConHilos", body="texto")
+    una = sugerir(client, nota["id"], old_text="texto", new_text="otro").json()
+    dos = sugerir(client, nota["id"], old_text="texto", new_text="otro más").json()
+
+    assert client.delete(f"/pages/{nota['id']}").status_code == 204
+
+    entradas = client.get("/trash").json()
+    assert [e["original_path"] for e in entradas] == ["Notas/ConHilos.md"], (
+        "el sidecar no es una nota suelta: no puede salir como entrada de papelera"
+    )
+
+    # Restaurar un `.json` por separado se rechaza: dejaría un sidecar huérfano.
+    suelto = next(vault_path.glob(".trash/*/Notas/ConHilos.md.sugerencias/*.json"))
+    rel_suelto = suelto.relative_to(vault_path).as_posix()
+    rechazo = client.post("/trash/restore", json={"path": rel_suelto})
+    assert rechazo.status_code == 400, rechazo.text
+    assert "sugerencia" in rechazo.json()["detail"]
+    assert suelto.is_file()
+    assert not (vault_path / "Notas" / "ConHilos.md.sugerencias").exists()
+
+    # Y restaurar la nota devuelve las dos con ella.
+    vuelta = client.post("/trash/restore", json={"path": entradas[0]["path"]})
+    assert vuelta.status_code == 200, vuelta.text
+    en_sitio = sorted(p.name for p in sidecar_de(vault_path, "ConHilos").iterdir())
+    assert en_sitio == sorted([f"{una['id']}.json", f"{dos['id']}.json"])
+
+
+def test_renombrar_una_fila_se_lleva_sus_sugerencias(client, vault_path):
+    database, fila = crear_fila(client, titulo="Fila")
+    sugerencia = sugerir(
+        client,
+        fila["id"],
+        kind="new_page",
+        title="Nota propuesta",
+        new_text="cuerpo propuesto",
+    ).json()
+    viejo = vault_path / "Bases" / "Base" / "Fila.md.sugerencias"
+    assert (viejo / f"{sugerencia['id']}.json").is_file()
+
+    renombrada = client.patch(
+        f"/databases/{database['id']}/rows/{fila['id']}",
+        json={"title": "Fila renombrada"},
+    )
+    assert renombrada.status_code == 200, renombrada.text
+
+    nuevo = vault_path / "Bases" / "Base" / "Fila renombrada.md.sugerencias"
+    assert not viejo.exists()
+    assert (nuevo / f"{sugerencia['id']}.json").is_file()
+    # Y la sigue viendo su nota: si el sidecar se queda atrás, el listado sale [].
+    listada = client.get(f"/pages/{fila['id']}/suggestions").json()
+    assert [s["id"] for s in listada] == [sugerencia["id"]]
+
+
+def test_renombrar_la_base_se_lleva_las_sugerencias_de_la_propia_base(client, vault_path):
+    database = client.post("/databases", json={"title": "Base", "schema_def": []})
+    assert database.status_code == 200, database.text
+    base = database.json()
+    sugerencia = sugerir(
+        client, base["id"], kind="new_page", title="Otra", new_text="cuerpo"
+    ).json()
+    assert (vault_path / "Bases" / "Base.md.sugerencias" / f"{sugerencia['id']}.json").is_file()
+
+    renombrada = client.patch(f"/databases/{base['id']}", json={"title": "Base dos"})
+    assert renombrada.status_code == 200, renombrada.text
+
+    assert not (vault_path / "Bases" / "Base.md.sugerencias").exists()
+    assert (
+        vault_path / "Bases" / "Base dos.md.sugerencias" / f"{sugerencia['id']}.json"
+    ).is_file()
+    assert [s["id"] for s in client.get(f"/pages/{base['id']}/suggestions").json()] == [
+        sugerencia["id"]
+    ]
+
+
+def test_borrar_una_fila_se_lleva_sus_sugerencias_a_la_papelera(client, vault_path):
+    database, fila = crear_fila(client, titulo="Fila")
+    sugerencia = sugerir(
+        client, fila["id"], kind="new_page", title="Otra", new_text="cuerpo"
+    ).json()
+
+    assert client.delete(f"/databases/{database['id']}/rows/{fila['id']}").status_code == 204
+
+    assert not (vault_path / "Bases" / "Base" / "Fila.md.sugerencias").exists()
+    en_papelera = list(
+        vault_path.glob(".trash/*/Bases/Base/Fila.md.sugerencias/*.json")
+    )
+    assert [p.name for p in en_papelera] == [f"{sugerencia['id']}.json"]
+    # La fila es una entrada de papelera; sus sugerencias, no.
+    assert [e["original_path"] for e in client.get("/trash").json()] == [
+        "Bases/Base/Fila.md"
+    ]
+
+
+def test_los_topes_valen_en_cualquier_kind_y_para_agent_y_reason(client):
+    nota = crear_nota(client, body="texto")
+
+    # `title` tiene tope también en un `edit` (el ADR no distingue).
+    assert sugerir(
+        client, nota["id"], old_text="texto", new_text="otro", title="T" * 201
+    ).status_code == 413
+    # `agent` es autoría, pero se escribe en el `.json`: mismo tope.
+    assert sugerir(
+        client, nota["id"], agent="a" * 201, old_text="texto", new_text="otro"
+    ).status_code == 413
+    # Los 200 bytes justos sí caben.
+    assert sugerir(
+        client, nota["id"], old_text="texto", new_text="otro", title="T" * 200
+    ).status_code == 200
+
+    sugerencia = sugerir(client, nota["id"], old_text="texto", new_text="otro").json()
+    # El motivo del rechazo y el nombre de quien responde también van al vault.
+    assert client.post(
+        f"/suggestions/{sugerencia['id']}/reject",
+        json={"reason": "x" * (4 * 1024 + 1)},
+    ).status_code == 413
+    assert client.post(
+        f"/suggestions/{sugerencia['id']}/reply",
+        json={"text": "hola", "author": "a" * 201},
+    ).status_code == 413
+    assert client.post(
+        f"/suggestions/{sugerencia['id']}/reject",
+        json={"reason": "x" * (4 * 1024)},
+    ).status_code == 200

@@ -36,7 +36,10 @@ router = APIRouter(tags=["suggestions"])
 def _check_size(value: str, limit: int, what: str) -> None:
     """413 si `value` pasa del tope, contando bytes UTF-8 (no caracteres)."""
     if len((value or "").encode("utf-8")) > limit:
-        raise HTTPException(413, f"{what} pasa del tope de {limit // 1024} KB")
+        # En KB cuando tiene sentido; los topes pequeños (200 B) se dicen en
+        # bytes, que "0 KB" no informa de nada.
+        tope = f"{limit // 1024} KB" if limit >= 1024 else f"{limit} B"
+        raise HTTPException(413, f"{what} pasa del tope de {tope}")
 
 
 def _get_or_404(repo: Repository, page_id: uuid.UUID):
@@ -80,10 +83,14 @@ def create_suggestion(
     _get_or_404(repo, page_id)
 
     kind = str(getattr(payload.kind, "value", payload.kind))
+    # Todo lo que se guarda en el `.json` del vault tiene tope, en cualquier
+    # `kind`: un `title` de 300 KB en una sugerencia `edit` acababa en disco
+    # aunque el ADR dijera 200 bytes, y `agent` no se miraba nunca.
+    _check_size(payload.agent, suggestions.MAX_AGENT, "agent")
     _check_size(payload.rationale, suggestions.MAX_RATIONALE, "rationale")
+    _check_size(payload.title or "", suggestions.MAX_TITLE, "title")
     if kind == "new_page":
         _check_size(payload.new_text, suggestions.MAX_NEW_PAGE_BODY, "new_text")
-        _check_size(payload.title or "", suggestions.MAX_TITLE, "title")
     else:
         _check_size(payload.old_text, suggestions.MAX_OLD_TEXT, "old_text")
         _check_size(payload.new_text, suggestions.MAX_NEW_TEXT, "new_text")
@@ -180,6 +187,8 @@ def reject_suggestion(
     repo: Repository = Depends(get_repo),
 ):
     """Marca `rejected` (con motivo si se manda). El `.md` no se toca."""
+    if payload is not None:
+        _check_size(payload.reason or "", suggestions.MAX_REASON, "reason")
     try:
         suggestion = repo.reject_suggestion(
             str(suggestion_id), reason=(payload.reason if payload else None)
@@ -204,6 +213,7 @@ def reply_suggestion(
 ):
     """Añade una entrada al hilo del dueño (el canal de vuelta al agente)."""
     _check_size(payload.text, suggestions.MAX_REPLY_TEXT, "text")
+    _check_size(payload.author or "", suggestions.MAX_AGENT, "author")
     try:
         suggestion = repo.reply_to_suggestion(
             str(suggestion_id), text=payload.text, author=payload.author

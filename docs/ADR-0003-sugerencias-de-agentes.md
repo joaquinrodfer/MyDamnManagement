@@ -67,8 +67,14 @@ Consecuencia directa: el sidecar **no es una nota**. El recorrido del vault
 y además excluye por nombre las carpetas `*.md.sugerencias/`; la carpeta contiene
 solo `.json`, así que ni `/pages` ni la deriva de `/status` la ven. Si la nota se
 renombra o se mueve, `VaultStore.save` mueve su carpeta de sugerencias con ella
-(la misma operación del vault); si se borra, se van con ella a la papelera, y
+(la misma operación del vault); lo mismo `save_row` y `save_database` al
+renombrar una fila o una base. Si se borra, se van con ella a la papelera, y
 restaurar la nota devuelve también sus sugerencias.
+
+La papelera respeta esa distinción: `GET /trash` **no** lista los `.json` del
+sidecar como entradas sueltas (una nota con dos sugerencias es una entrada, no
+tres) y `POST /trash/restore` rechaza restaurarlas por separado — deja un
+sidecar de una nota que no existe. Se restauran con su nota.
 
 Lo que **no** se hizo: una tabla en el índice SQLite. El índice es derivado y
 reconstruible desde el vault (ADR-0001 D1); las sugerencias son estado propio del
@@ -134,9 +140,11 @@ atómico + índice al día, y publica el evento SSE `page` de la nota
 entere. Aceptar dos veces, o aceptar una rechazada, es **409 `ya_resuelta`**:
 una sugerencia resuelta no se vuelve a aplicar.
 
-Límites de tamaño en bytes UTF-8: `old_text` y `new_text` de un parche, 8 KB;
-el cuerpo de una nota propuesta, 32 KB; `rationale` y cada respuesta, 4 KB;
-`title`, 200 bytes. Por encima, **413**.
+Límites de tamaño en bytes UTF-8, aplicados a cualquier `kind` y a todo lo que
+acaba escrito en el `.json` del vault: `old_text` y `new_text` de un parche, 8 KB;
+el cuerpo de una nota propuesta, 32 KB; `rationale`, cada respuesta y el motivo
+de un rechazo, 4 KB; `title`, 200 bytes; `agent` y el `author` de una respuesta,
+200 bytes. Por encima, **413**.
 
 ## Consecuencias
 
