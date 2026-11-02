@@ -770,11 +770,11 @@ def test_el_token_de_agente_no_abre_la_api_del_dueno(client, agentes):
 
 
 # --------------------------------------------------------------------------
-# 7. migración v3 -> v4 sobre una base existente
+# 7. migración de una base antigua (v3) a la versión actual
 # --------------------------------------------------------------------------
 
 
-def test_una_base_v3_migra_a_la_4_y_conserva_sus_notas(client, index_path):
+def test_una_base_v3_migra_a_la_actual_y_conserva_sus_notas(client, index_path):
     from app.index import SCHEMA_VERSION, ensure_index
 
     nota = client.post("/pages", json={"title": "Antes de la 4"}).json()
@@ -790,15 +790,17 @@ def test_una_base_v3_migra_a_la_4_y_conserva_sus_notas(client, index_path):
         conn.close()
 
     info = ensure_index(str(index_path))
-    assert info.version == SCHEMA_VERSION == 4
+    # P13 subió el esquema a la 5 (tokens de captura): la migración encadena
+    # 4 y 5 sobre el mismo fichero, que es lo que se comprueba aquí.
+    assert info.version == SCHEMA_VERSION == 5
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
         tablas = {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        assert {"users", "sessions"} <= tablas
+        assert {"users", "sessions", "capture_tokens"} <= tablas
         # Las notas que había siguen ahí, y sus columnas son las de antes.
         assert (
             conn.execute("SELECT title FROM pages WHERE id = ?", (nota["id"],)).fetchone()[0]

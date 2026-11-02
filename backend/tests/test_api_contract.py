@@ -34,7 +34,11 @@ def test_health_y_status(client):
     assert estado["services"]["api"]["ok"] is True
     assert estado["services"]["db"]["ok"] is True
     assert estado["services"]["db"]["engine"] == "sqlite"
-    assert estado["services"]["db"]["schema_version"] == 4
+    from app import index as indice
+
+    # La versión, la que declare el código (P13 la subió a la 5): este test
+    # comprueba que `/status` la publica, no que valga un número concreto.
+    assert estado["services"]["db"]["schema_version"] == indice.SCHEMA_VERSION
     assert estado["services"]["db"]["counts"]["pages"] == 0
     assert estado["checked_at"].endswith("+00:00")
 

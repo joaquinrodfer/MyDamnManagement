@@ -741,10 +741,28 @@ class VaultStore:
         page_id: Optional[str] = None,
         created: Optional[str] = None,
         updated: Optional[str] = None,
+        folder: Optional[str] = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> str:
-        """Crea el `.md` y su fila en el índice. Devuelve el id de la página."""
+        """Crea el `.md` y su fila en el índice. Devuelve el id de la página.
+
+        `folder` fija la carpeta de una nota que no cuelga de otra: la bandeja
+        de captura (P13) vive en `Bandeja/`, no en `Notas/`. Sin `folder` la
+        decide el padre (o `Notas/` en la raíz), como siempre.
+
+        `extra` son claves de frontmatter que solo conoce quien llama
+        (`captured_at`, `capture_source`, `captured_by`): se escriben tal cual
+        y el resto del fichero lo pone el mismo camino de siempre. Al guardar
+        después, `fm.rewrite` las conserva (son claves desconocidas para el
+        modelo, no se pierden).
+        """
         self.ensure_structure()
-        folder = self._folder_for_parent(parent_id)
+        if folder is None:
+            folder = self._folder_for_parent(parent_id)
+        else:
+            # Una carpeta de configuración también puede ser una ruta rara: se
+            # valida antes de `makedirs` (mismo motivo que en el padre).
+            folder = vaultfs.safe_rel(self.root, folder)
         page_id = page_id or str(uuid.uuid4())
         now = now_iso()
         rel, notes = write_note_file(
@@ -758,6 +776,7 @@ class VaultStore:
             created=created or now,
             updated=updated or now,
             created_by=created_by,
+            extra=extra,
         )
         with self._tx():
             self._index_file(rel, self._parent_str(parent_id))
@@ -1666,6 +1685,11 @@ class VaultStore:
                 return None
             return ids_by_path.get(f"{folder}.md")
 
+        # La bandeja de capturas (P13) también es una carpeta del vault con
+        # notas de primera clase: no está fuera de sitio, así que no avisa.
+        from app.config import settings
+
+        capture_dir = settings.capture_dir.strip("/")
         # Padres antes que hijas: la FK `parent_id` es inmediata.
         pages.sort(key=lambda p: (p.path.count("/"), p.path))
         for page in pages:
@@ -1675,6 +1699,8 @@ class VaultStore:
                 or folder.startswith(NOTES_DIR + "/")
                 or folder == DATABASES_DIR
                 or folder.startswith(DATABASES_DIR + "/")
+                or folder == capture_dir
+                or folder.startswith(capture_dir + "/")
             ):
                 stats.warnings.append(
                     f"{page.path}: está fuera de {NOTES_DIR}/ y {DATABASES_DIR}/ "

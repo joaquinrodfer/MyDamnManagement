@@ -24,7 +24,7 @@ def test_esquema_versionado_y_fts5(index_path):
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == indice.SCHEMA_VERSION
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
         tablas = {

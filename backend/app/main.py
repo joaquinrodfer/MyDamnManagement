@@ -3,15 +3,16 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import agent_auth, auth, login_page
+from app import agent_auth, auth, capture_tokens, login_page
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
 from app.routers import (
     agent,
+    capture,
     dashboard,
     databases,
     events,
@@ -41,6 +42,10 @@ app = FastAPI(
 )
 
 app.include_router(pages.router)
+# `/capture` (P13): el endpoint que llaman los atajos del sistema operativo y
+# `/inbox`, la bandeja que pinta el panel. Los dos piden identidad; un token
+# personal de captura solo vale para `POST /capture` (ver el middleware).
+app.include_router(capture.router)
 app.include_router(databases.router)
 app.include_router(status.router)
 app.include_router(trash.router)
@@ -75,8 +80,20 @@ app.include_router(auth_routes.router)
 # mismo fichero, así que servirlo sin sesión no enseña nada que no esté ya en la
 # pantalla de entrada). `/agent/...` tiene su propio permiso acotado
 # (`X-Agent-Token`) y no se mezcla con la sesión del dueño.
+# `/manifest.webmanifest` es el manifiesto de la PWA (P13): no lleva datos,
+# solo el nombre, los iconos y `display: standalone`. Va aquí porque el
+# navegador lo pide al instalar y, si no, la respuesta sería un 401 con la
+# pantalla de entrada (que es justo lo que no se puede instalar).
 PUBLIC_PATHS = frozenset(
-    {"/health", "/auth/login", "/auth/setup", "/auth/status", "/login", "/logo.png"}
+    {
+        "/health",
+        "/auth/login",
+        "/auth/setup",
+        "/auth/status",
+        "/login",
+        "/logo.png",
+        "/manifest.webmanifest",
+    }
 )
 
 
@@ -108,15 +125,26 @@ async def session_is_required(request: Request, call_next):
     el panel de siempre, sin ella lleva al login y vuelve a donde ibas.
 
     El orden de los middleware importa: este se declara ANTES que
-    `agent_token_is_scoped`, y Starlette envuelve al último declarado por
-    fuera, así que el permiso de agente se evalúa primero y su 403 («un token
-    solo abre /agent/*») no depende de que además haya sesión.
+    `agent_token_is_scoped` y que `user_token_is_scoped`, y Starlette envuelve
+    al último declarado por fuera, así que los permisos acotados (el del agente
+    y el del token de captura) se evalúan primero y sus 403 («un token solo
+    abre /agent/*», «un token de captura solo abre POST /capture») no dependen
+    de que además haya sesión.
+
+    Un token de captura sí vale para `POST /capture`: en ese caso el middleware
+    de fuera ya ha dejado el usuario en `request.state` y aquí no se mira la
+    cookie (no hay).
     """
     path = request.url.path
     if path in PUBLIC_PATHS or path == "/agent" or path.startswith("/agent/"):
         return await call_next(request)
 
-    user = _user_from_cookie(request)
+    # El usuario puede venir ya resuelto por el middleware del token de
+    # captura (P13). Solo pasa en `POST /capture`: cualquier otra ruta con ese
+    # token se ha cortado antes con 403.
+    user = getattr(request.state, "user", None)
+    if user is None:
+        user = _user_from_cookie(request)
     if user is None:
         if _accepts_html(request):
             destino = path
@@ -158,6 +186,71 @@ async def agent_token_is_scoped(request: Request, call_next):
                     )
                 },
             )
+    return await call_next(request)
+
+
+def _capture_token(request: Request) -> Optional[str]:
+    """El token personal de captura de la petición, si lo trae (P13).
+
+    Dos formas para lo mismo: `Authorization: Bearer <token>` es lo que usan
+    `curl` y los scripts, y `X-User-Token` es lo cómodo en un atajo que no deja
+    montar un esquema de autenticación. Se lee de cabeceras y no de la query a
+    propósito: una URL acaba en el log de acceso y en el historial del cliente.
+    """
+    header = request.headers.get("authorization", "")
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    explicit = request.headers.get("x-user-token")
+    if explicit and explicit.strip():
+        return explicit.strip()
+    return None
+
+
+@app.middleware("http")
+async def user_token_is_scoped(request: Request, call_next):
+    """Un token de captura solo abre `POST /capture`; el resto es 403 (P13).
+
+    Es la misma idea que `agent_token_is_scoped`, para el otro secreto acotado
+    que tiene la app: un token que vive en un script de escritorio (o en el
+    portapapeles de un atajo) no puede ser una llave maestra del vault. Si se
+    filtra, quien lo tenga apunta notas en la bandeja y nada más: no lee
+    páginas, no borra y no crea tokens.
+
+    Un token desconocido **no** se rechaza aquí: no identifica a nadie, así que
+    la petición sigue su curso y decide la puerta de la sesión (401 en todo lo
+    que no sea público). Rechazarlo aquí sería inventar una autenticación que
+    no es la de esta puerta.
+
+    Se declara después de los otros dos, así que es el middleware de fuera: su
+    403 no depende de que haya sesión ni de qué más venga en las cabeceras.
+    """
+    token = _capture_token(request)
+    if token is None:
+        return await call_next(request)
+
+    conn = open_index(settings.index_path)
+    try:
+        found = capture_tokens.resolve(conn, token)
+        if found is None:
+            return await call_next(request)
+        if request.method != "POST" or request.url.path != "/capture":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": (
+                        "un token de captura solo abre POST /capture: el resto "
+                        "de la API es de la sesión del dueño"
+                    )
+                },
+            )
+        # Aquí sí: el token acaba de usarse para lo único que puede.
+        capture_tokens.mark_used(conn, found.token.id)
+    finally:
+        conn.close()
+
+    request.state.user = found.user
+    request.state.capture_token = found.token
     return await call_next(request)
 
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
@@ -322,6 +415,23 @@ def on_shutdown() -> None:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def manifest():
+    """El manifiesto de la PWA (P13), con su tipo MIME.
+
+    `StaticFiles` no conoce la extensión `.webmanifest` y la serviría como
+    `application/octet-stream`; un manifiesto con ese tipo no vale para
+    instalar. Esta ruta se declara antes del montaje del panel (que es el
+    último y por eso gana a todo lo demás), así que se sirve con el tipo
+    correcto y sin caché. **No hay service worker**: la app necesita el
+    servidor, y prometer lo contrario sería mentir en el manifiesto.
+    """
+    return FileResponse(
+        Path(settings.frontend_dir) / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
 
 
 @app.get("/login", include_in_schema=False)

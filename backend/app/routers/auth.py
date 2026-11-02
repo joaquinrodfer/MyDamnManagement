@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from app import auth, config
+from app import auth, capture_tokens, config
 from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -56,6 +56,11 @@ class SetupRequest(BaseModel):
 class PasswordRequest(BaseModel):
     current_password: str
     new_password: str
+
+
+class TokenCreateRequest(BaseModel):
+    # Una etiqueta para reconocer la llave en la lista («Mac de casa»).
+    name: Optional[str] = None
 
 
 class UserCreateRequest(BaseModel):
@@ -260,6 +265,52 @@ def change_password(
 
     auth.revoke_user_sessions(conn, user.id)
     return signed_in(conn, request, user)
+
+
+@router.get("/tokens")
+def list_capture_tokens(
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Los tokens de captura del usuario, **sin el secreto** (P13).
+
+    `last_used_at` es la última vez que ese token capturó algo: la lista sirve
+    para decidir qué llave se puede revocar sin miedo a romper un atajo.
+    """
+    return [token.as_dict() for token in capture_tokens.list_for_user(conn, user.id)]
+
+
+@router.post("/tokens", status_code=201)
+def create_capture_token(
+    payload: TokenCreateRequest,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Crea un token de captura. El secreto se enseña **una sola vez**.
+
+    En la base queda su SHA-256, así que esta respuesta es la única ocasión en
+    la que el token existe en claro: el panel lo enseña con un aviso y no lo
+    vuelve a pedir (si se pierde, se revoca y se crea otro).
+    """
+    token, secret = capture_tokens.create(conn, user.id, name=payload.name)
+    return {**token.as_dict(), "token": secret}
+
+
+@router.delete("/tokens/{token_id}", status_code=204)
+def revoke_capture_token(
+    token_id: str,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Revoca un token de captura del usuario. Idempotente a medias: 404 si no está.
+
+    El `user_id` entra en el `WHERE` (ver `capture_tokens.revoke`): el id de un
+    token ajeno no se puede revocar. Se responde 404 y no 403 para no decir
+    siquiera si existía.
+    """
+    if not capture_tokens.revoke(conn, user.id, token_id):
+        raise HTTPException(404, "no hay ningún token de captura con ese id")
+    return Response(status_code=204)
 
 
 @router.get("/users")

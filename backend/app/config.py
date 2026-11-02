@@ -79,6 +79,19 @@ class Settings(BaseSettings):
     # lo fuerza; `=0` lo apaga (útil en un desarrollo por http en otra máquina).
     session_cookie_secure: Optional[bool] = None
 
+    # --- Captura rápida (P13) -------------------------------------------
+    # Carpeta del vault donde caen las notas de `POST /capture`: lo que se
+    # apunta desde un atajo y todavía no está clasificado. Relativa a
+    # `VAULT_PATH` y configurable porque no es una carpeta de contenido como
+    # `Notas/`: la interfaz la enseña aparte («Bandeja (N)») y «Procesar» la
+    # mueve a donde toque con el PATCH de `parent_id` de siempre.
+    capture_dir: str = "Bandeja"
+
+    # Tope del texto de una captura, en bytes UTF-8. Una captura es un apunte,
+    # no un documento: 64 KB dan para pegar una página entera y dejan fuera el
+    # envío accidental de un fichero grande por el atajo.
+    capture_max_bytes: int = 64 * 1024
+
     # --- Puerta para agentes (P10b) -------------------------------------
     # `AGENT_TOKENS="token1:agente-hitos,token2:agente-revision"`: pares
     # token:nombre separados por comas (el orden es el del ejemplo: primero el

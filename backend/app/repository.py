@@ -294,6 +294,56 @@ class Repository:
             "(POST /databases/{database_id}/rows)"
         )
 
+    def capture_note(
+        self,
+        *,
+        text: str,
+        title: str,
+        source: str,
+        captured_by: Optional[str],
+        folder: str,
+        captured_at: Optional[str] = None,
+    ) -> Page:
+        """Crea una nota de captura en `folder` (la bandeja) y la devuelve.
+
+        Va por `VaultStore.create`, que es el mismo camino que una nota normal
+        desde el panel: `.md` atómico, índice en la misma transacción y la
+        colisión de título resuelta con sufijo (` (2)`, ` (3)`…) por el propio
+        vault. Lo único distinto es la carpeta (la bandeja no es `Notas/`) y
+        tres claves de frontmatter que solo tienen sentido en una captura.
+        """
+        page_id = self.vault.create(
+            title=title,
+            body=text,
+            created_by=captured_by,
+            folder=folder,
+            extra={
+                "captured_at": captured_at or _iso(_now()),
+                "capture_source": source,
+                "captured_by": captured_by,
+            },
+        )
+        page = self.get_page(page_id)
+        assert page is not None
+        return page
+
+    def inbox_pages(self, folder: str) -> list[Page]:
+        """Las notas que viven en `folder` (la bandeja), la más reciente primero.
+
+        La API no devuelve `path`, así que el panel no tiene otra forma de
+        saber qué está sin clasificar: esta es la lista que pinta la sección
+        «Bandeja (N)». Incluye las subcarpetas, si alguien hizo una dentro de
+        la bandeja: siguen siendo cosas por procesar.
+        """
+        prefix = folder.strip("/") + "/"
+        rows = self.conn.execute(
+            SELECT_PAGE
+            + " WHERE p.type = ? AND substr(p.path, 1, ?) = ?"
+            " ORDER BY p.created_at DESC, p.rowid DESC",
+            (PageType.note.value, len(prefix), prefix),
+        ).fetchall()
+        return [_page(row) for row in rows]
+
     def update_page(
         self,
         page_id: uuid.UUID,
