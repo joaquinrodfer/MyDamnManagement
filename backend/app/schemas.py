@@ -296,3 +296,89 @@ class SuggestionAcceptRead(BaseModel):
     page_id: uuid.UUID
     created: bool = False
     stale: bool = False
+
+
+# --- Puerta para agentes (P10b) ----------------------------------------
+
+
+class AgentSuggestionCreate(BaseModel):
+    """Lo que manda un agente en `POST /agent/suggestions`.
+
+    Igual que `SuggestionCreate` pero con `page_id` en el cuerpo (la ruta del
+    agente no cuelga de la nota) y **sin `agent`**: el nombre sale del token.
+    Si el cuerpo trae `agent`, se ignora en silencio — no es un error, es que
+    ese campo no lo pone quien llama.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    page_id: uuid.UUID
+    kind: SuggestionKind = SuggestionKind.edit
+    old_text: str = ""
+    new_text: str = ""
+    rationale: str = ""
+    title: Optional[str] = None
+    offset: Optional[int] = None
+
+
+class AgentPageRef(BaseModel):
+    """La nota sobre la que se lee el contexto. `path`, la del vault."""
+
+    id: uuid.UUID
+    title: str
+    path: Optional[str] = None
+    type: PageType
+    updated_at: datetime
+
+
+class AgentBacklink(BaseModel):
+    """Una página que enlaza a esta por `[[wikilink]]`."""
+
+    id: uuid.UUID
+    title: str
+
+
+class AgentLink(BaseModel):
+    """Un wikilink del cuerpo. `exists: false` = el título no resuelve hoy."""
+
+    title: str
+    exists: bool
+
+
+class AgentSuggestionRead(BaseModel):
+    """Una sugerencia con su hilo, en la forma compacta que lee un agente.
+
+    `reason` y `replies` son el canal de vuelta: lo que el dueño dijo al
+    rechazar y lo que ha respondido. `path` dice dónde vive la nota.
+    """
+
+    id: uuid.UUID
+    page_id: Optional[uuid.UUID] = None
+    path: Optional[str] = None
+    status: SuggestionStatus
+    kind: SuggestionKind
+    agent: str
+    title: Optional[str] = None
+    created_at: Optional[datetime] = None
+    decided_at: Optional[datetime] = None
+    old_text: str = ""
+    new_text: str = ""
+    rationale: str = ""
+    reason: Optional[str] = None
+    replies: list[SuggestionReply] = []
+
+
+class AgentContextRead(BaseModel):
+    """`GET /agent/context`: la nota, su vecindario y su hilo, de una vez.
+
+    `body_truncated` dice si el cuerpo se cortó (`AGENT_CONTEXT_MAX_BODY`):
+    quien lee tiene que saber que no lo ha visto entero.
+    """
+
+    page: AgentPageRef
+    body: str
+    body_truncated: bool = False
+    backlinks: list[AgentBacklink] = []
+    links: list[AgentLink] = []
+    suggestions: list[AgentSuggestionRead] = []
+    brief: Optional[str] = None

@@ -55,6 +55,26 @@ class Settings(BaseSettings):
     default_user_name: str = "Tú"
     default_icon: str = "📄"
 
+    # --- Puerta para agentes (P10b) -------------------------------------
+    # `AGENT_TOKENS="token1:agente-hitos,token2:agente-revision"`: pares
+    # token:nombre separados por comas (el orden es el del ejemplo: primero el
+    # token, luego el nombre). El nombre del agente viaja dentro del token: el
+    # cuerpo de la petición no puede elegirlo. Vacía o ausente -> los
+    # endpoints `/agent/...` no existen (404), que es la forma más barata de no
+    # anunciar una superficie que no está configurada.
+    agent_tokens: str = ""
+
+    # Tope del cuerpo que devuelve `GET /agent/context`, en bytes UTF-8. Una
+    # nota de varios MB no puede volcarse entera a un LLM de una vez: se corta
+    # y se dice (`body_truncated: true`).
+    agent_context_max_body: int = 20 * 1024
+
+    # Tope de sugerencias pendientes, para que un agente en bucle no llene una
+    # nota de ruido. Dos contadores independientes: por nota (da igual quién
+    # las proponga) y por agente (en todo el vault). Por encima, 429.
+    agent_max_pending_note: int = 20
+    agent_max_pending_agent: int = 20
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

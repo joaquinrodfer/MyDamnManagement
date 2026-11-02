@@ -33,7 +33,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from app.vault import vaultfs
 
@@ -292,11 +292,8 @@ def read(path: str) -> Optional[Suggestion]:
     return Suggestion.from_dict(data)
 
 
-def list_for(
-    root: str, note_rel: str, status: Optional[str] = None
-) -> list[Suggestion]:
-    """Sugerencias de una nota, las más recientes primero. `status` filtra."""
-    folder = sidecar_abs(root, note_rel)
+def _in_folder(folder: str, status: Optional[str] = None) -> list[Suggestion]:
+    """Las sugerencias de una carpeta de sidecar. Un `.json` roto no la tumba."""
     try:
         names = sorted(os.listdir(folder))
     except OSError:
@@ -311,8 +308,39 @@ def list_for(
         if status is not None and suggestion.status != status:
             continue
         found.append(suggestion)
+    return found
+
+
+def list_for(
+    root: str, note_rel: str, status: Optional[str] = None
+) -> list[Suggestion]:
+    """Sugerencias de una nota, las más recientes primero. `status` filtra."""
+    found = _in_folder(sidecar_abs(root, note_rel), status)
     found.sort(key=lambda s: (s.created_at, s.id), reverse=True)
     return found
+
+
+def _sidecars(root: str) -> Iterator[tuple[str, str]]:
+    """`(nota_rel, carpeta_abs)` de cada carpeta de sugerencias del vault.
+
+    Recorrido único que comparten `find`, el contador de pendientes y el
+    listado por agente: las tres rutas preguntan «¿qué sidecars hay?» y solo se
+    diferencian en qué leen de ellos. La papelera se salta (una sugerencia que
+    se fue con su nota está borrada) y no se desciende dentro de una carpeta de
+    sidecar, que solo tiene `.json`.
+    """
+    root_abs = os.path.abspath(root)
+    for dirpath, dirnames, _files in os.walk(root_abs):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+        sidecars = [name for name in dirnames if name.endswith(SIDECAR_MARK)]
+        for name in sidecars:
+            dirnames.remove(name)
+        for name in sidecars:
+            rel_dir = os.path.relpath(os.path.join(dirpath, name), root_abs)
+            note_rel = note_rel_of(rel_dir)
+            if note_rel is None:                     # pragma: no cover
+                continue
+            yield note_rel, os.path.join(dirpath, name)
 
 
 def find(root: str, suggestion_id: str) -> Optional[tuple[Suggestion, str]]:
@@ -320,29 +348,71 @@ def find(root: str, suggestion_id: str) -> Optional[tuple[Suggestion, str]]:
 
     Las rutas de la API (`/suggestions/{sid}/accept`) no llevan la nota, así
     que hay que recorrer las carpetas de sidecar: son pocas y con un nivel de
-    ficheros, y el recorrido no entra en ellas. La papelera se salta: una
-    sugerencia que se fue con su nota está borrada.
+    ficheros, y el recorrido no entra en ellas.
     """
-    root_abs = os.path.abspath(root)
-    for dirpath, dirnames, _files in os.walk(root_abs):
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
-        sidecars = [name for name in dirnames if name.endswith(SIDECAR_MARK)]
-        # Dentro de una carpeta de sidecar solo hay `.json`: no se desciende.
-        for name in sidecars:
-            dirnames.remove(name)
-        for name in sidecars:
-            path = os.path.join(dirpath, name, f"{suggestion_id}.json")
-            if not os.path.isfile(path):
-                continue
-            suggestion = read(path)
-            if suggestion is None:
-                continue
-            rel_dir = os.path.relpath(os.path.join(dirpath, name), root_abs)
-            note_rel = note_rel_of(rel_dir)
-            if note_rel is None:                     # pragma: no cover
-                continue
-            return suggestion, note_rel
+    for note_rel, folder in _sidecars(root):
+        path = os.path.join(folder, f"{suggestion_id}.json")
+        if not os.path.isfile(path):
+            continue
+        suggestion = read(path)
+        if suggestion is None:
+            continue
+        return suggestion, note_rel
     return None
+
+
+def counts_pending(root: str, note_rel: str, agent: str) -> tuple[int, int]:
+    """Cuántas sugerencias `pending` hay en la nota y cuántas tiene ese agente.
+
+    Devuelve `(en_esa_nota, del_agente_en_todo_el_vault)`. Son dos topes
+    distintos (P10b): el primero protege **la nota** de un agente en bucle
+    —da igual quién las proponga, el dueño abre la nota y ve veinte parches—,
+    el segundo protege **el vault** de un agente que reparte ruido por todas
+    partes. Se calculan en el mismo recorrido que ya hace falta para el
+    segundo.
+    """
+    on_note = 0
+    by_agent = 0
+    for sidecar_note, folder in _sidecars(root):
+        for suggestion in _in_folder(folder, "pending"):
+            if suggestion.agent == agent:
+                by_agent += 1
+            if sidecar_note == note_rel:
+                on_note += 1
+    return on_note, by_agent
+
+
+def list_for_agent(
+    root: str, agent: str, status: Optional[str] = None
+) -> list[tuple[str, Suggestion]]:
+    """Sugerencias de un agente en todo el vault, `(nota_rel, sugerencia)`.
+
+    La más reciente actividad primero, que es el orden en que un agente quiere
+    leer «qué ha pasado»: crear, decidir o la última respuesta del dueño.
+    """
+    found: list[tuple[str, Suggestion]] = []
+    for note_rel, folder in _sidecars(root):
+        for suggestion in _in_folder(folder, status):
+            if suggestion.agent == agent:
+                found.append((note_rel, suggestion))
+    found.sort(key=lambda item: (activity_at(item[1]), item[1].id), reverse=True)
+    return found
+
+
+def activity_at(suggestion: Suggestion) -> str:
+    """Lo último que pasó con la sugerencia, en ISO 8601 UTC.
+
+    Es la marca de `?since=` («¿qué ha pasado desde mi última visita?»): una
+    sugerencia propuesta anteayer con una respuesta del dueño de ayer cuenta
+    como de ayer, no como del día que se propuso. Se comparan cadenas ISO del
+    mismo formato (las escribe `repository._iso`); el router convierte la marca
+    y el `since` a `datetime` antes de comparar, para aceptar `Z` y desfases.
+    """
+    stamps = [suggestion.created_at or ""]
+    if suggestion.decided_at:
+        stamps.append(suggestion.decided_at)
+    stamps.extend(str(reply.get("at") or "") for reply in suggestion.replies)
+    return max(stamps)
 
 
 # --------------------------------------------------------------------------

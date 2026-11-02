@@ -426,6 +426,36 @@ class Repository:
         ).fetchone()
         return row["path"] if row is not None else None
 
+    def page_by_path(self, rel_path: str) -> Optional[Page]:
+        """La página que vive en `rel_path` (ruta relativa al vault), o None.
+
+        Es la puerta de `GET /agent/context?path=...`: un agente que lee el
+        vault por su cuenta conoce rutas, no ids. La ruta tiene que ser la del
+        índice (`Notas/Proyectos.md`) tal cual; no se adivina con prefijos,
+        porque `Notas/X.md` y `X.md` son dos notas distintas si existen las dos.
+        Quien llama normaliza antes (`vaultfs.safe_rel`).
+        """
+        row = self.conn.execute(
+            SELECT_PAGE + " WHERE p.path = ?", (rel_path,)
+        ).fetchone()
+        return _page(row) if row else None
+
+    def folded_titles(self, workspace_id: uuid.UUID | str) -> set[str]:
+        """Títulos del workspace plegados con `fold_title`, para los wikilinks.
+
+        `GET /agent/context` necesita decir, por cada `[[Título]]` del cuerpo,
+        si apunta a una página existente. Se pliega igual que al guardar
+        (`fold_title`: NFKC + `casefold`, sin quitar acentos), así que «existe»
+        en el contexto y «crea un backlink» en el guardado dicen lo mismo.
+        """
+        return {
+            fold_title(row["title"])
+            for row in self.conn.execute(
+                "SELECT title FROM pages WHERE workspace_id = ?",
+                (str(workspace_id),),
+            )
+        }
+
     def create_suggestion(
         self,
         page_id: uuid.UUID,
@@ -608,6 +638,32 @@ class Repository:
         """Deja escrito que el ancla ya no está, antes de contarlo por error."""
         suggestion.status = "orphaned"
         suggestions.write(self.vault.root, suggestion, note_rel)
+
+    # -------------------------------------- sugerencias por agente (P10b)
+
+    def pending_counts(self, page_id: uuid.UUID, agent: str) -> tuple[int, int]:
+        """`(pendientes en la nota, pendientes del agente en todo el vault)`.
+
+        Los dos topes de P10b. El primero es de la nota (da igual quién las
+        proponga): es lo que el dueño ve al abrirla. El segundo es del agente:
+        un bucle que reparte parches por veinte notas distintas tampoco pasa.
+        """
+        note_rel = self.page_path(page_id)
+        if note_rel is None:        # pragma: no cover - ya comprobado antes
+            return (0, 0)
+        return suggestions.counts_pending(self.vault.root, note_rel, agent)
+
+    def list_agent_suggestions(
+        self, agent: str, status: Optional[str] = None
+    ) -> list[tuple[str, Suggestion]]:
+        """Sugerencias de un agente en todo el vault, `[(ruta_de_la_nota, sug)]`.
+
+        La ruta de la nota sale del sitio donde está el sidecar, así que
+        responde «dónde» sin una consulta al índice por sugerencia.
+        """
+        if status is not None and status not in suggestions.STATUSES:
+            raise SuggestionError(f"status desconocido: {status!r}")
+        return suggestions.list_for_agent(self.vault.root, agent, status)
 
     # ---------------------------------------------------------- databases
 

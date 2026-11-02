@@ -9,6 +9,7 @@ from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
 from app.routers import (
+    agent,
     dashboard,
     databases,
     events,
@@ -24,6 +25,7 @@ from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 from app.vault.watcher import VaultWatcher
 
 log = logging.getLogger("mdm.main")
+
 
 app = FastAPI(
     title="MyDamnManagement API",
@@ -54,6 +56,10 @@ app.include_router(graph.router)
 # proponen los agentes, en el sidecar de la nota. Solo backend: la interfaz va
 # en su propia tarjeta.
 app.include_router(suggestions.router)
+# `/agent/...` (P10b): la puerta de los agentes — leer contexto, proponer y ver
+# lo decidido, con `X-Agent-Token`. Sin `AGENT_TOKENS` las tres rutas dan 404
+# (no existen), que es lo que hace un despliegue sin agentes configurados.
+app.include_router(agent.router)
 
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
 # los tests y el apagado puedan pararlo sin depender del objeto `app`.

@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from app import schemas
 from app.dependencies import get_repo
 from app.events import bus
+from app.limits import check_size as _check_size
 from app.repository import Repository
 from app.vault import suggestions
 from app.vault.store import VaultError
@@ -31,15 +32,6 @@ from app.vault.suggestions import (
 )
 
 router = APIRouter(tags=["suggestions"])
-
-
-def _check_size(value: str, limit: int, what: str) -> None:
-    """413 si `value` pasa del tope, contando bytes UTF-8 (no caracteres)."""
-    if len((value or "").encode("utf-8")) > limit:
-        # En KB cuando tiene sentido; los topes pequeños (200 B) se dicen en
-        # bytes, que "0 KB" no informa de nada.
-        tope = f"{limit // 1024} KB" if limit >= 1024 else f"{limit} B"
-        raise HTTPException(413, f"{what} pasa del tope de {tope}")
 
 
 def _get_or_404(repo: Repository, page_id: uuid.UUID):
