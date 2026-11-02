@@ -12,6 +12,9 @@ services:
       INDEX_PATH: /data/index.sqlite
       VAULT_PATH: /data/vault
       DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
+      # Bandeja de capturas (P13): dónde caen las notas de POST /capture.
+      # Relativa al vault; por defecto `Bandeja`, dentro de él.
+      CAPTURE_DIR: ${CAPTURE_DIR:-Bandeja}
     volumes:
       - ./backend/app:/app/app # hot-reload en desarrollo (Windows y Linux por igual)
       - ./frontend:/app/frontend:ro # panel de estado; estático, sin build

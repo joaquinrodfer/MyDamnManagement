@@ -1,0 +1,24 @@
+[Desktop Entry]
+# Lanzador de la captura rápida (P13). Copia este fichero a
+#   ~/.local/share/applications/mdm-captura.desktop
+# y cambia `Exec` por la ruta donde tengas `captura.sh` (aquí se asume
+# ~/.local/bin/captura.sh, que es el sitio habitual). Después aparece en el
+# menú de aplicaciones y se puede lanzar desde el escritorio.
+#
+# El atajo de teclado lo pone el escritorio, no la app. En GNOME:
+#   gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/']"
+#   gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ name 'Capturar en MyDamnManagement'
+#   gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ command "$HOME/.local/bin/captura.sh"
+#   gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ binding '<Control><Alt>n'
+# (los tres últimos van sobre el mismo esquema; si ya tenías atajos propios,
+#  añade la ruta a la lista del primero en vez de sustituirla).
+Type=Application
+Name=Capturar en MyDamnManagement
+Name[en]=Capture into MyDamnManagement
+Comment=Apunta algo en la bandeja de MyDamnManagement
+Comment[en]=Send a note to the MyDamnManagement inbox
+Exec=/home/TU_USUARIO/.local/bin/captura.sh
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;
+Keywords=captura;capture;nota;note;mdm;

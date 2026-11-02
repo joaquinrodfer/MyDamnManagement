@@ -44,6 +44,9 @@ services:
       # OBSOLETO desde P11a (el creador sale de la sesión): se pasa por si
       # algún despliegue viejo lo tiene en su `.env`, pero ya no se usa.
       DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
+      # Bandeja de capturas (P13): dónde caen las notas de POST /capture.
+      # Relativa al vault; por defecto `Bandeja`, dentro de él.
+      CAPTURE_DIR: ${CAPTURE_DIR:-Bandeja}
       DOCS_ENABLED: "0" # apaga /docs, /redoc y /openapi.json en producción
     # Solo datos. Nada de `./backend/app` ni `./frontend`: el código ya está en
     # la imagen (`backend/Dockerfile` los copia) y montarlo encima reintroduciría

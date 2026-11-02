@@ -180,8 +180,14 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/auth/users`  | GET    | Lista los usuarios (`as_dict()`, sin hashes). Solo un administrador |
 | `/auth/users`  | POST   | Crea otro usuario. Solo un administrador                 |
 | `/auth/logout` | POST   | Borra la sesión en la base y borra la cookie             |
+| `/auth/tokens` | GET    | Tokens personales de captura del usuario (`id`, `name`, `created_at`, `last_used_at`), **sin el secreto** |
+| `/auth/tokens` | POST   | Crea un token de captura y devuelve el secreto **una sola vez** |
+| `/auth/tokens/{id}` | DELETE | Revoca un token de captura (404 si no es del usuario) |
+| `/capture`     | POST   | Crea una nota en la bandeja (`Bandeja/`) desde un atajo o un script: `{text, title?, source}` → `{id, title, path}`. Sesión **o** token de captura |
+| `/inbox`       | GET    | La bandeja: `{dir, count, pages}` para la sección «Bandeja (N)». Solo sesión |
+| `/manifest.webmanifest` | GET | Manifiesto de la PWA (`application/manifest+json`) |
 
-Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
+Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
 
 Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]]`) en `body_markdown`; se resuelven por título exacto (sin distinguir mayúsculas) dentro del mismo workspace al guardar la página. En el editor no hace falta teclearlos enteros: `[[` abre la lista de páginas y `Enter` completa.
 
@@ -331,7 +337,7 @@ curl -s -b cookies.txt -H 'Content-Type: application/json' \
 
 Protege:
 
-- **Todo salvo** `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status` y `/agent/...`. Sin sesión: `401 {"detail": "no autenticado"}` para la API y `303` a `/login` cuando la petición acepta HTML. Navegar a `/` sin sesión no rompe nada: lleva a entrar y vuelve a donde ibas. El panel, si una llamada devuelve 401, salta a `/login`.
+- **Todo salvo** `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest` y `/agent/...`. Sin sesión: `401 {"detail": "no autenticado"}` para la API y `303` a `/login` cuando la petición acepta HTML. Navegar a `/` sin sesión no rompe nada: lleva a entrar y vuelve a donde ibas. El panel, si una llamada devuelve 401, salta a `/login`.
 - **Las contraseñas** con `hashlib.scrypt` (n=2**14, r=8, p=1) y una sal por usuario, en hexadecimal. Sin dependencias nuevas.
 - **Las sesiones** por token aleatorio de 256 bits cuyo hash es lo único que se guarda.
 
@@ -343,6 +349,138 @@ No protege, o no lo hace todavía:
 - **El índice contiene las credenciales.** El backup del vault no se lleva usuarios ni sesiones; si no usas `ADMIN_USER`, guarda también el índice o apunta las contraseñas.
 - El límite de intentos es **por proceso y en memoria**: no sobrevive a un reinicio y no se comparte si algún día hay más de un worker.
 - **Los agentes no son usuarios.** `/agent/...` sigue con su `X-Agent-Token`, que no es una sesión: no abre ninguna ruta del dueño (`403`) ni las de `/auth/*`.
+- **Los tokens de captura tampoco.** Un token personal (P13) solo abre `POST /capture`: el resto de la API responde `403`, y no caducan solos — se revocan desde el panel. Viven en el índice, así que un backup del vault no se los lleva (y hay que apuntarlos si se quiere conservar el atajo).
+
+## Capturar desde fuera (atajo global)
+
+Apuntar algo tiene que costar dos segundos, desde cualquier sitio y en
+cualquier sistema. `POST /capture` crea una nota en la **bandeja de entrada**
+(`Bandeja/`, configurable con `CAPTURE_DIR`) y el panel la enseña arriba del
+todo, en **«Bandeja (N)»**, hasta que se clasifique. El atajo de teclado global
+lo pone el **sistema operativo**: la app solo da el endpoint y los scripts.
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/capture \
+  -H "Authorization: Bearer $MDM_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Comprar pan","title":"Recados","source":"api"}'
+# {"id":"…","title":"Recados","path":"Bandeja/Recados.md"}
+```
+
+- `text` es obligatorio y tiene tope (`CAPTURE_MAX_BYTES`, 64 KB): una captura
+  es un apunte, no un documento.
+- `title` es opcional; si falta, `Captura 2026-11-02 14-33`. El `:` de la hora
+  se escribe `-` porque **el título es el nombre del fichero** (ADR-0001) y
+  Windows no admite `:` en un nombre.
+- `source` es `shortcut`, `raycast`, `cli` o `api`.
+- Si el título ya existe en la bandeja no falla: el vault resuelve la colisión
+  con ` (2)`, ` (3)`…, como en cualquier otra nota.
+- El `.md` lleva `captured_at`, `capture_source` y `captured_by` en el
+  frontmatter, y se escribe por el **mismo camino** que todo lo demás:
+  escritura atómica, índice en la misma transacción y aviso por `/events` (la
+  pestaña abierta se entera sin recargar).
+
+### El token de captura
+
+El panel entra con la cookie de sesión, pero un atajo del sistema operativo no
+tiene cookie. Para eso está el **token de captura** — y es del usuario, no del
+agente: panel → menú del usuario → **«Tokens de captura»** → crear (el secreto
+se enseña **una sola vez**), listar (con su `last_used_at`) y revocar. Por API,
+con la sesión puesta (`cookies.txt` es el fichero de cookie de `curl`):
+
+```bash
+# crear (la respuesta trae el token, la única vez)
+curl -s -b cookies.txt -H 'Content-Type: application/json' \
+  -d '{"name":"Atajo del Mac"}' http://localhost:8000/auth/tokens
+# {"id":"…","name":"Atajo del Mac","created_at":"…","last_used_at":null,"token":"…"}
+
+# listar (sin el secreto) y revocar
+curl -s -b cookies.txt http://localhost:8000/auth/tokens
+curl -s -b cookies.txt -X DELETE http://localhost:8000/auth/tokens/<id>
+```
+
+En la base queda el **SHA-256** del token, nunca el token, igual que en las
+sesiones. Un token de captura **solo abre `POST /capture`**: cualquier otra
+ruta contesta **403**, por el mismo motivo por el que un token de agente se
+queda en `/agent/*` (un secreto guardado en un script no puede ser una llave
+maestra del vault). No caduca solo: se revoca.
+
+### Los tres atajos, en `tools/capture/`
+
+Los tres hablan con el mismo endpoint, leen `MDM_TOKEN` (obligatorio) y
+`MDM_URL` (por defecto `http://127.0.0.1:8000`), y **avisan** si el servidor no
+responde o el token no vale — nunca fallan en silencio. Ninguno necesita nada
+que no traiga su sistema.
+
+| Sistema | Qué hay | Cómo se dispara |
+| ------- | ------- | --------------- |
+| **macOS** | [`macos/captura.md`](tools/capture/macos/captura.md), paso a paso | Un **Atajo de Shortcuts** con atajo de teclado **`⌘⇧N`** |
+| **Windows** | [`windows/captura.ps1`](tools/capture/windows/captura.ps1) + [`windows/LEEME.md`](tools/capture/windows/LEEME.md) | Acceso directo al script + **PowerToys → Teclado** |
+| **Linux** | [`linux/captura.sh`](tools/capture/linux/captura.sh) + [`linux/mdm-captura.desktop`](tools/capture/linux/mdm-captura.desktop) | Atajo de **GNOME** con `gsettings` |
+
+**macOS.** Se crea un atajo en la app Atajos con **Recibir → Texto → Entrada
+rápida**, una acción **Obtener contenido de URL** (POST a `/capture`, cabecera
+`Authorization: Bearer …`, cuerpo JSON con `text` = la entrada y `source` =
+`shortcut`) y una **notificación** con el título que devuelve el servidor. Los
+nombres exactos de cada acción (en español y en inglés) están en
+`tools/capture/macos/captura.md`; aquí no hay capturas de pantalla porque no
+hay un Mac donde hacerlas.
+
+**Windows.**
+
+```powershell
+setx MDM_TOKEN "el-token"          # variable de usuario; MDM_URL si no es localhost
+# acceso directo: powershell.exe -NoProfile -Sta -ExecutionPolicy Bypass -WindowStyle Hidden -File "...\captura.ps1"
+```
+
+El script abre un cuadro de texto (WinForms) con **el portapapeles como valor
+inicial**, hace el `POST` con `Invoke-RestMethod` en UTF-8 y avisa con un globo
+de la bandeja (o un cuadro de error). El atajo se asigna de dos formas: la
+«Tecla de método abreviado» de las propiedades del acceso directo, o
+**PowerToys → Teclado → Remapear un atajo → Abrir una aplicación**. Detalle en
+`tools/capture/windows/LEEME.md`.
+
+**Linux.** `captura.sh` usa `zenity`, `kdialog` o `rofi` para pedir el texto y,
+si no hay ninguno, lee de la entrada estándar (`printf 'idea' | captura.sh`),
+hace el `POST` con `curl` (el JSON se escapa con `awk`, sin `jq`) y avisa con
+`notify-send`/`zenity`/`kdialog`. Para el atajo, en GNOME:
+
+```bash
+gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/']"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ name 'Capturar en MyDamnManagement'
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ command "$HOME/.local/bin/captura.sh"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ binding '<Control><Alt>n'
+```
+
+### La bandeja, en el panel
+
+La sección **«Bandeja (N)»** es la primera de la barra lateral y **solo sale si
+hay algo** (nada de «Bandeja (0)»). Se despliega al pulsarla y lista las notas
+de `Bandeja/`; el árbol de páginas no las repite. Cada una tiene **«Procesar»**:
+un selector con las páginas existentes (las notas hacen de carpeta) o una
+página nueva; al confirmar se hace el `PATCH` de `parent_id` de siempre, se
+refresca el árbol y se abre la nota. Procesar una nota la saca de la bandeja y
+la deja donde toque.
+
+### Instalarlo en el Dock (PWA)
+
+El panel es instalable: `frontend/manifest.webmanifest` (nombre, iconos
+generados desde `logo.png` y `display: standalone`) y `/manifest.webmanifest`
+se sirve con su tipo MIME. En Chrome (macOS o cualquier sistema) → menú → **«Añadir al Dock»** / «Instalar aplicación». **No hay service worker**: la app
+necesita el servidor, así que no se promete funcionar sin conexión — lo que
+hace el manifiesto es quitar la barra del navegador y darle un icono propio.
+
+### Por qué no es una aplicación de escritorio
+
+La app **no se distribuye como aplicación de escritorio** y no es un olvido: es
+un servidor autoalojado (Docker, un vault de `.md` que se puede copiar, una
+API) y su interfaz es una página. Un cliente nativo traería instalador por
+sistema, firma y notarización en macOS, actualizaciones por cada plataforma y
+un segundo sitio donde guardar estado — para acabar pidiendo los mismos datos a
+la misma API. Lo único que de verdad hacía falta de un cliente (el atajo global
+y un cuadro de texto) lo pone el sistema operativo con los scripts de arriba, y
+el panel se instala como PWA si se quiere en el Dock. Menos piezas y ninguna
+que pueda quedarse desincronizada del vault.
 
 ## Roadmap
 
