@@ -262,6 +262,21 @@ def change_password(
     return signed_in(conn, request, user)
 
 
+@router.get("/users")
+def list_users(
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Los usuarios, para el panel de administración (nombre, @usuario, color).
+
+    Solo un admin: la lista no es un secreto, pero tampoco tiene por qué verla
+    cualquiera. `as_dict()` no lleva hash ni salt.
+    """
+    if not user.is_admin:
+        raise HTTPException(403, "solo un administrador puede listar los usuarios")
+    return [u.as_dict() for u in auth.list_users(conn)]
+
+
 @router.post("/users", status_code=201)
 def create_user(
     payload: UserCreateRequest,

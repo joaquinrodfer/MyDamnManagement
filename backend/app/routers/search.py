@@ -21,4 +21,5 @@ def search_pages(
     `Reuniones`), que es lo que hacía el `plainto_tsquery('spanish', ...)` de
     Postgres con su lematizador.
     """
-    return [serialize_page(p) for p in repo.search(q, limit=50)]
+    colors = repo.author_colors()
+    return [serialize_page(p, colors) for p in repo.search(q, limit=50)]

@@ -240,6 +240,18 @@ def get_user(conn: sqlite3.Connection, user_id: str) -> Optional[User]:
     return _user(row) if row is not None else None
 
 
+def list_users(conn: sqlite3.Connection) -> list[User]:
+    """Todos los usuarios, ordenados por nombre visible (para el panel admin).
+
+    Devuelve objetos `User`, que no llevan hash ni salt: el `as_dict()` de cada
+    uno es lo único que sale por HTTP (ver `GET /auth/users`).
+    """
+    rows = conn.execute(
+        "SELECT * FROM users ORDER BY display_name COLLATE NOCASE, username"
+    ).fetchall()
+    return [_user(row) for row in rows]
+
+
 def get_user_by_username(conn: sqlite3.Connection, username: str) -> Optional[User]:
     row = conn.execute(
         "SELECT * FROM users WHERE username = ?", ((username or "").strip(),)

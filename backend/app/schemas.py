@@ -39,6 +39,11 @@ class PageRead(PageBase):
     id: uuid.UUID
     workspace_id: uuid.UUID
     created_by: Optional[str] = None
+    # Color del usuario que la creó (P11b), resuelto en el servidor contra
+    # `users` por `display_name`: el cliente no tiene por qué conocer la tabla
+    # de usuarios para pintar el punto de un autor. `null` = nombre sin usuario
+    # (notas viejas con «Tú»), y la interfaz pinta el gris neutro de siempre.
+    created_by_color: Optional[str] = None
     header_image_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime

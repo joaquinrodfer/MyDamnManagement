@@ -603,6 +603,129 @@ def test_created_by_es_el_usuario_de_la_sesion(client, vault_path):
     assert "created_by: Marta" in texto
 
 
+def test_la_pagina_lleva_el_color_de_quien_la_creo(client, index_path):
+    """`created_by_color` se resuelve en el servidor, no en el navegador (P11b).
+
+    El punto clave: la nota la lee OTRA sesión (la del admin) que nunca ha visto
+    al autor; el color tiene que ser el de Luis igualmente, no el de quien mira.
+    """
+    alta = client.post(
+        "/auth/users",
+        json={
+            "username": "luis",
+            "display_name": "Luis",
+            "password": "contrasena-de-luis",
+            "color": "#f5a623",
+        },
+    )
+    assert alta.status_code == 201, alta.text
+    assert alta.json()["color"] == "#f5a623"
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as luis:
+        assert (
+            luis.post(
+                "/auth/login", json={"username": "luis", "password": "contrasena-de-luis"}
+            ).status_code
+            == 200
+        )
+        nota = luis.post(
+            "/pages", json={"title": "De Luis", "body_markdown": "su nota"}
+        ).json()
+        assert nota["created_by"] == "Luis"
+        assert nota["created_by_color"] == "#f5a623"
+
+    # Desde la sesión del admin, que no ha creado la nota ni conoce a Luis por
+    # el panel: el color sigue siendo el del autor.
+    leida = client.get(f"/pages/{nota['id']}").json()
+    assert leida["created_by"] == "Luis"
+    assert leida["created_by_color"] == "#f5a623"
+
+    listado = {p["id"]: p for p in client.get("/pages").json()}
+    assert listado[nota["id"]]["created_by_color"] == "#f5a623"
+
+    buscada = client.get("/search", params={"q": "Luis"}).json()
+    assert any(
+        p["id"] == nota["id"] and p["created_by_color"] == "#f5a623" for p in buscada
+    ), buscada
+
+    # Backlinks: misma regla (comparten el serializador).
+    enlace = client.post(
+        "/pages", json={"title": "Enlaza", "body_markdown": "[[De Luis]]"}
+    ).json()
+    backlinks = client.get(f"/pages/{nota['id']}/backlinks").json()
+    assert [p["id"] for p in backlinks] == [enlace["id"]]
+
+
+def test_una_autoria_sin_usuario_no_inventa_color(client, index_path):
+    """Una nota vieja con un `created_by` que no es de nadie: color `null`.
+
+    Es la rama que la interfaz pinta en gris y sin punto. Se fuerza en el índice
+    porque la API de hoy siempre firma con una sesión real; los datos de antes
+    de P11a son exactamente esto.
+    """
+    nota = client.post("/pages", json={"title": "Vieja", "body_markdown": "hola"}).json()
+    conn = _abrir(index_path)
+    try:
+        conn.execute(
+            "UPDATE pages SET created_by = 'Alguien de antes' WHERE id = ?", (nota["id"],)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    leida = client.get(f"/pages/{nota['id']}").json()
+    assert leida["created_by"] == "Alguien de antes"
+    assert leida["created_by_color"] is None
+
+
+def test_el_listado_de_usuarios_es_solo_para_admin(client):
+    """`GET /auth/users` (P11b): el panel de admin lista de verdad."""
+    listado = client.get("/auth/users")
+    assert listado.status_code == 200, listado.text
+    filas = listado.json()
+    assert [u["username"] for u in filas] == [USUARIO_PRUEBA]
+    # Solo lo que ya devolvía `/auth/me`: ni hash ni salt.
+    assert set(filas[0]) == {"id", "username", "display_name", "color", "is_admin"}
+
+    assert (
+        client.post(
+            "/auth/users",
+            json={
+                "username": "nuria",
+                "display_name": "Nuria",
+                "password": "contrasena-de-nuria",
+            },
+        ).status_code
+        == 201
+    )
+    nombres = [u["display_name"] for u in client.get("/auth/users").json()]
+    assert nombres == ["Nuria", NOMBRE_PRUEBA]  # ordenado por nombre visible
+
+    # Un usuario normal no lista (ni ve la tabla de usuarios).
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as nuria:
+        assert (
+            nuria.post(
+                "/auth/login", json={"username": "nuria", "password": "contrasena-de-nuria"}
+            ).status_code
+            == 200
+        )
+        respuesta = nuria.get("/auth/users")
+        assert respuesta.status_code == 403
+        assert "administrador" in respuesta.json()["detail"]
+
+    # Sin sesión, la puerta de siempre.
+    client.cookies.clear()
+    assert client.get("/auth/users").status_code == 401
+
+
 def test_crear_un_usuario_repetido_es_400(client):
     respuesta = client.post(
         "/auth/users",

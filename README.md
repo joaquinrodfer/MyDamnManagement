@@ -177,6 +177,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/auth/login`  | POST   | `{username, password}` → cookie de sesión `HttpOnly`      |
 | `/auth/me`     | GET    | Usuario de la sesión (`id`, `username`, `display_name`, `color`, `is_admin`) |
 | `/auth/password` | POST | Cambia la contraseña propia (pide la actual) y cierra las demás sesiones |
+| `/auth/users`  | GET    | Lista los usuarios (`as_dict()`, sin hashes). Solo un administrador |
 | `/auth/users`  | POST   | Crea otro usuario. Solo un administrador                 |
 | `/auth/logout` | POST   | Borra la sesión en la base y borra la cookie             |
 
@@ -279,7 +280,7 @@ curl -s -H "X-Agent-Token: token1" \
 
 ## Usuarios y acceso
 
-Desde v1.3 la API **no está abierta**: quien no tiene sesión no lee, no escribe y no borra. Usuarios y sesiones viven en el **índice** (`users`, `sessions`, esquema 4), no en el vault — el vault sigue siendo solo de las notas. El «creador» de cada nota deja de ser un literal: `created_by` es el `display_name` del usuario de la sesión, en el índice y en el frontmatter del `.md`.
+Desde v1.3 la API **no está abierta**: quien no tiene sesión no lee, no escribe y no borra. Usuarios y sesiones viven en el **índice** (`users`, `sessions`, esquema 4), no en el vault — el vault sigue siendo solo de las notas. El «creador» de cada nota deja de ser un literal: `created_by` es el `display_name` del usuario de la sesión, en el índice y en el frontmatter del `.md`. Las páginas que devuelve la API llevan además `created_by_color`: el color del usuario resuelto **en el servidor** contra `users` (una consulta por respuesta), o `null` si ese nombre no es de nadie (notas antiguas con «Tú»). Así el panel pinta el punto del autor sin que el navegador tenga que conocer la tabla de usuarios.
 
 ### Primer arranque
 
@@ -316,7 +317,7 @@ curl -s -b cookies.txt -X POST http://localhost:8000/auth/logout
 
 ### Crear otro usuario
 
-De momento solo un administrador, con `POST /auth/users`:
+De momento solo un administrador: `GET /auth/users` lista (sin hash ni salt) y `POST /auth/users` crea:
 
 ```bash
 curl -s -b cookies.txt -H 'Content-Type: application/json' \

@@ -26,7 +26,9 @@ def _get_or_404(repo: Repository, page_id: uuid.UUID):
 
 @router.get("", response_model=List[schemas.PageRead])
 def list_pages(repo: Repository = Depends(get_repo)):
-    return [serialize_page(p) for p in repo.list_pages()]
+    # El mapa de colores se hace una vez por respuesta, no una por página.
+    colors = repo.author_colors()
+    return [serialize_page(p, colors) for p in repo.list_pages()]
 
 
 @router.post("", response_model=schemas.PageRead)
@@ -51,7 +53,7 @@ def create_page(
         # Padre inexistente o de un tipo que todavía no vive en ficheros: 400
         # con el motivo, en vez de un 500 desde el fondo del vault.
         raise HTTPException(400, str(exc)) from exc
-    return serialize_page(page)
+    return serialize_page(page, repo.author_colors())
 
 
 @router.get("/tree")
@@ -66,7 +68,7 @@ def get_tree(repo: Repository = Depends(get_repo)):
 
 @router.get("/{page_id}", response_model=schemas.PageRead)
 def get_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
-    return serialize_page(_get_or_404(repo, page_id))
+    return serialize_page(_get_or_404(repo, page_id), repo.author_colors())
 
 
 @router.patch("/{page_id}", response_model=schemas.PageRead)
@@ -90,7 +92,7 @@ def update_page(
         raise HTTPException(400, str(exc)) from exc
     if page is None:
         raise HTTPException(404, "Página no encontrada")
-    return serialize_page(page)
+    return serialize_page(page, repo.author_colors())
 
 
 @router.delete("/{page_id}", status_code=204)
@@ -111,7 +113,8 @@ def delete_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
 def get_backlinks(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
     """Páginas cuyo cuerpo contiene un [[wikilink]] hacia esta página."""
     _get_or_404(repo, page_id)
-    return [serialize_page(p) for p in repo.backlinks(page_id)]
+    colors = repo.author_colors()
+    return [serialize_page(p, colors) for p in repo.backlinks(page_id)]
 
 
 @router.post("/{page_id}/header-image", response_model=schemas.PageRead)
@@ -147,7 +150,7 @@ async def upload_header_image(
         # retira la imagen recién subida para no dejar un huérfano y se explica.
         (Path(settings.vault_path) / rel).unlink(missing_ok=True)
         raise HTTPException(400, str(exc)) from exc
-    return serialize_page(page)
+    return serialize_page(page, repo.author_colors())
 
 
 @router.delete("/{page_id}/header-image", response_model=schemas.PageRead)
@@ -161,4 +164,4 @@ def delete_header_image(page_id: uuid.UUID, repo: Repository = Depends(get_repo)
     # La imagen se borra DESPUÉS de que el `.md` deje de apuntar a ella: si el
     # guardado falla, el frontmatter no queda apuntando a un fichero borrado.
     attachments.delete_header(settings.vault_path, page_id)
-    return serialize_page(page)
+    return serialize_page(page, repo.author_colors())

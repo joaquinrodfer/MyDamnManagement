@@ -189,6 +189,24 @@ class Repository:
     def stats(self) -> dict[str, int]:
         return index_mod.count_rows(self.conn)
 
+    def author_colors(self) -> dict[str, str]:
+        """`display_name` -> color de los usuarios, para la autoría visible.
+
+        `pages.created_by` guarda el `display_name` (texto, no un id), así que
+        la única forma de saber de qué color pintar el punto de un autor es
+        resolverlo contra `users` en el servidor: el cliente no puede listar
+        usuarios si no es admin. Una consulta por respuesta (la tabla es
+        pequeña: una fila por persona del vault), nunca una por página.
+
+        `display_name` no es UNIQUE (la UNIQUE es `username`), así que dos
+        usuarios con el mismo nombre comparten color aquí; es la misma
+        ambigüedad que ya arrastra `created_by`, que guarda el nombre.
+        """
+        rows = self.conn.execute(
+            "SELECT display_name, color FROM users WHERE color IS NOT NULL"
+        ).fetchall()
+        return {row["display_name"]: row["color"] for row in rows}
+
     def reindex(self, force: bool = False, empty_hint: str | None = None):
         """Reconstruye las notas del índice desde el vault (ADR D1).
 
