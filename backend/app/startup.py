@@ -238,6 +238,13 @@ class StartupIndex:
             percent = (
                 int(round(100.0 * self._done / self._total)) if self._total else None
             )
+            if estado == STARTING and percent is not None:
+                # Mientras el índice no está listo, `100 %` sería una mentira
+                # por definición: aún queda cerrar la transacción y marcar el
+                # índice como bueno. El 100 es de `ok`; un `starting` se queda
+                # como mucho en 99, así que un `100 %` en `/health` siempre
+                # significa lo mismo que `status: "ok"`.
+                percent = min(percent, 99)
             return {
                 "status": estado,
                 "phase": self._phase,

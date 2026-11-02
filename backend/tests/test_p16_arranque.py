@@ -11,7 +11,10 @@ Lo que se comprueba aquí, y por qué:
 - si lleva demasiado tiempo sin avanzar, también: un indexado atascado no es
   «casi listo», es un fallo;
 - el arranque sigue leyendo el vault entero en cada arranque (ADR-0001 D2): lo
-  que cambia es que no bloquea, no que se deje de reindexar.
+  que cambia es que no bloquea, no que se deje de reindexar;
+- el porcentaje que publica `/health` mientras indexa no adelanta el final: el
+  `100 %` es de `ok`, y la serie solo sube (ronda 2 de P16: antes decía 100 %
+  desde el primer segundo y volvía a bajar al empezar a enlazar).
 
 Este módulo pone `SIN_ESPERA_DE_ARRANQUE = True`: quiere VER el arranque a
 medias, así que el `autouse` de `conftest` no le espera el `/health`.
@@ -22,6 +25,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -213,3 +217,118 @@ def test_el_arranque_sigue_reindexando_lo_que_cambio_por_fuera(
         acceso(otro)
         titulos = [p["title"] for p in otro.get("/pages").json()]
         assert "Escrita por fuera" in titulos
+
+
+def test_un_starting_nunca_trae_percent_100(abrir_app, vault_path, monkeypatch):
+    """El `100 %` lo pone `ok`, no la última pasada (ronda 2 de P16).
+
+    Se frena el enlazado --la última de las cuatro pasadas, la que más tarda--
+    y se mira `/health` con el índice a medias. Antes de esta ronda, en ese
+    mismo instante `/health` decía `{"phase": "escribiendo el índice",
+    "percent": 100}` desde el primer segundo, y al pasar a `enlazando` el
+    número caía a 0: quien lo mirase (el `healthcheck`, el dueño en `docker
+    compose up`) leía «ya está» cuando no había escrito ni una fila.
+    """
+    from app.vault import store as store_mod
+
+    notas = vault_path / "Notas"
+    notas.mkdir(parents=True, exist_ok=True)
+    for i in range(5):
+        (notas / f"nota-{i}.md").write_text(
+            "---\nid: %s\n---\nnota %d\n\n[[nota-0]]\n"
+            % (uuid.uuid5(uuid.NAMESPACE_URL, f"p16-percent-{i}"), i),
+            encoding="utf-8",
+        )
+
+    enlazando = threading.Event()
+    suelto = threading.Event()
+    original = store_mod.sync_wikilinks
+    primera = True
+
+    def sync_frenado(conn, page_id, workspace_id, body):
+        nonlocal primera
+        if primera:
+            primera = False
+            enlazando.set()
+            assert suelto.wait(60), "el test no soltó el enlazado"
+        return original(conn, page_id, workspace_id, body)
+
+    monkeypatch.setattr(store_mod, "sync_wikilinks", sync_frenado)
+
+    with abrir_app() as client:
+        assert enlazando.wait(60), "el arranque no llegó a enlazar"
+        try:
+            salud = client.get("/health")
+            assert salud.status_code == 200
+            cuerpo = salud.json()
+            assert cuerpo["status"] == "starting"
+            avance = cuerpo["progress"]
+            assert avance["phase"] == "enlazando", avance
+            assert avance["percent"] is not None, avance
+            assert avance["percent"] < 100, avance
+            # El `503` de las rutas del índice dice el mismo número, no otro.
+            negada = client.get("/pages")
+            assert negada.status_code == 503
+            assert negada.json()["progress"]["percent"] == avance["percent"]
+        finally:
+            suelto.set()
+
+        esperar_indice_listo(client)
+        assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_el_progreso_del_reindexado_solo_sube_y_no_adelanta_el_100(
+    vault_path, index_path
+):
+    """La serie completa del reindexado, sin HTTP.
+
+    Con `2 * PROGRESS_EVERY` notas cada pasada publica muestras intermedias, así
+    que se puede comprobar lo que de verdad lee quien mira `/health`: el
+    porcentaje solo sube, el 100 % es la última muestra, y mientras queda
+    enlazado por hacer no se pasa del 75 %.
+    """
+    from app.index import ensure_index, open_index
+    from app.repository import Repository
+    from app.vault.reader import PROGRESS_EVERY
+
+    cuantas = 2 * PROGRESS_EVERY
+    notas = vault_path / "Notas"
+    notas.mkdir(parents=True, exist_ok=True)
+    for i in range(cuantas):
+        (notas / f"nota-{i:04d}.md").write_text(
+            "---\nid: %s\n---\nnota %d\n\n[[nota-0000]]\n"
+            % (uuid.uuid5(uuid.NAMESPACE_URL, f"p16-serie-{i}"), i),
+            encoding="utf-8",
+        )
+
+    muestras: list[tuple[str, int, int]] = []
+    ensure_index(str(index_path))
+    conn = open_index(str(index_path))
+    try:
+        repo = Repository(conn)
+        repo.ensure_workspace()
+        repo.reindex(
+            progress=lambda fase, done, total: muestras.append((fase, done, total))
+        )
+    finally:
+        conn.close()
+
+    fases = [fase for fase, _, _ in muestras]
+    for esperada in (
+        "leyendo el vault", "preparando páginas", "escribiendo el índice", "enlazando"
+    ):
+        assert esperada in fases, f"falta la fase {esperada!r}: {fases}"
+
+    porcentajes = [
+        int(round(100.0 * done / total)) for _, done, total in muestras if total
+    ]
+    assert porcentajes == sorted(porcentajes), f"el porcentaje retrocede: {porcentajes}"
+    assert porcentajes[-1] == 100, porcentajes
+    assert 100 not in porcentajes[:-1], f"dice 100 antes de terminar: {porcentajes}"
+
+    # Cuatro pasadas: la escritura empieza en el 50 % (dos de cuatro) y no
+    # puede llegar al 75 % hasta haber escrito todas las filas.
+    escritura = [(done, total) for fase, done, total in muestras
+                 if fase == "escribiendo el índice"]
+    assert escritura[0] == (2 * cuantas, 4 * cuantas), escritura[0]
+    assert max(done for done, _ in escritura) <= 3 * cuantas, escritura

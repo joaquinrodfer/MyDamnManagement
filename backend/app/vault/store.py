@@ -1683,15 +1683,40 @@ class VaultStore:
         `progress(phase, done, total)` es opcional y solo lo pasa el arranque
         (P16): con miles de notas esto tarda minutos y `/health` tiene que
         poder decir por dónde va (y el `healthcheck` distinguir «lento» de
-        «atascado»). No cambia nada de lo que se escribe, solo informa.
+        «atascado»). No cambia nada de lo que se escribe, solo informa. El
+        `done`/`total` va en unidades de trabajo --cuatro pasadas por página:
+        leer, preparar, escribir y enlazar--, así que el porcentaje no vuelve a
+        cero al cambiar de fase y el 100 % es el final de verdad.
         """
         started = time.perf_counter()
         stats = RebuildStats()
         if not allow_empty:
             self._refuse_suspicious_vault(empty_hint)
-        if progress is not None:
-            progress("comprobando el vault", 0, 0)
-        vault = reader.load(self.root, progress=progress)
+        # El porcentaje que ve `/health` es del reindexado ENTERO, no de la
+        # fase (P16, ronda 2): cada página se toca en cuatro pasadas --leer,
+        # preparar, escribir, enlazar-- y cada una se lleva un cuarto de la
+        # barra. Por eso `total` son unidades de trabajo (cuatro por página),
+        # no páginas. Antes se publicaba `done == total` justo antes de abrir
+        # la transacción del volcado: `100 %` con todo el trabajo por delante,
+        # y al pasar a `enlazando` el número retrocedía a 0. Un porcentaje que
+        # dice 100 y luego baja no informa de nada (y el `healthcheck` del
+        # compose lo imprime tal cual).
+        PASADAS = 4
+
+        def avance(fase: str, hechas: int, total: int = 0, tramo: int = 0) -> None:
+            """Publica `hechas` de la pasada `tramo` sobre `total` páginas."""
+            if progress is not None:
+                progress(fase, tramo * total + hechas, total * PASADAS)
+
+        def avance_lectura(fase: str, hechas: int, total: int) -> None:
+            # La lectura cuenta ficheros, que es lo que tiene en la mano, y es
+            # el mismo número de páginas: su pasada acaba igual en el 25 %.
+            avance(fase, hechas, total, 0)
+
+        avance("comprobando el vault", 0)   # sin total: `/health` da percent None
+        vault = reader.load(
+            self.root, progress=avance_lectura if progress is not None else None
+        )
         stats.warnings.extend(vault.warnings)
 
         pages = list(vault.pages.values())
@@ -1732,6 +1757,7 @@ class VaultStore:
                 )
         workspace_id = self._workspace()
         total = len(pages)
+        avance("preparando páginas", 0, total, 1)
         records = []
         for hechas, page in enumerate(pages, 1):
             records.append(
@@ -1741,23 +1767,33 @@ class VaultStore:
                     ids_by_path[page.path],
                 )
             )
-            if progress is not None and hechas % reader.PROGRESS_EVERY == 0:
-                progress("preparando páginas", hechas, total)
+            if hechas % reader.PROGRESS_EVERY == 0:
+                avance("preparando páginas", hechas, total, 1)
         by_path = {record.path: record for record in records}
-        if progress is not None:
-            # El volcado va en UNA transacción (o el índice está entero o no
-            # está: quien lea mientras tanto ve la foto de antes, y el arranque
-            # además contesta 503 hasta que esto acaba). Mientras dure, el
-            # progreso no puede avanzar --escribir ES el paso--, así que se
-            # avisa justo antes para que el vigilante de «atascado» no confunda
-            # escribir con colgarse.
-            progress("escribiendo el índice", total, total)
+        # El volcado va en UNA transacción (o el índice está entero o no está:
+        # quien lea mientras tanto ve la foto de antes, y el arranque además
+        # contesta 503 hasta que esto acaba). Se escribe a lotes para que el
+        # porcentaje avance con las filas de verdad y para que el vigilante de
+        # «atascado» sepa que el hilo sigue trabajando durante el volcado, que
+        # es lo que más tarda; el troceado no cambia lo que se escribe, la
+        # transacción es la misma.
+        avance("escribiendo el índice", 0, total, 2)
 
         with self._tx():
             # Todas las páginas están en ficheros: se rehace el árbol entero y
             # las cascadas del esquema se llevan bases, vistas, filas y enlaces.
             self.conn.execute("DELETE FROM pages")
-            self.conn.executemany(UPSERT_PAGE, [r.values() for r in records])
+            valores = [record.values() for record in records]
+            for desde in range(0, len(valores), reader.PROGRESS_EVERY):
+                self.conn.executemany(
+                    UPSERT_PAGE, valores[desde:desde + reader.PROGRESS_EVERY]
+                )
+                avance(
+                    "escribiendo el índice",
+                    min(desde + reader.PROGRESS_EVERY, total),
+                    total,
+                    2,
+                )
             # FTS5 con `content='pages'`: se regenera desde la tabla de
             # contenido para que dos reindexados den el mismo índice.
             self.conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('rebuild')")
@@ -1791,10 +1827,11 @@ class VaultStore:
             # Enlaces: se recalculan enteros desde los cuerpos (los de una fila
             # también: el `.md` de una fila puede llevar `[[wikilinks]]`).
             self.conn.execute("DELETE FROM links")
+            avance("enlazando", 0, total, 3)
             for hechas, record in enumerate(records, 1):
                 sync_wikilinks(self.conn, record.id, workspace_id, record.body)
-                if progress is not None and hechas % reader.PROGRESS_EVERY == 0:
-                    progress("enlazando", hechas, total)
+                if hechas % reader.PROGRESS_EVERY == 0:
+                    avance("enlazando", hechas, total, 3)
 
             # Marca del último reindexado. `GET /status` compara el índice con
             # el disco y dice cuánto ha cambiado por fuera desde aquí.
