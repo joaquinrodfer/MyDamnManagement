@@ -214,6 +214,21 @@ def test_el_vault_ilegible_falla_con_su_mensaje(index_path, vault_path):
     assert "el vault no se puede recorrer" in resultado.stderr
 
 
+def test_si_falta_el_fichero_del_indice_lo_dice(tmp_path, vault_path):
+    """Sin índice no es «no se puede escribir»: es que no está donde se mira."""
+    script = script_del_healthcheck()
+    (vault_path / "Notas").mkdir(parents=True, exist_ok=True)
+    (vault_path / "Notas" / "una.md").write_text("hola", encoding="utf-8")
+
+    with _api_de_pega(200, {"status": "ok"}) as puerto:
+        resultado = _ejecutar(
+            script, puerto=puerto, vault=vault_path, index=tmp_path / "no-existe.sqlite"
+        )
+
+    assert resultado.returncode == 1
+    assert "no existe el índice" in resultado.stderr
+
+
 def test_sin_api_escuchando_falla(index_path, vault_path):
     script = script_del_healthcheck()
     # Un puerto que estaba libre hace un instante: nadie escucha ahí.

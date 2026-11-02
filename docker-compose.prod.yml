@@ -163,6 +163,11 @@ services:
               fail("/health no dice ok ni starting: " + json.dumps(salud))
 
           index = os.environ.get("INDEX_PATH", "/data/index.sqlite")
+          if not os.path.exists(index):
+              # `os.access` sobre una ruta que no existe también dice que no:
+              # sin esta rama el mensaje hablaría de permisos cuando lo que
+              # pasa es que la app escribe en otro sitio.
+              fail("no existe el índice " + index + " (¿otro INDEX_PATH?)")
           # Un índice que se puede LEER no es un índice que se pueda ESCRIBIR:
           # la app necesita escribirlo en cada guardado y en cada reindexado.
           for ruta in (index, os.path.dirname(index) or "."):
