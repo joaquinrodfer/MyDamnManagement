@@ -483,11 +483,10 @@ function initTreeRovingTabIndex(container) {
 // navegador ha visto —el propio y los que cree un admin— en localStorage, para
 // que el color siga ahí tras una recarga.
 //
-// Los usuarios viven en el índice, no en el vault, y esta versión de la API no
-// expone el listado completo (`GET /auth/users` no existe; sí el POST). El panel
-// lo intenta igualmente: el día que exista lo usa sin cambiar nada más, y
-// mientras dice que solo conoce los de este navegador en vez de fingir una
-// lista que no tiene.
+// Los usuarios viven en el índice, no en el vault. El panel de administración
+// los pide a `GET /auth/users`; `knownUsers` queda como respaldo (el usuario de
+// la sesión y los que este navegador haya visto) para cuando esa llamada falla y
+// para no volver a preguntar por cada color.
 const KNOWN_USERS_KEY = "mdm_known_users";
 
 const sessionUser = { me: null }; // el de /auth/me
@@ -526,18 +525,23 @@ function colorForAuthor(displayName) {
 
 /** «Creado por <nombre>», con el punto del color de quien la creó.
  *
- * Sin usuario conocido (notas viejas con «Tú») no hay punto y el texto se queda
- * en el gris de .note-meta: inventar un color para un nombre que no es de nadie
- * sería mentir con una bonita paleta.
+ * El color llega resuelto del servidor (`created_by_color`, P11b): así la nota
+ * de otro usuario sale con SU color aunque este navegador no lo haya visto
+ * nunca ni sea admin. `knownUsers` queda como respaldo (respuestas antiguas o
+ * un autor cambiado a mano).
+ *
+ * Sin color (notas viejas con «Tú», o un `created_by` que no es de nadie) no
+ * hay punto y el texto se queda en el gris de .note-meta: inventar un color
+ * para un nombre que no es de nadie sería mentir con una bonita paleta.
  */
-function paintCreatedBy(el, createdBy) {
+function paintCreatedBy(el, createdBy, createdByColor) {
   el.textContent = "";
   const name = (createdBy || "").trim();
   if (!name) {
     el.textContent = "Creado por —";
     return;
   }
-  const color = colorForAuthor(name);
+  const color = createdByColor || colorForAuthor(name);
   if (color) {
     const dot = document.createElement("span");
     dot.className = "user-dot";
@@ -738,19 +742,19 @@ function paintUsersNote() {
   const count = knownUsers.size;
   setFormNote(
     usersNote,
-    "Esta versión de la API no ofrece el listado de usuarios (no hay GET /auth/users): " +
-      `aquí solo salen los que este navegador conoce (${count} ${count === 1 ? "usuario" : "usuarios"}).`,
+    "No se pudo cargar el listado de usuarios: aquí solo salen los que este " +
+      `navegador conoce (${count} ${count === 1 ? "usuario" : "usuarios"}).`,
   );
 }
 
-/** Pinta los usuarios que este navegador conoce, con su color y su @usuario. */
-function renderKnownUsers() {
+/** Filas de usuario (punto, nombre, @usuario y admin), de la lista que llegue. */
+function renderUsers(users) {
   if (!usersList) return 0;
   usersList.textContent = "";
-  const users = [...knownUsers.values()].sort((a, b) =>
-    a.display_name.localeCompare(b.display_name, "es"),
+  const sorted = [...users].sort((a, b) =>
+    (a.display_name || "").localeCompare(b.display_name || "", "es"),
   );
-  users.forEach((u) => {
+  sorted.forEach((u) => {
     const row = document.createElement("div");
     row.className = "user-row";
     const dot = document.createElement("span");
@@ -773,7 +777,12 @@ function renderKnownUsers() {
     usersList.appendChild(row);
   });
   paintUsersNote();
-  return users.length;
+  return sorted.length;
+}
+
+/** Respaldo: los que conoce este navegador (si `GET /auth/users` falla). */
+function renderKnownUsers() {
+  return renderUsers([...knownUsers.values()]);
 }
 
 async function openUsersDialog() {
@@ -786,11 +795,13 @@ async function openUsersDialog() {
   setFormNote(usersNote, "Cargando usuarios…");
   usersDialog.showModal();
   try {
-    // Cuando la API tenga el listado, este panel lo usará sin más cambios.
+    // El listado es del servidor (`GET /auth/users`, solo admin): un segundo
+    // admin en un navegador limpio ve a todos, no solo a sí mismo.
     const fetched = await api("/auth/users");
     if (Array.isArray(fetched)) {
       fetched.forEach((u) => rememberUser(u));
-      renderKnownUsers();
+      usersListUnavailable = false;
+      renderUsers(fetched);
     }
     setFormNote(usersNote, "");
   } catch (e) {
@@ -1492,13 +1503,16 @@ function renderNote(page, backlinks) {
   titleRow.append(iconBtn, titleInput);
 
   // ---- meta (creador, obligatorio y de solo lectura -- se fija al crear) ----
-  // El punto lleva el color de quien la creó; si el nombre no es de un usuario
-  // conocido (notas viejas con «Tú») no hay punto (ver paintCreatedBy).
+  // El punto lleva el color de quien la creó, que viene resuelto en la página
+  // (`created_by_color`); sin color (notas viejas con «Tú») no hay punto (ver
+  // paintCreatedBy).
   const meta = document.createElement("div");
   meta.className = "note-meta";
-  paintCreatedBy(meta, page.created_by);
-  // /auth/me puede llegar después que la nota: entonces se repinta solo esto.
-  state.repaintAuthor = () => paintCreatedBy(meta, page.created_by);
+  paintCreatedBy(meta, page.created_by, page.created_by_color);
+  // /auth/me puede llegar después que la nota: entonces se repinta solo esto
+  // (el color del servidor no cambia; el respaldo local sí puede).
+  state.repaintAuthor = () =>
+    paintCreatedBy(meta, page.created_by, page.created_by_color);
 
   // ---- descripción (opcional) ----
   const descInput = document.createElement("textarea");

@@ -181,6 +181,34 @@
     font-weight: 600;
   }
   .brand-logo { width: 22px; height: 22px; border-radius: 50%; display: block; }
+  .brand-name { white-space: nowrap; }
+
+  /* Cabecera estrecha (P11b). Con el chip de usuario la fila dejó de caber
+     entre ~481 y ~640 px: sobraba ancho y el menú del chip se salía por la
+     derecha (era el único scroll horizontal de la app). Por debajo de 720 px
+     el nombre de la marca se queda en el logo (sigue en el title del span) y
+     los huecos se aprietan; el chip recorta un nombre visible largo en vez de
+     empujar la fila. Los indicadores api/db conservan su punto a partir de
+     520 px y por debajo dejan solo el punto, que es lo que se mira de un
+     vistazo. */
+  @media (max-width: 720px) {
+    header { padding: 8px 12px; gap: 10px; }
+    header .brand { gap: 0; }
+    .brand-name { display: none; }
+    .status-strip { gap: 10px; }
+    .user-chip-name {
+      max-width: 11ch;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+  @media (max-width: 520px) {
+    header { padding: 8px 10px; gap: 6px; }
+    .status-strip { gap: 8px; }
+    .status-item-label { display: none; }
+    .header-left { gap: 8px; }
+  }
   .status-strip { display: flex; gap: 14px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
   .status-item { display: flex; align-items: center; gap: 5px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
@@ -1491,7 +1519,7 @@
   <header>
     <div class="header-left">
       <button class="icon-btn" id="btn-toggle-sidebar" title="Mostrar/ocultar barra lateral" aria-label="Mostrar u ocultar barra lateral"><svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-menu"/></svg></button>
-      <span class="brand"><img src="/logo.png" alt="" class="brand-logo" />MyDamnManagement</span>
+      <span class="brand" title="MyDamnManagement"><img src="/logo.png" alt="" class="brand-logo" /><span class="brand-name">MyDamnManagement</span></span>
       <div class="nav-history-controls">
         <button class="icon-btn" id="btn-nav-home" title="Ir al inicio" aria-label="Ir al inicio"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-home"/></svg></button>
         <button class="icon-btn" id="btn-nav-back" title="Atrás" aria-label="Atrás" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-left"/></svg></button>
@@ -1501,8 +1529,8 @@
       </div>
     </div>
     <div class="status-strip">
-      <span class="status-item"><span class="dot" id="dot-api"></span>api</span>
-      <span class="status-item"><span class="dot" id="dot-db"></span>db</span>
+      <span class="status-item"><span class="dot" id="dot-api"></span><span class="status-item-label">api</span></span>
+      <span class="status-item"><span class="dot" id="dot-db"></span><span class="status-item-label">db</span></span>
       <!-- Quién eres (P11b): tu punto de color y tu nombre; al pulsarlo, tu
            menú. app.js lo rellena con /auth/me y lo deja oculto hasta saberlo
            (sin sesión, la puerta ya ha mandado a /login). -->
