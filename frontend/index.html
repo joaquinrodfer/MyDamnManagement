@@ -1763,17 +1763,19 @@
     }
     /* 16 px de texto y un hueco inferior grande: con el teclado del móvil
        abierto hay que poder seguir viendo lo que se escribe sin que la barra
-       de sugerencias del sistema tape el cursor. */
+       de sugerencias del sistema tape el cursor. El hueco de la izquierda (48)
+       es el del asa de bloque de 44 + 4 de aire, y deja el cuerpo alineado con
+       el título (que empieza a 64: 16 de margen + 44 del icono + 4). */
     #note-body .cm-editor { min-height: 55dvh; }
     #note-body .cm-content {
-      padding: 4px 2px 40vh 52px;
+      padding: 4px 2px 40vh 48px;
       font-size: 16px;
       line-height: 1.65;
     }
-    /* Asas de bloque: 44×44 en el hueco de 52 px. En móvil el «+» se oculta
+    /* Asas de bloque: 44×44 en el hueco de 48 px. En móvil el «+» se oculta
        porque el hueco del asa es ancho de lectura y Enter ya crea un bloque
        debajo; el asa (seleccionar/convertir/borrar) sí se queda. */
-    .cm-mdm-block-handle-wrap { left: -52px; gap: 0; }
+    .cm-mdm-block-handle-wrap { left: -48px; gap: 0; }
     .cm-mdm-block-add { display: none; }
     .cm-mdm-block-handle {
       width: 44px;
@@ -1835,6 +1837,7 @@
     #btn-new-note,
     #btn-new-database,
     .note-topbar .icon-btn,
+    dialog .icon-btn,
     .note-header-remove,
     .row-del,
     .cell-del {
@@ -1862,6 +1865,14 @@
     .user-dot { width: 12px; height: 12px; }
     .user-menu { min-width: 200px; max-width: calc(100vw - 20px); }
     header .brand { display: none; }
+  }
+
+  /* Móvil pequeño: las cuatro columnas de una propiedad (clave, nombre, tipo,
+     quitar) no caben legibles en 375 px. Clave y nombre arriba, el tipo debajo
+     a lo ancho y la X a su lado. */
+  @media (max-width: 480px) {
+    .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
+    .prop-row .prop-type { grid-column: 1 / 3; }
   }
 
   @media (prefers-reduced-motion: reduce) {
