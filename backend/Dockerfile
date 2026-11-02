@@ -40,4 +40,6 @@ EXPOSE 8000
 
 # Sin `alembic upgrade head`: el esquema del índice se crea/migra al arrancar
 # (PRAGMA user_version, ver backend/app/index.py).
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# `logging.json` viaja en la imagen (`COPY backend/ ./`): le pone handler al
+# logger `mdm` (la app) sin tocar los de uvicorn. Ver `docs/ADR-0004`.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-config", "logging.json"]

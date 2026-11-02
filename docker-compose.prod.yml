@@ -57,6 +57,7 @@ services:
     command: >
       uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
       --proxy-headers --forwarded-allow-ips=* --log-level info
+      --log-config logging.json
     healthcheck:
       # No usa `/health` (siempre responde "ok" y no toca nada): pregunta a
       # `/status`, que abre el índice y recorre el vault, y falla con un motivo

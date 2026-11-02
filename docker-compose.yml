@@ -21,7 +21,11 @@ services:
       - "8000:8000"
     # Sin `alembic upgrade head`: el esquema del índice se crea/migra al
     # arrancar la app (PRAGMA user_version).
-    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    # `--log-config` pone el handler de los loggers `mdm.*`: sin él uvicorn
+    # configura solo los suyos y todo el INFO de la app (el resumen del
+    # reindexado, los cambios del vault, una línea por sugerencia de agente)
+    # se queda por debajo del único handler que había (`lastResort`, WARNING+).
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-config logging.json"
 
 volumes:
   mdm_data:
