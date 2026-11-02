@@ -26,6 +26,19 @@ export function isLinkableTitle(title) {
   return limpio !== "" && LINK_TITLE_RE.test(limpio);
 }
 
+/** Cuántos destinos de la lista se pueden enlazar de verdad. Lo usa la lista
+ * cuando sale vacía: con cero destinos enlazables el vault no tiene notas que
+ * ofrecer («Aún no hay notas»), y con alguno lo que no hay es coincidencia con
+ * lo escrito («Sin coincidencias»). Contar la lista SIN filtrar hacía que un
+ * vault con solo títulos no enlazables dijera «Sin coincidencias». */
+export function countLinkableTitles(targets) {
+  let total = 0;
+  for (const target of targets || []) {
+    if (isLinkableTitle(target && target.title)) total += 1;
+  }
+  return total;
+}
+
 /** Lo que se escribe en el documento para enlazar con `title`. */
 export function linkMarkup(title) {
   return `${LINK_OPEN}${createLinkTitle(title)}${LINK_CLOSE}`;

@@ -21,6 +21,7 @@ import {
 } from "@codemirror/autocomplete";
 import {
   LINK_OPEN,
+  countLinkableTitles,
   createLinkTitle,
   isLinkableTitle,
   linkMarkup,
@@ -1866,7 +1867,12 @@ function linkCompletionSource(onCreateLink) {
         filter: false,
         options: [
           {
-            label: state.field(linkTargetsField).length ? "Sin coincidencias" : "Aún no hay notas",
+            // Se cuentan los destinos ENLAZABLES, no los del campo: en un
+            // vault cuyas únicas notas lleven `]` no hay nada que ofrecer y el
+            // aviso correcto es «Aún no hay notas», no «Sin coincidencias».
+            label: countLinkableTitles(state.field(linkTargetsField))
+              ? "Sin coincidencias"
+              : "Aún no hay notas",
             class: "cm-mdm-link-empty",
             apply: (view) => closeCompletion(view),
           },
