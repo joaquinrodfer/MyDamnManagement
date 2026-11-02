@@ -641,17 +641,20 @@ class Repository:
 
     # -------------------------------------- sugerencias por agente (P10b)
 
-    def pending_counts(self, page_id: uuid.UUID, agent: str) -> tuple[int, int]:
-        """`(pendientes en la nota, pendientes del agente en todo el vault)`.
+    def unresolved_counts(self, page_id: uuid.UUID, agent: str) -> tuple[int, int]:
+        """`(sin resolver en la nota, sin resolver del agente en todo el vault)`.
 
         Los dos topes de P10b. El primero es de la nota (da igual quién las
         proponga): es lo que el dueño ve al abrirla. El segundo es del agente:
         un bucle que reparte parches por veinte notas distintas tampoco pasa.
+        «Sin resolver» incluye `pending` y `orphaned` (ver
+        `suggestions.counts_unresolved`): una sugerencia sin ancla sigue
+        esperando decisión y no puede esquivar el tope.
         """
         note_rel = self.page_path(page_id)
         if note_rel is None:        # pragma: no cover - ya comprobado antes
             return (0, 0)
-        return suggestions.counts_pending(self.vault.root, note_rel, agent)
+        return suggestions.counts_unresolved(self.vault.root, note_rel, agent)
 
     def list_agent_suggestions(
         self, agent: str, status: Optional[str] = None

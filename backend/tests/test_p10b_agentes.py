@@ -475,3 +475,104 @@ def test_un_sidecar_roto_no_tumba_el_contexto(client, vault_path):
 
     listado = client.get("/agent/suggestions", headers=HITOS)
     assert listado.status_code == 200, listado.text
+
+
+# --------------------------------------------------------------------------
+# 5. el permiso acotado y los topes que no se esquivan
+# --------------------------------------------------------------------------
+
+
+def test_las_orphaned_cuentan_para_el_tope_de_la_nota(client, monkeypatch):
+    """Un ancla ausente no es un error: nace `orphaned` y sigue ocupando sitio.
+
+    Es el caso normal —el dueño editó la nota y lo que el agente leyó ya no
+    encaja—, así que si las huérfanas no contaran, el agente que más ruido hace
+    sería justo el que nunca toca el 429.
+    """
+    monkeypatch.setattr(settings, "agent_max_pending_note", 2)
+    monkeypatch.setattr(settings, "agent_max_pending_agent", 10)
+    nota = crear_nota(client, body="cuerpo")
+
+    for i in range(2):
+        creada = proponer(client, nota["id"], old_text="ANCLA-QUE-NO-ESTA", new_text=f"x{i}")
+        assert creada.status_code == 200, creada.text
+        assert creada.json()["status"] == "orphaned"
+
+    tercera = proponer(client, nota["id"], old_text="ANCLA-QUE-NO-ESTA", new_text="otra")
+    assert tercera.status_code == 429, tercera.text
+    assert "tope 2" in tercera.json()["detail"]
+
+    # La nota no se llenó: siguen siendo dos, no tres.
+    contexto = client.get(f"/agent/context?page_id={nota['id']}", headers=HITOS).json()
+    assert [s["status"] for s in contexto["suggestions"]] == ["orphaned", "orphaned"]
+
+    # Rechazar una huérfana la decide y libera el sitio.
+    primera = contexto["suggestions"][0]["id"]
+    assert client.post(f"/suggestions/{primera}/reject", json={"reason": "ya no"}).status_code == 200
+    assert proponer(client, nota["id"], old_text="ANCLA-QUE-NO-ESTA", new_text="otra").status_code == 200
+
+
+def test_las_orphaned_cuentan_para_el_tope_del_agente(client, monkeypatch):
+    monkeypatch.setattr(settings, "agent_max_pending_note", 10)
+    monkeypatch.setattr(settings, "agent_max_pending_agent", 2)
+    una = crear_nota(client, title="Una", body="cuerpo")
+    otra = crear_nota(client, title="Otra", body="cuerpo")
+    tercera = crear_nota(client, title="Tercera", body="cuerpo")
+
+    for nota in (una, otra):
+        creada = proponer(client, nota["id"], old_text="ANCLA-QUE-NO-ESTA", new_text="x")
+        assert creada.status_code == 200, creada.text
+        assert creada.json()["status"] == "orphaned"
+
+    respuesta = proponer(client, tercera["id"], old_text="ANCLA-QUE-NO-ESTA", new_text="x")
+    assert respuesta.status_code == 429, respuesta.text
+    assert "agente-hitos" in respuesta.json()["detail"]
+    # El otro agente no paga el tope del primero.
+    assert proponer(
+        client, tercera["id"], headers=REVISION, old_text="cuerpo", new_text="otro"
+    ).status_code == 200
+
+
+def test_un_token_valido_solo_abre_las_rutas_de_agente(client):
+    """Con `X-Agent-Token` válido, la puerta del dueño contesta 403.
+
+    No es autenticación: es un permiso acotado. El token solo sirve para leer
+    contexto y proponer, así que un token filtrado no edita, no borra y no
+    acepta sugerencias.
+    """
+    nota = crear_nota(client, body="Hola mundo")
+    sugerencia = proponer(client, nota["id"], old_text="Hola", new_text="Adiós").json()
+
+    def prohibido(metodo, ruta, **kwargs):
+        respuesta = getattr(client, metodo)(ruta, headers=HITOS, **kwargs)
+        assert respuesta.status_code == 403, (ruta, respuesta.status_code, respuesta.text)
+        detalle = respuesta.json()["detail"]
+        assert "/agent" in detalle
+        assert "tok-de-hitos" not in respuesta.text
+        return respuesta
+
+    prohibido("patch", f"/pages/{nota['id']}", json={"title": "Otro"})
+    prohibido("delete", f"/pages/{nota['id']}")
+    prohibido("post", f"/suggestions/{sugerencia['id']}/accept")
+    prohibido("post", f"/suggestions/{sugerencia['id']}/reject", json={"reason": "no"})
+    prohibido("post", f"/suggestions/{sugerencia['id']}/reply", json={"text": "hola"})
+    prohibido("get", "/trash")
+    prohibido("get", "/pages")
+    prohibido("get", f"/pages/{nota['id']}/suggestions")
+
+    # Ninguna de esas llamadas hizo nada.
+    assert client.get(f"/pages/{nota['id']}").json()["title"] == "Proyecto"
+    assert client.get(f"/pages/{nota['id']}").json()["body_markdown"] == "Hola mundo"
+    assert client.get(f"/pages/{nota['id']}/suggestions").json()[0]["status"] == "pending"
+
+    # Las suyas siguen funcionando con el mismo token.
+    assert client.get(f"/agent/context?page_id={nota['id']}", headers=HITOS).status_code == 200
+    assert client.get("/agent/suggestions", headers=HITOS).status_code == 200
+
+    # Y el dueño sigue entrando sin token: la API no está autenticada (deuda
+    # declarada de v1.3). Un token inválido tampoco bloquea, porque no
+    # identifica a nadie.
+    assert client.patch(f"/pages/{nota['id']}", json={"title": "Mío"}).status_code == 200
+    anonimo = {"X-Agent-Token": "token-que-no-existe"}
+    assert client.get("/trash", headers=anonimo).status_code == 200
+    assert client.get(f"/agent/context?page_id={nota['id']}", headers=anonimo).status_code == 401

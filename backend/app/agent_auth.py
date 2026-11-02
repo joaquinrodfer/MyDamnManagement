@@ -25,6 +25,11 @@ El contrato es pequeño a propósito:
   avisos de configuración. Los avisos hablan del nombre del agente y de la
   posición de la entrada, que es lo que hace falta para arreglar la variable
   sin volcar el secreto en el log.
+- Un token válido es un permiso **acotado**: `app.main` rechaza con **403**
+  cualquier petición que lo traiga y no vaya a `/agent/...`. No es
+  autenticación —la API del dueño sigue sin tenerla— pero hace que un token
+  filtrado no sirva de llave para escribir, borrar ni aceptar sugerencias:
+  solo propone, que es lo que el contrato promete.
 
 `hmac.compare_digest` sobre `str` exige ASCII: un token con un acento lanzaría
 `TypeError` (un 500 por una cabecera rara). Se comparan los bytes UTF-8, que
@@ -117,6 +122,27 @@ def configured() -> dict[str, str]:
     return parse_tokens(settings.agent_tokens)
 
 
+def resolve(token: str | None, tokens: dict[str, str] | None = None) -> str | None:
+    """Nombre del agente dueño de `token`, o `None` si no hay o no existe.
+
+    Sin excepciones a propósito: lo usa también el guardia de `app.main`, que
+    decide si una petición firmada como agente puede pasar, y allí un token
+    inválido no es un error sino «esto no es una petición de agente».
+    """
+    if not token:
+        return None
+    if tokens is None:
+        tokens = configured()
+    candidate = token.encode("utf-8")
+    found: str | None = None
+    # Se comparan TODOS los tokens, sin romper el bucle al acertar: el tiempo
+    # de respuesta no debe decir si el token existía ni en qué posición estaba.
+    for known, name in tokens.items():
+        if hmac.compare_digest(candidate, known.encode("utf-8")):
+            found = name
+    return found
+
+
 def require_agent(x_agent_token: str | None = Header(default=None)) -> Agent:
     """Dependencia de FastAPI: resuelve el agente del token, o corta con 401/404.
 
@@ -130,17 +156,9 @@ def require_agent(x_agent_token: str | None = Header(default=None)) -> Agent:
         # Sin agentes configurados la ruta no existe. Ver el docstring del
         # módulo: 404 y no 403.
         raise HTTPException(404, "no hay agentes configurados")
-    if not x_agent_token:
-        raise HTTPException(401, "token de agente ausente o no válido")
 
-    candidate = x_agent_token.encode("utf-8")
-    found: str | None = None
-    # Se comparan TODOS los tokens, sin romper el bucle al acertar: el tiempo
-    # de respuesta no debe decir si el token existía ni en qué posición estaba.
-    for token, name in tokens.items():
-        if hmac.compare_digest(candidate, token.encode("utf-8")):
-            found = name
-    if found is None:
+    name = resolve(x_agent_token, tokens)
+    if name is None:
         # Mismo texto que «no mandaste token»: no se filtra si el token existía.
         raise HTTPException(401, "token de agente ausente o no válido")
-    return Agent(name=found)
+    return Agent(name=name)

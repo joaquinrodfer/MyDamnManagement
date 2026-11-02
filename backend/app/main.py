@@ -2,9 +2,11 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import agent_auth
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
@@ -60,6 +62,36 @@ app.include_router(suggestions.router)
 # lo decidido, con `X-Agent-Token`. Sin `AGENT_TOKENS` las tres rutas dan 404
 # (no existen), que es lo que hace un despliegue sin agentes configurados.
 app.include_router(agent.router)
+
+
+@app.middleware("http")
+async def agent_token_is_scoped(request: Request, call_next):
+    """Un token de agente solo abre `/agent/...`; el resto es 403.
+
+    No es autenticación —la API del dueño sigue sin login— sino un permiso
+    **acotado**: si un token se filtra, quien lo tenga puede leer contexto y
+    proponer sugerencias, y nada más. Sin esto, poner la cabecera no cambiaba
+    nada y el token era una etiqueta con ínfulas de credencial.
+
+    Un token inválido no se rechaza aquí: no identifica a nadie, así que la
+    petición sigue su curso normal (401 en `/agent`, y como cualquier cliente
+    anónimo en el resto: la puerta del dueño no mira cabeceras). Rechazarlo
+    sería inventar una autenticación que no existe.
+    """
+    token = request.headers.get("x-agent-token")
+    if token and agent_auth.resolve(token) is not None:
+        path = request.url.path
+        if path != "/agent" and not path.startswith("/agent/"):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": (
+                        "X-Agent-Token solo da acceso a /agent/*: "
+                        "las rutas del dueño no aceptan peticiones de agente"
+                    )
+                },
+            )
+    return await call_next(request)
 
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
 # los tests y el apagado puedan pararlo sin depender del objeto `app`.

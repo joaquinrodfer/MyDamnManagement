@@ -11,10 +11,13 @@ GET  /agent/suggestions?status=...&since=<iso>
 
 Lo que **no** hay aquí es tan importante como lo que hay: un agente no puede
 editar (`PATCH /pages/{id}`), ni borrar, ni aceptar ni rechazar sus propias
-sugerencias. Esas siguen siendo rutas del dueño, sin token. La puerta del
-agente es de solo lectura sobre el vault más un canal de propuesta; si el
-token se filtra, lo peor que puede pasar es que alguien llene de sugerencias
-pendientes una nota, y para eso está el tope (`429`).
+sugerencias. Esas siguen siendo rutas del dueño, y el guardia de `app.main`
+responde **403** si una petición las llama con un `X-Agent-Token` válido: el
+token es un permiso acotado a `/agent/*`. Lo que el token **no** hace es
+autenticar al dueño —esa API sigue abierta a quien alcance el puerto, deuda de
+v1.3—, así que la frontera de seguridad hoy es la red, no el token. Si un
+token de agente se filtra, lo peor que puede pasar es que alguien llene de
+sugerencias sin resolver una nota, y para eso está el tope (`429`).
 
 `GET /agent/context` devuelve todo lo que un LLM necesita para proponer algo
 sensato en **una** respuesta: la nota, lo que la enlaza, lo que enlaza ella, el
@@ -266,20 +269,20 @@ def create_agent_suggestion(
         check_size(payload.old_text, vault_suggestions.MAX_OLD_TEXT, "old_text")
         check_size(payload.new_text, vault_suggestions.MAX_NEW_TEXT, "new_text")
 
-    on_note, by_agent = repo.pending_counts(payload.page_id, agent.name)
+    on_note, by_agent = repo.unresolved_counts(payload.page_id, agent.name)
     if on_note >= settings.agent_max_pending_note:
         raise HTTPException(
             429,
-            f"la nota ya tiene {on_note} sugerencias pendientes "
+            f"la nota ya tiene {on_note} sugerencias sin resolver "
             f"(tope {settings.agent_max_pending_note}): el dueño tiene que "
             "decidir las que hay antes de que lleguen más",
         )
     if by_agent >= settings.agent_max_pending_agent:
         raise HTTPException(
             429,
-            f"el agente {agent.name} tiene {by_agent} sugerencias pendientes en "
-            f"el vault (tope {settings.agent_max_pending_agent}): espera a que "
-            "el dueño decida antes de proponer más",
+            f"el agente {agent.name} tiene {by_agent} sugerencias sin resolver "
+            f"en el vault (tope {settings.agent_max_pending_agent}): espera a "
+            "que el dueño decida antes de proponer más",
         )
 
     try:

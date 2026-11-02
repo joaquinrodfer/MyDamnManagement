@@ -47,6 +47,10 @@ SIDECAR_MARK = f".md{SIDECAR_SUFFIX}"
 log = logging.getLogger("mdm.vault")
 
 STATUSES = frozenset({"pending", "accepted", "rejected", "orphaned"})
+# Lo que sigue esperando una decisión del dueño y por tanto ocupa sitio en
+# los topes de P10b (`counts_unresolved`): una `orphaned` no está decidida,
+# solo se quedó sin ancla.
+UNRESOLVED_STATUSES = frozenset({"pending", "orphaned"})
 KINDS = frozenset({"edit", "new_page"})
 
 # Topes de tamaño, en bytes UTF-8 (los aplica la API con 413). Un parche es
@@ -361,8 +365,8 @@ def find(root: str, suggestion_id: str) -> Optional[tuple[Suggestion, str]]:
     return None
 
 
-def counts_pending(root: str, note_rel: str, agent: str) -> tuple[int, int]:
-    """Cuántas sugerencias `pending` hay en la nota y cuántas tiene ese agente.
+def counts_unresolved(root: str, note_rel: str, agent: str) -> tuple[int, int]:
+    """Cuántas sugerencias **sin resolver** hay en la nota y cuántas tiene ese agente.
 
     Devuelve `(en_esa_nota, del_agente_en_todo_el_vault)`. Son dos topes
     distintos (P10b): el primero protege **la nota** de un agente en bucle
@@ -370,11 +374,21 @@ def counts_pending(root: str, note_rel: str, agent: str) -> tuple[int, int]:
     el segundo protege **el vault** de un agente que reparte ruido por todas
     partes. Se calculan en el mismo recorrido que ya hace falta para el
     segundo.
+
+    «Sin resolver» es `pending` **y** `orphaned`, no solo `pending`: una
+    sugerencia cuyo ancla ya no está nace `orphaned` —es lo normal en cuanto el
+    dueño edita la nota— y sigue esperando una decisión del dueño, así que
+    ocupa sitio igual que una `pending`. Si no contara, el agente que más ruido
+    hace (el que propone sobre un contexto que acaba de cambiar) sería justo el
+    que nunca toca el 429. `accepted` y `rejected` ya están decididas y no
+    cuentan.
     """
     on_note = 0
     by_agent = 0
     for sidecar_note, folder in _sidecars(root):
-        for suggestion in _in_folder(folder, "pending"):
+        for suggestion in _in_folder(folder):
+            if suggestion.status not in UNRESOLVED_STATUSES:
+                continue
             if suggestion.agent == agent:
                 by_agent += 1
             if sidecar_note == note_rel:
