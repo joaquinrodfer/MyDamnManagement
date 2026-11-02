@@ -293,6 +293,14 @@ class Cliente:
         except ErrorHTTP as exc:
             if exc.codigo >= 500:
                 raise self._servidor(exc, "POST /agent/suggestions") from None
+            if exc.codigo in (401, 403):
+                # El token ha dejado de valer a mitad de la pasada (revocado, o
+                # cambiado el AGENT_TOKENS del servidor): es configuración, no
+                # un rechazo del parche.
+                raise ErrorConfig(
+                    f"el servidor ya no acepta el token a mitad de la ejecución "
+                    f"({exc.codigo}: {exc.detalle})"
+                ) from None
             raise
         if not isinstance(datos, dict) or not datos.get("id"):
             raise ErrorServidor("POST /agent/suggestions no devolvió la sugerencia")
@@ -684,6 +692,7 @@ def construir_prompt(
     brief: Optional[str] = None,
     brief_ruta: Optional[str] = None,
     max_bytes: int = MAX_PROMPT_BYTES,
+    max_hitos: int = MAX_HITOS,
 ) -> str:
     """El prompt que se le manda al modelo: instrucciones, brief y notas.
 
@@ -713,7 +722,7 @@ def construir_prompt(
         '- "titulo": corto, sin punto final, menos de 80 caracteres.',
         '- "detalle": una frase que explique el hito con lo que dice la nota.',
         "",
-        f"Como mucho {MAX_HITOS} hitos. Si no hay nada que proponer, devuelve [].",
+        f"Como mucho {max_hitos} hitos. Si no hay nada que proponer, devuelve [].",
         "No repitas lo que ya está en la nota ni lo que el dueño ya rechazó: abajo",
         "está el hilo de sugerencias, con su estado y su motivo.",
         "",
@@ -961,7 +970,13 @@ def _ejecutar(
     base = (args.url or os.environ.get("MDM_URL") or DEFAULT_URL).rstrip("/")
     token = (os.environ.get("MDM_AGENT_TOKEN") or "").strip()
     agente = (args.agente or os.environ.get("MDM_AGENTE") or DEFAULT_AGENTE).strip()
-    max_hitos = args.max_hitos or _entorno_entero("MDM_MAX_HITOS", MAX_HITOS)
+    max_hitos = (
+        args.max_hitos
+        if args.max_hitos is not None
+        else _entorno_entero("MDM_MAX_HITOS", MAX_HITOS)
+    )
+    if max_hitos < 1:
+        raise ErrorConfig("--max-hitos tiene que ser al menos 1")
 
     if not token:
         # Sin token no hay lectura: el servidor contesta 401 a todo `/agent/*`.
@@ -986,6 +1001,15 @@ def _ejecutar(
     if not rutas:
         rutas = notas_del_brief(brief or "")
     rutas = [_ruta_limpia(r) for r in rutas if _ruta_limpia(r)]
+    # Sin repetidas: dos veces la misma ruta en `--nota` no debe leerla dos veces
+    # ni mandar el mismo cuerpo dos veces al modelo.
+    ya: set[str] = set()
+    unicas: list[str] = []
+    for ruta in rutas:
+        if ruta not in ya:
+            ya.add(ruta)
+            unicas.append(ruta)
+    rutas = unicas
 
     if not rutas:
         donde = brief_ruta or f"Agentes/{agente}.md"
@@ -1003,7 +1027,7 @@ def _ejecutar(
         )
 
     prompt = construir_prompt(
-        agente, notas, brief=brief, brief_ruta=brief_ruta
+        agente, notas, brief=brief, brief_ruta=brief_ruta, max_hitos=max_hitos
     )
     if args.dry_run:
         salida.write(prompt)

@@ -229,6 +229,11 @@ def test_el_prompt_recuerda_que_la_nota_viene_recortada():
     assert "cuerpo recortado por el servidor" in prompt
 
 
+def test_el_prompt_dice_el_tope_efectivo_de_hitos():
+    prompt = hitos.construir_prompt("agente-hitos", [], max_hitos=3)
+    assert "Como mucho 3 hitos" in prompt
+
+
 # --------------------------------------------------------------------------
 # 3. la respuesta del modelo
 # --------------------------------------------------------------------------
@@ -380,6 +385,14 @@ def test_servidor_caido_sale_2(monkeypatch):
     codigo, salida, errores = ejecutar(Caido({}), monkeypatch=monkeypatch)
     assert codigo == 2
     assert "servidor:" in errores
+
+
+def test_un_max_hitos_de_cero_es_configuracion(monkeypatch):
+    codigo, _, errores = ejecutar(
+        cliente_con_brief(), argv=["--max-hitos", "0"], monkeypatch=monkeypatch
+    )
+    assert codigo == 1
+    assert "al menos 1" in errores
 
 
 def test_modelo_roto_sale_3(monkeypatch):
