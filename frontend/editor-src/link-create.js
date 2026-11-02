@@ -11,6 +11,34 @@ export function createLinkTitle(typed) {
   return String(typed == null ? "" : typed).trim();
 }
 
+// Un título que el formato del wikilink no puede representar. `WIKILINK_RE`
+// (aquí y en backend/app/wikilinks.py: `\[\[([^\]|]+)(?:\|[^\]]+)?\]\]`)
+// corta en el primer `]` y en el primer `|`, así que `[[Notas [2026]]]` se lee
+// como `[[Notas [2026` -- sin arista -- y `[[a|b]]` enlaza con `a` y llama `b`
+// al alias. `names.sanitize()` ya impide crear esos títulos desde la app, pero
+// un `.md` copiado a mano (o creado antes del arreglo) los puede traer: esos
+// no se ofrecen en la lista.
+const LINK_TITLE_RE = /^[^\]|]+$/;
+
+/** ¿Se puede escribir `[[title]]` y volver a leer `title` al resolverlo? */
+export function isLinkableTitle(title) {
+  const limpio = createLinkTitle(title);
+  return limpio !== "" && LINK_TITLE_RE.test(limpio);
+}
+
+/** Cuántos destinos de la lista se pueden enlazar de verdad. Lo usa la lista
+ * cuando sale vacía: con cero destinos enlazables el vault no tiene notas que
+ * ofrecer («Aún no hay notas»), y con alguno lo que no hay es coincidencia con
+ * lo escrito («Sin coincidencias»). Contar la lista SIN filtrar hacía que un
+ * vault con solo títulos no enlazables dijera «Sin coincidencias». */
+export function countLinkableTitles(targets) {
+  let total = 0;
+  for (const target of targets || []) {
+    if (isLinkableTitle(target && target.title)) total += 1;
+  }
+  return total;
+}
+
 /** Lo que se escribe en el documento para enlazar con `title`. */
 export function linkMarkup(title) {
   return `${LINK_OPEN}${createLinkTitle(title)}${LINK_CLOSE}`;

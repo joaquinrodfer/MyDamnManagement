@@ -19,7 +19,14 @@ import {
   closeCompletion,
   moveCompletionSelection,
 } from "@codemirror/autocomplete";
-import { LINK_OPEN, createLinkTitle, linkMarkup, resolveCreatedLinkTitle } from "./link-create.js";
+import {
+  LINK_OPEN,
+  countLinkableTitles,
+  createLinkTitle,
+  isLinkableTitle,
+  linkMarkup,
+  resolveCreatedLinkTitle,
+} from "./link-create.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -1813,6 +1820,9 @@ function linkCompletionSource(onCreateLink) {
     for (const target of state.field(linkTargetsField)) {
       const title = String(target.title || "").trim();
       if (!title) continue;
+      // Un título con `]` o `|` no se puede enlazar (ver isLinkableTitle): se
+      // queda fuera de la lista en vez de ofrecer lo que saldría roto.
+      if (!isLinkableTitle(title)) continue;
       const folded = foldText(title);
       const at = query ? folded.indexOf(query) : 0;
       if (query && at < 0) continue;
@@ -1857,7 +1867,12 @@ function linkCompletionSource(onCreateLink) {
         filter: false,
         options: [
           {
-            label: state.field(linkTargetsField).length ? "Sin coincidencias" : "Aún no hay notas",
+            // Se cuentan los destinos ENLAZABLES, no los del campo: en un
+            // vault cuyas únicas notas lleven `]` no hay nada que ofrecer y el
+            // aviso correcto es «Aún no hay notas», no «Sin coincidencias».
+            label: countLinkableTitles(state.field(linkTargetsField))
+              ? "Sin coincidencias"
+              : "Aún no hay notas",
             class: "cm-mdm-link-empty",
             apply: (view) => closeCompletion(view),
           },
