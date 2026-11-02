@@ -59,7 +59,7 @@ test("sin título del servidor no se inserta nada", () => {
   assert.equal(resolveCreatedLinkTitle("[[Mi nota ", "Mi nota ", "   "), null);
 });
 
-test("el título se compara sin distinguir espacios sobrantes del servidor", () => {
+test("el enlace no arrastra los espacios sobrantes del título del servidor", () => {
   // El servidor puede devolver el título con espacios de más: no se escriben.
   assert.equal(linkMarkup("  Mi nota  "), "[[Mi nota]]");
 });

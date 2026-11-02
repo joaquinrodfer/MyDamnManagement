@@ -1870,17 +1870,19 @@ function renderNote(page, backlinks) {
   }
 
   // Comando "Crear «…»" del autocompletado de "[[" (entry.js): la nota nueva
-  // cuelga de ésta -- igual que "/page" -- y se refresca el árbol aquí mismo,
-  // sin esperar al evento del vigilante (el SSE puede llegar después, o no
-  // llegar si está desconectado). Devuelve {id, title} para que el editor
-  // escriba el enlace con el título que haya quedado DE VERDAD en el
-  // servidor: el nombre se normaliza al crearlo y "Lo que sea" puede acabar
-  // siendo otra cosa.
+  // es HERMANA de la que se está editando -- mismo parent_id, o la raíz si
+  // ésta está en la raíz --, no su hija: escribir "[[" es enlazar con otra
+  // nota del mismo nivel, y crear una subpágina ya es "/page" (que sí cuelga
+  // de page.id). El árbol se refresca aquí mismo, sin esperar al evento del
+  // vigilante (el SSE puede llegar después, o no llegar si está
+  // desconectado). Devuelve {id, title} para que el editor escriba el enlace
+  // con el título que haya quedado DE VERDAD en el servidor: el nombre se
+  // normaliza al crearlo y "Lo que sea" puede acabar siendo otra cosa.
   async function createLinkedPage(title) {
     try {
       const created = await api("/pages", {
         method: "POST",
-        body: JSON.stringify({ title, parent_id: page.id, body_markdown: "" }),
+        body: JSON.stringify({ title, parent_id: page.parent_id ?? null, body_markdown: "" }),
       });
       await loadTree();
       return { id: created.id, title: created.title };
