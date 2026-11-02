@@ -18,6 +18,7 @@ const state = {
   history: [], // [{kind, id}, ...] -- pila de navegación para los botones atrás/adelante
   historyPos: -1, // índice de "dónde estamos" dentro de state.history
   noteSession: null, // nota abierta: qué queda sin guardar y cómo refrescarla (P8, /events)
+  repaintAuthor: null, // repinta «Creado por …» de la nota abierta cuando llega /auth/me (P11b)
 };
 
 // ---------------------------------------------------------------- helpers
@@ -244,6 +245,7 @@ function clearMain() {
   // La sesión de la nota (cambios pendientes, refresco en vivo) es de la nota
   // que se deja atrás: renderNote() pone la suya al terminar.
   state.noteSession = null;
+  state.repaintAuthor = null;
   if (state.editor) {
     state.editor.destroy();
     state.editor = null;
@@ -472,6 +474,367 @@ function initTreeRovingTabIndex(container) {
     currentRows[nextIdx].focus();
   });
 }
+
+
+// --------------------------------------------------------- quién eres (P11b)
+// El backend guarda `created_by` como el `display_name` del usuario (texto, no
+// un id), así que para pintar el punto de su color hay que saber de quién se
+// trata. `/auth/me` da el usuario de la sesión y aquí se recuerdan los que este
+// navegador ha visto —el propio y los que cree un admin— en localStorage, para
+// que el color siga ahí tras una recarga.
+//
+// Los usuarios viven en el índice, no en el vault, y esta versión de la API no
+// expone el listado completo (`GET /auth/users` no existe; sí el POST). El panel
+// lo intenta igualmente: el día que exista lo usa sin cambiar nada más, y
+// mientras dice que solo conoce los de este navegador en vez de fingir una
+// lista que no tiene.
+const KNOWN_USERS_KEY = "mdm_known_users";
+
+const sessionUser = { me: null }; // el de /auth/me
+const knownUsers = new Map(); // display_name -> {username, display_name, color, is_admin}
+
+function loadKnownUsers() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(KNOWN_USERS_KEY) || "[]");
+    if (Array.isArray(stored)) stored.forEach((u) => rememberUser(u, { persist: false }));
+  } catch {
+    // localStorage con basura: no es un dato crítico, se empieza de cero
+  }
+}
+
+function rememberUser(user, { persist = true } = {}) {
+  if (!user || !user.display_name) return;
+  knownUsers.set(user.display_name, {
+    username: user.username || "",
+    display_name: user.display_name,
+    color: user.color || null,
+    is_admin: Boolean(user.is_admin),
+  });
+  if (!persist) return;
+  try {
+    localStorage.setItem(KNOWN_USERS_KEY, JSON.stringify([...knownUsers.values()]));
+  } catch {
+    // sin sitio en localStorage: el color se pierde al recargar, nada más
+  }
+}
+
+/** Color del usuario que firma `displayName`, o null si no se conoce. */
+function colorForAuthor(displayName) {
+  const name = (displayName || "").trim();
+  return name ? knownUsers.get(name)?.color || null : null;
+}
+
+/** «Creado por <nombre>», con el punto del color de quien la creó.
+ *
+ * Sin usuario conocido (notas viejas con «Tú») no hay punto y el texto se queda
+ * en el gris de .note-meta: inventar un color para un nombre que no es de nadie
+ * sería mentir con una bonita paleta.
+ */
+function paintCreatedBy(el, createdBy) {
+  el.textContent = "";
+  const name = (createdBy || "").trim();
+  if (!name) {
+    el.textContent = "Creado por —";
+    return;
+  }
+  const color = colorForAuthor(name);
+  if (color) {
+    const dot = document.createElement("span");
+    dot.className = "user-dot";
+    dot.style.background = color;
+    dot.setAttribute("aria-hidden", "true");
+    el.appendChild(dot);
+  }
+  el.appendChild(document.createTextNode(`Creado por ${name}`));
+}
+
+// ---------------------------------------------------------------- el chip
+
+function paintUserChip() {
+  const wrap = document.getElementById("user-chip-wrap");
+  const chip = document.getElementById("user-chip");
+  const menu = document.getElementById("user-menu");
+  const me = sessionUser.me;
+  if (!wrap || !chip || !menu) return;
+  if (!me) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  chip.querySelector(".user-dot").style.background = me.color || "var(--ink-muted)";
+  chip.querySelector(".user-chip-name").textContent = me.display_name;
+  chip.title = `${me.display_name} (@${me.username})${me.is_admin ? " · administrador" : ""}`;
+  chip.setAttribute("aria-label", `Tu cuenta: ${me.display_name}. Abrir el menú`);
+  // «Usuarios» solo existe para un admin: a los demás no se les enseña un botón
+  // que solo puede dar 403.
+  menu.querySelector('[data-action="users"]').hidden = !me.is_admin;
+}
+
+function initUserChip() {
+  const wrap = document.getElementById("user-chip-wrap");
+  const chip = document.getElementById("user-chip");
+  const menu = document.getElementById("user-menu");
+  if (!wrap || !chip || !menu) return;
+
+  const closeMenu = () => {
+    menu.hidden = true;
+    chip.setAttribute("aria-expanded", "false");
+  };
+  const openMenu = () => {
+    menu.hidden = false;
+    chip.setAttribute("aria-expanded", "true");
+  };
+
+  chip.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (menu.hidden) openMenu();
+    else closeMenu();
+  });
+  // Clic en cualquier otro sitio o Escape: se cierra. Sin esto el menú se
+  // quedaba abierto encima del contenido al navegar.
+  document.addEventListener("click", (event) => {
+    if (!menu.hidden && !wrap.contains(event.target)) closeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      closeMenu();
+      chip.focus();
+    }
+  });
+
+  menu.querySelector('[data-action="password"]').addEventListener("click", () => {
+    closeMenu();
+    openPasswordDialog();
+  });
+  menu.querySelector('[data-action="users"]').addEventListener("click", () => {
+    closeMenu();
+    openUsersDialog();
+  });
+  menu.querySelector('[data-action="logout"]').addEventListener("click", () => {
+    closeMenu();
+    logOut();
+  });
+}
+
+/** Pide /auth/me. Un 401 ya lo gestiona api(): manda al login y lanza. */
+async function loadCurrentUser() {
+  try {
+    const me = await api("/auth/me");
+    sessionUser.me = me;
+    rememberUser(me);
+    paintUserChip();
+    // La nota abierta pudo pintarse antes de saber quién eres: se repinta su
+    // autoría para que el color no falte por una carrera de milisegundos.
+    state.repaintAuthor?.();
+  } catch (e) {
+    if (e?.status === 401) return; // ya se está yendo al login
+    reportError("No se pudo saber qué usuario tienes", e);
+  }
+}
+
+/** Cerrar la sesión: la cookie deja de valer en el servidor y se va al login.
+ * Si la petición no llega, NO se navega: con la sesión todavía viva, /login
+ * devolvería al panel y el botón parecería roto. */
+async function logOut() {
+  try {
+    await api("/auth/logout", { method: "POST" });
+  } catch (e) {
+    if (e?.status === 401) return;
+    reportError("No se pudo cerrar la sesión", e);
+    return;
+  }
+  location.replace("/login");
+}
+
+// ------------------------------------------------------- diálogo: contraseña
+
+const passwordDialog = document.getElementById("dialog-password");
+const passwordForm = document.getElementById("form-password");
+const passwordNote = document.getElementById("pw-note");
+const PASSWORD_NOTE = passwordNote?.textContent || "";
+
+/** Aviso dentro de un diálogo: el mismo hueco para «cambiando…», el error del
+ * backend y el «hecho». */
+function setFormNote(el, text, kind = "") {
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("form-error", kind === "error");
+  el.classList.toggle("form-ok", kind === "ok");
+}
+
+function openPasswordDialog() {
+  if (!passwordDialog) return;
+  passwordForm.reset();
+  setFormNote(passwordNote, PASSWORD_NOTE);
+  document.getElementById("btn-save-password").disabled = false;
+  passwordDialog.showModal();
+  document.getElementById("pw-current").focus();
+}
+
+passwordForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const current = document.getElementById("pw-current").value;
+  const next = document.getElementById("pw-new").value;
+  const repeat = document.getElementById("pw-repeat").value;
+  if (!current) {
+    return setFormNote(passwordNote, "Escribe tu contraseña actual.", "error");
+  }
+  if (next.length < 8) {
+    return setFormNote(passwordNote, "La contraseña nueva necesita al menos 8 caracteres.", "error");
+  }
+  if (next !== repeat) {
+    return setFormNote(passwordNote, "Las dos contraseñas nuevas no coinciden.", "error");
+  }
+
+  const save = document.getElementById("btn-save-password");
+  save.disabled = true;
+  setFormNote(passwordNote, "Cambiando…");
+  try {
+    const me = await api("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: current, new_password: next }),
+    });
+    // El backend cierra las demás sesiones y deja esta abierta con una cookie
+    // nueva (viene puesta en la respuesta); aquí solo queda reflejarlo.
+    if (me) {
+      sessionUser.me = me;
+      rememberUser(me);
+      paintUserChip();
+    }
+    passwordForm.reset();
+    setFormNote(
+      passwordNote,
+      "Contraseña cambiada. Las demás sesiones abiertas se han cerrado.",
+      "ok",
+    );
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(passwordNote, describeError(e), "error");
+  } finally {
+    save.disabled = false;
+  }
+});
+
+document.getElementById("btn-cancel-password")?.addEventListener("click", () => {
+  passwordDialog.close();
+});
+
+// --------------------------------------------------------- diálogo: usuarios
+
+const usersDialog = document.getElementById("dialog-users");
+const usersNote = document.getElementById("users-note");
+const usersList = document.getElementById("users-list");
+const newUserForm = document.getElementById("form-new-user");
+const newUserNote = document.getElementById("nu-note");
+const NEW_USER_NOTE = newUserNote?.textContent || "";
+
+/** Pinta los usuarios que este navegador conoce, con su color y su @usuario. */
+function renderKnownUsers() {
+  if (!usersList) return 0;
+  usersList.textContent = "";
+  const users = [...knownUsers.values()].sort((a, b) =>
+    a.display_name.localeCompare(b.display_name, "es"),
+  );
+  users.forEach((u) => {
+    const row = document.createElement("div");
+    row.className = "user-row";
+    const dot = document.createElement("span");
+    dot.className = "user-dot";
+    dot.style.background = u.color || "var(--ink-muted)";
+    dot.setAttribute("aria-hidden", "true");
+    const name = document.createElement("span");
+    name.className = "user-name";
+    name.textContent = u.display_name;
+    const handle = document.createElement("span");
+    handle.className = "user-handle";
+    handle.textContent = `@${u.username}`;
+    row.append(dot, name, handle);
+    if (u.is_admin) {
+      const badge = document.createElement("span");
+      badge.className = "user-admin-badge";
+      badge.textContent = "admin";
+      row.appendChild(badge);
+    }
+    usersList.appendChild(row);
+  });
+  return users.length;
+}
+
+async function openUsersDialog() {
+  if (!usersDialog) return;
+  newUserForm.reset();
+  setFormNote(newUserNote, NEW_USER_NOTE);
+  renderKnownUsers();
+  setFormNote(usersNote, "Cargando usuarios…");
+  usersDialog.showModal();
+  try {
+    // Cuando la API tenga el listado, este panel lo usará sin más cambios.
+    const fetched = await api("/auth/users");
+    if (Array.isArray(fetched)) {
+      fetched.forEach((u) => rememberUser(u));
+      renderKnownUsers();
+    }
+    setFormNote(usersNote, "");
+  } catch (e) {
+    if (e?.status === 401) return;
+    const count = renderKnownUsers();
+    setFormNote(
+      usersNote,
+      "Esta versión de la API no ofrece el listado de usuarios (no hay GET /auth/users): " +
+        `aquí solo salen los que este navegador conoce (${count}).`,
+    );
+  }
+}
+
+newUserForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const username = document.getElementById("nu-username").value.trim().toLowerCase();
+  const displayName = document.getElementById("nu-display").value.trim();
+  const password = document.getElementById("nu-password").value;
+  const isAdmin = document.getElementById("nu-admin").checked;
+
+  if (!username) {
+    return setFormNote(newUserNote, "El usuario no puede estar vacío.", "error");
+  }
+  if (!displayName) {
+    return setFormNote(newUserNote, "El nombre visible no puede estar vacío.", "error");
+  }
+  if (password.length < 8) {
+    return setFormNote(
+      newUserNote,
+      "La contraseña del usuario nuevo necesita al menos 8 caracteres.",
+      "error",
+    );
+  }
+
+  const create = document.getElementById("btn-create-user");
+  create.disabled = true;
+  setFormNote(newUserNote, "Creando…");
+  try {
+    const created = await api("/auth/users", {
+      method: "POST",
+      body: JSON.stringify({
+        username,
+        display_name: displayName,
+        password,
+        is_admin: isAdmin,
+      }),
+    });
+    rememberUser(created);
+    newUserForm.reset();
+    renderKnownUsers();
+    setFormNote(newUserNote, `Usuario «${created.display_name}» creado.`, "ok");
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(newUserNote, describeError(e), "error");
+  } finally {
+    create.disabled = false;
+  }
+});
+
+document.getElementById("btn-close-users")?.addEventListener("click", () => {
+  usersDialog.close();
+});
 
 // ------------------------------------------------------------------ árbol
 
@@ -1115,9 +1478,13 @@ function renderNote(page, backlinks) {
   titleRow.append(iconBtn, titleInput);
 
   // ---- meta (creador, obligatorio y de solo lectura -- se fija al crear) ----
+  // El punto lleva el color de quien la creó; si el nombre no es de un usuario
+  // conocido (notas viejas con «Tú») no hay punto (ver paintCreatedBy).
   const meta = document.createElement("div");
   meta.className = "note-meta";
-  meta.textContent = `Creado por ${page.created_by || "—"}`;
+  paintCreatedBy(meta, page.created_by);
+  // /auth/me puede llegar después que la nota: entonces se repinta solo esto.
+  state.repaintAuthor = () => paintCreatedBy(meta, page.created_by);
 
   // ---- descripción (opcional) ----
   const descInput = document.createElement("textarea");
@@ -1744,7 +2111,19 @@ function renderNote(page, backlinks) {
         entry.className = "sug-reply-entry";
         const who = document.createElement("span");
         who.className = "sug-reply-author";
-        who.textContent = `${r.author || "—"}:`;
+        // Quién habla: si el autor tiene cuenta (el dueño, o cualquiera que
+        // haya respondido) lleva su punto de color; si no —el agente—, su
+        // nombre tal cual, que es lo que ya venía.
+        const authorColor = colorForAuthor(r.author);
+        if (authorColor) {
+          who.classList.add("is-owner");
+          const dot = document.createElement("span");
+          dot.className = "user-dot";
+          dot.style.background = authorColor;
+          dot.setAttribute("aria-hidden", "true");
+          who.appendChild(dot);
+        }
+        who.appendChild(document.createTextNode(`${r.author || "—"}:`));
         const text = document.createElement("span");
         text.className = "sug-reply-text";
         text.textContent = r.text;
@@ -3546,6 +3925,13 @@ themeBtn?.addEventListener("click", () => {
 applyTheme(localStorage.getItem(THEME_KEY) || "dark");
 
 // -------------------------------------------------------------------- arranque
+
+// Quién eres (P11b) antes de nada: si no hay sesión, /auth/me responde 401 y
+// api() manda al login. Los usuarios que este navegador ya conoce se leen antes
+// para que la autoría de las notas salga con su color desde el primer pintado.
+loadKnownUsers();
+initUserChip();
+loadCurrentUser();
 
 loadTree();
 showEmpty(); // landing con páginas recientes + fechas cercanas, en vez del hueco estático de index.html

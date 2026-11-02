@@ -187,6 +187,60 @@
   .dot.ok { background: var(--ok); }
   .dot.down { background: var(--down); }
 
+  /* ---------- quién eres (P11b) ---------- */
+  /* El chip vive en la cabecera: punto del color del usuario + su nombre. Al
+     pulsarlo se abre el menú, que es `position: absolute` dentro de su
+     contenedor y no del header: así queda pegado al chip aunque la cabecera
+     cambie de alto. */
+  .user-chip-wrap { position: relative; display: flex; align-items: center; }
+  .user-chip-wrap[hidden] { display: none; }
+  .user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 9px 3px 7px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: none;
+    color: var(--ink-muted);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+  .user-chip:hover,
+  .user-chip[aria-expanded="true"] { color: var(--ink); background: var(--code-bg); border-color: var(--panel-border); }
+  .user-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .user-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-muted); flex: 0 0 auto; }
+  .user-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 1000; /* como los menús flotantes del editor: encima del contenido */
+    min-width: 200px;
+    padding: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border: 1px solid var(--panel-border);
+    border-radius: 9px;
+    background: var(--surface-elevated);
+    box-shadow: var(--shadow-float);
+  }
+  .user-menu[hidden] { display: none; }
+  .user-menu-item {
+    padding: 7px 10px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 13px;
+    text-align: left;
+  }
+  .user-menu-item:hover,
+  .user-menu-item:focus-visible { background: var(--code-bg); }
+  .user-menu-item.is-danger { color: var(--down); }
+
   /* ---------- layout ---------- */
   .layout { flex: 1; display: flex; min-height: 0; }
 
@@ -601,6 +655,10 @@
   .sug-thread { display: flex; flex-direction: column; gap: 3px; padding-left: 8px; border-left: 2px solid var(--panel-border); }
   .sug-reply-entry { font-size: 11.5px; color: var(--ink); }
   .sug-reply-author { color: var(--ink-muted); font-weight: 600; }
+  /* En el hilo, quien tiene cuenta (el dueño) lleva su punto de color; el
+     agente se queda con su nombre tal cual (P11b). */
+  .sug-reply-author.is-owner { color: var(--ink); }
+  .sug-reply-author .user-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; vertical-align: middle; }
   .sug-reply-row { display: flex; gap: 6px; }
   .sug-reply-input {
     flex: 1;
@@ -679,6 +737,9 @@
   }
   .note-description:focus { color: var(--ink); }
   .note-meta { font-size: 12px; color: var(--ink-muted); margin-bottom: 18px; font-variant-numeric: tabular-nums; }
+  /* El punto de color de quien creó la nota. Sin usuario conocido no se pinta
+     y el texto se queda en el gris de .note-meta (ver paintCreatedBy). */
+  .note-meta .user-dot { display: inline-block; vertical-align: middle; margin-right: 6px; }
   .panel-head {
     display: flex;
     align-items: center;
@@ -1294,6 +1355,44 @@
   #prop-rows, #row-props { max-height: 55vh; overflow-y: auto; padding-right: 2px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
+  /* Diálogos de cuenta (P11b): lista de usuarios y avisos en línea. */
+  .users-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 34vh;
+    overflow-y: auto;
+    margin-bottom: 14px;
+  }
+  .user-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--panel-border);
+    border-radius: 7px;
+    font-size: 13px;
+  }
+  .user-row .user-name { color: var(--ink); }
+  .user-row .user-handle { color: var(--ink-muted); font-family: var(--font-mono); font-size: 11.5px; }
+  .user-row .user-admin-badge {
+    margin-left: auto;
+    padding: 1px 7px;
+    border: 1px solid var(--panel-border);
+    border-radius: 999px;
+    color: var(--accent-ink);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .form-note { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--ink-muted); }
+  .form-note.form-error { color: var(--down); }
+  .form-note.form-ok { color: var(--ok); }
+  .field-inline { flex-direction: row; align-items: center; gap: 8px; }
+  .field-inline label { text-transform: none; letter-spacing: 0; font-size: var(--text-xs); }
+  .field-inline input { min-height: 0; }
+
   /* ---------- avisos de error (toasts) ----------
      Cuelgan de document.body, no de #main (ver showError en app.js): así
      siguen visibles al navegar y no se los lleva por delante el siguiente
@@ -1404,6 +1503,21 @@
     <div class="status-strip">
       <span class="status-item"><span class="dot" id="dot-api"></span>api</span>
       <span class="status-item"><span class="dot" id="dot-db"></span>db</span>
+      <!-- Quién eres (P11b): tu punto de color y tu nombre; al pulsarlo, tu
+           menú. app.js lo rellena con /auth/me y lo deja oculto hasta saberlo
+           (sin sesión, la puerta ya ha mandado a /login). -->
+      <div class="user-chip-wrap" id="user-chip-wrap" hidden>
+        <button type="button" class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Tu cuenta">
+          <span class="user-dot" aria-hidden="true"></span>
+          <span class="user-chip-name"></span>
+        </button>
+        <div class="user-menu" id="user-menu" role="menu" aria-label="Tu cuenta" hidden>
+          <button type="button" class="user-menu-item" role="menuitem" data-action="password">Cambiar contraseña</button>
+          <!-- Solo para un admin: paintUserChip() lo enseña o lo esconde. -->
+          <button type="button" class="user-menu-item" role="menuitem" data-action="users" hidden>Usuarios</button>
+          <button type="button" class="user-menu-item is-danger" role="menuitem" data-action="logout">Cerrar sesión</button>
+        </div>
+      </div>
       <!-- Interruptor de tema (SPEC-B §1.1). El icono visible lo decide el
            data-theme del <html>: sol en oscuro (pasar a claro) y luna en claro. -->
       <button type="button" class="icon-btn" id="btn-toggle-theme" title="Cambiar a tema claro" aria-label="Cambiar entre tema oscuro y claro" aria-pressed="false">
@@ -1505,6 +1619,63 @@
       <button class="btn" id="btn-cancel-row">Cancelar</button>
       <button class="btn btn-primary" id="btn-save-row">Guardar</button>
     </div>
+  </dialog>
+
+  <!-- Tu cuenta (P11b): cambiar la contraseña propia. La actual se pide
+       porque cambiarla es también la forma de echar a quien estuviera dentro
+       con la vieja (el backend cierra las demás sesiones). -->
+  <dialog id="dialog-password">
+    <h3>Cambiar contraseña</h3>
+    <form id="form-password" novalidate>
+      <div class="field">
+        <label for="pw-current">Contraseña actual</label>
+        <input type="password" id="pw-current" autocomplete="current-password" />
+      </div>
+      <div class="field">
+        <label for="pw-new">Contraseña nueva</label>
+        <input type="password" id="pw-new" autocomplete="new-password" />
+      </div>
+      <div class="field">
+        <label for="pw-repeat">Repite la contraseña nueva</label>
+        <input type="password" id="pw-repeat" autocomplete="new-password" />
+      </div>
+      <p class="form-note" id="pw-note">Al menos 8 caracteres. Al cambiarla se cierran las demás sesiones abiertas.</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="btn-cancel-password">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="btn-save-password">Cambiar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Usuarios (P11b, solo admin): listar y crear. Editar y borrar no entran
+       en esta tarjeta. -->
+  <dialog id="dialog-users">
+    <h3>Usuarios</h3>
+    <p class="form-note" id="users-note"></p>
+    <div class="users-list" id="users-list"></div>
+    <form id="form-new-user" novalidate>
+      <div class="field">
+        <label for="nu-username">Usuario</label>
+        <input type="text" id="nu-username" placeholder="marta" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label for="nu-display">Nombre visible</label>
+        <input type="text" id="nu-display" placeholder="Marta" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="nu-password">Contraseña</label>
+        <input type="password" id="nu-password" autocomplete="new-password" />
+      </div>
+      <div class="field field-inline">
+        <input type="checkbox" id="nu-admin" />
+        <label for="nu-admin">Administrador</label>
+      </div>
+      <p class="form-note" id="nu-note">El color lo asigna la paleta según el nombre de usuario.</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="btn-close-users">Cerrar</button>
+        <button type="submit" class="btn btn-primary" id="btn-create-user">Crear usuario</button>
+      </div>
+    </form>
   </dialog>
 
   <script type="module" src="/app.js"></script>
