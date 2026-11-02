@@ -85,6 +85,17 @@ services:
       # vault se pueden leer de verdad. El motivo de un fallo aparece en
       # `docker inspect --format '{{json .State.Health}}' mdm_api_prod`.
       #
+      # Desde P16 el índice se construye en segundo plano, así que `/health`
+      # contesta `starting` mientras tanto y `ok` al terminar: **los dos valen**
+      # (el contenedor está vivo y haciendo su trabajo). Lo que NO vale es
+      # `error` --503, el reindexado falló o lleva STARTUP_STALL_SECONDS sin
+      # avanzar-- ni un proceso que no contesta.
+      #
+      # Orden a propósito: primero el vault y después `/health`. Así un vault
+      # ilegible se cuenta como tal ("el vault no se puede recorrer: …", el
+      # caso de P7) aunque la app esté muerta por ello, en vez de confundirlo
+      # con una API caída.
+      #
       # Sin `curl` a propósito: sería una dependencia más en
       # `python:3.12-slim-bookworm` solo para esto.
       test:
@@ -92,20 +103,13 @@ services:
         - python
         - -c
         - |
-          import json, os, sqlite3, sys, urllib.request
+          import json, os, sqlite3, sys, urllib.error, urllib.request
 
 
           def fail(msg):
               print("healthcheck: " + msg, file=sys.stderr)
               sys.exit(1)
 
-
-          try:
-              with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10) as resp:
-                  if json.load(resp).get("status") != "ok":
-                      fail("/health no dice ok")
-          except Exception as exc:
-              fail("la API no responde en /health: " + repr(exc))
 
           vault = os.environ.get("VAULT_PATH", "/data/vault")
           if not os.path.isdir(vault):
@@ -124,7 +128,47 @@ services:
               dirs[:] = [d for d in dirs if d != ".trash"]
               en_vault += sum(1 for f in ficheros if f.endswith(".md"))
 
+          # `/health` distingue los tres estados: `ok` (índice reconstruido),
+          # `starting` (se está construyendo: aceptable) y `error` (503 con el
+          # motivo: fallo). Un `starting` eterno no engaña a nadie: la propia
+          # app lo convierte en `error` cuando el indexado se atasca, así que
+          # aquí no hay que llevar la cuenta del tiempo.
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10) as resp:
+                  salud = json.load(resp)
+          except urllib.error.HTTPError as exc:
+              try:
+                  salud = json.load(exc)
+              except Exception:
+                  fail("la API no responde en /health: " + repr(exc))
+          except Exception as exc:
+              fail("la API no responde en /health: " + repr(exc))
+
+          estado = salud.get("status")
+          if estado == "error":
+              fail("/health dice error: " + str(salud.get("detail")))
+          if estado == "starting":
+              avance = salud.get("progress") or {}
+              print(
+                  "indexando: %s (%s%%), %s s en marcha; %s ficheros del vault"
+                  % (
+                      avance.get("phase"),
+                      avance.get("percent"),
+                      avance.get("elapsed_seconds"),
+                      en_vault,
+                  )
+              )
+              sys.exit(0)
+          if estado != "ok":
+              fail("/health no dice ok ni starting: " + json.dumps(salud))
+
           index = os.environ.get("INDEX_PATH", "/data/index.sqlite")
+          # Un índice que se puede LEER no es un índice que se pueda ESCRIBIR:
+          # la app necesita escribirlo en cada guardado y en cada reindexado.
+          for ruta in (index, os.path.dirname(index) or "."):
+              if not os.access(ruta, os.W_OK):
+                  fail("el índice no se puede escribir: " + ruta)
+
           try:
               conn = sqlite3.connect("file:" + index + "?mode=ro", uri=True, timeout=10)
               try:
@@ -141,7 +185,8 @@ services:
           # true con `counts.pages == 0`, la API servía el panel vacío y el
           # contenedor se quedaba `healthy` para siempre (`restart:
           # unless-stopped` no reinicia por `unhealthy`). Ese es el susto que
-          # este chequeo evita.
+          # este chequeo evita. Solo se mira con el índice ya listo: a mitad de
+          # reindexado un índice vacío es lo normal.
           if pages == 0 and en_vault > 0:
               fail(
                   "el índice está vacío (%s páginas) pero hay %d ficheros en el "
@@ -156,8 +201,11 @@ services:
       interval: 30s
       timeout: 15s
       retries: 3
-      # El arranque reindexa el vault entero (0,32 s medidos con 5.033 notas):
-      # este margen evita contar como caído un arranque normal.
+      # Desde P16 la app escucha desde el primer segundo (el índice se
+      # construye detrás), así que este margen ya no cubre un reindexado: solo
+      # el arranque del proceso y la primera respuesta. Se deja en 60 s porque
+      # un host frío o una imagen que se acaba de construir también cuentan, y
+      # durante el indexado el chequeo pasa con `starting`.
       start_period: 60s
     # stdout/stderr, sin ficheros ni rotación propia: `docker logs mdm_api_prod`.
     # La rotación la hace el driver de Docker (abajo), no la app.
