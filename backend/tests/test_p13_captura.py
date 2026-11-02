@@ -459,6 +459,7 @@ def test_los_iconos_publicos_no_abren_el_panel(client):
 SCRIPT_LINUX = (
     Path(__file__).resolve().parents[2] / "tools" / "capture" / "linux" / "captura.sh"
 )
+MDM_DESKTOP = SCRIPT_LINUX.with_name("mdm-captura.desktop")
 
 
 def _doble(carpeta, nombre, cuerpo):
@@ -468,8 +469,13 @@ def _doble(carpeta, nombre, cuerpo):
     return ruta
 
 
-def _correr_captura(tmp_path, *, entorno, entrada=None):
-    """Lanza `captura.sh` con dobles. Devuelve (resultado, llamadas, enviado)."""
+def _correr_captura(tmp_path, *, entorno, entrada=None, directo=False):
+    """Lanza `captura.sh` con dobles. Devuelve (resultado, llamadas, enviado).
+
+    Con `directo=True` se ejecuta el fichero por su ruta (`execve`, como el
+    atajo de GNOME y el `Exec=` del `.desktop`), no a través de `sh`.
+    """
+    orden = [str(SCRIPT_LINUX)] if directo else ["sh", str(SCRIPT_LINUX)]
     bin_falso = tmp_path / "bin"
     bin_falso.mkdir()
     registro = tmp_path / "llamadas.log"
@@ -515,7 +521,7 @@ def _correr_captura(tmp_path, *, entorno, entrada=None):
     medio.update(entorno)
     if entrada is None:
         resultado = subprocess.run(
-            ["sh", str(SCRIPT_LINUX)],
+            orden,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -525,7 +531,7 @@ def _correr_captura(tmp_path, *, entorno, entrada=None):
         )
     else:
         resultado = subprocess.run(
-            ["sh", str(SCRIPT_LINUX)],
+            orden,
             input=entrada,
             capture_output=True,
             text=True,
@@ -583,4 +589,34 @@ def test_el_script_de_linux_normaliza_las_barras_finales_de_mdm_url(tmp_path):
     assert resultado.returncode == 0, resultado.stderr
     assert "http://127.0.0.1:8000/capture" in llamadas, llamadas
     assert "//capture" not in llamadas, llamadas
+
+
+def test_los_lanzadores_de_linux_viajan_ejecutables():
+    """El atajo de GNOME (`command` con la ruta del script) y el `Exec=` del
+    `.desktop` lanzan el fichero directamente, sin shell: con el bit apagado el
+    proceso no llega a arrancar —`Permission denied`, exit 126— y el usuario no
+    recibe ningún aviso, que es justo lo que el script evita al resto de fallos.
+
+    El modo viaja en el índice de git, así que esto cubre también el `git
+    clone` y el `cp` que hacen los documentos de instalación.
+    """
+    for ruta in (SCRIPT_LINUX, MDM_DESKTOP):
+        modo = ruta.stat().st_mode & 0o777
+        assert modo & 0o111, (
+            f"{ruta.name} viaja en {modo:03o}: el atajo moriría con «Permission denied»"
+        )
+
+
+def test_el_script_de_linux_arranca_sin_pasar_por_sh(tmp_path):
+    """Como el atajo: `execve` sobre el fichero, no `sh captura.sh`."""
+    assert os.access(SCRIPT_LINUX, os.X_OK), "sin el bit de ejecución no hay execve"
+    resultado, llamadas, enviado = _correr_captura(
+        tmp_path,
+        entorno={"MDM_TOKEN": "token-de-prueba", "MDM_URL": "http://127.0.0.1:9"},
+        directo=True,
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    assert "zenity --entry" in llamadas, llamadas
+    assert enviado == {"text": "una idea del cuadro", "source": "cli"}
 

@@ -443,8 +443,19 @@ de la bandeja (o un cuadro de error). El atajo se asigna de dos formas: la
 **Linux.** `captura.sh` toma el texto del argumento, de la entrada estándar si
 trae algo (`printf 'idea' | captura.sh`) o, si no hay ninguna de las dos, de un
 cuadro con `zenity`, `kdialog` o `rofi`; hace el `POST` con `curl` (el JSON se
-escapa con `awk`, sin `jq`) y avisa con `notify-send`/`zenity`/`kdialog`. Para
-el atajo, en GNOME:
+escapa con `awk`, sin `jq`) y avisa con `notify-send`/`zenity`/`kdialog`. Antes
+del atajo hay que instalarlo **con permiso de ejecución**: el atajo de GNOME y
+el `Exec=` del `.desktop` lanzan el fichero directamente, sin shell, así que un
+`cp` normal lo deja en `644` y el atajo muere con `Permission denied` **antes
+de arrancar**, sin ningún aviso (el script ni siquiera llega a ejecutarse):
+
+```bash
+install -m 755 tools/capture/linux/captura.sh ~/.local/bin/captura.sh
+install -m 755 tools/capture/linux/mdm-captura.desktop ~/.local/share/applications/
+```
+
+(el `.desktop` lleva `Exec=` con la ruta de tu usuario: edítalo antes o después
+de instalarlo). Y el atajo, en GNOME:
 
 ```bash
 gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/']"

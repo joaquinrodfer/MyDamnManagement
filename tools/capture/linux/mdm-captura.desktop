@@ -1,9 +1,13 @@
 [Desktop Entry]
 # Lanzador de la captura rápida (P13). Copia este fichero a
 #   ~/.local/share/applications/mdm-captura.desktop
+# con permiso de ejecución (los escritorios lanzan `Exec=` sin pasar por un
+# shell; en el repo el fichero ya viene 755, pero un `cp` normal lo deja 644):
+#   install -m 755 tools/capture/linux/mdm-captura.desktop ~/.local/share/applications/
 # y cambia `Exec` por la ruta donde tengas `captura.sh` (aquí se asume
-# ~/.local/bin/captura.sh, que es el sitio habitual). Después aparece en el
-# menú de aplicaciones y se puede lanzar desde el escritorio.
+# ~/.local/bin/captura.sh, que es el sitio habitual; instálalo también con
+# `install -m 755`, o el atajo muere con «Permission denied» sin avisar).
+# Después aparece en el menú de aplicaciones y se puede lanzar desde el escritorio.
 #
 # El atajo de teclado lo pone el escritorio, no la app. En GNOME:
 #   gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/']"
