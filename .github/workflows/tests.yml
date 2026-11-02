@@ -49,6 +49,24 @@ jobs:
       - name: Tests
         run: pytest -q
 
+      # Los tres guiones de verificación del repo (P1.2a, P1.2b y P2). Corren la
+      # app de verdad con TestClient sobre un vault y un índice temporales y
+      # salen con 0 solo si su criterio de hecho se cumple. Hasta ahora no los
+      # ejecutaba nadie y se rompieron en silencio al cerrar la API en P11a:
+      # este paso es lo que impide que vuelva a pasar. No necesitan servicios
+      # ni variables: cada uno crea su propio `tempfile.mkdtemp` y abre sesión
+      # con `/auth/setup` (ver backend/scripts/_sesion.py). Tardan ~25 s entre
+      # los tres.
+      - name: Guiones de verificación (P1.2a, P1.2b, P2)
+        run: |
+          set -euo pipefail
+          for guion in backend/scripts/verify_p1_2a.py \
+                       backend/scripts/verify_p1_2b.py \
+                       backend/scripts/verify_p2.py; do
+            echo "== $guion"
+            python "$guion"
+          done
+
   bundle:
     name: bundle del editor (entry.js -> vendor/editor.bundle.js)
     runs-on: ubuntu-latest
