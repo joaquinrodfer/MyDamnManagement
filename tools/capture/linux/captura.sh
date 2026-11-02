@@ -135,7 +135,10 @@ respuesta=$(printf '%s' "$cuerpo" | curl -sS --max-time 15 \
 estado_curl=$?
 
 if [ "$estado_curl" -ne 0 ]; then
-  avisar "No se pudo conectar con $URL: ¿está arrancada la app? ($respuesta)" error
+  # El último renglón de `$respuesta` es el código (`000` si no hubo ni
+  # conexión): sobra en el aviso, y el mensaje de curl puede traer saltos.
+  detalle_red=$(printf '%s\n' "$respuesta" | sed '$d' | tr '\n' ' ')
+  avisar "No se pudo conectar con $URL: ¿está arrancada la app? ($detalle_red)" error
   exit 1
 fi
 
