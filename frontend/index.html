@@ -1743,7 +1743,7 @@
     .note-topbar { flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
     .note-topbar-right { flex-wrap: wrap; gap: 6px; }
     .note-title-row { gap: 4px; align-items: center; }
-    .note-title { font-size: 21px; min-width: 0; }
+    .note-title { font-size: 21px; min-width: 0; min-height: 44px; }
     .note-icon-btn { font-size: 20px; width: 44px; height: 44px; }
     .note-description { font-size: 16px; }
     .note-meta { margin-bottom: 12px; }
@@ -1831,6 +1831,12 @@
     .sug-actions { gap: 8px; }
     .sug-actions .btn { flex: 1 1 0; }
     .sug-reply-input { font-size: 16px; min-height: 44px; }
+    /* El asa de cerrar el panel y las entradas del índice se tocan con el dedo:
+       la X estaba en 28×28 (la esquina de arriba, la peor para el pulgar) y las
+       entradas del índice en 25 de alto. */
+    .sug-panel-close { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+    .note-outline-item { min-height: 44px; padding: 10px 12px; }
+    .note-description { min-height: 44px; }
 
     /* --- zonas táctiles de los controles de cada día --- */
     #btn-toggle-sidebar,
