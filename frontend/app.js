@@ -1724,6 +1724,9 @@ function renderNote(page, backlinks) {
   }
 
   async function loadSuggestions() {
+    // Una sola petición (todas, sin `?status=pending`) y el filtro aquí: el
+    // panel necesita también las decididas y las desancladas, así que pedir
+    // solo las pendientes obligaría a una segunda llamada para lo mismo.
     try {
       const found = await api(`/pages/${page.id}/suggestions`);
       if (state.noteSession !== session) return; // ya se navegó
