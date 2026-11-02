@@ -1870,9 +1870,26 @@ function renderNote(page, backlinks) {
     });
   });
 
-  const titleInput = document.createElement("input");
+  // El título es un <textarea> de una sola línea lógica y no un <input>
+  // (P14): en un móvil de 375 px un título normal no cabe y el <input> lo
+  // recorta sin más (no hay dónde leer el final). Con un textarea el título
+  // ocupa las líneas que necesite y se lee entero; Enter no mete salto, quita
+  // el foco (un título no tiene saltos de línea).
+  const titleInput = document.createElement("textarea");
   titleInput.className = "note-title";
+  titleInput.rows = 1;
   titleInput.value = page.title;
+  titleInput.setAttribute("aria-label", "Título de la página");
+  titleInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      titleInput.blur();
+    }
+  });
+  function autoResizeTitle() {
+    titleInput.style.height = "auto";
+    titleInput.style.height = `${titleInput.scrollHeight}px`;
+  }
 
   titleRow.append(iconBtn, titleInput);
 
@@ -2200,7 +2217,10 @@ function renderNote(page, backlinks) {
     }
   }
 
-  titleInput.addEventListener("input", scheduleSave);
+  titleInput.addEventListener("input", () => {
+    autoResizeTitle();
+    scheduleSave();
+  });
   descInput.addEventListener("input", () => {
     autoResizeDesc();
     scheduleSave();
@@ -2208,6 +2228,7 @@ function renderNote(page, backlinks) {
 
   main.append(topbar, headerWrap, fileInput, titleRow, meta, descInput, bodyMount);
   autoResizeDesc();
+  autoResizeTitle();
 
   // Ctrl/Cmd+S fuerza el guardado ya, sin esperar el debounce (y sin pasar
   // por el diálogo del navegador). Delegado en #main: pulsarlo desde
@@ -4349,10 +4370,66 @@ function setSidebarCollapsed(collapsed) {
 }
 
 document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
+  if (esMovil()) return setCajonAbierto(!cajonAbierto());
   setSidebarCollapsed(!layoutEl.classList.contains("sidebar-collapsed"));
 });
 
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+
+// ------------------------------------------------- cajón lateral en móvil (P14)
+// Por debajo de 768 px la barra lateral no ocupa columna: es un cajón encima
+// del contenido (ver el bloque «móvil» del CSS). Aquí solo se abre y se cierra,
+// y se cierra solo al elegir una página o al tocar el fondo oscurecido. Es un
+// estado de un momento, no una preferencia de pantalla: NO se guarda en
+// localStorage ni toca `sidebar-collapsed`, así que abrir el cajón en el móvil
+// no deja la barra colapsada la próxima vez que abras la app en el escritorio.
+const DRAWER_QUERY = "(max-width: 768px)";
+const drawerQuery = window.matchMedia(DRAWER_QUERY);
+const sidebarEl = document.getElementById("sidebar-aside");
+const scrimEl = document.getElementById("sidebar-scrim");
+const toggleSidebarBtn = document.getElementById("btn-toggle-sidebar");
+
+function esMovil() {
+  return drawerQuery.matches;
+}
+function cajonAbierto() {
+  return layoutEl.classList.contains("sidebar-drawer-open");
+}
+function setCajonAbierto(open) {
+  const abierto = Boolean(open) && esMovil();
+  layoutEl.classList.toggle("sidebar-drawer-open", abierto);
+  if (scrimEl) scrimEl.hidden = !abierto;
+  if (!toggleSidebarBtn) return;
+  // aria-expanded solo tiene sentido en el cajón: en escritorio el botón no
+  // despliega nada, colapsa la columna.
+  if (esMovil()) toggleSidebarBtn.setAttribute("aria-expanded", abierto ? "true" : "false");
+  else toggleSidebarBtn.removeAttribute("aria-expanded");
+}
+
+scrimEl?.addEventListener("click", () => setCajonAbierto(false));
+
+// Elegir una página (o procesar una captura) cierra el cajón: ya no hace falta.
+sidebarEl?.addEventListener("click", (e) => {
+  if (!cajonAbierto()) return;
+  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process")) setCajonAbierto(false);
+});
+
+// Escape cierra el cajón. En captura, porque el editor y los diálogos también
+// escuchan Escape y aquí se llega antes.
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key === "Escape" && cajonAbierto()) setCajonAbierto(false);
+  },
+  true,
+);
+
+// Al pasar a escritorio el cajón deja de existir: se cierra y se quita el fondo.
+drawerQuery.addEventListener("change", (e) => {
+  if (!e.matches) setCajonAbierto(false);
+});
+
+setCajonAbierto(false);
 
 // ------------------------------------------------------------------- tema
 // Oscuro por defecto; el interruptor de la cabecera conmuta a claro y la
