@@ -144,6 +144,10 @@ guarda tal cual, igual que `created_by` en una página.
 El token de agente —que un proceso pueda proponer sin poder escribir, con su
 identidad verificada— es la tarjeta siguiente. Cuando exista, `agent` pasará a
 salir del token y no del cuerpo de la petición; el resto del modelo no cambia.
+**Ya existe** ([`ADR-0004`](ADR-0004-puerta-para-agentes.md), P10b): por la
+puerta `/agent/...` el `agent` sale siempre del token, y `POST
+/pages/{id}/suggestions` sigue aceptando la etiqueta como antes (es la ruta del
+dueño).
 
 ## Contrato de la API
 

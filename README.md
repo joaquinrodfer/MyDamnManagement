@@ -189,6 +189,81 @@ Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]
 
 Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": {"key":"valor","dir":"desc"}, "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend; `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
 
+### Agentes (`/agent/...`)
+
+Un agente externo —un proceso que lee el vault y propone cambios— puede **leer contexto y proponer parches**, y nada más. Se identifica con un token; no hay usuarios, sesiones ni roles. La puerta está pensada para que un LLM trabaje sobre tus notas sin poder tocarlas: lo único que puede crear es una sugerencia pendiente, que aceptas o rechazas tú.
+
+```bash
+# En el `.env` del servidor (o en el entorno del contenedor). Pares
+# token:nombre separados por comas. El nombre es el del agente y va DENTRO del
+# token: el cuerpo de una petición no puede elegirlo.
+AGENT_TOKENS="token1:agente-hitos,token2:agente-revision"
+```
+
+- **Sin `AGENT_TOKENS`** (o vacía) las tres rutas de `/agent` **no existen: 404**. No es un 403: un despliegue sin agentes no anuncia una superficie que no tiene configurada.
+- El token viaja en la cabecera **`X-Agent-Token`**, nunca en la URL (una URL acaba en el log de acceso; una cabecera no). Sin token o con uno que no está configurado: **401**, con el mismo mensaje en los dos casos.
+- La comparación es en tiempo constante (`hmac.compare_digest`) y se hace contra todos los tokens, sin cortar al primero que acierta.
+- Los tokens **no se registran**: ni al acertar, ni al fallar, ni en los avisos de configuración. El log de una sugerencia creada dice agente, nota y tamaño del parche, jamás su texto: `INFO mdm.agents: sugerencia <id>: agente=agente-hitos nota=Notas/Hitos.md kind=edit parche=98 B`. Para que esa línea llegue al log del contenedor, el arranque pasa `--log-config logging.json` (ver [Logs](#logs)): sin él, uvicorn solo configura sus propios loggers y la app se queda sin `INFO`.
+- Un nombre de agente es un nombre de fichero portable (letras, dígitos, `.`, `_` y `-`): se usa para buscar su nota de instrucciones. Una entrada de `AGENT_TOKENS` con un nombre raro se descarta con un aviso (sin el token) y las demás siguen valiendo.
+
+| Endpoint | Método | Qué hace |
+| --- | --- | --- |
+| `/agent/context?page_id=<uuid>` o `?path=Notas/Algo.md` | GET | La nota, sus backlinks, sus wikilinks (y si resuelven), todas sus sugerencias con el hilo del dueño y el `brief` del agente, en una sola respuesta |
+| `/agent/suggestions` | POST | Propone un parche (`kind=edit`) o una nota nueva (`kind=new_page`) sobre `page_id`. **413** si el parche pasa de 8 KB (32 KB en `new_page`), **429** si hay demasiadas pendientes |
+| `/agent/suggestions?status=…&since=<iso>` | GET | Las sugerencias **de ese agente**, con lo que el dueño decidió: `pending`/`accepted`/`rejected`/`orphaned`, y `since` para preguntar «¿qué ha pasado desde mi última visita?» |
+
+Leer el contexto (lo que un agente pide antes de proponer nada):
+
+```bash
+curl -s -H "X-Agent-Token: token1" \
+  "http://localhost:8000/agent/context?path=Notas/Hitos.md"
+```
+
+```json
+{"page": {"id": "9f1c…", "title": "Hitos", "path": "Notas/Hitos.md",
+          "type": "note", "updated_at": "2026-11-02T09:12:44.120931+00:00"},
+ "body": "# Hitos\n\n- Cerrar P10a\n- Cerrar P10b\n",
+ "body_truncated": false,
+ "backlinks": [{"id": "3a77…", "title": "Proyecto"}],
+ "links": [{"title": "Proyecto", "exists": true}, {"title": "Roadmap", "exists": false}],
+ "suggestions": [{"id": "b41e…", "status": "rejected", "agent": "agente-hitos",
+                  "kind": "edit", "old_text": "- Cerrar P10a",
+                  "new_text": "- Cerrar P10a (hecho)", "rationale": "ya está",
+                  "reason": "todavía no", "replies": [{"author": "Tú", "text": "cuando cierre el CI", "at": "2026-11-01T18:04:02+00:00"}],
+                  "created_at": "2026-11-01T17:50:00+00:00", "decided_at": "2026-11-01T18:00:00+00:00",
+                  "page_id": "9f1c…", "path": "Notas/Hitos.md", "title": null}],
+ "brief": "Propón hitos cortos y verificables. No cambies las fechas."}
+```
+
+- `body` se corta a **20 KB** (`AGENT_CONTEXT_MAX_BODY`) y, si se cortó, `body_truncated` lo dice: quien lo lee tiene que saber que no lo ha visto entero.
+- `suggestions` incluye las **ya resueltas**: el motivo del rechazo (`reason`) y las respuestas del dueño (`replies`) son el canal de vuelta. Un agente que vuelve a mirar ve qué se aceptó, qué se rechazó y por qué.
+- `brief` es el cuerpo de la nota **`Agentes/<nombre-del-agente>.md`** — las instrucciones que le hayas escrito a ese agente. Se busca en la raíz del vault y en `Notas/Agentes/` (donde nace si la creas desde la app); si no existe, `null`.
+
+Proponer un parche:
+
+```bash
+curl -s -X POST http://localhost:8000/agent/suggestions \
+  -H "X-Agent-Token: token1" -H "Content-Type: application/json" \
+  -d '{"page_id": "9f1c…", "kind": "edit",
+       "old_text": "- Cerrar P10b", "new_text": "- Cerrar P10b (hecho)",
+       "rationale": "la tarjeta está cerrada", "offset": 40}'
+```
+
+El `agent` de la sugerencia **es el del token**: si el cuerpo manda `agent`, se ignora. `offset` es opcional y solo desempata cuando `old_text` aparece varias veces (se aplica en la más cercana). Un `old_text` que ya no está no es un error: la sugerencia nace `orphaned` y se puede responder. Para una nota nueva, `{"kind": "new_page", "title": "…", "new_text": "cuerpo markdown"}`.
+
+Ver lo que el dueño decidió:
+
+```bash
+curl -s -H "X-Agent-Token: token1" \
+  "http://localhost:8000/agent/suggestions?status=accepted&since=2026-11-01T00:00:00Z"
+```
+
+`since` mira la **última actividad** (crear, decidir o la última respuesta del dueño), no la fecha de creación: una sugerencia de anteayer con una respuesta de ayer es novedad de ayer.
+
+**Topes.** `AGENT_MAX_PENDING_NOTE` (20) pendientes por nota, de cualquier agente, y `AGENT_MAX_PENDING_AGENT` (20) pendientes por agente en todo el vault. Por encima, **429** con el número y el tope en el mensaje: un agente en bucle no puede llenarte una nota de ruido.
+
+**Lo que un agente NO puede hacer**, y es deliberado: no edita (`PATCH /pages/{id}` no lo acepta y no hay ninguna ruta de escritura detrás del token), no borra, no acepta ni rechaza sus propias sugerencias y no puede firmar como otro agente. Aceptar y rechazar siguen siendo rutas del dueño; la puerta del agente es de solo lectura sobre el vault más un canal de propuesta. Las decisiones de diseño están en [`docs/ADR-0004-puerta-para-agentes.md`](docs/ADR-0004-puerta-para-agentes.md).
+
 ## Roadmap
 
 - [x] **Fase 0** — Compose + Postgres + API mínima
@@ -279,6 +354,8 @@ docker logs --since 20m mdm_api_prod
 ```
 
 El compose fija el driver `json-file` con `max-size: 10m` y `max-file: 3` para que el registro no llene el disco del servidor: eso es rotación del driver de Docker, no de la aplicación.
+
+Además del log de uvicorn está el de la app, con sus propios loggers `mdm.*` (`INFO mdm.main:` el resumen del reindexado, `WARNING mdm.main:` un índice ilegible, `INFO mdm.agents:` una sugerencia creada). El handler lo pone el **arranque**, no la app: los tres comandos de `docker-compose.yml`, `docker-compose.prod.yml` y el `CMD` de la imagen pasan `--log-config logging.json` (el fichero es `backend/logging.json`, dentro del contenedor en `/app/logging.json`). Sin ese fichero uvicorn no configura loggers ajenos y de la app solo saldría lo que pasa por el `lastResort` de `logging`, que es WARNING y superior — el `INFO` se tiraba. Si arrancas uvicorn a mano, pásale también `--log-config` para ver lo mismo que en producción.
 
 ### Backup
 
