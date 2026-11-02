@@ -61,18 +61,22 @@ def build_app(tmp_path: Path, monkeypatch):
         sys.modules[name].__dict__.update(snapshot)
 
 
-def test_docs_apagado_responde_404_y_health_sigue_ok(build_app):
+def test_docs_apagado_responde_404_y_health_sigue_ok(build_app, acceso):
     """`DOCS_ENABLED=0`: las tres rutas de docs dan 404; /health no se entera."""
     app = build_app("0")
     with TestClient(app) as client:
+        # Desde P11a `/docs` está detrás de la sesión: se entra por el camino
+        # normal (con el `settings` recargado de este test, no el del conftest).
+        acceso(client)
         assert client.get("/docs").status_code == 404
         assert client.get("/redoc").status_code == 404
         assert client.get("/openapi.json").status_code == 404
         assert client.get("/health").status_code == 200
 
 
-def test_docs_encendido_por_defecto(build_app):
+def test_docs_encendido_por_defecto(build_app, acceso):
     """Sin `DOCS_ENABLED` en el entorno (valor por defecto): /docs responde 200."""
     app = build_app(None)
     with TestClient(app) as client:
+        acceso(client)
         assert client.get("/docs").status_code == 200

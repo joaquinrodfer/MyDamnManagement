@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app import schemas
 from app.config import settings
-from app.dependencies import get_repo
+from app import auth
+from app.dependencies import get_current_user, get_repo
 from app.properties import validate_properties
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
@@ -81,13 +82,17 @@ def _serialize_view(view: View) -> schemas.ViewRead:
 # ---------------------------------------------------------------- databases
 
 @router.post("", response_model=schemas.DatabaseRead)
-def create_database(payload: schemas.DatabaseCreate, repo: Repository = Depends(get_repo)):
+def create_database(
+    payload: schemas.DatabaseCreate,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
     with _vault_errors():
         db_def = repo.create_database(
             title=payload.title,
             parent_id=payload.parent_id,
             icon=payload.icon or settings.default_icon,
-            created_by=settings.default_user_name,
+            created_by=user.display_name,
             schema_def=[p.model_dump() for p in payload.schema_def],
         )
     return _serialize_database(db_def)
@@ -113,7 +118,9 @@ def list_templates():
 
 @router.post("/from-template", response_model=schemas.DatabaseRead)
 def create_from_template(
-    payload: schemas.DatabaseFromTemplate, repo: Repository = Depends(get_repo)
+    payload: schemas.DatabaseFromTemplate,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
 ):
     template = TEMPLATES.get(payload.template)
     if not template:
@@ -123,7 +130,7 @@ def create_from_template(
         db_def = repo.create_database(
             title=payload.title or template["title"],
             icon=settings.default_icon,
-            created_by=settings.default_user_name,
+            created_by=user.display_name,
             schema_def=template["schema_def"],
             views=template["views"],
         )

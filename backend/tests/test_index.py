@@ -19,12 +19,12 @@ def _pagina(repo: Repository, titulo: str, cuerpo: str = ""):
 
 def test_esquema_versionado_y_fts5(index_path):
     info = ensure_index(str(index_path))
-    assert info.version == indice.SCHEMA_VERSION == 3
+    assert info.version == indice.SCHEMA_VERSION
     assert info.recreated is True  # no existía
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
         tablas = {
@@ -90,7 +90,7 @@ def test_fichero_corrupto_se_aparta_y_se_rehace(index_path):
         repo.close()
 
 
-def test_la_app_arranca_con_un_indice_ilegible(index_path, monkeypatch):
+def test_la_app_arranca_con_un_indice_ilegible(index_path, monkeypatch, acceso):
     """El criterio literal: un fichero corrupto se detecta al arrancar y se
     rehace; uvicorn no se cae por encontrarse basura donde va el índice."""
     from fastapi.testclient import TestClient
@@ -103,6 +103,9 @@ def test_la_app_arranca_con_un_indice_ilegible(index_path, monkeypatch):
     from app.main import app
 
     with TestClient(app) as client:
+        # El índice recién rehecho no tiene usuarios: se da de alta el primero
+        # por la puerta de verdad (P11a).
+        acceso(client)
         assert client.get("/health").json() == {"status": "ok"}
         assert client.get("/pages").json() == []
         assert client.get("/status").json()["services"]["db"]["ok"] is True
@@ -247,7 +250,7 @@ def test_un_indice_de_la_version_1_migra_y_gana_la_tabla_meta(index_path):
 
     conn = open_index(str(index_path))
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == indice.SCHEMA_VERSION == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == indice.SCHEMA_VERSION
         tablas = {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }

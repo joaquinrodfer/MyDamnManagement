@@ -105,7 +105,7 @@ def test_fichero_v2_existente_gana_los_indices_por_migracion(client, index_path)
     assert info.recreated is False  # se migra, no se rehace desde cero
 
     # (a) la version queda en 3 y (b) `sqlite_master` lista los dos índices.
-    assert info.version == indice.SCHEMA_VERSION == 3
+    assert info.version == indice.SCHEMA_VERSION
     assert _existentes(index_path) == set(INDICES)
 
     # Y la consulta que motivó `pages_created` ya no ordena en un TEMP B-TREE.

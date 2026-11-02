@@ -52,7 +52,7 @@ def arrancar_de_nuevo():
 
 
 def test_el_arranque_recoge_un_guardado_que_quedo_solo_en_el_fichero(
-    client, vault_path
+    client, vault_path, acceso
 ):
     """El caso que justifica escribir el fichero antes que el índice.
 
@@ -70,16 +70,18 @@ def test_el_arranque_recoge_un_guardado_que_quedo_solo_en_el_fichero(
     assert client.get(f"/pages/{page['id']}").json()["body_markdown"] == "v1"
 
     with arrancar_de_nuevo() as otro:
+        acceso(otro)  # cada TestClient estrena índice (P11a)
         leida = otro.get(f"/pages/{page['id']}").json()
     assert leida["body_markdown"] == "v2 TRABAJO GUARDADO", "el arranque no reindexó"
     assert "v2 TRABAJO GUARDADO" in texto(fichero)
 
 
-def test_el_arranque_recoge_un_renombrado_hecho_por_fuera(client, vault_path):
+def test_el_arranque_recoge_un_renombrado_hecho_por_fuera(client, vault_path, acceso):
     page = crear(client, title="Antes")
     (vault_path / "Notas" / "Antes.md").rename(vault_path / "Notas" / "Después.md")
 
     with arrancar_de_nuevo() as otro:
+        acceso(otro)
         leida = otro.get(f"/pages/{page['id']}").json()
     assert leida["title"] == "Después", "la API serviría un título sin fichero detrás"
 
@@ -260,7 +262,7 @@ def test_sin_allow_empty_el_arranque_no_recomienda_un_endpoint_que_no_arranca(
 
 
 def test_allow_empty_arranca_con_el_vault_vacio_y_el_indice_queda_vacio(
-    client, vault_path, monkeypatch
+    client, vault_path, monkeypatch, acceso
 ):
     """`VAULT_ALLOW_EMPTY=1`: acepta el vaciado intencionado y el índice lo sigue.
 
@@ -283,6 +285,7 @@ def test_allow_empty_arranca_con_el_vault_vacio_y_el_indice_queda_vacio(
     monkeypatch.setattr(settings, "vault_allow_empty", True)
 
     with arrancar_de_nuevo() as otro:
+        acceso(otro)
         assert otro.get("/pages").json() == []
         assert otro.get(f"/databases/{base['id']}").status_code == 404
 

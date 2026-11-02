@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -96,6 +96,37 @@ MIGRATIONS: dict[int, list[str]] = {
     3: [
         "CREATE INDEX IF NOT EXISTS pages_created ON pages(created_at)",
         "CREATE INDEX IF NOT EXISTS pages_updated ON pages(updated_at)",
+    ],
+    # P11a: usuarios y sesiones. Viven en el índice (no en el vault: el vault
+    # es de las notas, y sus ficheros los edita cualquiera con un editor de
+    # texto). `IF NOT EXISTS` deja la migración inocua en un fichero recién
+    # creado con `SCHEMA_SQL`, igual que la 3.
+    #
+    # `password_hash` y `salt` van en hexadecimal y en columnas separadas: el
+    # algoritmo (scrypt) y sus parámetros pueden cambiar sin reinterpretar una
+    # cadena empaquetada. De la sesión se guarda el SHA-256 del token, nunca el
+    # token: un volcado del índice no da sesiones abiertas.
+    4: [
+        """CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE,
+    display_name  TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    salt          TEXT NOT NULL,
+    color         TEXT,
+    created_at    TEXT NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0
+)""",
+        """CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    user_agent TEXT
+)""",
+        "CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at)",
     ],
 }
 
@@ -198,7 +229,31 @@ CREATE TABLE meta (
     value TEXT NOT NULL
 );
 
-PRAGMA user_version = 3;
+-- Usuarios y sesiones (P11a). Ver la migración 4 de `MIGRATIONS`: el mismo
+-- SQL, para que un fichero creado de cero y uno migrado acaben idénticos.
+CREATE TABLE users (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE,
+    display_name  TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    salt          TEXT NOT NULL,
+    color         TEXT,
+    created_at    TEXT NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    user_agent TEXT
+);
+CREATE INDEX sessions_user ON sessions(user_id);
+CREATE INDEX sessions_expires ON sessions(expires_at);
+
+PRAGMA user_version = 4;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -474,7 +529,7 @@ def _inspect(path: str) -> IndexInfo:
             version = SCHEMA_VERSION
 
         missing = {"pages", "databases", "views", "rows", "links",
-                   "workspaces", "meta"} - _table_names(conn)
+                   "workspaces", "meta", "users", "sessions"} - _table_names(conn)
         if missing:
             raise IndexSchemaError(
                 "al índice le faltan tablas: " + ", ".join(sorted(missing))
@@ -618,6 +673,12 @@ DUMP_EXCLUDED = {
     # del vault. Cambia en cada reindexado por definición, así que incluirlo
     # rompería la idempotencia (`misma huella` al borrar y reconstruir).
     "meta",
+    # Usuarios y sesiones (P11a): son credenciales de acceso, no contenido del
+    # vault. El vault no los tiene (no se pueden reconstruir desde los `.md`),
+    # así que si entraran en la huella, reconstruir el índice daría otra
+    # huella y la idempotencia de P1.2 se rompería por algo que no es una nota.
+    "users",
+    "sessions",
 }
 
 

@@ -33,6 +33,65 @@ os.environ["VAULT_PATH"] = str(_SESSION_TMP / "vault")
 # encienden ellos mismos, con `WATCH_INTERVAL` bajo (ver
 # `test_p8_watcher_sse.py`).
 os.environ["WATCH_ENABLED"] = "0"
+# P11a: el primer usuario se crea desde la pantalla de alta (o `ADMIN_USER`).
+# En los tests se crea por el camino normal —`POST /auth/setup`— así que las
+# dos variables se vacían para que un `.env` del desarrollador no cambie el
+# arranque de la suite. `iniciar_sesion()` es lo que usa cada cliente de test.
+os.environ.pop("ADMIN_USER", None)
+os.environ.pop("ADMIN_PASSWORD", None)
+
+# Credenciales del usuario de los tests. El `display_name` es "Tú" a propósito:
+# es el valor que tenía `DEFAULT_USER_NAME` y lo que asertaban los tests de
+# autoría anteriores a P11a; ahora sale de la sesión, no de un literal.
+USUARIO_PRUEBA = "prueba"
+NOMBRE_PRUEBA = "Tú"
+CONTRASENA_PRUEBA = "contrasena-de-prueba"
+
+
+def iniciar_sesion(client) -> None:
+    """Deja `client` con sesión: alta del primer usuario o login.
+
+    Es la forma de autenticar los tests **sin saltarse el middleware**: pasa
+    por `/auth/setup` (índice sin usuarios) o por `/auth/login` (ya hay), que
+    es exactamente lo que hace un navegador. Un test que necesite un cliente a
+    mano llama a esto después de crearlo (ver el fixture `acceso`).
+    """
+    estado = client.get("/auth/status").json()
+    if estado["needs_setup"]:
+        respuesta = client.post(
+            "/auth/setup",
+            json={
+                "username": USUARIO_PRUEBA,
+                "display_name": NOMBRE_PRUEBA,
+                "password": CONTRASENA_PRUEBA,
+            },
+        )
+    else:
+        respuesta = client.post(
+            "/auth/login",
+            json={"username": USUARIO_PRUEBA, "password": CONTRASENA_PRUEBA},
+        )
+    assert respuesta.status_code in (200, 201), respuesta.text
+
+
+@pytest.fixture(autouse=True)
+def _sin_intentos_acumulados():
+    """El limitador de login es estado de módulo: se vacía por test.
+
+    Sin esto, los logins de una suite de 200 tests se contarían juntos contra
+    la misma clave (usuario+IP) y en mitad de la suite empezarían los 429.
+    """
+    from app import auth
+
+    auth.reset_attempts()
+    yield
+    auth.reset_attempts()
+
+
+@pytest.fixture()
+def acceso():
+    """El helper de login, para los tests que abren su propio `TestClient`."""
+    return iniciar_sesion
 
 
 @pytest.fixture(autouse=True)
@@ -67,4 +126,5 @@ def client(tmp_path: Path, index_path: Path, vault_path: Path, monkeypatch):
     from app.main import app
 
     with TestClient(app) as test_client:
+        iniciar_sesion(test_client)
         yield test_client

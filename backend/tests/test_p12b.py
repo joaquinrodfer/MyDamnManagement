@@ -28,7 +28,7 @@ def _adjunto(vault_path: Path, url: str) -> Path:
 
 
 def test_el_adjunto_acaba_en_el_vault_y_sobrevive_a_borrar_el_indice(
-    client, vault_path, index_path
+    client, vault_path, index_path, acceso
 ):
     page = crear(client, title="Con cabecera")
     subida = client.post(
@@ -65,6 +65,7 @@ def test_el_adjunto_acaba_en_el_vault_y_sobrevive_a_borrar_el_indice(
     from app.main import app
 
     with TestClient(app) as otro:
+        acceso(otro)  # el índice se borró: usuarios incluidos (P11a)
         assert otro.get(f"/pages/{page['id']}").json()["header_image_path"] == ruta
         assert otro.get(ruta).status_code == 200
         assert otro.get(ruta).content == PNG

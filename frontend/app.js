@@ -22,6 +22,32 @@ const state = {
 
 // ---------------------------------------------------------------- helpers
 
+/** La puerta contestó 401 (P11a): la sesión no vale o no hay.
+ *
+ * Lo único que hace el panel es volver al login; no borra nada ni intenta
+ * reintentar, porque sin sesión no hay nada que enseñar. Una sola navegación
+ * aunque fallen varias llamadas a la vez (árbol, estado y `/events` se piden
+ * en paralelo al arrancar) y se recuerda a dónde se iba.
+ */
+let redirigiendoAlLogin = false;
+function irAlLogin() {
+  if (redirigiendoAlLogin) return;
+  redirigiendoAlLogin = true;
+  const next = location.pathname + location.search;
+  if (next && next !== "/") {
+    location.replace(`/login?next=${encodeURIComponent(next)}`);
+  } else {
+    location.replace("/login");
+  }
+}
+
+/** ¿Es un 401? Si lo es, manda al login y dice que sí a quien llama. */
+function sesionExpirada(res) {
+  if (!res || res.status !== 401) return false;
+  irAlLogin();
+  return true;
+}
+
 async function api(path, opts = {}) {
   let res;
   try {
@@ -35,6 +61,13 @@ async function api(path, opts = {}) {
     // sepa que es de red y no lo confunda con cualquier otro TypeError.
     const err = new Error((e && e.message) || "Failed to fetch");
     err.network = true;
+    throw err;
+  }
+  // Antes de leer el cuerpo: sin sesión el `detail` es "no autenticado" y lo
+  // que hace falta no es enseñarlo, es ir a la pantalla de entrada.
+  if (sesionExpirada(res)) {
+    const err = new Error("no autenticado");
+    err.status = 401;
     throw err;
   }
   if (res.status === 204) return null;
@@ -1045,6 +1078,7 @@ function renderNote(page, backlinks) {
     formData.append("file", file);
     try {
       const res = await fetch(`/pages/${page.id}/header-image`, { method: "POST", body: formData });
+      if (sesionExpirada(res)) return; // la subida tampoco pasa sin sesión
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
       page.header_image_path = data.header_image_path;

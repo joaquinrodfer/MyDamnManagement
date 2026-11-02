@@ -17,8 +17,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from app import schemas
-from app.dependencies import get_repo
+from app import auth, schemas
+from app.dependencies import get_current_user, get_repo
 from app.events import bus
 from app.limits import check_size as _check_size
 from app.repository import Repository
@@ -202,13 +202,19 @@ def reply_suggestion(
     suggestion_id: uuid.UUID,
     payload: schemas.SuggestionReplyRequest,
     repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
 ):
     """Añade una entrada al hilo del dueño (el canal de vuelta al agente)."""
     _check_size(payload.text, suggestions.MAX_REPLY_TEXT, "text")
     _check_size(payload.author or "", suggestions.MAX_AGENT, "author")
     try:
         suggestion = repo.reply_to_suggestion(
-            str(suggestion_id), text=payload.text, author=payload.author
+            str(suggestion_id),
+            text=payload.text,
+            # Sin `author` en el cuerpo, firma quien tiene la sesión (P11a).
+            # `payload.author` sigue valiendo para el canal de vuelta de un
+            # agente o una nota dictada; el modelo de sugerencias no cambia.
+            author=payload.author or user.display_name,
         )
     except SuggestionNotFound as exc:
         raise HTTPException(404, "Sugerencia no encontrada") from exc

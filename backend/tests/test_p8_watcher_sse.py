@@ -118,7 +118,7 @@ def titulos(client) -> list[str]:
 
 
 @pytest.fixture()
-def vigilante(tmp_path, index_path, vault_path, monkeypatch):
+def vigilante(tmp_path, index_path, vault_path, monkeypatch, acceso):
     """App arrancada con el vigilante encendido y sondeando cada 0,2 s.
 
     Se parchea `settings` antes de entrar en el `TestClient` porque el hilo se
@@ -136,6 +136,7 @@ def vigilante(tmp_path, index_path, vault_path, monkeypatch):
     import app.main as main_mod
 
     with TestClient(app=main_mod.app) as client:
+        acceso(client)  # P11a: la app entera está detrás de la sesión
         assert main_mod.watcher is not None, "el vigilante no arrancó"
         assert main_mod.watcher.running, "el vigilante no está corriendo"
         assert main_mod.watcher.interval == pytest.approx(0.2)

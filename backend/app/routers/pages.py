@@ -4,9 +4,9 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
-from app import schemas
+from app import auth, schemas
 from app.config import settings
-from app.dependencies import get_repo
+from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
 from app.serializers import serialize_page
 from app.vault import attachments
@@ -30,7 +30,11 @@ def list_pages(repo: Repository = Depends(get_repo)):
 
 
 @router.post("", response_model=schemas.PageRead)
-def create_page(payload: schemas.PageCreate, repo: Repository = Depends(get_repo)):
+def create_page(
+    payload: schemas.PageCreate,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
     try:
         page = repo.create_page(
             title=payload.title,
@@ -38,7 +42,9 @@ def create_page(payload: schemas.PageCreate, repo: Repository = Depends(get_repo
             parent_id=payload.parent_id,
             icon=payload.icon or settings.default_icon,
             description=payload.description,
-            created_by=settings.default_user_name,  # "obligatorio": la API siempre lo rellena
+            # Autoría real (P11a): el `display_name` de quien tiene la sesión.
+            # Ya no hay literal de repuesto (`DEFAULT_USER_NAME`).
+            created_by=user.display_name,
             body_markdown=payload.body_markdown or "",
         )
     except VaultError as exc:

@@ -248,7 +248,9 @@ def _hash(index_path: Path) -> str:
     return indice.dump_hash(str(index_path))[0]
 
 
-def test_borrar_el_indice_y_arrancar_da_el_mismo_indice(client, index_path, vault_path):
+def test_borrar_el_indice_y_arrancar_da_el_mismo_indice(
+    client, index_path, vault_path, acceso
+):
     """El criterio: índice derivado, reconstruible, idéntico (hash de volcado)."""
     from fastapi.testclient import TestClient
 
@@ -271,6 +273,7 @@ def test_borrar_el_indice_y_arrancar_da_el_mismo_indice(client, index_path, vaul
     from app.main import app
 
     with TestClient(app) as otro:
+        acceso(otro)  # el índice se borró: usuarios incluidos (P11a)
         assert [p["id"] for p in otro.get("/pages").json()] != []
         assert otro.get(f"/pages/{hija['id']}").json()["parent_id"] == padre["id"]
 

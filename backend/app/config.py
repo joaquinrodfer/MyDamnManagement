@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,11 +51,33 @@ class Settings(BaseSettings):
     # del vault (`_attachments/`, ver `app/vault/attachments.py`).
     frontend_dir: str = "/app/frontend"
 
-    # Sin autenticación todavía (uso personal en solitario) -- "creador" de
-    # una página se rellena con esto. El día que haya login de verdad, se
-    # sustituye por el usuario autenticado sin tocar el resto del modelo.
+    # OBSOLETO desde P11a: el "creador" de una página es el `display_name` del
+    # usuario de la sesión (`app/auth.py`), no un literal. Se deja el ajuste
+    # para no romper un `.env` viejo y porque `app.repository.reply_to_suggestion`
+    # lo usa como último recurso cuando le llaman sin autor (scripts, tests);
+    # ninguna ruta HTTP lo usa ya. Desaparecerá cuando no quede nadie que
+    # llame al repositorio sin sesión.
     default_user_name: str = "Tú"
     default_icon: str = "📄"
+
+    # --- Usuarios y sesiones (P11a) -------------------------------------
+    # `ADMIN_USER`/`ADMIN_PASSWORD` son opcionales y SOLO se usan en el primer
+    # arranque, cuando el índice no tiene ningún usuario: si están, se crea ese
+    # administrador al arrancar y `/` no pide el alta. Con usuarios ya en el
+    # índice no se toca nada (ni se resetea la contraseña de nadie). El
+    # `display_name` del admin creado es su propio username.
+    admin_user: str = ""
+    admin_password: str = ""
+
+    # Días de vida de una sesión. Es **deslizante**: cada petición con cookie
+    # válida la empuja a `ahora + SESSION_DAYS`, con un tope absoluto de 90
+    # días desde que se abrió (`app.auth.ABSOLUTE_DAYS`).
+    session_days: int = 30
+
+    # `Secure` en la cookie de sesión. `None` (por defecto) lo deduce de cada
+    # petición: `X-Forwarded-Proto: https` o esquema https. `SESSION_COOKIE_SECURE=1`
+    # lo fuerza; `=0` lo apaga (útil en un desarrollo por http en otra máquina).
+    session_cookie_secure: Optional[bool] = None
 
     # --- Puerta para agentes (P10b) -------------------------------------
     # `AGENT_TOKENS="token1:agente-hitos,token2:agente-revision"`: pares

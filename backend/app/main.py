@@ -2,11 +2,11 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import agent_auth
+from app import agent_auth, auth, login_page
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
@@ -23,6 +23,7 @@ from app.routers import (
     suggestions,
     trash,
 )
+from app.routers import auth as auth_routes
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 from app.vault.watcher import VaultWatcher
 
@@ -62,6 +63,68 @@ app.include_router(suggestions.router)
 # lo decidido, con `X-Agent-Token`. Sin `AGENT_TOKENS` las tres rutas dan 404
 # (no existen), que es lo que hace un despliegue sin agentes configurados.
 app.include_router(agent.router)
+# `/auth/...` (P11a): entrar, salir, saber quién eres y crear usuarios. Ojo:
+# estas rutas están DESPUÉS de `/agent` y de nada más; el middleware de abajo
+# es el que decide cuáles no piden sesión.
+app.include_router(auth_routes.router)
+
+
+# Rutas que no piden sesión. Las tres de `/auth` son las que permiten entrar
+# (`login`, `setup` y `status`, que solo dice si hay que dar de alta al
+# primero); `/login` es la pantalla. `/agent/...` tiene su propio permiso
+# acotado (`X-Agent-Token`) y no se mezcla con la sesión del dueño.
+PUBLIC_PATHS = frozenset({"/health", "/auth/login", "/auth/setup", "/auth/status", "/login"})
+
+
+def _accepts_html(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "").lower()
+
+
+def _user_from_cookie(request: Request):
+    """Usuario de la cookie de sesión, o `None`. Empuja la caducidad."""
+    token = request.cookies.get(auth.COOKIE_NAME)
+    if not token:
+        return None
+    conn = open_index(settings.index_path)
+    try:
+        return auth.user_for_token(conn, token)
+    finally:
+        conn.close()
+
+
+@app.middleware("http")
+async def session_is_required(request: Request, call_next):
+    """La puerta (P11a): sin sesión no pasa nada salvo lo que la abre.
+
+    Dos respuestas para el mismo «no»: `401 {"detail": "no autenticado"}` para
+    la API (el `fetch` del panel lo ve y manda a `/login`) y una redirección
+    para la navegación normal del navegador (`Accept: text/html`), que si no
+    se quedaría mirando un JSON con la pantalla en blanco. La app es una SPA,
+    así que `/` sí exige sesión: lo que no puede es romperse — con sesión sirve
+    el panel de siempre, sin ella lleva al login y vuelve a donde ibas.
+
+    El orden de los middleware importa: este se declara ANTES que
+    `agent_token_is_scoped`, y Starlette envuelve al último declarado por
+    fuera, así que el permiso de agente se evalúa primero y su 403 («un token
+    solo abre /agent/*») no depende de que además haya sesión.
+    """
+    path = request.url.path
+    if path in PUBLIC_PATHS or path == "/agent" or path.startswith("/agent/"):
+        return await call_next(request)
+
+    user = _user_from_cookie(request)
+    if user is None:
+        if _accepts_html(request):
+            destino = path
+            if request.url.query:
+                destino += "?" + request.url.query
+            return RedirectResponse(login_page.redirect_to_login(destino), status_code=303)
+        return JSONResponse(status_code=401, content={"detail": "no autenticado"})
+
+    # Lo lee `app.dependencies.get_current_user` (y con él los routers que
+    # necesitan saber de quién es la nota).
+    request.state.user = user
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -169,7 +232,41 @@ def on_startup() -> None:
     finally:
         conn.close()
 
+    _admin_from_env()
     _start_watcher()
+
+
+def _admin_from_env() -> None:
+    """Crea el primer administrador desde `ADMIN_USER`/`ADMIN_PASSWORD`.
+
+    Solo cuando el índice no tiene ningún usuario: con usuarios ya dentro no
+    se toca nada (ni se renombra ni se resetea la contraseña de nadie). Es la
+    alternativa a la pantalla de alta para un despliegue desatendido; sin las
+    dos variables, el alta se hace desde `/login`.
+    """
+    if not settings.admin_user or not settings.admin_password:
+        return
+    conn = open_index(settings.index_path)
+    try:
+        if auth.count_users(conn):
+            return
+        try:
+            auth.create_user(
+                conn,
+                username=settings.admin_user,
+                display_name=settings.admin_user,
+                password=settings.admin_password,
+                is_admin=True,
+            )
+        except auth.AuthError as exc:
+            raise RuntimeError(
+                f"no se puede arrancar: ADMIN_USER/ADMIN_PASSWORD no válidos ({exc})"
+            ) from exc
+        log.info(
+            "primer usuario %r creado desde ADMIN_USER (administrador)", settings.admin_user
+        )
+    finally:
+        conn.close()
 
 
 def _start_watcher() -> None:
@@ -212,6 +309,24 @@ def on_shutdown() -> None:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/login", include_in_schema=False)
+def login_page_view(request: Request, next_url: str = Query("/", alias="next")):
+    """La pantalla de entrada (P11a). Pública: es lo que pide la sesión.
+
+    Si ya hay sesión se sale de aquí hacia donde se iba: volver al login con
+    la cookie puesta es una pantalla que no sirve para nada.
+    """
+    conn = open_index(settings.index_path)
+    try:
+        user = auth.user_for_token(conn, request.cookies.get(auth.COOKIE_NAME))
+        needs_setup = auth.count_users(conn) == 0
+    finally:
+        conn.close()
+    if user is not None:
+        return RedirectResponse(login_page.safe_next(next_url), status_code=303)
+    return HTMLResponse(login_page.render(needs_setup=needs_setup, next_url=next_url))
 
 
 class NoCacheStaticFiles(StaticFiles):

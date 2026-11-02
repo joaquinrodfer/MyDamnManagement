@@ -269,7 +269,9 @@ def test_mover_la_nota_que_contiene_una_base_mueve_tambien_sus_filas(client, ind
 # --------------------------------------------------------------------------
 
 
-def test_borrar_el_indice_reconstruye_bases_filas_y_vistas_igual(client, index_path):
+def test_borrar_el_indice_reconstruye_bases_filas_y_vistas_igual(
+    client, index_path, acceso
+):
     base = client.post("/databases/from-template", json={"template": "crm"}).json()
     for titulo, props in (
         ("Acme", {"empresa": "Acme S.L.", "fase": "lead", "valor": 12000}),
@@ -297,6 +299,7 @@ def test_borrar_el_indice_reconstruye_bases_filas_y_vistas_igual(client, index_p
         Path(str(index_path) + suffix).unlink(missing_ok=True)
 
     with arrancar_de_nuevo() as otro:
+        acceso(otro)  # el índice se borró: usuarios incluidos (P11a)
         assert otro.get(f"/databases/{base['id']}").status_code == 200
         assert len(otro.get(f"/databases/{base['id']}/rows").json()) == 3
         assert [v["name"] for v in otro.get(f"/databases/{base['id']}/views").json()] == [
@@ -523,7 +526,7 @@ def test_una_base_escrita_a_mano_se_indexa_con_su_schema_y_sus_vistas(client, va
 # --------------------------------------------------------------------------
 
 def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
-    client, index_path, vault_path
+    client, index_path, vault_path, acceso
 ):
     """`cp Bases/Contactos.md "Bases/Contactos copia.md"` es copiar y ya.
 
@@ -566,6 +569,7 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     # el arranque siguiente levanta con las dos bases.
     reindexar_y_comparar_huella(client, index_path)
     with arrancar_de_nuevo() as otro:
+        acceso(otro)
         despues = otro.get("/databases").json()
         assert {b["title"] for b in despues} == {"Contactos", "Contactos copia"}
         # Las dos siguen sirviendo sus vistas y sus filas desde el índice.
