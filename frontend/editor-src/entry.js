@@ -19,6 +19,7 @@ import {
   closeCompletion,
   moveCompletionSelection,
 } from "@codemirror/autocomplete";
+import { LINK_OPEN, createLinkTitle, linkMarkup, resolveCreatedLinkTitle } from "./link-create.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -1726,7 +1727,6 @@ function foldText(s) {
     .toLowerCase();
 }
 
-const LINK_OPEN = "[[";
 // Cualquier corchete (o un salto de línea) entre "[[" y el cursor cancela la
 // lista: con "[[foo]]" ya escrito y el cursor detrás del cierre, lo que hay
 // delante no es una consulta sino un enlace terminado.
@@ -1751,7 +1751,7 @@ function linkTrigger(state, pos) {
 /** Sustituye lo tecleado desde "[[" por "[[título]]" y deja el cursor detrás
  * del cierre. */
 function applyLink(view, from, to, title) {
-  const insert = `${LINK_OPEN}${title}]]`;
+  const insert = linkMarkup(title);
   view.dispatch({
     changes: { from, to, insert },
     selection: { anchor: from + insert.length },
@@ -1765,11 +1765,18 @@ function applyLink(view, from, to, title) {
  *
  * Si la creación falla -- la app ya avisó por su cuenta -- no se inserta
  * NADA: lo tecleado se queda tal cual para poder corregirlo y reintentar. */
-async function applyCreateLink(view, from, to, typedTitle, onCreateLink) {
+async function applyCreateLink(view, from, to, typedText, onCreateLink) {
   closeCompletion(view);
+  // `typedText` es lo tecleado TAL CUAL (espacios incluidos); el recorte se
+  // hace solo para el título que viaja a la API.
+  const title = createLinkTitle(typedText);
+  if (!title) {
+    view.focus();
+    return;
+  }
   let created = null;
   try {
-    created = await onCreateLink?.(typedTitle);
+    created = await onCreateLink?.(title);
   } catch (e) {
     created = null;
   }
@@ -1779,11 +1786,18 @@ async function applyCreateLink(view, from, to, typedTitle, onCreateLink) {
   }
   // Mientras se creaba, el usuario pudo seguir escribiendo (o cambiar de
   // nota, y entonces este editor ya no pinta nada): si bajo "[[" ya no está
-  // lo que se tecleó, no se toca el documento.
-  const expected = `${LINK_OPEN}${typedTitle}`;
-  const stillThere = from <= view.state.doc.length && view.state.doc.sliceString(from, to) === expected;
-  if (!stillThere) return;
-  applyLink(view, from, to, created.title);
+  // exactamente lo que se tecleó -- espacios incluidos --, no se toca el
+  // documento. El fragmento se comprueba crudo porque es lo que hay en el
+  // texto; compararlo con el título ya recortado dejaba la nota creada y el
+  // enlace sin escribir.
+  const doc = view.state.doc;
+  const fragment = from >= 0 && from <= to && to <= doc.length ? doc.sliceString(from, to) : null;
+  const realTitle = resolveCreatedLinkTitle(fragment, typedText, created.title);
+  if (!realTitle) {
+    view.focus();
+    return;
+  }
+  applyLink(view, from, to, realTitle);
 }
 
 function linkCompletionSource(onCreateLink) {
@@ -1818,8 +1832,10 @@ function linkCompletionSource(onCreateLink) {
         label: `Crear «${writable}»`,
         detail: "nota nueva",
         class: "cm-mdm-link-create",
+        // Lo tecleado crudo, no `writable`: la sustitución tiene que
+        // encontrar en el documento exactamente lo que hay bajo "[[".
         apply: (view, _completion, applyFrom, applyTo) =>
-          applyCreateLink(view, applyFrom, applyTo, writable, onCreateLink),
+          applyCreateLink(view, applyFrom, applyTo, typed, onCreateLink),
       });
     }
     for (const m of matches) {

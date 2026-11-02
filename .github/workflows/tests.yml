@@ -91,6 +91,15 @@ jobs:
           npm run build
           git diff --exit-code ../vendor/editor.bundle.js
 
+      # La lógica pura de la opción «Crear «…»» del autocompletado de [[ -- qué
+      # fragmento se sustituye y con qué título real -- se prueba sin navegador
+      # con el runner de Node (`npm test`, node --test). Ahí vive la regresión
+      # de los espacios al crear un enlace, que no se ve en el bundle.
+      - name: Tests del editor
+        run: |
+          cd frontend/editor-src
+          npm test
+
   imagen:
     name: docker build (backend/Dockerfile)
     runs-on: ubuntu-latest
