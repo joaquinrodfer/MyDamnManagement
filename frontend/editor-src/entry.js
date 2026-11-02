@@ -1536,6 +1536,36 @@ function locateSuggestions(state) {
   return { placed, unplaced };
 }
 
+/** Engancha un botón del widget a su acción, por ratón y por teclado.
+ *
+ * `click` es la vía del ratón (y de `.click()`), pero dentro del editor no
+ * basta para el teclado: CodeMirror escucha `keydown` en el contenido y su
+ * keymap se queda con Enter (inserta una línea nueva) antes de que el
+ * navegador active el `<button>` enfocado, así que con Tab se llegaba a ✓/✗
+ * y no pasaba nada. Por eso Enter y Espacio se atienden aquí mismo, con
+ * `preventDefault()` + `stopPropagation()`: la acción sale una sola vez y
+ * es la misma con ratón que con teclado.
+ */
+function wireSuggestionButton(button, callback, id) {
+  // El mousedown solo se neutraliza: así el clic no mueve el cursor dentro
+  // del texto ni roba la selección, y el documento que se revisa no cambia.
+  button.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  button.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+    event.preventDefault();
+    event.stopPropagation();
+    callback?.(id);
+  });
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    callback?.(id);
+  });
+}
+
 // El texto propuesto, pegado al final del rango tachado, con los dos botones.
 // Un widget (no un reemplazo) porque el texto viejo TIENE que seguir viéndose:
 // la gracia es comparar el de antes con el de después en el mismo sitio.
@@ -1573,14 +1603,7 @@ class SuggestionWidget extends WidgetType {
     accept.textContent = "✓";
     accept.setAttribute("aria-label", "Aceptar sugerencia");
     accept.title = "Aceptar sugerencia";
-    // mousedown (no click) con preventDefault: el clic no mueve el cursor
-    // dentro del texto ni roba la selección, así que decidir sobre la
-    // sugerencia no toca el documento que se está revisando.
-    accept.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.callbacks.onAccept?.(this.suggestion.id);
-    });
+    wireSuggestionButton(accept, this.callbacks.onAccept, this.suggestion.id);
 
     const reject = document.createElement("button");
     reject.type = "button";
@@ -1588,11 +1611,7 @@ class SuggestionWidget extends WidgetType {
     reject.textContent = "✗";
     reject.setAttribute("aria-label", "Rechazar sugerencia");
     reject.title = "Rechazar sugerencia";
-    reject.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.callbacks.onReject?.(this.suggestion.id);
-    });
+    wireSuggestionButton(reject, this.callbacks.onReject, this.suggestion.id);
 
     actions.append(accept, reject);
     wrap.append(proposed, actions);
@@ -1617,19 +1636,37 @@ function suggestionDecorations(state) {
   return Decoration.set(ranges, true);
 }
 
+/** El reparto actual, en el formato que consume la app: ids anclados, ids
+ * que no caben en el texto y una clave para comparar dos repartos. */
+function placementOf(state) {
+  const { placed, unplaced } = locateSuggestions(state);
+  const ids = placed.map((p) => p.suggestion.id);
+  return { placed: ids, unplaced, key: `${ids.join("\u0000")}|${unplaced.join("\u0000")}` };
+}
+
 function suggestionPlugin() {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
         this.decorations = suggestionDecorations(view.state);
+        this.placement = placementOf(view.state).key;
       }
       update(update) {
-        if (
-          update.docChanged ||
-          update.state.field(suggestionField) !== update.startState.field(suggestionField)
-        ) {
-          this.decorations = suggestionDecorations(update.state);
-        }
+        const setChanged =
+          update.state.field(suggestionField) !== update.startState.field(suggestionField);
+        if (!update.docChanged && !setChanged) return;
+        this.decorations = suggestionDecorations(update.state);
+        const placement = placementOf(update.state);
+        const changed = placement.key !== this.placement;
+        this.placement = placement.key;
+        // Solo se avisa cuando es una EDICIÓN la que mueve el reparto:
+        // setSuggestions() ya devuelve el suyo a quien la llama. Sin este
+        // aviso, si el `old_text` desaparece con la nota abierta la app se
+        // queda con el reparto viejo y la sugerencia no sale ni en el texto
+        // ni en el panel -- un callejón sin salida hasta reabrir la nota.
+        if (!update.docChanged || !changed) return;
+        const { callbacks } = update.state.field(suggestionField);
+        callbacks.onPlacementChange?.({ placed: placement.placed, unplaced: placement.unplaced });
       }
     },
     { decorations: (v) => v.decorations }
@@ -1713,7 +1750,10 @@ export function createNoteEditor({
      *
      * `list` es `[{id, old_text, new_text, status}]` (lo que devuelve
      * `GET /pages/{id}/suggestions`) y `callbacks` trae `onAccept(id)` y
-     * `onReject(id)`, que la app conecta a la API. Devuelve qué se pudo
+     * `onReject(id)`, que la app conecta a la API, y opcionalmente
+     * `onPlacementChange({placed, unplaced})`, por el que el editor avisa
+     * cuando una edición del documento deja sugerencias sin ancla (o las
+     * vuelve a anclar). Devuelve qué se pudo
      * anclar en el texto y qué no -- `{placed: [id...], unplaced: [id...]}` --
      * para que la app enseñe aparte lo que aquí no cabe (desancladas, o dos
      * propuestas sobre el mismo texto).
@@ -1729,8 +1769,8 @@ export function createNoteEditor({
           agent: s.agent || "",
         }));
       view.dispatch({ effects: setSuggestionSet.of({ list: clean, callbacks: callbacks || {} }) });
-      const { placed, unplaced } = locateSuggestions(view.state);
-      return { placed: placed.map((p) => p.suggestion.id), unplaced };
+      const { placed, unplaced } = placementOf(view.state);
+      return { placed, unplaced };
     },
     clearSuggestions() {
       view.dispatch({ effects: setSuggestionSet.of(NO_SUGGESTIONS) });
