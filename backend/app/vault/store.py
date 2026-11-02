@@ -971,6 +971,12 @@ class VaultStore:
         Lo más reciente primero. Un `.md` suelto dentro de `.trash/` (sin
         carpeta de fecha, de un `mv` a mano) no se lista: no hay ruta original
         que restaurar, y adivinarla sería inventarse el sitio del fichero.
+
+        Los `.json` de una carpeta `<nota>.md.sugerencias/` tampoco: el sidecar
+        viaja con su nota y se restaura con ella (`_restore_sidecar`). Listarlos
+        aquí daba una entrada restaurable por sugerencia --y restaurar un `.json`
+        suelto dejaba un sidecar de una nota que no existe--, que es justo la
+        confusión nota/sidecar que el índice y el vigilante ya evitan.
         """
         trash = os.path.join(self.root, ".trash")
         entries: list[TrashEntry] = []
@@ -982,6 +988,8 @@ class VaultStore:
                 parts = rel.split("/")
                 if len(parts) < 3:      # `.trash/<sello>/<ruta original...>`
                     continue
+                if suggestions.in_sidecar(rel):
+                    continue            # sugerencia: se restaura con su nota
                 try:
                     size = os.path.getsize(full)
                 except OSError:
@@ -1006,7 +1014,16 @@ class VaultStore:
 
         `vaultfs.restore` lanza `TrashConflict` si la ruta original está
         ocupada; aquí se deja subir, que la API lo traduzca a 409 con el motivo.
+
+        Un fichero del sidecar de sugerencias **no** se restaura suelto: no es
+        una nota, y devolverlo solo dejaría una carpeta huérfana de una nota que
+        no existe. Se restaura su nota, y `_restore_sidecar` las trae con ella.
         """
+        if suggestions.in_sidecar(trash_rel):
+            raise ValueError(
+                f"{trash_rel!r} es una sugerencia, no una nota: no se restaura "
+                "suelta. Restaura la nota a la que pertenece y vuelve con ella."
+            )
         dst = vaultfs.restore(self.root, trash_rel)
         rel = os.path.relpath(dst, self.root).replace(os.sep, "/")
         self._restore_sidecar(trash_rel, rel)
@@ -1202,6 +1219,7 @@ class VaultStore:
             vaultfs.move(self._abs(old_children), self._abs(new_children))
         if new_rel != old_rel:
             vaultfs.move(abs_old, self._abs(new_rel))
+            self._move_sidecar(old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -1259,6 +1277,13 @@ class VaultStore:
                 if not os.path.exists(src):
                     continue
                 vaultfs.move(src, os.path.join(stamp, rel_file))
+                # Las sugerencias de la base o de una fila se van con ella.
+                sidecar = suggestions.sidecar_abs(self.root, rel_file)
+                if os.path.isdir(sidecar):
+                    vaultfs.move(
+                        sidecar,
+                        os.path.join(stamp, suggestions.sidecar_rel(rel_file)),
+                    )
             _prune_empty_dirs(self._abs(folder))
 
         with self._tx():
@@ -1369,6 +1394,7 @@ class VaultStore:
         new_rel = f"{folder}/{final_stem}.md"
         if new_rel != old_rel:
             vaultfs.move(abs_old, self._abs(new_rel))
+            self._move_sidecar(old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -1405,8 +1431,15 @@ class VaultStore:
         if row["path"]:
             src = self._abs(row["path"])
             if os.path.exists(src):
-                vaultfs.move(src, os.path.join(
-                    vaultfs.trash_dir_for(self.root), row["path"]))
+                stamp = vaultfs.trash_dir_for(self.root)
+                vaultfs.move(src, os.path.join(stamp, row["path"]))
+                # El sidecar de la fila se va con ella (y vuelve al restaurarla).
+                sidecar = suggestions.sidecar_abs(self.root, row["path"])
+                if os.path.isdir(sidecar):
+                    vaultfs.move(
+                        sidecar,
+                        os.path.join(stamp, suggestions.sidecar_rel(row["path"])),
+                    )
         with self._tx():
             cur = self.conn.execute("DELETE FROM pages WHERE id = ?", (row["id"],))
         return cur.rowcount > 0

@@ -54,7 +54,11 @@ MAX_NEW_TEXT = 8 * 1024
 MAX_NEW_PAGE_BODY = 32 * 1024
 MAX_RATIONALE = 4 * 1024
 MAX_REPLY_TEXT = 4 * 1024
+MAX_REASON = 4 * 1024
 MAX_TITLE = 200
+# `agent` es una etiqueta de autoria (y en `reply`, el nombre de quien responde):
+# se escribe en el `.json` del vault, asi que tiene tope como el resto.
+MAX_AGENT = 200
 
 # Carpetas del vault que no son notas: la papelera (una sugerencia borrada con
 # su nota no se busca), los adjuntos y las carpetas de otras herramientas.
@@ -168,6 +172,17 @@ def sidecar_abs(root: str, note_rel: str) -> str:
 def file_abs(root: str, note_rel: str, suggestion_id: str) -> str:
     """Ruta absoluta del `.json` de una sugerencia."""
     return os.path.join(sidecar_abs(root, note_rel), f"{suggestion_id}.json")
+
+
+def in_sidecar(rel_path: str) -> bool:
+    """¿La ruta cae dentro de una carpeta de sugerencias (`*.md.sugerencias/`)?
+
+    Lo usan la papelera y el borrado: un `.json` del sidecar no es una nota
+    suelta, ni al listar ni al restaurar. Se comprueba sobre cualquier
+    componente porque la ruta puede venir relativa al vault o a `.trash/`.
+    """
+    parts = rel_path.replace(os.sep, "/").split("/")
+    return any(part.endswith(SIDECAR_MARK) for part in parts)
 
 
 def note_rel_of(sidecar_rel_path: str) -> Optional[str]:
