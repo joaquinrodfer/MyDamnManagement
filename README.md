@@ -200,16 +200,17 @@ Un agente externo —un proceso que lee el vault y propone cambios— puede **le
 AGENT_TOKENS="token1:agente-hitos,token2:agente-revision"
 ```
 
-- **Sin `AGENT_TOKENS`** (o vacía) las tres rutas de `/agent` **no existen: 404**. No es un 403: un despliegue sin agentes no anuncia una superficie que no tiene configurada.
+- **Sin `AGENT_TOKENS`** (o vacía) las tres rutas de `/agent` **no existen: 404**. No es un 403: un despliegue sin agentes no anuncia una superficie activa. (Con `DOCS_ENABLED` encendido, que es el valor por defecto, `/openapi.json` sí lista las rutas aunque respondan 404; `DOCS_ENABLED=0` apaga también eso.)
 - El token viaja en la cabecera **`X-Agent-Token`**, nunca en la URL (una URL acaba en el log de acceso; una cabecera no). Sin token o con uno que no está configurado: **401**, con el mismo mensaje en los dos casos.
 - La comparación es en tiempo constante (`hmac.compare_digest`) y se hace contra todos los tokens, sin cortar al primero que acierta.
+- **Un token válido solo abre `/agent/...`.** Cualquier otra ruta (`/pages`, `/suggestions/{id}/accept`, `/trash`, …) con `X-Agent-Token` válido responde **403**: el token no es una llave para escribir, borrar ni aceptar. Lo que **no** hace es autenticar al dueño: mientras no exista login (v1.3) quien alcance el puerto puede leer, escribir y borrar; la frontera hoy es la red (Tailscale), no el token.
 - Los tokens **no se registran**: ni al acertar, ni al fallar, ni en los avisos de configuración. El log de una sugerencia creada dice agente, nota y tamaño del parche, jamás su texto: `INFO mdm.agents: sugerencia <id>: agente=agente-hitos nota=Notas/Hitos.md kind=edit parche=98 B`. Para que esa línea llegue al log del contenedor, el arranque pasa `--log-config logging.json` (ver [Logs](#logs)): sin él, uvicorn solo configura sus propios loggers y la app se queda sin `INFO`.
 - Un nombre de agente es un nombre de fichero portable (letras, dígitos, `.`, `_` y `-`): se usa para buscar su nota de instrucciones. Una entrada de `AGENT_TOKENS` con un nombre raro se descarta con un aviso (sin el token) y las demás siguen valiendo.
 
 | Endpoint | Método | Qué hace |
 | --- | --- | --- |
 | `/agent/context?page_id=<uuid>` o `?path=Notas/Algo.md` | GET | La nota, sus backlinks, sus wikilinks (y si resuelven), todas sus sugerencias con el hilo del dueño y el `brief` del agente, en una sola respuesta |
-| `/agent/suggestions` | POST | Propone un parche (`kind=edit`) o una nota nueva (`kind=new_page`) sobre `page_id`. **413** si el parche pasa de 8 KB (32 KB en `new_page`), **429** si hay demasiadas pendientes |
+| `/agent/suggestions` | POST | Propone un parche (`kind=edit`) o una nota nueva (`kind=new_page`) sobre `page_id`. **413** si el parche pasa de 8 KB (32 KB en `new_page`), **429** si hay demasiadas sin resolver |
 | `/agent/suggestions?status=…&since=<iso>` | GET | Las sugerencias **de ese agente**, con lo que el dueño decidió: `pending`/`accepted`/`rejected`/`orphaned`, y `since` para preguntar «¿qué ha pasado desde mi última visita?» |
 
 Leer el contexto (lo que un agente pide antes de proponer nada):
@@ -260,9 +261,9 @@ curl -s -H "X-Agent-Token: token1" \
 
 `since` mira la **última actividad** (crear, decidir o la última respuesta del dueño), no la fecha de creación: una sugerencia de anteayer con una respuesta de ayer es novedad de ayer.
 
-**Topes.** `AGENT_MAX_PENDING_NOTE` (20) pendientes por nota, de cualquier agente, y `AGENT_MAX_PENDING_AGENT` (20) pendientes por agente en todo el vault. Por encima, **429** con el número y el tope en el mensaje: un agente en bucle no puede llenarte una nota de ruido.
+**Topes.** `AGENT_MAX_PENDING_NOTE` (20) sin resolver por nota, de cualquier agente, y `AGENT_MAX_PENDING_AGENT` (20) sin resolver por agente en todo el vault. «Sin resolver» es `pending` **y** `orphaned`: una sugerencia cuyo ancla ya no está sigue esperando tu decisión, así que también ocupa sitio — si no, el agente que propone sobre un contexto viejo sería el que nunca toca el límite. Por encima, **429** con el número y el tope en el mensaje: un agente en bucle no puede llenarte una nota de ruido. Aceptar o rechazar libera sitio.
 
-**Lo que un agente NO puede hacer**, y es deliberado: no edita (`PATCH /pages/{id}` no lo acepta y no hay ninguna ruta de escritura detrás del token), no borra, no acepta ni rechaza sus propias sugerencias y no puede firmar como otro agente. Aceptar y rechazar siguen siendo rutas del dueño; la puerta del agente es de solo lectura sobre el vault más un canal de propuesta. Las decisiones de diseño están en [`docs/ADR-0004-puerta-para-agentes.md`](docs/ADR-0004-puerta-para-agentes.md).
+**Lo que un agente NO puede hacer**, y es deliberado: con el token puesto, no edita (`PATCH /pages/{id}`), no borra (`DELETE /pages/{id}`, `/trash`), no acepta ni rechaza sus propias sugerencias y no puede firmar como otro agente; el guardia responde **403** en cualquier ruta que no sea `/agent/...`. Aceptar y rechazar siguen siendo rutas del dueño. Pero el token **no autentica al dueño**: mientras no exista login (v1.3) la API del dueño no tiene autenticación, así que quien alcance el puerto —con o sin token— puede leer, escribir y borrar. La frontera de seguridad hoy es la red (Tailscale), no el token; lo que el token aporta es autoría y un permiso mínimo para el agente. Las decisiones de diseño están en [`docs/ADR-0004-puerta-para-agentes.md`](docs/ADR-0004-puerta-para-agentes.md).
 
 ## Roadmap
 

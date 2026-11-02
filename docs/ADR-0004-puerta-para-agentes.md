@@ -39,9 +39,11 @@ comparan, no se interpretan.
 
 - **Sin `AGENT_TOKENS` (o vacía) las rutas de `/agent` dan 404.** No 403. Un 403
   dice «existe y no puedes»; un despliegue que no ha configurado agentes no
-  tiene esa superficie y no debe anunciarla. Además, 404 es lo que ya hace la
-  app con cualquier ruta desconocida: no hay una forma especial de descubrir
-  que el servidor «casi» tiene agentes.
+  tiene esa superficie y no debe anunciarla; 404 es lo que ya hace la app con
+  cualquier ruta desconocida. Con `DOCS_ENABLED` encendido (el valor por
+  defecto) `/openapi.json` **sí** publica las tres rutas aunque no haya tokens:
+  lo que no se anuncia es la superficie *activa*, no la posibilidad de
+  configurarla. Quien quiera ni eso, `DOCS_ENABLED=0`.
 - **La cabecera es `X-Agent-Token`**, no un parámetro de la URL. Las URLs
   acaban en el log de acceso, en el historial y en los `Referer`; una cabecera,
   no. FastAPI/uvicorn no registra cabeceras en el log de acceso por defecto.
@@ -120,12 +122,18 @@ cuerpo de `new_page`, 200 B de título; `rationale` 4 KB) y el mensaje de error
 sale del mismo sitio (`app/limits.py`), para que las dos puertas no se
 distancien con el tiempo.
 
-Encima hay dos topes de **pendientes**, y son dos a propósito:
+Encima hay dos topes de **sugerencias sin resolver**, y son dos a propósito:
 
 | Tope | Ajuste | A quién protege |
 | --- | --- | --- |
-| pendientes **por nota** | `AGENT_MAX_PENDING_NOTE` (20) | al dueño que abre la nota: da igual quién las proponga, veinte parches son ruido |
-| pendientes **por agente** | `AGENT_MAX_PENDING_AGENT` (20) | al vault: un bucle que reparte uno por nota tampoco pasa |
+| sin resolver **por nota** | `AGENT_MAX_PENDING_NOTE` (20) | al dueño que abre la nota: da igual quién las proponga, veinte parches son ruido |
+| sin resolver **por agente** | `AGENT_MAX_PENDING_AGENT` (20) | al vault: un bucle que reparte uno por nota tampoco pasa |
+
+«Sin resolver» es `pending` **y** `orphaned`, no solo `pending`. Una sugerencia
+cuyo ancla ya no está nace `orphaned` y sigue esperando una decisión: cuenta
+igual. Es el caso normal —el dueño edita la nota y lo que el agente leyó deja
+de encajar— y sin contarlo el agente que más ruido hace sería justo el que
+nunca toca el 429. `accepted` y `rejected` ya están decididas y no cuentan.
 
 Por encima de cualquiera de los dos: **429** con el número y el tope en el
 mensaje. Los dos contadores se calculan en el mismo recorrido de sidecars que ya
@@ -169,21 +177,25 @@ Un `since` que no es una fecha ISO 8601 es **400**, no una lista vacía: un
 agente que manda basura tiene que enterarse, no creer que no pasó nada. Se
 aceptan `Z` y desfases; sin zona se asume UTC.
 
-### 5. Lo que un agente no puede hacer
+### 5. Lo que un agente no puede hacer (y lo que el token no es)
 
-- **No edita ni borra.** Detrás de `X-Agent-Token` no hay ninguna ruta de
-  escritura del vault: `PATCH /pages/{id}`, `DELETE /pages/{id}` y `/trash` son
-  rutas del dueño y no miran el token.
-- **No acepta ni rechaza sus propias sugerencias.** `accept`, `reject` y `reply`
-  son del dueño. Un agente puede responder a su propia propuesta por
-  `POST /suggestions/{sid}/reply` **como dueño**, exactamente igual que
-  cualquier otro cliente: eso es deuda conocida de la app, no una puerta que
-  esta tarjeta abra.
+- **No edita, no borra, no acepta ni rechaza.** Un `@app.middleware` en
+  `app/main.py` corta con **403** cualquier petición que traiga un
+  `X-Agent-Token` válido y no vaya a `/agent/...`: `PATCH /pages/{id}`,
+  `DELETE /pages/{id}`, `/trash`, `accept`, `reject` y `reply` quedan fuera del
+  permiso. El token deja de ser una etiqueta y pasa a ser un permiso
+  **acotado**: si se filtra, sirve para leer contexto y proponer, nada más.
+  Un token **inválido** no se rechaza en el guardia: no identifica a nadie, así
+  que la petición sigue como cualquier cliente anónimo (401 en `/agent`, y la
+  ruta del dueño no mira cabeceras).
 - **No puede firmar como otro**: el `agent` del `.json` es siempre el nombre del
   token.
-- Si un token se filtra, lo peor que puede pasar es que alguien llene de
-  sugerencias pendientes tus notas — y para eso están los 429. No hay borrado,
-  no hay escritura y no hay lectura de nada que no esté ya en el vault.
+- **Lo que el token NO es: autenticación del dueño.** La API del dueño sigue sin
+  login (deuda declarada de v1.3): quien alcance el puerto puede leer, escribir
+  y borrar sin token ninguno. La frontera de seguridad hoy es la **red**
+  (Tailscale), no el token. Lo que el token aporta es autoría y el permiso
+  mínimo del agente; un token filtrado no da más que eso — llenar de
+  sugerencias sin resolver tus notas, y para eso están los 429.
 
 ## Contrato
 
@@ -194,13 +206,20 @@ POST /agent/suggestions                      200 | 400 | 404 | 413 | 429
 GET  /agent/suggestions?status=&since=       200 | 400 (since) | 422 (status)
 todas                                        + 401 sin token / token malo
 todas                                        404 si no hay AGENT_TOKENS
+cualquier otra ruta + X-Agent-Token válido   403 (permiso acotado a /agent/*)
 ```
 
 ## Consecuencias
 
 - La API del dueño (`/pages`, `/pages/{id}/suggestions`, `/suggestions/{sid}/…`)
   **no cambia**: mismos códigos, mismos cuerpos. Lo único que se movió de sitio
-  es el helper del 413 (`app/limits.py`), compartido por los dos routers.
+  es el helper del 413 (`app/limits.py`), compartido por los dos routers. La
+  excepción es una petición que se identifique como agente: el guardia de
+  `app/main.py` la corta con 403 si no va a `/agent/...`, que es el permiso
+  acotado que promete la sección 5.
+- El dueño sigue sin autenticación. Este ADR no la inventa y no debe leerse
+  como si la hubiera: la puerta del agente está cerrada con token, la del dueño
+  está abierta a quien alcance el puerto hasta v1.3.
 - El agente puede leer el vault entero por `?path=`, que es lo que ya permite
   `GET /pages` sin token. Esto no añade una vía de lectura nueva en la práctica;
   añade una forma cómoda para un LLM.
@@ -209,7 +228,7 @@ todas                                        404 si no hay AGENT_TOKENS
 - El rastro de agente es una línea por sugerencia creada, no por lectura: un
   agente que lee contexto cien veces no llena el log (el log de acceso de
   uvicorn ya cuenta las peticiones, y la URL no lleva token).
-- Deuda anotada: contar pendientes recorre los sidecars del vault en cada
+- Deuda anotada: contar las no resueltas recorre los sidecars del vault en cada
   `POST /agent/suggestions` (milisegundos con un vault local; si algún día hay
   miles de sugerencias, se puede indexar), y `brief` no tiene tope de tamaño:
   es texto del dueño para su agente, y recortarlo en silencio sería peor que
