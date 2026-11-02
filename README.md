@@ -187,7 +187,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/inbox`       | GET    | La bandeja: `{dir, count, pages}` para la sección «Bandeja (N)». Solo sesión |
 | `/manifest.webmanifest` | GET | Manifiesto de la PWA (`application/manifest+json`) |
 
-Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
+Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest`, `/icons/*.png` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
 
 Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]]`) en `body_markdown`; se resuelven por título exacto (sin distinguir mayúsculas) dentro del mismo workspace al guardar la página. En el editor no hace falta teclearlos enteros: `[[` abre la lista de páginas y `Enter` completa.
 
@@ -337,7 +337,7 @@ curl -s -b cookies.txt -H 'Content-Type: application/json' \
 
 Protege:
 
-- **Todo salvo** `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest` y `/agent/...`. Sin sesión: `401 {"detail": "no autenticado"}` para la API y `303` a `/login` cuando la petición acepta HTML. Navegar a `/` sin sesión no rompe nada: lleva a entrar y vuelve a donde ibas. El panel, si una llamada devuelve 401, salta a `/login`.
+- **Todo salvo** `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest`, `/icons/*.png` y `/agent/...`. Sin sesión: `401 {"detail": "no autenticado"}` para la API y `303` a `/login` cuando la petición acepta HTML. Navegar a `/` sin sesión no rompe nada: lleva a entrar y vuelve a donde ibas. El panel, si una llamada devuelve 401, salta a `/login`.
 - **Las contraseñas** con `hashlib.scrypt` (n=2**14, r=8, p=1) y una sal por usuario, en hexadecimal. Sin dependencias nuevas.
 - **Las sesiones** por token aleatorio de 256 bits cuyo hash es lo único que se guarda.
 
@@ -466,7 +466,10 @@ la deja donde toque.
 
 El panel es instalable: `frontend/manifest.webmanifest` (nombre, iconos
 generados desde `logo.png` y `display: standalone`) y `/manifest.webmanifest`
-se sirve con su tipo MIME. En Chrome (macOS o cualquier sistema) → menú → **«Añadir al Dock»** / «Instalar aplicación». **No hay service worker**: la app
+se sirve con su tipo MIME. Los iconos (`/icons/*.png`) también son públicos,
+como `/logo.png`: el navegador los pide al instalar **sin** la cookie de la
+página, y detrás de la puerta darían 401. El permiso es al fichero del icono,
+no al prefijo: `/icons/%2e%2e/app.js` sigue respondiendo 401. En Chrome (macOS o cualquier sistema) → menú → **«Añadir al Dock»** / «Instalar aplicación». **No hay service worker**: la app
 necesita el servidor, así que no se promete funcionar sin conexión — lo que
 hace el manifiesto es quitar la barra del navegador y darle un icono propio.
 

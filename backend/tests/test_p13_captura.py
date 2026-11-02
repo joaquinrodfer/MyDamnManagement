@@ -385,3 +385,59 @@ def test_la_bandeja_se_puede_cambiar_de_carpeta(client, vault_path, monkeypatch)
 def test_la_bandeja_y_la_captura_piden_identidad(client, ruta):
     client.cookies.clear()
     assert client.get(ruta).status_code == 401
+
+
+# --------------------------------------------------------------------------
+# 4. la PWA: manifiesto e iconos, sin sesión
+# --------------------------------------------------------------------------
+
+
+def _tamano_png(raw: bytes) -> tuple[int, int]:
+    """Ancho y alto de un PNG, leídos de su cabecera IHDR."""
+    import struct
+
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n", "no es un PNG"
+    ancho, alto = struct.unpack(">II", raw[16:24])
+    return ancho, alto
+
+
+def test_el_manifiesto_y_sus_iconos_se_sirven_sin_sesion(client):
+    """Al instalar la PWA el navegador pide esto **sin** la cookie de la página."""
+    client.cookies.clear()
+
+    manifiesto = client.get("/manifest.webmanifest")
+    assert manifiesto.status_code == 200, manifiesto.text
+    # `StaticFiles` no conoce `.webmanifest`: con otro tipo MIME no se instala.
+    assert manifiesto.headers["content-type"].startswith("application/manifest+json")
+    datos = manifiesto.json()
+    assert datos["display"] == "standalone"
+    assert datos["start_url"] == "/" and datos["scope"] == "/"
+
+    tamanos = set()
+    for icono in datos["icons"]:
+        respuesta = client.get(icono["src"])
+        assert respuesta.status_code == 200, (icono["src"], respuesta.status_code)
+        assert respuesta.headers["content-type"] == "image/png"
+        assert "%dx%d" % _tamano_png(respuesta.content) == icono["sizes"]
+        tamanos.add(icono["sizes"])
+    assert tamanos == {"192x192", "512x512"}
+    # Sin service worker: el manifiesto no promete nada sin conexión.
+    assert "service_worker" not in manifiesto.text
+
+
+def test_los_iconos_publicos_no_abren_el_panel(client):
+    """El permiso es al fichero del icono, no al prefijo `/icons/`.
+
+    `/icons/%2e%2e/app.js` llega al middleware ya decodificado: con un
+    `startswith("/icons/")` el panel entero se servía sin sesión (200 con el
+    `app.js`), que es justo lo que la puerta de P11a no puede permitir.
+    """
+    client.cookies.clear()
+    for ruta in (
+        "/icons/../app.js",
+        "/icons/%2e%2e/app.js",
+        "/icons/../index.html",
+    ):
+        assert client.get(ruta).status_code == 401, ruta
+    # Un icono que no existe sí es público: 404, nunca el panel.
+    assert client.get("/icons/no-existe.png").status_code == 404

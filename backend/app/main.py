@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -96,6 +97,13 @@ PUBLIC_PATHS = frozenset(
     }
 )
 
+# Los iconos del manifiesto (P13): planos y solo PNG. **No basta con mirar el
+# prefijo** `/icons/`, porque una ruta como `/icons/%2e%2e/app.js` llega aquí
+# ya decodificada, empieza por `/icons/` y `StaticFiles` la resolvería al panel
+# **sin sesión** (comprobado: devolvía el `app.js` con un 200). Validando el
+# nombre, solo se abren los ficheros de esa carpeta.
+ICON_PATH = re.compile(r"/icons/[A-Za-z0-9_-]+\.png")
+
 
 def _accepts_html(request: Request) -> bool:
     return "text/html" in request.headers.get("accept", "").lower()
@@ -136,7 +144,17 @@ async def session_is_required(request: Request, call_next):
     cookie (no hay).
     """
     path = request.url.path
-    if path in PUBLIC_PATHS or path == "/agent" or path.startswith("/agent/"):
+    # Los iconos del manifiesto también son públicos (P13): son los mismos
+    # bytes que `/logo.png`, que ya lo era. El navegador los pide al instalar
+    # la PWA sin la cookie de la página (la petición del manifiesto y sus
+    # iconos no lleva credenciales), así que detrás de la puerta darían 401
+    # justo en el momento en que hacen falta.
+    if (
+        path in PUBLIC_PATHS
+        or ICON_PATH.fullmatch(path)
+        or path == "/agent"
+        or path.startswith("/agent/")
+    ):
         return await call_next(request)
 
     # El usuario puede venir ya resuelto por el middleware del token de
@@ -252,6 +270,7 @@ async def user_token_is_scoped(request: Request, call_next):
     request.state.user = found.user
     request.state.capture_token = found.token
     return await call_next(request)
+
 
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
 # los tests y el apagado puedan pararlo sin depender del objeto `app`.
