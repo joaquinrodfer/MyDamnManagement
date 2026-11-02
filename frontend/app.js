@@ -1511,13 +1511,31 @@ function renderNote(page, backlinks) {
   let suggestionItems = []; // todas las de esta nota: pendientes y decididas
   let placedIds = new Set(); // las que el editor ha podido anclar en el texto
 
+  // Un único objeto de callbacks mientras viva la nota: el editor lo compara
+  // por identidad (SuggestionWidget.eq) para no reconstruir los widgets en
+  // cada repintado.
+  const suggestionCallbacks = {
+    onAccept: (id) => acceptSuggestion(id),
+    onReject: (id) => rejectSuggestion(id),
+    // El editor avisa cuando es una EDICIÓN la que desancla algo. Sin esto,
+    // `placedIds` era la foto de cuando se cargó la nota: si el `old_text`
+    // desaparecía del texto, la marca se iba (bien) pero el panel seguía
+    // diciendo que estaba «dentro del texto» y no la listaba en ningún sitio.
+    onPlacementChange: ({ placed }) => {
+      if (state.noteSession !== session) return;
+      const next = new Set(placed ?? []);
+      const same =
+        next.size === placedIds.size && [...next].every((id) => placedIds.has(id));
+      if (same) return;
+      placedIds = next;
+      paintSuggestionsPanel();
+    },
+  };
+
   function paintSuggestions() {
     if (state.noteSession !== session) return; // ya se navegó a otra nota
     const pending = suggestionItems.filter((s) => s.status === "pending");
-    const result = state.editor?.setSuggestions?.(pending, {
-      onAccept: (id) => acceptSuggestion(id),
-      onReject: (id) => rejectSuggestion(id),
-    });
+    const result = state.editor?.setSuggestions?.(pending, suggestionCallbacks);
     placedIds = new Set(result?.placed ?? []);
     sugBtn.hidden = suggestionItems.length === 0;
     sugBtn.textContent = `Sugerencias (${pending.length})`;
