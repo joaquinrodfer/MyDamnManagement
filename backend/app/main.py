@@ -71,9 +71,13 @@ app.include_router(auth_routes.router)
 
 # Rutas que no piden sesión. Las tres de `/auth` son las que permiten entrar
 # (`login`, `setup` y `status`, que solo dice si hay que dar de alta al
-# primero); `/login` es la pantalla. `/agent/...` tiene su propio permiso
-# acotado (`X-Agent-Token`) y no se mezcla con la sesión del dueño.
-PUBLIC_PATHS = frozenset({"/health", "/auth/login", "/auth/setup", "/auth/status", "/login"})
+# primero); `/login` es la pantalla y `/logo.png` su favicon (el del panel es el
+# mismo fichero, así que servirlo sin sesión no enseña nada que no esté ya en la
+# pantalla de entrada). `/agent/...` tiene su propio permiso acotado
+# (`X-Agent-Token`) y no se mezcla con la sesión del dueño.
+PUBLIC_PATHS = frozenset(
+    {"/health", "/auth/login", "/auth/setup", "/auth/status", "/login", "/logo.png"}
+)
 
 
 def _accepts_html(request: Request) -> bool:
@@ -131,15 +135,15 @@ async def session_is_required(request: Request, call_next):
 async def agent_token_is_scoped(request: Request, call_next):
     """Un token de agente solo abre `/agent/...`; el resto es 403.
 
-    No es autenticación —la API del dueño sigue sin login— sino un permiso
-    **acotado**: si un token se filtra, quien lo tenga puede leer contexto y
-    proponer sugerencias, y nada más. Sin esto, poner la cabecera no cambiaba
+    No es la autenticación del dueño —desde P11a eso es la sesión— sino un
+    permiso **acotado**: si un token se filtra, quien lo tenga puede leer
+    contexto y proponer sugerencias, y nada más. Sin esto, poner la cabecera no cambiaba
     nada y el token era una etiqueta con ínfulas de credencial.
 
     Un token inválido no se rechaza aquí: no identifica a nadie, así que la
-    petición sigue su curso normal (401 en `/agent`, y como cualquier cliente
-    anónimo en el resto: la puerta del dueño no mira cabeceras). Rechazarlo
-    sería inventar una autenticación que no existe.
+    petición sigue su curso normal (401 en `/agent`; en el resto decide la
+    puerta de la sesión, que no mira cabeceras). Rechazarlo aquí sería
+    inventar una autenticación que no es la de esta puerta.
     """
     token = request.headers.get("x-agent-token")
     if token and agent_auth.resolve(token) is not None:
@@ -244,7 +248,16 @@ def _admin_from_env() -> None:
     alternativa a la pantalla de alta para un despliegue desatendido; sin las
     dos variables, el alta se hace desde `/login`.
     """
+    if not settings.admin_user and not settings.admin_password:
+        return
     if not settings.admin_user or not settings.admin_password:
+        # Una sola de las dos no crea nada (y no es un error de arranque: la
+        # salida sigue siendo la pantalla de alta). Se dice para que no parezca
+        # que la variable se ignoró en silencio.
+        log.warning(
+            "ADMIN_USER y ADMIN_PASSWORD van juntas: con solo una puesta no se "
+            "crea ningún usuario; el alta se pide en /login"
+        )
         return
     conn = open_index(settings.index_path)
     try:

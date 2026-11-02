@@ -28,6 +28,21 @@ services:
       # verdad de las notas y lo único que hay que respaldar (README, "Backup").
       INDEX_PATH: /data/index.sqlite
       VAULT_PATH: /data/vault
+      # Usuarios y sesiones (P11a). NADA de secretos en este fichero: si
+      # quieres que el primer administrador se cree al arrancar, pon
+      # ADMIN_USER y ADMIN_PASSWORD en el `.env` del servidor y el compose
+      # las pasa; si no están, el alta se hace desde la pantalla de
+      # `/login`. Con usuarios ya en el índice no hacen nada.
+      #
+      # No hay `SESSION_SECRET`: las sesiones viven en la base y lo que
+      # viaja es un token aleatorio (se guarda su SHA-256), no un JWT
+      # firmado. `SESSION_COOKIE_SECURE` no se fija: se deduce de
+      # `X-Forwarded-Proto`, que es lo que manda `tailscale serve`.
+      ADMIN_USER: ${ADMIN_USER:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SESSION_DAYS: ${SESSION_DAYS:-30}
+      # OBSOLETO desde P11a (el creador sale de la sesión): se pasa por si
+      # algún despliegue viejo lo tiene en su `.env`, pero ya no se usa.
       DEFAULT_USER_NAME: ${DEFAULT_USER_NAME:-Tú}
       DOCS_ENABLED: "0" # apaga /docs, /redoc y /openapi.json en producción
     # Solo datos. Nada de `./backend/app` ni `./frontend`: el código ya está en
@@ -39,8 +54,9 @@ services:
     # 127.0.0.1, no "8000:8000": desde fuera solo se alcanza a través de la
     # propia máquina. `tailscale serve` (en el host) termina el TLS y habla con
     # esta dirección; sin él, la app no sale a ninguna interfaz de red.
-    # Publicar aquí "8000:8000" deja una app SIN autenticación al alcance de
-    # toda la red: es exactamente lo que este fichero evita.
+    # Publicar aquí "8000:8000" deja el puerto al alcance de toda la red: la
+    # app pide sesión (v1.3), pero la frontera pensada sigue siendo
+    # Tailscale y este fichero es lo que la mantiene.
     ports:
       - "127.0.0.1:8000:8000"
     # Un solo worker a propósito: cada worker reindexa el vault entero en su
@@ -59,9 +75,11 @@ services:
       --proxy-headers --forwarded-allow-ips=* --log-level info
       --log-config logging.json
     healthcheck:
-      # No usa `/health` (siempre responde "ok" y no toca nada): pregunta a
-      # `/status`, que abre el índice y recorre el vault, y falla con un motivo
-      # legible si cualquiera de los dos no se puede leer. El motivo aparece en
+      # Desde P11a `/status` (como todo) pide sesión, y el healthcheck no tiene
+      # credenciales ni debe tenerlas. Así que se comprueba desde dentro del
+      # contenedor lo mismo que se miraba en `/status`: que el proceso contesta
+      # en `/health` (la única ruta de estado pública) y que el índice y el
+      # vault se pueden leer de verdad. El motivo de un fallo aparece en
       # `docker inspect --format '{{json .State.Health}}' mdm_api_prod`.
       #
       # Sin `curl` a propósito: sería una dependencia más en
@@ -71,7 +89,7 @@ services:
         - python
         - -c
         - |
-          import json, os, sys, urllib.request
+          import json, os, sqlite3, sys, urllib.request
 
 
           def fail(msg):
@@ -79,37 +97,41 @@ services:
               sys.exit(1)
 
 
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10) as resp:
+                  if json.load(resp).get("status") != "ok":
+                      fail("/health no dice ok")
+          except Exception as exc:
+              fail("la API no responde en /health: " + repr(exc))
+
           vault = os.environ.get("VAULT_PATH", "/data/vault")
           if not os.path.isdir(vault):
               fail("no existe el vault " + vault + " (¿volumen sin montar?)")
 
+          en_vault = 0
+          for raiz, dirs, ficheros in os.walk(vault):
+              # `.trash` no son notas: las borradas no cuentan como contenido.
+              dirs[:] = [d for d in dirs if d != ".trash"]
+              en_vault += sum(1 for f in ficheros if f.endswith(".md"))
+
+          index = os.environ.get("INDEX_PATH", "/data/index.sqlite")
           try:
-              with urllib.request.urlopen("http://127.0.0.1:8000/status", timeout=10) as resp:
-                  data = json.load(resp)
+              conn = sqlite3.connect("file:" + index + "?mode=ro", uri=True, timeout=10)
+              try:
+                  version = conn.execute("PRAGMA user_version").fetchone()[0]
+                  pages = conn.execute("SELECT count(*) FROM pages").fetchone()[0]
+              finally:
+                  conn.close()
           except Exception as exc:
-              fail("/status no responde: " + repr(exc))
-
-          db = data.get("services", {}).get("db") or {}
-          if not db.get("ok"):
-              fail("el índice no se puede leer: " + str(db.get("error")))
-
-          drift = data.get("drift") or {}
-          if not drift.get("ok"):
-              fail("el vault no se puede recorrer: " + str(drift.get("error")))
+              fail("el índice no se puede leer: " + repr(exc))
 
           # Un índice que se puede ABRIR no es un índice CON contenido. Si el
           # fichero del índice desaparece con la app en marcha, `ensure_index`
-          # recrea uno vacío en la siguiente consulta: `db.ok` sigue siendo true
-          # con `counts.pages == 0`, la API sirve el panel vacío y el contenedor
-          # se quedaría `healthy` para siempre (`restart: unless-stopped` no
-          # reinicia por `unhealthy`). Ese es el susto que este chequeo evita.
-          #
-          # `checked + added` son los `.md` que hay en el vault (los que el
-          # índice ya conoce y los que aún no). Se usa esa suma y no `changed` a
-          # propósito: un `.md` editado por fuera da `modified` y es el caso
-          # normal hasta el siguiente reindexado, no una caída.
-          pages = (db.get("counts") or {}).get("pages") or 0
-          en_vault = (drift.get("checked") or 0) + (drift.get("added") or 0)
+          # recrea uno vacío en la siguiente consulta: `db.ok` seguía siendo
+          # true con `counts.pages == 0`, la API servía el panel vacío y el
+          # contenedor se quedaba `healthy` para siempre (`restart:
+          # unless-stopped` no reinicia por `unhealthy`). Ese es el susto que
+          # este chequeo evita.
           if pages == 0 and en_vault > 0:
               fail(
                   "el índice está vacío (%s páginas) pero hay %d ficheros en el "
@@ -118,8 +140,8 @@ services:
               )
 
           print(
-              "ok: índice v%s, %s páginas, %s ficheros del vault comprobados"
-              % (db.get("schema_version"), pages, drift.get("checked"))
+              "ok: índice v%s, %s páginas, %s ficheros del vault"
+              % (version, pages, en_vault)
           )
       interval: 30s
       timeout: 15s

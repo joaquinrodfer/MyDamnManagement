@@ -191,7 +191,10 @@ def login(
     hash falso cuando el usuario no está): el tiempo de respuesta no es un
     oráculo de qué usuarios existen.
     """
-    username = (payload.username or "").strip()
+    # Los usernames se crean en minúsculas (`snake_case`), así que se acepta
+    # que alguien escriba "Joaquin": el fallo de login no puede depender de una
+    # mayúscula.
+    username = (payload.username or "").strip().lower()
     ip = _client_ip(request)
     if auth.blocked(username, ip):
         raise HTTPException(429, "demasiados intentos: espera un minuto")

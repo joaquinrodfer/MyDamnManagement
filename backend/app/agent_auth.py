@@ -3,8 +3,7 @@
 Hasta P10a el campo `agent` de una sugerencia era una etiqueta que ponía quien
 llamaba: cualquiera con acceso a la API podía firmar como otro. Esta tarjeta
 cierra eso con un secreto compartido por agente, y solo por agente — el dueño
-sigue entrando sin token (la app no tiene login todavía y esta tarjeta no lo
-inventa).
+entra con su sesión (P11a), no con un token de agente.
 
 El contrato es pequeño a propósito:
 
@@ -26,10 +25,10 @@ El contrato es pequeño a propósito:
   posición de la entrada, que es lo que hace falta para arreglar la variable
   sin volcar el secreto en el log.
 - Un token válido es un permiso **acotado**: `app.main` rechaza con **403**
-  cualquier petición que lo traiga y no vaya a `/agent/...`. No es
-  autenticación —la API del dueño sigue sin tenerla— pero hace que un token
-  filtrado no sirva de llave para escribir, borrar ni aceptar sugerencias:
-  solo propone, que es lo que el contrato promete.
+  cualquier petición que lo traiga y no vaya a `/agent/...`. No es una sesión
+  —desde P11a las rutas del dueño piden la suya— y hace que un token filtrado
+  no sirva de llave para escribir, borrar ni aceptar sugerencias: solo
+  propone, que es lo que el contrato promete.
 
 `hmac.compare_digest` sobre `str` exige ASCII: un token con un acento lanzaría
 `TypeError` (un 500 por una cabecera rara). Se comparan los bytes UTF-8, que

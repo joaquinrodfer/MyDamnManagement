@@ -349,14 +349,21 @@ def user_for_token(
     """Usuario de la sesión, empujando la caducidad deslizante.
 
     Devuelve `None` si el token no existe, si la sesión caducó o si su usuario
-    ya no está. En el primer caso de caducidad borra la fila: una sesión
-    vencida no se queda en la tabla esperando a que alguien la limpie.
+    ya no está. En el caso de caducidad borra la fila: una sesión vencida no se
+    queda en la tabla esperando a que alguien la limpie.
+
+    El empujón escribe una fila, así que se hace **como mucho una vez por
+    hora**: cargar el panel son ~8 peticiones (el HTML, `app.js`, el bundle y
+    las imágenes) y no tiene sentido escribir la misma sesión ocho veces para
+    mover una fecha 30 días. La ventana sigue siendo deslizante; solo no se
+    afina al segundo.
     """
     if not token:
         return None
     token_hash = _token_hash(token)
     row = conn.execute(
-        "SELECT s.created_at AS created_at, s.expires_at AS expires_at, u.*"
+        "SELECT s.created_at AS created_at, s.last_seen AS last_seen,"
+        " s.expires_at AS expires_at, u.*"
         " FROM sessions s JOIN users u ON u.id = s.user_id"
         " WHERE s.token_hash = ?",
         (token_hash,),
@@ -371,12 +378,13 @@ def user_for_token(
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
         return None
 
-    days = config.settings.session_days if days is None else days
-    expires = min(now + timedelta(days=days), tope)
-    conn.execute(
-        "UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token_hash = ?",
-        (_iso(now), _iso(expires), token_hash),
-    )
+    if now - _parse(row["last_seen"]) >= timedelta(hours=1):
+        days = config.settings.session_days if days is None else days
+        expires = min(now + timedelta(days=days), tope)
+        conn.execute(
+            "UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token_hash = ?",
+            (_iso(now), _iso(expires), token_hash),
+        )
     return _user(row)
 
 

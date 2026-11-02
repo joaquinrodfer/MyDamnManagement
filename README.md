@@ -22,7 +22,9 @@ Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/)
 
 El resto del frontend sigue siendo HTML/CSS/JS plano sin build (`frontend/index.html` + `frontend/app.js`, servidos por la propia API); la única pieza compilada es el editor, vendorizado como un único archivo (`frontend/vendor/editor.bundle.js`, generado una vez con esbuild desde `frontend/editor-src/` — ver más abajo).
 
-Las páginas tienen metadatos propios: icono (emoji real, con selector de búsqueda), creador (se fija solo al crear, pensado para cuando haya espacios grupales), descripción y una imagen de cabecera opcionales. Todo se autoguarda 2 segundos después del último cambio — no hay botón "Guardar". El editor entiende `/` como comando de bloque al estilo Notion, convierte `->`/`<-`/`<->` en flechas de verdad y muestra los wikilinks como enlaces normales con vista previa al pasar el ratón.
+Desde **v1.3** la app pide login: hay usuarios y sesiones (cookie `HttpOnly`), el creador de cada nota es quien la escribe de verdad y todo lo que no sea `/health`, el propio login o `/agent/...` exige sesión — ver «Usuarios y acceso».
+
+Las páginas tienen metadatos propios: icono (emoji real, con selector de búsqueda), creador (se fija solo al crear, con el usuario de la sesión), descripción y una imagen de cabecera opcionales. Todo se autoguarda 2 segundos después del último cambio — no hay botón "Guardar". El editor entiende `/` como comando de bloque al estilo Notion, convierte `->`/`<-`/`<->` en flechas de verdad y muestra los wikilinks como enlaces normales con vista previa al pasar el ratón.
 
 ## Cómo arrancarlo (desarrollo)
 
@@ -169,6 +171,16 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/trash`       | GET    | Papelera: ruta original, fecha del borrado (UTC) y tamaño de cada fichero, lo más reciente primero |
 | `/trash/restore` | POST | Devuelve un fichero de la papelera a su ruta original y reindexa. **409** si la ruta está ocupada o si un ancestro de ella es un fichero (no una carpeta); **404** si la entrada no existe |
 | `/search?q=`   | GET    | Búsqueda full-text (título + cuerpo) en español          |
+| `/login`       | GET    | Pantalla de entrada (HTML propio, sin dependencias): login o alta del primer usuario |
+| `/auth/status` | GET    | `{needs_setup, authenticated}`: lo que la pantalla necesita para pintar el formulario |
+| `/auth/setup`  | POST   | Alta del primer usuario (admin). **403** si ya hay usuarios |
+| `/auth/login`  | POST   | `{username, password}` → cookie de sesión `HttpOnly`      |
+| `/auth/me`     | GET    | Usuario de la sesión (`id`, `username`, `display_name`, `color`, `is_admin`) |
+| `/auth/password` | POST | Cambia la contraseña propia (pide la actual) y cierra las demás sesiones |
+| `/auth/users`  | POST   | Crea otro usuario. Solo un administrador                 |
+| `/auth/logout` | POST   | Borra la sesión en la base y borra la cookie             |
+
+Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
 
 Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]]`) en `body_markdown`; se resuelven por título exacto (sin distinguir mayúsculas) dentro del mismo workspace al guardar la página.
 
@@ -191,7 +203,7 @@ Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value
 
 ### Agentes (`/agent/...`)
 
-Un agente externo —un proceso que lee el vault y propone cambios— puede **leer contexto y proponer parches**, y nada más. Se identifica con un token; no hay usuarios, sesiones ni roles. La puerta está pensada para que un LLM trabaje sobre tus notas sin poder tocarlas: lo único que puede crear es una sugerencia pendiente, que aceptas o rechazas tú.
+Un agente externo —un proceso que lee el vault y propone cambios— puede **leer contexto y proponer parches**, y nada más. Se identifica con un token propio, independiente de las sesiones de usuario de v1.3. La puerta está pensada para que un LLM trabaje sobre tus notas sin poder tocarlas: lo único que puede crear es una sugerencia pendiente, que aceptas o rechazas tú.
 
 ```bash
 # En el `.env` del servidor (o en el entorno del contenedor). Pares
@@ -203,7 +215,7 @@ AGENT_TOKENS="token1:agente-hitos,token2:agente-revision"
 - **Sin `AGENT_TOKENS`** (o vacía) las tres rutas de `/agent` **no existen: 404**. No es un 403: un despliegue sin agentes no anuncia una superficie activa. (Con `DOCS_ENABLED` encendido, que es el valor por defecto, `/openapi.json` sí lista las rutas aunque respondan 404; `DOCS_ENABLED=0` apaga también eso.)
 - El token viaja en la cabecera **`X-Agent-Token`**, nunca en la URL (una URL acaba en el log de acceso; una cabecera no). Sin token o con uno que no está configurado: **401**, con el mismo mensaje en los dos casos.
 - La comparación es en tiempo constante (`hmac.compare_digest`) y se hace contra todos los tokens, sin cortar al primero que acierta.
-- **Un token válido solo abre `/agent/...`.** Cualquier otra ruta (`/pages`, `/suggestions/{id}/accept`, `/trash`, …) con `X-Agent-Token` válido responde **403**: el token no es una llave para escribir, borrar ni aceptar. Lo que **no** hace es autenticar al dueño: mientras no exista login (v1.3) quien alcance el puerto puede leer, escribir y borrar; la frontera hoy es la red (Tailscale), no el token.
+- **Un token válido solo abre `/agent/...`.** Cualquier otra ruta (`/pages`, `/suggestions/{id}/accept`, `/trash`, `/auth/*`, …) con `X-Agent-Token` válido responde **403**: el token no es una llave para escribir, borrar ni aceptar. Lo que **no** hace es autenticar al dueño: desde v1.3 eso lo hace la sesión (`/auth/login`), y quien no la tenga no lee, no escribe y no borra.
 - Los tokens **no se registran**: ni al acertar, ni al fallar, ni en los avisos de configuración. El log de una sugerencia creada dice agente, nota y tamaño del parche, jamás su texto: `INFO mdm.agents: sugerencia <id>: agente=agente-hitos nota=Notas/Hitos.md kind=edit parche=98 B`. Para que esa línea llegue al log del contenedor, el arranque pasa `--log-config logging.json` (ver [Logs](#logs)): sin él, uvicorn solo configura sus propios loggers y la app se queda sin `INFO`.
 - Un nombre de agente es un nombre de fichero portable (letras, dígitos, `.`, `_` y `-`): se usa para buscar su nota de instrucciones. Una entrada de `AGENT_TOKENS` con un nombre raro se descarta con un aviso (sin el token) y las demás siguen valiendo.
 
@@ -263,7 +275,73 @@ curl -s -H "X-Agent-Token: token1" \
 
 **Topes.** `AGENT_MAX_PENDING_NOTE` (20) sin resolver por nota, de cualquier agente, y `AGENT_MAX_PENDING_AGENT` (20) sin resolver por agente en todo el vault. «Sin resolver» es `pending` **y** `orphaned`: una sugerencia cuyo ancla ya no está sigue esperando tu decisión, así que también ocupa sitio — si no, el agente que propone sobre un contexto viejo sería el que nunca toca el límite. Por encima, **429** con el número y el tope en el mensaje: un agente en bucle no puede llenarte una nota de ruido. Aceptar o rechazar libera sitio.
 
-**Lo que un agente NO puede hacer**, y es deliberado: con el token puesto, no edita (`PATCH /pages/{id}`), no borra (`DELETE /pages/{id}`, `/trash`), no acepta ni rechaza sus propias sugerencias y no puede firmar como otro agente; el guardia responde **403** en cualquier ruta que no sea `/agent/...`. Aceptar y rechazar siguen siendo rutas del dueño. Pero el token **no autentica al dueño**: mientras no exista login (v1.3) la API del dueño no tiene autenticación, así que quien alcance el puerto —con o sin token— puede leer, escribir y borrar. La frontera de seguridad hoy es la red (Tailscale), no el token; lo que el token aporta es autoría y un permiso mínimo para el agente. Las decisiones de diseño están en [`docs/ADR-0004-puerta-para-agentes.md`](docs/ADR-0004-puerta-para-agentes.md).
+**Lo que un agente NO puede hacer**, y es deliberado: con el token puesto, no edita (`PATCH /pages/{id}`), no borra (`DELETE /pages/{id}`, `/trash`), no acepta ni rechaza sus propias sugerencias y no puede firmar como otro agente; el guardia responde **403** en cualquier ruta que no sea `/agent/...`. Aceptar y rechazar siguen siendo rutas del dueño. El token **no autentica al dueño ni sustituye a una sesión**: desde v1.3 las rutas del dueño piden sesión (`/auth/login`) y un `X-Agent-Token` válido fuera de `/agent/...` sigue dando **403**. Las decisiones de diseño están en [`docs/ADR-0004-puerta-para-agentes.md`](docs/ADR-0004-puerta-para-agentes.md).
+
+## Usuarios y acceso
+
+Desde v1.3 la API **no está abierta**: quien no tiene sesión no lee, no escribe y no borra. Usuarios y sesiones viven en el **índice** (`users`, `sessions`, esquema 4), no en el vault — el vault sigue siendo solo de las notas. El «creador» de cada nota deja de ser un literal: `created_by` es el `display_name` del usuario de la sesión, en el índice y en el frontmatter del `.md`.
+
+### Primer arranque
+
+Con el índice sin usuarios, `GET /` lleva a `/login`, que pinta el **alta del primer usuario**. Ese usuario es administrador. Dos caminos:
+
+1. **Desde la pantalla** (lo normal): abre `http://localhost:8000/` y rellena usuario, nombre visible y contraseña. El username es `snake_case` (minúsculas, dígitos y `_`, 3-32 caracteres, empezando por letra); la contraseña, 8+ caracteres.
+2. **Desatendido**, con dos variables en el `.env` del servidor:
+
+   ```bash
+   ADMIN_USER=joaquin
+   ADMIN_PASSWORD=algo-largo-y-unico
+   ```
+
+   Si al arrancar no hay ningún usuario, se crea ese administrador (su nombre visible es el propio `ADMIN_USER`). Con usuarios ya en el índice las dos variables **no hacen nada**: no se resetea la contraseña de nadie.
+
+### Entrar, salir y cambiar la contraseña
+
+```bash
+curl -s -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"joaquin","password":"algo-largo-y-unico"}' \
+  http://localhost:8000/auth/login
+
+curl -s -b cookies.txt http://localhost:8000/auth/me
+# {"id":"…","username":"joaquin","display_name":"Joaquín","color":"#5e6ad2","is_admin":true}
+
+curl -s -b cookies.txt -X POST http://localhost:8000/auth/logout
+```
+
+- La cookie se llama `mdm_session` y es `HttpOnly` (el JS del panel no puede leer el token), `SameSite=Lax` y `Path=/`. `Secure` se añade cuando la petición llega por HTTPS, mirando `X-Forwarded-Proto` (lo que manda `tailscale serve`) o el esquema; `SESSION_COOKIE_SECURE=1`/`0` lo fuerza.
+- En la base se guarda el **SHA-256 del token**, nunca el token: un volcado del índice no da sesiones abiertas.
+- Duración: `SESSION_DAYS` (30) **deslizantes**, con tope absoluto de 90 días desde que se abrió (el empujón se escribe como mucho una vez por hora). `POST /auth/logout` borra la sesión en la base.
+- `POST /auth/password` con `{"current_password": "…", "new_password": "…"}`: pide la actual, cierra las demás sesiones del usuario y deja abierta la que hace el cambio.
+- Un usuario inexistente y una contraseña mala responden lo mismo (`401 {"detail": "usuario o contraseña incorrectos"}`) y cuestan lo mismo (se compara contra un hash falso para no filtrar por tiempo). Hay un límite de 10 intentos por minuto por usuario+IP, en memoria: por encima, `429`.
+
+### Crear otro usuario
+
+De momento solo un administrador, con `POST /auth/users`:
+
+```bash
+curl -s -b cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"marta","display_name":"Marta","password":"otra-larga","color":"#3dd68c"}' \
+  http://localhost:8000/auth/users
+```
+
+`color` es opcional (`#rrggbb`; si falta se asigna uno estable por username) e `is_admin` es `false` salvo que se mande `true`. Las notas antiguas con `"Tú"` se quedan como están: la migración no reescribe el vault.
+
+### Qué protege y qué no
+
+Protege:
+
+- **Todo salvo** `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status` y `/agent/...`. Sin sesión: `401 {"detail": "no autenticado"}` para la API y `303` a `/login` cuando la petición acepta HTML. Navegar a `/` sin sesión no rompe nada: lleva a entrar y vuelve a donde ibas. El panel, si una llamada devuelve 401, salta a `/login`.
+- **Las contraseñas** con `hashlib.scrypt` (n=2**14, r=8, p=1) y una sal por usuario, en hexadecimal. Sin dependencias nuevas.
+- **Las sesiones** por token aleatorio de 256 bits cuyo hash es lo único que se guarda.
+
+No protege, o no lo hace todavía:
+
+- **No sustituye a la red.** Sigue haciendo falta Tailscale (o lo que pongas delante) y HTTPS: una contraseña que viaja por HTTP se lee. Con `tailscale serve` el TLS lo termina el proxy y la cookie sale `Secure`.
+- **No hay permisos por nota**: cualquier usuario con sesión lee y escribe todo el vault; lo único «solo admin» es crear usuarios.
+- **No hay 2FA ni recuperación de contraseña**. Si te quedas fuera y no hay otro admin, la salida es editar la base a mano o borrar el índice y volver al alta (las notas del vault no se tocan; las cuentas se pierden).
+- **El índice contiene las credenciales.** El backup del vault no se lleva usuarios ni sesiones; si no usas `ADMIN_USER`, guarda también el índice o apunta las contraseñas.
+- El límite de intentos es **por proceso y en memoria**: no sobrevive a un reinicio y no se comparte si algún día hay más de un worker.
+- **Los agentes no son usuarios.** `/agent/...` sigue con su `X-Agent-Token`, que no es una sesión: no abre ninguna ruta del dueño (`403`) ni las de `/auth/*`.
 
 ## Roadmap
 
@@ -280,6 +358,7 @@ curl -s -H "X-Agent-Token: token1" \
 - [x] **P1.2a — las notas pasan a ficheros `.md`** — vault en disco (`Notas/`, `.trash/`), guardar/renombrar/mover/borrar escriben fichero, reindexado desde el vault (`POST /reindex` y al arrancar) y migración del índice al vault
 - [x] **P1.2b — el vault completo** — adjuntos dentro del vault (`_attachments/`, servidos por `/files` con la ruta del vault y validación por magic bytes), restaurar desde la papelera (`GET /trash`, `POST /trash/restore`) y deriva índice/disco en `/status`
 - [x] **P2 — bases de datos y filas en ficheros** — `Bases/<slug>.md` + `Bases/<slug>/*.md`, `schema` y `views` en el frontmatter, alta/baja/edición escribiendo ficheros, reindexado de bases y filas, papelera y migración
+- [x] **v1.3 — usuarios, sesiones y login (P11a)** — esquema 4 con `users`/`sessions`, contraseñas con scrypt, cookie de sesión `HttpOnly` con caducidad deslizante, `/login` propio con alta del primer usuario, y la API cerrada a los anónimos (`401`/redirección) salvo `/health` y `/agent/*`
 - [ ] **Fase 4** — Despliegue en Proxmox + Tailscale, backups automatizados
 
 ## Despliegue (producción, solo por Tailscale)
@@ -306,14 +385,14 @@ En el servidor (Docker con el plugin `compose` v2 y Tailscale instalado):
 git clone <url-del-repo> MyDamnManagement
 cd MyDamnManagement
 git switch release/v1.0        # la rama/etiqueta que quieras desplegar
-cp .env.example .env           # DEFAULT_USER_NAME; el resto lo fija el compose
+cp .env.example .env           # opcional: ADMIN_USER/ADMIN_PASSWORD; el resto lo fija el compose
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml ps     # api ... (healthy)
 curl -s http://127.0.0.1:8000/health
 ```
 
-- **Estado del healthcheck:** `docker inspect --format '{{.State.Health.Status}}' mdm_api_prod` (`starting` hasta que pasa el periodo de gracia del arranque, luego `healthy`). El motivo del último fallo, con texto: `docker inspect --format '{{json .State.Health}}' mdm_api_prod | python3 -m json.tool`. Está definido en el compose y no usa `/health` (que siempre contesta `ok`): pregunta a `/status`, que abre el índice y recorre el vault, y sale con código 1 diciendo qué falla — `el índice no se puede leer: …`, `el índice está vacío (0 páginas) pero hay N ficheros en el vault …: POST /reindex o reinicia el contenedor`, `no existe el vault … (¿volumen sin montar?)`, `el vault no se puede recorrer: …`.
-  El del índice vacío es el caso traicionero: si el fichero del índice se pierde con la app en marcha, el índice se recrea vacío y la API sirve el panel en blanco, pero `db.ok` sigue siendo `true`; por eso el chequeo exige que haya páginas cuando el vault tiene `.md`. Y como `restart: unless-stopped` **no** reinicia por `unhealthy`, el contenedor se quedaría así: la salida es `POST /reindex` o reiniciar. Un vault vacío de verdad (0 `.md`, 0 páginas) sigue dando `healthy`, y la deriva normal —un `.md` editado por fuera, `drift.modified`— **no** cuenta como caída: es lo esperado hasta el siguiente reindexado.
+- **Estado del healthcheck:** `docker inspect --format '{{.State.Health.Status}}' mdm_api_prod` (`starting` hasta que pasa el periodo de gracia del arranque, luego `healthy`). El motivo del último fallo, con texto: `docker inspect --format '{{json .State.Health}}' mdm_api_prod | python3 -m json.tool`. Está definido en el compose y, desde v1.3, no pregunta a `/status` (que como el resto pide sesión y el healthcheck no tiene credenciales): comprueba desde dentro del contenedor lo mismo — que la API contesta en `/health` y que el índice y el vault se leen de verdad — y sale con código 1 diciendo qué falla: `la API no responde en /health: …`, `el índice no se puede leer: …`, `el índice está vacío (0 páginas) pero hay N ficheros en el vault …: POST /reindex o reinicia el contenedor`, `no existe el vault … (¿volumen sin montar?)`.
+  El del índice vacío es el caso traicionero: si el fichero del índice se pierde con la app en marcha, el índice se recrea vacío y la API sirve el panel en blanco (y las cuentas se pierden con él, ver «Usuarios y acceso»); por eso el chequeo exige que haya páginas cuando el vault tiene `.md`. Y como `restart: unless-stopped` **no** reinicia por `unhealthy`, el contenedor se quedaría así: la salida es `POST /reindex` o reiniciar. Un vault vacío de verdad (0 `.md`, 0 páginas) sigue dando `healthy`, y la deriva normal —un `.md` editado por fuera, `drift.modified`— **no** cuenta como caída: es lo esperado hasta el siguiente reindexado.
 - **Actualizar:** `git pull && docker compose -f docker-compose.prod.yml up -d --build`. Cada arranque reindexa el vault entero, así que un cambio de código no necesita ningún paso extra sobre los datos.
 - **No levantes los dos composes a la vez** en la misma máquina: los dos publican el puerto 8000 del host (el de desarrollo en todas las interfaces, el de producción en loopback) y el segundo se queda sin puerto.
 - **Los volúmenes se llaman `mdm-prod_mdm_data` y `mdm-prod_mdm_vault`** porque el compose fija `name: mdm-prod`. No dependen del directorio desde el que clones, y así el backup y el restore de más abajo son comandos exactos y no "mira a ver cómo se llama".
@@ -332,7 +411,7 @@ Se entra desde cualquier dispositivo del tailnet en `https://<equipo>.<tu-tailne
 
 Lo que esto protege y lo que no, sin adornos:
 
-- **La frontera es la red, no un login.** La app sigue sin autenticación: quien alcance el puerto lee, escribe y borra. Lo que cambia es que el puerto ya no está abierto a la LAN ni a internet, y solo llega quien esté en tu tailnet (y a quien tus ACLs de Tailscale dejen llegar a ese equipo).
+- **La frontera son dos capas: la red y la sesión.** Desde v1.3 la app pide login (ver «Usuarios y acceso»), pero el TLS y el alcance los sigue poniendo Tailscale: sin él, la contraseña del login viajaría en claro por la LAN, y con él la cookie sale `Secure` (`X-Forwarded-Proto: https`). Y el puerto ya no está abierto a la LAN ni a internet: solo llega quien esté en tu tailnet (y a quien tus ACLs dejen llegar a ese equipo).
 - **Nunca `tailscale funnel`**: eso publica el servicio en internet. `serve` es para el tailnet; `funnel` no.
 - Si compartes tailnet con más gente o con dispositivos que no son tuyos, restringe el acceso con ACLs de Tailscale (`tailscale.com/kb/1018/acls`) antes de meter notas de verdad.
 - La alternativa que planteaba el roadmap —un token de API por cabecera— **no está implementada**. Añadirla es código de la app (una dependencia que revise la cabecera en cada router), no empaquetado, y este cambio no toca la app. Queda como deuda para cuando haya más de un usuario.
@@ -343,7 +422,7 @@ Lo que esto protege y lo que no, sin adornos:
 
 `DOCS_ENABLED=0` en el entorno (o en el `.env`) las apaga: `/docs`, `/redoc` y `/openapi.json` dan 404 y la app no publica el esquema OpenAPI. `docker-compose.prod.yml` ya lo trae a `"0"`, así que en producción no se exponen y en el `.env` del servidor no hace falta tocar nada.
 
-Apagarlas **no es autenticación**: solo deja de publicar la documentación. El resto de la API sigue sin login y sigue accesible desde el tailnet (ver la sección «Exponerlo por Tailscale»): la frontera real sigue siendo la red.
+Desde v1.3 `/docs`, `/redoc` y `/openapi.json` están detrás de la sesión como el resto de la API, así que apagarlas no cambia quién entra: sigue siendo buena idea en producción (menos superficie y menos esquema publicado), pero lo que protege es el login, no `DOCS_ENABLED`.
 
 ### Logs
 
@@ -404,14 +483,14 @@ curl -s http://127.0.0.1:8000/status
 
 En el JSON de `/status`, `services.db.counts.pages` tiene que ser mayor que 0 y `drift.changed` tiene que ser 0 (si no lo es, `curl -X POST http://127.0.0.1:8000/reindex`). Después, abre el panel y mira que están tus notas.
 
-**Restaurar también el índice** solo tiene sentido si guardaste `mdm-prod_mdm_data`, y entonces hay que parar el servicio antes de copiar (es un SQLite en WAL: copiarlo en caliente no es seguro). No hace falta para recuperar los datos, y este documento no lo recomienda: el vault es la verdad y el índice se rehace.
+**Restaurar también el índice** solo tiene sentido si guardaste `mdm-prod_mdm_data`, y entonces hay que parar el servicio antes de copiar (es un SQLite en WAL: copiarlo en caliente no es seguro). Para las notas no hace falta: el vault es la verdad y el índice se rehace. **Pero desde v1.3 el índice guarda los usuarios y las sesiones** (`users`, `sessions`), que no están en el vault: restaurar solo el vault deja la app sin cuentas (volverías al alta del primer usuario, o a `ADMIN_USER` si lo tienes en el `.env`). Si no quieres depender de eso, guarda también el índice o apunta las contraseñas.
 
 ### Lo que no está verificado aquí
 
 Este cambio se ha hecho sin poder arrancar el contenedor ni tocar un tailnet: en la máquina donde se escribió no hay plugin `compose` (`docker compose` no existe como subcomando), el daemon de Docker está caído y no hay `tailscale`. Por tanto:
 
 - `docker compose -f docker-compose.prod.yml config` se validó con el plugin `compose` **v2.29.7** durante la revisión de este cambio (`exit 0`: `host_ip: 127.0.0.1`, solo los volúmenes `mdm_data`/`mdm_vault`, ningún bind-mount de código). La máquina donde se escribió el compose no tiene el subcomando `compose`, así que conviene repetirlo en el servidor antes de `up`: es el primer comando que hay que correr allí.
-- El comando del `healthcheck` **sí** está probado contra la app de verdad: se extrajo el script del propio YAML y se ejecutó contra un `uvicorn` local con un índice y un vault temporales. Devuelve 0 con todo sano; 1 `el índice no se puede leer: …` cuando desaparece el directorio del índice; 1 `el índice está vacío (0 páginas) …` al borrar el **fichero** del índice con la app en marcha y notas en el vault (el caso que se colaba: `/pages` devolvía `[]` y el chequeo salía 0), y vuelve a 0 tras `POST /reindex`; 1 nombrando el vault cuando desaparece o no se puede recorrer; 0 con un `.md` editado por fuera (deriva `modified`, caso normal); 0 con un vault realmente vacío. También se comprobó, con la app en marcha, que un índice vacío más un vault con notas arranca con el índice reconstruido (1 página, `drift.changed` 0) y que un vault editado por fuera gana al índice atrasado en el siguiente arranque.
+- El comando del `healthcheck` **sí** está probado contra la app de verdad, pero no en Docker: el script se extrae del propio YAML y se ejecuta con el `python` de la imagen contra un `uvicorn` local. Con el healthcheck de v1.3 (que ya no usa `/status`, ver arriba) devuelve 0 con todo sano (`ok: índice v4, 1 páginas, 1 ficheros del vault`); 1 `el índice está vacío (0 páginas) pero hay 1 ficheros en el vault …` con un índice recién creado y una nota en el vault; 1 `no existe el vault …` cuando el directorio no está; y 1 `la API no responde en /health: …` cuando no hay nada escuchando. Lo que **no** se ha podido comprobar aquí es que el `python` de la imagen tenga el módulo `sqlite3` (es de la biblioteca estándar, y la imagen ya lo usa para la app) ni el ciclo `healthy`/`unhealthy` de Docker.
 - El `tar` que usan el backup y el restore es el de la propia imagen (`python:3.12-slim-bookworm`, base Debian): aquí no se ha podido comprobar que esté, por lo mismo. Si en tu imagen no estuviera, el mismo comando vale con un contenedor de usar y tirar: `docker run --rm -v mdm-prod_mdm_vault:/data/vault:ro -v "$PWD/backups":/backup busybox tar -czf /backup/vault.tar.gz -C /data/vault .`.
 - `docker build` de la imagen, `docker compose up` y `tailscale serve` **no** se han ejecutado aquí.
 
