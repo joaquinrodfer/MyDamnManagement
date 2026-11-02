@@ -1811,12 +1811,18 @@ function renderNote(page, backlinks) {
       // escribió, lo tecleado manda y el aviso sale en el guardado que lo
       // aplique, con el título que quede entonces. `showError` no se apila
       // consigo mismo, así que esto es un aviso por guardado, no por tecla.
+      //
+      // El aviso dice solo lo que se sabe: qué título ha quedado. De los
+      // corchetes sí se sabe la causa (el formato de `[[…]]` no los admite),
+      // pero `sanitize()` cambia el título por más motivos —vacío, espacios de
+      // más, nombre ya cogido, truncado— y ahí el aviso no puede culpar a los
+      // caracteres ni inventarse un porqué.
       if (updated.title !== sentTitle && changeSeq === seqAtSave) {
         titleInput.value = updated.title;
         showError(
           /\[|\]/.test(sentTitle)
             ? `El título se ha guardado como «${updated.title}»: los corchetes rompen los enlaces [[…]].`
-            : `El título se ha guardado como «${updated.title}»: algunos caracteres no valen en el nombre de una nota.`,
+            : `El título se ha guardado como «${updated.title}».`,
         );
       }
       // Solo queda "nada pendiente" si no se ha escrito nada mientras se
