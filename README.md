@@ -221,7 +221,7 @@ curl -s -H "X-Agent-Token: token1" \
 
 ```json
 {"page": {"id": "9f1c…", "title": "Hitos", "path": "Notas/Hitos.md",
-          "type": "note", "updated_at": "2026-11-02T09:12:44.120931+00:00"},
+          "type": "note", "updated_at": "2026-11-02T09:12:44.120931Z"},
  "body": "# Hitos\n\n- Cerrar P10a\n- Cerrar P10b\n",
  "body_truncated": false,
  "backlinks": [{"id": "3a77…", "title": "Proyecto"}],
@@ -229,8 +229,8 @@ curl -s -H "X-Agent-Token: token1" \
  "suggestions": [{"id": "b41e…", "status": "rejected", "agent": "agente-hitos",
                   "kind": "edit", "old_text": "- Cerrar P10a",
                   "new_text": "- Cerrar P10a (hecho)", "rationale": "ya está",
-                  "reason": "todavía no", "replies": [{"author": "Tú", "text": "cuando cierre el CI", "at": "2026-11-01T18:04:02+00:00"}],
-                  "created_at": "2026-11-01T17:50:00+00:00", "decided_at": "2026-11-01T18:00:00+00:00",
+                  "reason": "todavía no", "replies": [{"author": "Tú", "text": "cuando cierre el CI", "at": "2026-11-01T18:04:02.881400+00:00"}],
+                  "created_at": "2026-11-01T17:50:00.100000Z", "decided_at": "2026-11-01T18:00:00.245000Z",
                   "page_id": "9f1c…", "path": "Notas/Hitos.md", "title": null}],
  "brief": "Propón hitos cortos y verificables. No cambies las fechas."}
 ```
