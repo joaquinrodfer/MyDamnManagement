@@ -732,9 +732,10 @@ const newUserForm = document.getElementById("form-new-user");
 const newUserNote = document.getElementById("nu-note");
 const NEW_USER_NOTE = newUserNote?.textContent || "";
 
-// El aviso de «esta API no tiene listado» lleva el número de usuarios que se
+// El aviso de «no se pudo cargar el listado» lleva el número de usuarios que se
 // están enseñando: si se queda escrito al abrir, crear uno nuevo lo dejaba
-// mintiendo («(1)» con dos filas). Por eso se repinta con cada lista.
+// mintiendo («(1)» con dos filas). Por eso se repinta con cada lista. Con
+// `GET /auth/users` en la API el aviso solo sale si esa llamada falla.
 let usersListUnavailable = false;
 
 function paintUsersNote() {
