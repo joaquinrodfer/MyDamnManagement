@@ -1793,12 +1793,32 @@ function renderNote(page, backlinks) {
 
     const seqAtSave = changeSeq;
     const body = buildSaveBody();
+    // Lo que se ha mandado como título, para saber si el servidor lo cambia:
+    // `names.sanitize()` sustituye los corchetes y los signos que no valen en
+    // un nombre de fichero, y la nota acaba llamándose de otra forma.
+    const sentTitle = JSON.parse(body).title;
     savingBody = body; // para que el guardado de emergencia sepa qué va de camino
 
     try {
       const updated = await api(`/pages/${page.id}`, { method: "PATCH", body });
       page.updated_at = updated.updated_at;
       page.title = updated.title;
+      // Si el servidor ha cambiado el título, la cabecera tiene que enseñar el
+      // que se ha guardado de verdad: si no, la nota se llama de una forma en
+      // la cabecera y de otra en el árbol, sin nada que lo explique, y el
+      // cambio se descubre al recargar. El input solo se pisa si no se ha
+      // escrito nada mientras iba el PATCH (`changeSeq === seqAtSave`): si se
+      // escribió, lo tecleado manda y el aviso sale en el guardado que lo
+      // aplique, con el título que quede entonces. `showError` no se apila
+      // consigo mismo, así que esto es un aviso por guardado, no por tecla.
+      if (updated.title !== sentTitle && changeSeq === seqAtSave) {
+        titleInput.value = updated.title;
+        showError(
+          /\[|\]/.test(sentTitle)
+            ? `El título se ha guardado como «${updated.title}»: los corchetes rompen los enlaces [[…]].`
+            : `El título se ha guardado como «${updated.title}»: algunos caracteres no valen en el nombre de una nota.`,
+        );
+      }
       // Solo queda "nada pendiente" si no se ha escrito nada mientras se
       // guardaba: si se escribió, `dirty` sigue puesto y el guardado de
       // emergencia mandará el contenido nuevo en vez de darlo por guardado.
