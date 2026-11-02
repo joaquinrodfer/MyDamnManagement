@@ -105,12 +105,41 @@ test("⏎ en el punto vacío sale de la lista: con DOS ítems, igual", () => {
   assert.ok(!r.text.slice(12).includes("- "));
 });
 
-test("desde el medio de una lista vacía no se deja hueco", () => {
-  // "- uno / -  / - tres": la fila vacía se va entera, con su salto.
+test("R1: salir del medio de una lista conserva el hueco y no pega el texto al ítem siguiente", () => {
+  // "- uno / -  / - tres" con el cursor en el punto vacío del medio: se va el
+  // marcador, pero el salto se queda como hueco del párrafo nuevo y el cursor
+  // va detrás (fila en blanco), no delante del "- " de "tres".
   const text = "- uno\n- \n- tres";
   const r = apply(text, 8, { from: 6, to: 8, type: "bullet_list_item" });
-  assert.equal(r.text, "- uno\n- tres");
-  assert.ok(!r.text.includes("\n\n"));
+  assert.equal(r.text, "- uno\n\n- tres");
+  assert.equal(r.cursor, 6);
+  // Lo que se teclea cae en la fila en blanco: no toca ninguna viñeta.
+  const typed = r.text.slice(0, r.cursor) + "x" + r.text.slice(r.cursor);
+  assert.equal(typed, "- uno\nx\n- tres");
+  assert.ok(!typed.includes("x- "), "el texto no puede pegarse al marcador siguiente");
+  assert.ok(typed.includes("\n- tres"), "el ítem de debajo conserva su viñeta");
+});
+
+test("R1 (numerada): salir del medio tampoco pega el texto al número siguiente", () => {
+  const text = "1. uno\n2. \n3. tres";
+  const r = apply(text, 9, { from: 7, to: 9, type: "ordered_list_item" });
+  assert.equal(r.text, "1. uno\n\n3. tres");
+  assert.equal(r.cursor, 7);
+  const typed = r.text.slice(0, r.cursor) + "x" + r.text.slice(r.cursor);
+  assert.equal(typed, "1. uno\nx\n3. tres");
+  assert.ok(!typed.includes("x3."));
+});
+
+test("R2: salir de una lista que tiene un párrafo detrás no se lo traga", () => {
+  // Salir con ⏎ del último ítem seguido de un párrafo: el párrafo tiene que
+  // seguir siendo un bloque aparte, no continuación perezosa del ítem.
+  const text = "- uno\n- \n\nparrafo\n\nsegundo";
+  const r = apply(text, 8, { from: 6, to: 8, type: "bullet_list_item" });
+  assert.equal(r.text, "- uno\n\n\nparrafo\n\nsegundo");
+  assert.equal(r.cursor, 6); // fila en blanco justo debajo del ítem
+  const typed = r.text.slice(0, r.cursor) + "x" + r.text.slice(r.cursor);
+  assert.equal(typed, "- uno\nx\n\nparrafo\n\nsegundo");
+  assert.ok(typed.includes("\n\nparrafo"), "el párrafo sigue separado por una línea en blanco");
 });
 
 // ------------------------------------------------------ listas numeradas

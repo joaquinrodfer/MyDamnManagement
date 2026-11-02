@@ -80,8 +80,13 @@ function splitBlock(text, pos, block) {
  * - Si no queda nada detrás, la fila se convierte en la línea en blanco que
  *   separa el párrafo nuevo (el `.md` recorta los saltos finales, así que en
  *   disco el resultado es `- uno` a secas, sin `- ` colgando).
- * - Si hay contenido detrás (salir del medio de una lista), la fila se va
- *   entera, con su salto: el hueco no es negociable (D1/D2).
+ * - Si hay contenido detrás (salir del medio de una lista), se va SOLO el
+ *   marcador y el salto de la fila se queda: es el hueco del párrafo nuevo.
+ *   El cursor va detrás de ese salto (la fila en blanco), NUNCA delante del
+ *   marcador siguiente: si se borraba la fila entera, lo que se tecleaba
+ *   quedaba pegado al ítem de abajo (`x- dos`, sin viñeta) y, si el bloque de
+ *   debajo era un párrafo, éste se lo tragaba como continuación perezosa del
+ *   ítem.
  */
 function exitMarkerLine(text, line) {
   const hasBreak = line.to < text.length;
@@ -89,7 +94,7 @@ function exitMarkerLine(text, line) {
   if (nextContent.trim() === "") {
     return { from: line.from, to: hasBreak ? line.to + 1 : line.to, insert: "\n", cursor: line.from + 1 };
   }
-  return { from: line.from, to: line.to + 1, insert: "", cursor: line.from };
+  return { from: line.from, to: line.to, insert: "", cursor: line.from };
 }
 
 function listEnter(text, pos, block) {
