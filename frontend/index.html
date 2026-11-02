@@ -209,6 +209,18 @@
     .status-item-label { display: none; }
     .header-left { gap: 8px; }
   }
+  /* Móvil estrecho: los cinco botones de navegación y el chip no caben con los
+     huecos de escritorio. Se aprieta todo un poco más; no se esconde nada. */
+  @media (max-width: 400px) {
+    header { padding: 8px 6px; gap: 4px; }
+    .header-left { gap: 4px; }
+    .status-strip { gap: 6px; }
+    .user-chip { padding: 2px 4px; gap: 5px; }
+    .user-chip-name { max-width: 8ch; }
+    /* El logo (22 px + hueco) es lo único prescindible: el título sigue en la
+       pestaña. Sin esto quedaban 10 px de scroll a 375. */
+    header .brand { display: none; }
+  }
   .status-strip { display: flex; gap: 14px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
   .status-item { display: flex; align-items: center; gap: 5px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
