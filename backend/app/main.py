@@ -316,9 +316,12 @@ def _no_listo(foto: dict) -> JSONResponse:
             "Vuelve en unos segundos."
         )
     else:
+        # Un índice que no se pudo construir no se arregla con un reintento de
+        # la petición: el arranque siguiente lo vuelve a intentar desde cero.
         detalle = (
             "el índice no está disponible: "
             + (foto["error"] or "el arranque del índice falló")
+            + " (reinicia el contenedor para reintentar el indexado)"
         )
     return JSONResponse(
         status_code=503,
