@@ -11,7 +11,7 @@ import { EditorState, EditorSelection, StateField, StateEffect } from "@codemirr
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
 import {
   autocompletion,
@@ -27,6 +27,7 @@ import {
   linkMarkup,
   resolveCreatedLinkTitle,
 } from "./link-create.js";
+import { blockKeyEdit } from "./block-keys.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -1388,15 +1389,72 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
   return [plugin, menuKeymap];
 }
 
-const shiftEnterKeymap = keymap.of([
-  {
-    key: "Shift-Enter",
-    run: (view) => {
-      view.dispatch(view.state.replaceSelection("\n\n"));
-      return true;
-    },
-  },
+// ---------------------------------------------- ⏎ / ⇧⏎ / ⌘⏎ / ⌃⏎
+//
+// Hasta aquí, ⏎ era un salto de línea dentro del bloque y Mayús+Enter
+// ("\n\n") era lo que creaba un bloque nuevo. El dueño lo quiso al revés:
+// ⏎ crea bloque y ⇧⏎/⌘⏎/⌃⏎ saltan línea dentro del bloque. Qué cambia
+// exactamente en cada tipo (lista, numerada, cita, título, código) se decide
+// en block-keys.js, sin CodeMirror, para poder probarlo con `node --test`.
+//
+// Este keymap va DESPUÉS del de "[[", del menú "/" y del de las flechas de la
+// lista de enlaces: con el desplegable de "[[" abierto tiene que ganar su
+// Enter (completa el enlace y NO crea bloque -- manda sobre todo lo demás).
+// Las tres combinaciones con modificador hacen lo mismo: en un Mac `⌘` es el
+// modificador real de CodeMirror (Mod) y en Linux/Windows lo es Ctrl; Meta se
+// escucha además aparte porque es el nombre con el que el dueño lo pide.
+const blockKeymap = keymap.of([
+  { key: "Enter", run: (view) => runBlockKey(view, "enter") },
+  { key: "Shift-Enter", run: (view) => runBlockKey(view, "soft") },
+  { key: "Mod-Enter", run: (view) => runBlockKey(view, "soft") },
+  { key: "Ctrl-Enter", run: (view) => runBlockKey(view, "soft") },
+  { key: "Meta-Enter", run: (view) => runBlockKey(view, "soft") },
 ]);
+
+/** Bloque (del árbol de Markdown) en el que cae `pos`, o null si el cursor no
+ * está dentro de ninguno (nota vacía, fila en blanco entre dos bloques). */
+function blockAt(state, pos) {
+  let found = null;
+  for (const b of state.field(blockField).blocks) {
+    if (pos >= b.from && pos <= b.to) found = b;
+  }
+  return found;
+}
+
+function runBlockKey(view, kind) {
+  const { state } = view;
+  const range = state.selection.main;
+
+  // Con texto seleccionado no hay bloque que partir: la selección se sustituye
+  // por el separador que toque (⇧⏎/⌘⏎ un salto; ⏎ el de bloque, salvo dentro
+  // de código, donde una valla no se parte nunca).
+  if (!range.empty) {
+    const sep = kind === "enter" && !isInsideCodeBlock(state, range.from) ? "\n\n" : "\n";
+    view.dispatch({
+      changes: { from: range.from, to: range.to, insert: sep },
+      selection: { anchor: range.from + sep.length },
+      scrollIntoView: true,
+      userEvent: "input",
+    });
+    return true;
+  }
+
+  const edit = blockKeyEdit({
+    text: state.doc.toString(),
+    pos: range.head,
+    block: blockAt(state, range.head),
+    kind,
+  });
+  if (!edit) return false; // nota vacía, "---", fila en blanco...: decide CodeMirror
+
+  view.dispatch({
+    changes: { from: edit.from, to: edit.to, insert: edit.insert },
+    selection: { anchor: edit.cursor },
+    scrollIntoView: true,
+    userEvent: "input",
+  });
+  return true;
+}
 
 // --------------------------------------------- flechas arriba/abajo por línea
 //
@@ -1963,11 +2021,20 @@ export function createNoteEditor({
         // El del autocompletado, justo detrás: primero el menú "/" (que solo
         // consume teclas mientras está abierto) y luego la lista de "[[".
         linkKeymap,
-        shiftEnterKeymap,
+        blockKeymap,
+        // El Backspace «que borra el marcador» de Markdown (deleteMarkupBackward)
+        // se registra aquí a mano: `markdown()` ya no trae su keymap (ver abajo),
+        // porque su Enter (insertNewlineContinueMarkup) competía con el de los
+        // bloques y ganaba por precedencia (va con Prec.high). Del resto de su
+        // comportamiento no se toca nada.
+        keymap.of([{ key: "Backspace", run: deleteMarkupBackward }]),
         ...verticalMoveExtension(),
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
-        markdown(),
+        // Sin keymap propio: su Enter (continuar lista/cita con un salto de
+        // línea) es justo el que ahora decide blockKeymap. Su Backspace se
+        // conserva, registrado arriba.
+        markdown({ addKeymap: false }),
         syntaxHighlighting(highlightStyle),
         blockField,
         blockHandlesPlugin(),
