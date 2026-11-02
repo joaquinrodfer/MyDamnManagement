@@ -291,6 +291,13 @@ def _es_puerta_o_estatico(path: str) -> bool:
     """
     if path in ("/", "/health", "/login"):
         return True
+    # `/auth/*` también: la tabla de usuarios y sesiones se crea en la fase
+    # rápida del arranque, así que estas rutas no necesitan el índice. Si no
+    # se eximen, en un vault grande la pantalla de entrada queda en error
+    # durante todo el reindexado (y los guiones que abren sesión al arrancar
+    # se caen con un `KeyError` en vez de esperar).
+    if path.startswith("/auth/"):
+        return True
     rel = path.lstrip("/")
     partes = Path(rel).parts
     if not rel or ".." in partes:
