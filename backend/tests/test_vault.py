@@ -165,6 +165,43 @@ def test_el_titulo_no_escapa_del_vault(client, vault_path):
     assert not (vault_path.parent / "fuera").exists()
 
 
+def test_un_titulo_con_corchetes_se_sanea_y_el_enlace_resuelve(client, vault_path):
+    """El título con `]` rompía el wikilink, y la lista de `[[` lo ofrecía igual.
+
+    El título ES el nombre del fichero y `[[Notas [2026]]]` se lee truncado en
+    el primer `]` (`app/wikilinks.py`): no había arista, el enlace salía roto y
+    la nota quedaba sin forma de enlazarse. Ahora el corchete se sustituye al
+    crear, y el título que devuelve la API (el del fichero) ya es enlazable.
+    """
+    from app.wikilinks import extract_titles
+
+    page = crear(client, title="Notas [2026]")
+    assert page["title"] == "Notas (2026)", "el título se sanea, no se descarta"
+    assert (vault_path / "Notas" / "Notas (2026).md").exists()
+    # Lo que se muestra es el título final del servidor, no lo tecleado.
+    assert client.get(f"/pages/{page['id']}").json()["title"] == "Notas (2026)"
+    # Y con ese título el enlace se lee entero: la arista existe.
+    assert extract_titles(f"[[{page['title']}]]") == [page["title"]]
+
+    origen = crear(client, title="Índice", body_markdown=f"Ver [[{page['title']}]]")
+    assert [p["title"] for p in client.get(f"/pages/{page['id']}/backlinks").json()] == [
+        origen["title"]
+    ]
+
+
+def test_renombrar_a_un_titulo_con_corchetes_tambien_lo_sanea(client, vault_path):
+    page = crear(client, title="Provisional")
+    assert (vault_path / "Notas" / "Provisional.md").exists()
+
+    renombrada = client.patch(f"/pages/{page['id']}", json={"title": "Notas [2026]"}).json()
+
+    assert renombrada["title"] == "Notas (2026)"
+    assert not (vault_path / "Notas" / "Provisional.md").exists()
+    assert (vault_path / "Notas" / "Notas (2026).md").exists()
+    # Mismo id: renombrar no crea otra página.
+    assert renombrada["id"] == page["id"]
+
+
 def test_dos_notas_con_el_mismo_titulo_en_la_misma_carpeta_no_se_pisan(client, vault_path):
     primera = crear(client, title="Duplicada", body_markdown="uno")
     segunda = crear(client, title="Duplicada", body_markdown="dos")
