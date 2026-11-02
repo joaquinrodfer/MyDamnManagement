@@ -728,6 +728,21 @@ const newUserForm = document.getElementById("form-new-user");
 const newUserNote = document.getElementById("nu-note");
 const NEW_USER_NOTE = newUserNote?.textContent || "";
 
+// El aviso de «esta API no tiene listado» lleva el número de usuarios que se
+// están enseñando: si se queda escrito al abrir, crear uno nuevo lo dejaba
+// mintiendo («(1)» con dos filas). Por eso se repinta con cada lista.
+let usersListUnavailable = false;
+
+function paintUsersNote() {
+  if (!usersListUnavailable) return;
+  const count = knownUsers.size;
+  setFormNote(
+    usersNote,
+    "Esta versión de la API no ofrece el listado de usuarios (no hay GET /auth/users): " +
+      `aquí solo salen los que este navegador conoce (${count} ${count === 1 ? "usuario" : "usuarios"}).`,
+  );
+}
+
 /** Pinta los usuarios que este navegador conoce, con su color y su @usuario. */
 function renderKnownUsers() {
   if (!usersList) return 0;
@@ -757,6 +772,7 @@ function renderKnownUsers() {
     }
     usersList.appendChild(row);
   });
+  paintUsersNote();
   return users.length;
 }
 
@@ -764,6 +780,8 @@ async function openUsersDialog() {
   if (!usersDialog) return;
   newUserForm.reset();
   setFormNote(newUserNote, NEW_USER_NOTE);
+  // Se vuelve a preguntar en cada apertura: puede que la API ya lo tenga.
+  usersListUnavailable = false;
   renderKnownUsers();
   setFormNote(usersNote, "Cargando usuarios…");
   usersDialog.showModal();
@@ -777,12 +795,8 @@ async function openUsersDialog() {
     setFormNote(usersNote, "");
   } catch (e) {
     if (e?.status === 401) return;
-    const count = renderKnownUsers();
-    setFormNote(
-      usersNote,
-      "Esta versión de la API no ofrece el listado de usuarios (no hay GET /auth/users): " +
-        `aquí solo salen los que este navegador conoce (${count}).`,
-    );
+    usersListUnavailable = true;
+    renderKnownUsers(); // pinta la lista conocida y el aviso con su cuenta
   }
 }
 
