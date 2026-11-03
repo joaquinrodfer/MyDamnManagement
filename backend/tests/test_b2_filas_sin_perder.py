@@ -48,6 +48,7 @@ SCHEMA = [
     },
     {"key": "valor", "name": "Valor", "type": "number"},
     {"key": "importe", "name": "Importe", "type": "number"},
+    {"key": "hecho", "name": "Hecho", "type": "checkbox"},
 ]
 
 
@@ -677,3 +678,100 @@ def test_invariante_editar_cualquier_celda_no_borra_entradas_opacas(client, vaul
                 f"{claves_tocadas(antes, despues) - {clave, 'updated'}}"
             )
         assert "empresa: |\n  Acme Corp SL" in despues
+
+
+# --------------------------------------------------------------------------
+# 8. checkbox: `_coerce` convierte en `false` el texto que no es booleano
+#    (revisión, ronda 4)
+# --------------------------------------------------------------------------
+#
+# `hecho: quizá` no llega al índice como `null` (como el `A-12` de un número)
+# sino como `false`, y la tabla lo enseña vacío igual (checkbox=false → `—`). La
+# casilla es el camino real (`toggleCheckbox` manda `{"hecho": true}`), así que
+# marcar, desmarcar o vaciar esa celda desde la app no puede llevarse el texto
+# del `.md` sin avisar: es el criterio literal de la tarjeta en la única familia
+# donde el lector no cae a `null`.
+
+
+def fila_con_checkbox_ilegible(client, vault_path: Path) -> tuple[dict, dict, Path]:
+    """`Bases/Contactos/Acme.md` con `hecho: quizá`, indexado como `false`."""
+    base = crear_base(client)
+    fila = crear_fila(client, base["id"], empresa="Acme Corp", hecho=False)
+    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero.write_text(
+        escribir_a_mano(texto(fichero), ("hecho: false", "hecho: quizá")),
+        encoding="utf-8",
+    )
+    assert "hecho: quizá" in texto(fichero)
+
+    assert client.post("/reindex").status_code == 200
+    # El índice no cae a `null`: `_coerce` lo convierte en `False`, que es
+    # exactamente lo que la tabla enseña como `—`.
+    en_indice = client.get(
+        f"/databases/{base['id']}/rows/{fila['id']}"
+    ).json()
+    assert en_indice["properties"]["hecho"] is False
+    return base, fila, fichero
+
+
+@pytest.mark.parametrize(
+    "nuevo", [True, False, None], ids=["marcar", "desmarcar", "vaciar"]
+)
+def test_tocar_un_checkbox_que_el_indice_lee_como_false_avisa_y_no_borra(
+    client, vault_path, nuevo
+):
+    """Marcar, desmarcar o vaciar `hecho: quizá` no puede tirar el texto."""
+    base, fila, fichero = fila_con_checkbox_ilegible(client, vault_path)
+    antes = texto(fichero)
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"hecho": nuevo}},
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    detalle = respuesta.json()["detail"]
+    assert "hecho: quizá" in detalle, detalle       # cita la línea cruda
+    assert "false" in detalle, detalle              # y lo que el índice hizo
+    assert texto(fichero) == antes, "el 400 no puede escribir el fichero"
+    # Ni el fichero ni el índice cambian: `quizá` sigue en el disco.
+    assert "hecho: quizá" in texto(fichero)
+    sigue = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert sigue["properties"]["hecho"] is False
+
+
+def test_un_checkbox_normal_se_sigue_marcando_y_desmarcando(client, vault_path):
+    """El guard es solo para lo ilegible: `false` → `true` y vuelta, 200."""
+    base = crear_base(client)
+    fila = crear_fila(client, base["id"], empresa="Acme Corp", hecho=False)
+    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    assert client.post("/reindex").status_code == 200
+    url = f"/databases/{base['id']}/rows/{fila['id']}"
+
+    marcada = client.patch(url, json={"properties": {"hecho": True}})
+    assert marcada.status_code == 200, marcada.text
+    assert marcada.json()["properties"]["hecho"] is True
+    assert "hecho: true" in texto(fichero)
+
+    desmarcada = client.patch(url, json={"properties": {"hecho": False}})
+    assert desmarcada.status_code == 200, desmarcada.text
+    assert desmarcada.json()["properties"]["hecho"] is False
+    assert "hecho: false" in texto(fichero)
+
+
+def test_editar_otra_celda_conserva_el_checkbox_ilegible(client, vault_path):
+    """La invariante también con esta familia: editar `empresa` no toca el resto."""
+    base, fila, fichero = fila_con_checkbox_ilegible(client, vault_path)
+    antes = texto(fichero)
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"empresa": "Acme Corp SL"}},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    despues = texto(fichero)
+    assert "hecho: quizá" in despues
+    assert claves_tocadas(antes, despues) <= {"empresa", "updated"}, (
+        f"editar «empresa» ha tocado "
+        f"{claves_tocadas(antes, despues) - {'empresa', 'updated'}}"
+    )
+

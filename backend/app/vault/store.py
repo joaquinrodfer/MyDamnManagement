@@ -194,12 +194,30 @@ def _linea_del_fichero(front: fm.Frontmatter, entry: fm.Entry) -> str:
     return entry.key or ""
 
 
+def _tipo_del_schema(schema: list[dict], key: str) -> Optional[str]:
+    """Tipo que el `schema` declara para `key` (o `None` si no la declara)."""
+    for prop in schema:
+        if isinstance(prop, dict) and prop.get("key") == key:
+            return prop.get("type")
+    return None
+
+
+# Literales que `reader._coerce` acepta como booleanos de un `checkbox`. Lo
+# demás lo convierte en `False` sin avisar (ni a `null`), así que un
+# `hecho: quizá` llega al índice como «false» y la tabla lo enseña vacío.
+_LITERALES_BOOLEANOS = frozenset(
+    {"true", "false", "yes", "no", "1", "0", "sí", "si"}
+)
+
+
 def _indice_no_lo_lee(schema: list[dict], key: str, valor) -> bool:
-    """¿El índice guardaría `null` para este valor del `.md`? (B2)
+    """¿El índice no puede representar este valor del `.md`? (B2)
 
     Usa `reader.row_properties`, el mismo camino que el reindexado (y que el
     `null` que la tabla enseña), para no inventar una segunda definición de «el
-    índice no lo entiende».
+    índice no lo entiende». El `checkbox` es la excepción: `_coerce` convierte
+    en `False` cualquier texto que no sea true-ish (no en `None`), así que el
+    guard tiene que decidir por los literales booleanos que el lector acepta.
 
     No cuentan como ilegibles:
 
@@ -210,6 +228,9 @@ def _indice_no_lo_lee(schema: list[dict], key: str, valor) -> bool:
     """
     if valor is None or str(valor).strip() == "":
         return False
+    tipo = _tipo_del_schema(schema, key)
+    if tipo == "checkbox":
+        return str(valor).strip().lower() not in _LITERALES_BOOLEANOS
     leido = reader.row_properties(schema, {key: valor})
     return key in leido and leido[key] is None
 
@@ -1376,18 +1397,23 @@ class VaultStore:
     ) -> None:
         """`VaultError` si el PATCH tocaría una celda que el índice no supo leer (B2).
 
-        Dos familias de valor «que el índice no puede representar»:
+        Tres familias de valor «que el índice no puede representar»:
 
         - el valor es legible para el parser pero no para el tipo del `schema`
           (`valor: A-12` en una propiedad `number`: `reader._coerce` no puede
           con él y el índice guarda `null`);
+        - el valor es un `checkbox` que no es un literal booleano
+          (`hecho: quizá`): `_coerce` lo convierte en `false` —no en `null`— y
+          la tabla lo enseña vacío igual, así que editar la celda borraría del
+          `.md` un texto que el índice ha leído como un booleano que nadie ha
+          visto;
         - el valor es una construcción que el parser **marca `opaque`** y por eso
           ni siquiera aparece en `front.data` (block scalars `|`/`>`, flow maps
           `{}`, anchors `&`/`*`, tags `!`). El índice tampoco lo tiene, así que
           la tabla enseña `—` igual.
 
-        Sobre la primera familia el criterio es el de la tarjeta, y vale para
-        **los dos sentidos**:
+        Sobre las familias «legible para el parser, no para el índice» el
+        criterio es el de la tarjeta, y vale para **los dos sentidos**:
 
         - **vaciar** la celda (`null`) se rechaza con 400: el cliente cree que
           estaba vacía porque la tabla enseña `—`, y borrarla se llevaría del
@@ -1474,20 +1500,27 @@ class VaultStore:
             if not ilegibles:
                 continue            # el índice entiende el valor: es del usuario
             crudo = _linea_del_fichero(front, ilegibles[0])
+            tipo = tipos.get(key)
+            if tipo == "checkbox":
+                detalle = (
+                    f"«{crudo}», que no es un valor booleano (true/false): el "
+                    "índice lo está leyendo como «false» y la tabla lo enseña vacío"
+                )
+            else:
+                detalle = (
+                    f"«{crudo}», que no es un valor de tipo «{tipo}» y el índice "
+                    "no puede representarlo (por eso la tabla lo enseña vacío)"
+                )
             if value is None:
                 raise VaultError(
-                    f"no se puede vaciar «{key}» de {rel}: el .md tiene "
-                    f"«{crudo}», que no es un valor de tipo «{tipos.get(key)}» "
-                    "y el índice no puede representarlo (por eso la tabla lo "
-                    "enseña vacío). Vaciarlo desde aquí borraría del fichero un "
-                    "dato que no se ha visto: corrige la línea del .md a mano."
+                    f"no se puede vaciar «{key}» de {rel}: el .md tiene {detalle}. "
+                    "Vaciarlo desde aquí borraría del fichero un dato que no se "
+                    "ha visto: corrige la línea del .md a mano."
                 )
             raise VaultError(
-                f"no se puede escribir «{key}» de {rel}: el .md tiene "
-                f"«{crudo}», que no es un valor de tipo «{tipos.get(key)}» y el "
-                "índice no puede representarlo (por eso la tabla lo enseña "
-                "vacío). Escribir aquí borraría del fichero ese dato sin que se "
-                "haya visto: corrige la línea del .md a mano."
+                f"no se puede escribir «{key}» de {rel}: el .md tiene {detalle}. "
+                "Escribir aquí borraría del fichero ese dato sin que se haya "
+                "visto: corrige la línea del .md a mano."
             )
 
     def save_row(
