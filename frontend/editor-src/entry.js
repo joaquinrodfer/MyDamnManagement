@@ -28,7 +28,7 @@ import {
   resolveCreatedLinkTitle,
 } from "./link-create.js";
 import { blockKeyEdit } from "./block-keys.js";
-import { backspaceJoinEdit, blockDeleteEdits, orderedRenumberEdits } from "./block-delete.js";
+import { backspaceJoinEdit, blockDeleteEdits, newBlockEdit, orderedRenumberEdits } from "./block-delete.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -1534,6 +1534,28 @@ function blockAt(state, pos) {
 function runBlockKey(view, kind) {
   const { state } = view;
   const range = state.selection.main;
+
+  // Con bloques marcados, ⏎ y ⇧⏎ los sustituyen por un bloque vacío en su
+  // sitio (el cursor queda dentro). Sin esto, el salto caía DENTRO del rango
+  // marcado, entre los separadores que ya había, y el `.md` acababa con cinco
+  // líneas en blanco. Es el mismo criterio que escribir encima: con varios
+  // marcados, la tecla afecta a todos.
+  const { selected } = state.field(blockField);
+  if (selected.size) {
+    const edit = newBlockEdit({ text: state.doc.toString(), blocks: state.field(blockField).blocks, indices: [...selected] });
+    if (edit) {
+      const set = ChangeSet.of(edit.changes, state.doc.length);
+      view.dispatch({
+        changes: set,
+        selection: { anchor: set.mapPos(edit.cursor, 1) },
+        effects: setSelectedBlocks.of(new Set()),
+        userEvent: "input",
+        scrollIntoView: true,
+      });
+      view.focus();
+      return true;
+    }
+  }
 
   // Con texto seleccionado no hay bloque que partir: la selección se sustituye
   // por el separador que toque (⇧⏎/⌘⏎ un salto; ⏎ el de bloque, salvo dentro

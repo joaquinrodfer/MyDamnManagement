@@ -13,7 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { blockDeleteEdits, orderedRenumberEdits, backspaceJoinEdit } from "../block-delete.js";
+import { blockDeleteEdits, newBlockEdit, orderedRenumberEdits, backspaceJoinEdit } from "../block-delete.js";
 
 /** Aplica una lista de cambios a un texto (como haría ChangeSet). */
 function applyChanges(text, changes) {
@@ -227,6 +227,39 @@ test("D3: escribir encima de una lista marcada no deja huecos", () => {
   ];
   const r = deleteBlocks(text, blocks, [1], "X");
   assert.equal(r.text, "1. uno\nX\n2. tres");
+});
+
+// ------------------------------------------- ⏎ con bloques marcados
+
+test("⏎ con un bloque marcado deja UN bloque vacío, no cinco líneas en blanco", () => {
+  const text = "uno\n\ndos\n\ntres";
+  const blocks = ["uno", "dos", "tres"].map((s) => para(text, s));
+  const edit = newBlockEdit({ text, blocks, indices: [1] });
+  assert.equal(applyChanges(text, edit.changes), "uno\n\n\n\ntres");
+  assert.equal(edit.cursor, 5); // dentro del bloque vacío: escribir ahí da "uno\n\nnuevo\n\ntres"
+});
+
+test("⏎ con dos bloques marcados deja uno solo vacío", () => {
+  const text = "alfa\n\nbeta\n\ngamma\n\ndelta";
+  const blocks = ["alfa", "beta", "gamma", "delta"].map((s) => para(text, s));
+  const edit = newBlockEdit({ text, blocks, indices: [1, 2] });
+  assert.equal(applyChanges(text, edit.changes), "alfa\n\n\n\ndelta");
+});
+
+test("⏎ con el último bloque marcado deja el hueco al final, sin pegarlo", () => {
+  const text = "uno\n\ndos";
+  const blocks = ["uno", "dos"].map((s) => para(text, s));
+  const edit = newBlockEdit({ text, blocks, indices: [1] });
+  assert.equal(applyChanges(text, edit.changes), "uno\n\n");
+  assert.equal(edit.cursor, 5); // al final, en la línea vacía
+});
+
+test("⏎ con el primer bloque marcado deja el hueco delante", () => {
+  const text = "uno\n\ndos";
+  const blocks = ["uno", "dos"].map((s) => para(text, s));
+  const edit = newBlockEdit({ text, blocks, indices: [0] });
+  assert.equal(applyChanges(text, edit.changes), "\n\ndos");
+  assert.equal(edit.cursor, 0);
 });
 
 // -------------------------------------------------------- D9: ⌫ en un ítem

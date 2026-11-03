@@ -114,6 +114,34 @@ export function blockDeleteEdits({ text, blocks, indices, insert = "" }) {
 }
 
 /**
+ * ⏎ (y ⇧⏎) con bloques marcados: los marcados se sustituyen por UN bloque
+ * vacío en su sitio, con el cursor dentro y listo para escribir.
+ *
+ * Es el mismo trozo que borrar (`blockDeleteEdits` con `insert: ""`, bloque +
+ * separador), pero dejando los dos saltos que convierten el hueco en un bloque
+ * de verdad. Sin esto, ⏎ sobre un bloque marcado metía su salto DENTRO del
+ * rango marcado, entre los separadores que ya había: `uno / dos / tres` menos
+ * `dos` acababa en `uno\n\n\n\n\n\ntres` (cinco líneas en blanco) y así se
+ * guardaba en el `.md`.
+ */
+export function newBlockEdit({ text, blocks, indices }) {
+  const edit = blockDeleteEdits({ text, blocks, indices });
+  if (!edit) return null;
+  const [first, ...rest] = edit.changes;
+  // El bloque vacío es el hueco que queda ENTRE los dos separadores; dónde
+  // cae el cursor depende de por dónde empieza el trozo borrado: si es el
+  // principio del propio bloque, el hueco está justo ahí; si el trozo se
+  // lleva además el separador de delante (borrar el último bloque), el hueco
+  // empieza después de los dos saltos nuevos.
+  const firstBlock = blocks[[...indices].map(Number).sort((a, b) => a - b)[0]];
+  const cursor = firstBlock && first.from === firstBlock.from ? first.from : first.from + 2;
+  return {
+    changes: [{ from: first.from, to: first.to, insert: "\n\n" }, ...rest],
+    cursor,
+  };
+}
+
+/**
  * Reenumeración de las listas numeradas tocadas por un borrado.
  *
  * Solo se reenumeran las listas que pierden algún ítem (una lista intacta se
