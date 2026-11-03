@@ -2327,7 +2327,13 @@ function dropOuterBlankLines(update) {
   if (!update.docChanged && !update.selectionSet) return;
   const view = update.view;
   if (trimming.has(view)) return;
-  const text = view.state.doc.toString();
+  // Barato primero: si el documento no empieza ni acaba en salto, no hay nada
+  // que recortar (esto corre en cada cambio de selección y de texto; no tiene
+  // que copiar el documento entero de una nota larga para nada).
+  const doc = view.state.doc;
+  if (!doc.length) return;
+  if (doc.sliceString(0, 1) !== "\n" && doc.sliceString(doc.length - 1) !== "\n") return;
+  const text = doc.toString();
   if (canonicalBody(text) === text) return;
   if (cursorInOuterBlanks(text, view.state.selection.main.head)) return; // se está escribiendo ahí
   trimming.add(view);
