@@ -2375,6 +2375,17 @@ function renderNote(page, backlinks) {
         {
           items: [
             {
+              label: `Duplicar ${n > 1 ? "bloques" : "bloque"}`,
+              onClick: () => {
+                payload.duplicateBlocks();
+                scheduleSave();
+              },
+            },
+          ],
+        },
+        {
+          items: [
+            {
               label: `Eliminar ${n > 1 ? "bloques" : "bloque"}`,
               danger: true,
               onClick: () => {

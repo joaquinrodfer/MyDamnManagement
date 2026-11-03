@@ -1147,10 +1147,20 @@
     justify-content: center;
     cursor: pointer;
     user-select: none;
+    /* En táctil, el toque no tiene que esperar 300 ms ni sacar el menú del
+       sistema al mantener pulsado (el menú de bloque lo abre el editor). */
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
   }
   .cm-mdm-block-add:hover,
   .cm-mdm-block-handle:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
   .cm-mdm-block-handle-selected { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent); opacity: 1; }
+  /* En una pantalla táctil no hay hover: el asa existía pero no se veía (había
+     que tocarla a ciegas para que apareciera). Se queda a la vista siempre; su
+     zona de 44×44 y el hover del ratón no cambian. */
+  @media (pointer: coarse) {
+    .cm-mdm-block-handle-wrap { opacity: 1; }
+  }
 
   /* ---------- menú contextual de bloques/páginas ---------- */
   .mdm-context-menu {
@@ -1770,15 +1780,25 @@
        el título (que empieza a 64: 16 de margen + 44 del icono + 4). */
     #note-body .cm-editor { min-height: 55dvh; }
     #note-body .cm-content {
-      padding: 4px 2px 40vh 48px;
+      padding: 4px 2px 40vh 92px;
       font-size: 16px;
       line-height: 1.65;
     }
-    /* Asas de bloque: 44×44 en el hueco de 48 px. En móvil el «+» se oculta
-       porque el hueco del asa es ancho de lectura y Enter ya crea un bloque
-       debajo; el asa (seleccionar/convertir/borrar) sí se queda. */
-    .cm-mdm-block-handle-wrap { left: -48px; gap: 0; }
-    .cm-mdm-block-add { display: none; }
+    /* Asas de bloque en el móvil: «+» y «⋮⋮» seguidos, 44×44 cada uno, y el
+       hueco de la izquierda crece a 92 px (44 + 44 + 4 de aire) para que los
+       dos quepan sin tapar el texto. Antes el «+» se ocultaba y el asa no se
+       veía hasta tocarla: desde el pulgar no había forma de añadir un bloque
+       ni de abrir el menú (convertir/duplicar/eliminar), porque el teclado en
+       pantalla no tiene Mayús+Intro ni Supr. */
+    .cm-mdm-block-handle-wrap { left: -92px; gap: 0; }
+    .cm-mdm-block-add {
+      display: inline-flex;
+      width: 44px;
+      height: 44px;
+      min-width: 44px;
+      min-height: 44px;
+      font-size: 20px;
+    }
     .cm-mdm-block-handle {
       width: 44px;
       height: 44px;

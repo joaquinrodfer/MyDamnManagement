@@ -33,9 +33,12 @@ import {
   backspaceWouldBreakFence,
   blockDeleteEdits,
   convertBlockEdits,
+  duplicateBlockEdits,
   newBlockEdit,
   orderedRenumberEdits,
+  renumberOrderedRun,
 } from "./block-delete.js";
+import { canonicalBody, cursorInOuterBlanks } from "./body.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -604,6 +607,53 @@ function blockHandlesPlugin() {
 
 function blockHandleEventHandlers(onBlockContextMenu) {
   return EditorView.domEventHandlers({
+    // ---- pulsación larga (pantalla táctil) ----
+    // En el móvil no hay clic derecho ni `Supr`: sin esta puerta no había
+    // manera de abrir el menú de bloque (convertir/duplicar/eliminar). La
+    // pulsación larga sobre el asa abre el mismo menú que el clic derecho; el
+    // toque corto sigue seleccionando el bloque como siempre. No se consume el
+    // evento: el mousedown de después (el que selecciona) tiene que seguir
+    // llegando, y con ratón esto ni se activa.
+    pointerdown(event, view) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return false;
+      const handle = target.closest(".cm-mdm-block-handle");
+      if (!handle) return false;
+      if (event.pointerType === "mouse") return false;
+      cancelLongPress();
+      longPressOrigin = { x: event.clientX, y: event.clientY };
+      longPressTimer = window.setTimeout(() => {
+        longPressTimer = null;
+        longPressOrigin = null;
+        const idx = Number(handle.dataset.blockIndex);
+        const { selected } = view.state.field(blockField);
+        const indices = selected.has(idx) ? selected : new Set([idx]);
+        if (indices !== selected) selectBlocks(view, indices);
+        // El clic sintético que el navegador manda al soltar el dedo llegaría
+        // al `document` y cerraría el menú recién abierto (ver `click`).
+        suppressTapUntil = Date.now() + 1200;
+        const rect = handle.getBoundingClientRect();
+        openBlockMenu(view, indices, rect.left, rect.bottom, onBlockContextMenu);
+      }, LONG_PRESS_MS);
+      return false;
+    },
+    pointermove(event) {
+      if (
+        longPressOrigin &&
+        Math.hypot(event.clientX - longPressOrigin.x, event.clientY - longPressOrigin.y) > LONG_PRESS_SLOP
+      ) {
+        cancelLongPress(); // se está desplazando, no pulsando
+      }
+      return false;
+    },
+    pointerup() {
+      cancelLongPress();
+      return false;
+    },
+    pointercancel() {
+      cancelLongPress();
+      return false;
+    },
     mousedown(event, view) {
       const target = event.target;
       if (target instanceof HTMLElement) {
@@ -617,6 +667,9 @@ function blockHandleEventHandlers(onBlockContextMenu) {
         const handle = target.closest(".cm-mdm-block-handle");
         if (handle) {
           event.preventDefault();
+          // Si acaba de abrirse el menú con un toque largo, el toque que lo
+          // abrió no tiene que volver a marcar ni a llevarse el foco del menú.
+          if (Date.now() < suppressTapUntil) return true;
           // El mousedown también llega con el botón derecho. Ahí no se toca la
           // selección: el menú contextual actúa sobre lo que ya estuviera
           // marcado (antes, el clic derecho la reducía a ese único bloque y
@@ -689,6 +742,19 @@ function blockHandleEventHandlers(onBlockContextMenu) {
     // colapsada -- si hubo arrastre para seleccionar texto, se deja tal
     // cual, para no romper esa selección.
     click(event, view) {
+      // El clic que el navegador sintetiza al levantar el dedo tras una
+      // pulsación larga llegararía al `document` y cerraría el menú que acaba
+      // de abrirse. Se traga ese clic y solo ese: el del asa, dentro de la
+      // ventana de la pulsación.
+      if (
+        Date.now() < suppressTapUntil &&
+        event.target instanceof HTMLElement &&
+        event.target.closest(".cm-mdm-block-handle")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
       // Un clic en el asa ya lo ha resuelto el mousedown: esto solo corrige el
       // caret del texto, y aplicarlo encima de una selección de bloques la
       // borraría (cualquier cambio de selección que no sea nuestro vacía
@@ -716,30 +782,56 @@ function blockHandleEventHandlers(onBlockContextMenu) {
       const handle = target.closest(".cm-mdm-block-handle");
       if (!handle) return false;
       event.preventDefault();
+      // Si el navegador (Android) sintetiza un `contextmenu` en la misma
+      // pulsación larga que ya abrió el menú, el temporizador sobra.
+      cancelLongPress();
 
       const idx = Number(handle.dataset.blockIndex);
-      const { blocks, selected } = view.state.field(blockField);
-      let indices = selected.has(idx) ? selected : new Set([idx]);
+      const { selected } = view.state.field(blockField);
+      // El clic derecho actúa sobre lo que ya estuviera marcado (con dos asas
+      // marcadas no se reduce a una); con un solo bloque, sobre ese.
+      const indices = selected.has(idx) ? selected : new Set([idx]);
       if (indices !== selected) selectBlocks(view, indices);
-
-      if (onBlockContextMenu) {
-        // Si es un único bloque, se puede decir de qué tipo es ya mismo;
-        // con varios seleccionados (posiblemente de tipos distintos) no.
-        const currentTypeLabel =
-          indices.size === 1 ? BLOCK_TYPE_LABEL[blocks[[...indices][0]].type] ?? null : null;
-
-        onBlockContextMenu({
-          x: event.clientX,
-          y: event.clientY,
-          count: indices.size,
-          currentTypeLabel,
-          types: BLOCK_TYPES,
-          convertTo: (type) => convertBlocks(view, indices, type),
-          deleteBlocks: () => deleteBlocks(view, indices),
-        });
-      }
+      openBlockMenu(view, indices, event.clientX, event.clientY, onBlockContextMenu);
       return true;
     },
+  });
+}
+
+// ---- puerta única del menú de bloque ----
+// El clic derecho del escritorio y la pulsación larga del móvil abren
+// exactamente lo mismo. `indices` es lo que el menú va a tocar.
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP = 10;
+let longPressTimer = null;
+let longPressOrigin = null;
+let suppressTapUntil = 0;
+
+function cancelLongPress() {
+  if (longPressTimer !== null) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  longPressOrigin = null;
+}
+
+function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
+  if (!onBlockContextMenu) return;
+  const { blocks } = view.state.field(blockField);
+  // Si es un único bloque, se puede decir de qué tipo es ya mismo; con varios
+  // seleccionados (posiblemente de tipos distintos) no.
+  const currentTypeLabel =
+    indices.size === 1 ? BLOCK_TYPE_LABEL[blocks[[...indices][0]].type] ?? null : null;
+
+  onBlockContextMenu({
+    x,
+    y,
+    count: indices.size,
+    currentTypeLabel,
+    types: BLOCK_TYPES,
+    convertTo: (type) => convertBlocks(view, indices, type),
+    duplicateBlocks: () => duplicateBlocks(view, indices),
+    deleteBlocks: () => deleteBlocks(view, indices),
   });
 }
 
@@ -797,6 +889,41 @@ function deleteBlocks(view, indices) {
     scrollIntoView: true,
   });
   view.focus();
+  return true;
+}
+
+// «Duplicar bloque» del menú: una copia de lo marcado justo debajo. La copia
+// se inserta y, si cae en una lista numerada, la lista se reenumera -- todo en
+// UNA transacción, para que un ⌘Z deshaga la duplicación entera y no medio
+// cambio (los cambios de número se componen sobre el de inserción).
+function duplicateBlocks(view, indices) {
+  const { blocks } = view.state.field(blockField);
+  const text = view.state.doc.toString();
+  const changes = duplicateBlockEdits({ text, blocks, indices });
+  if (!changes.length) return false;
+
+  const inserted = ChangeSet.of(changes, text.length);
+  const after = view.state.update({ changes: inserted });
+  const nextBlocks = after.state.field(blockField).blocks;
+  const nextText = after.state.doc.toString();
+
+  const renumber = [];
+  let shift = 0;
+  for (const change of changes) {
+    // `copy` viene en coordenadas del texto original; cada inserción anterior
+    // corre la posición lo que ocupe su propio texto.
+    const at = change.copy + shift;
+    shift += change.insert.length;
+    const copyIndex = nextBlocks.findIndex((b) => b.from === at);
+    if (copyIndex !== -1) {
+      renumber.push(...renumberOrderedRun({ text: nextText, blocks: nextBlocks, index: copyIndex }));
+    }
+  }
+
+  const set = renumber.length
+    ? inserted.compose(ChangeSet.of(renumber, after.state.doc.length))
+    : inserted;
+  view.dispatch({ changes: set, userEvent: "input.duplicate", scrollIntoView: true });
   return true;
 }
 
@@ -2150,6 +2277,38 @@ function linkCompletion(onCreateLink) {
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreateLink]
  * @param {(list: {id: string, title: string, type: string}[]) => void} [opts.linkTargets]
  */
+// D8 (a): los bloques vacíos de los extremos no existen. En cuanto el cursor
+// sale de ese hueco (deja de ser el bloque que se está creando), las líneas en
+// blanco de arriba o de abajo se van del documento: lo que se ve es lo que se
+// guarda. Se hace en un microtask porque despachar una transacción desde
+// dentro de un `updateListener` no está permitido, y fuera del historial
+// porque deshacer un cambio del usuario no tiene que resucitar un hueco que
+// nunca fue un bloque.
+const trimming = new WeakSet();
+
+function dropOuterBlankLines(update) {
+  if (!update.docChanged) return;
+  const view = update.view;
+  if (trimming.has(view)) return;
+  const text = view.state.doc.toString();
+  if (canonicalBody(text) === text) return;
+  if (cursorInOuterBlanks(text, view.state.selection.main.head)) return; // se está escribiendo ahí
+  trimming.add(view);
+  queueMicrotask(() => {
+    trimming.delete(view);
+    if (!view.dom.isConnected) return; // el editor ya se destruyó (navegación)
+    const current = view.state.doc.toString();
+    const target = canonicalBody(current);
+    if (target === current) return;
+    if (cursorInOuterBlanks(current, view.state.selection.main.head)) return;
+    view.dispatch({
+      changes: { from: 0, to: current.length, insert: target },
+      annotations: Transaction.addToHistory.of(false),
+      userEvent: "trim.outer",
+    });
+  });
+}
+
 export function createNoteEditor({
   parent,
   doc,
@@ -2226,13 +2385,18 @@ export function createNoteEditor({
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChange(update.state.doc.toString());
+          dropOuterBlankLines(update);
         }),
       ],
     }),
   });
 
   return {
-    getValue: () => view.state.doc.toString(),
+    // Lo que se guarda y lo que se exporta: el cuerpo canónico, sin las líneas
+    // en blanco de los extremos. Decisión D8 (a): esos bloques vacíos no
+    // existen -- el `.md` ya los tiraba al escribir (`canonical_body` en
+    // backend/app/vault/store.py), así que el editor no los manda siquiera.
+    getValue: () => canonicalBody(view.state.doc.toString()),
     /** Destinos posibles de un wikilink -- `[{id, title, type}]` con todas
      * las notas y bases de datos del vault. La app la llama al cargar el
      * árbol y cada vez que el árbol cambia; con la lista vacía el

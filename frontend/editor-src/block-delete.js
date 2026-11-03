@@ -266,27 +266,91 @@ export function orderedRenumberEdits({ text, blocks, indices, keepFirst = null }
     let touched = false;
     for (let k = i; k <= end; k++) if (removed(k)) touched = true;
 
-    if (touched) {
-      const firstLine = text.slice(blocks[i].from, blocks[i].to);
-      const firstMark = ORDERED_RE.exec(firstLine);
-      if (firstMark) {
-        let number = Number(firstMark[2]);
-        for (let k = i; k <= end; k++) {
-          if (removed(k)) continue;
-          const line = text.slice(blocks[k].from, blocks[k].to);
-          const mark = ORDERED_RE.exec(line);
-          if (!mark) continue;
-          const at = blocks[k].from + mark[1].length;
-          if (mark[2] !== String(number)) {
-            changes.push({ from: at, to: at + mark[2].length, insert: String(number) });
-          }
-          number += 1;
-        }
-      }
-    }
+    if (touched) changes.push(...runNumberEdits(text, blocks, i, end, removed));
     i = end + 1;
   }
   return changes;
+}
+
+/**
+ * Cambios de número para una tirada contigua de ítems numerados: los renumera
+ * desde el número con el que empieza la lista, conservando la sangría y el
+ * separador (`.` o `)`). `skip(k)` deja un ítem fuera del recuento (el que
+ * desaparece en un borrado, o el que hereda el marcador al escribir encima).
+ */
+function runNumberEdits(text, blocks, i, end, skip = () => false) {
+  const firstMark = ORDERED_RE.exec(text.slice(blocks[i].from, blocks[i].to));
+  if (!firstMark) return [];
+  const changes = [];
+  let number = Number(firstMark[2]);
+  for (let k = i; k <= end; k++) {
+    if (skip(k)) continue;
+    const mark = ORDERED_RE.exec(text.slice(blocks[k].from, blocks[k].to));
+    if (!mark) continue;
+    const at = blocks[k].from + mark[1].length;
+    if (mark[2] !== String(number)) {
+      changes.push({ from: at, to: at + mark[2].length, insert: String(number) });
+    }
+    number += 1;
+  }
+  return changes;
+}
+
+/**
+ * Reenumerar la lista numerada que contiene el bloque `index` (su tirada
+ * contigua de ítems), desde el número con el que empieza. Lo usa «Duplicar»:
+ * la copia entra con el número del original y los de detrás se corren uno, con
+ * el mismo criterio que un borrado (solo se reenumera la lista tocada).
+ *
+ * `text` y `blocks` tienen que ser los del documento YA insertado -- la copia
+ * forma parte de la lista a reenumerar.
+ */
+export function renumberOrderedRun({ text, blocks, index }) {
+  const k = Number(index);
+  if (!Number.isInteger(k) || k < 0 || k >= blocks.length) return [];
+  if (blocks[k].type !== "ordered_list_item") return [];
+  let start = k;
+  while (start > 0 && blocks[start - 1].type === "ordered_list_item") start--;
+  let end = k;
+  while (end + 1 < blocks.length && blocks[end + 1].type === "ordered_list_item") end++;
+  return runNumberEdits(text, blocks, start, end);
+}
+
+/**
+ * Cambios de texto para duplicar bloques («Duplicar bloque» del menú): una
+ * copia del bloque -- o del grupo marcado, como UNA copia seguida -- justo
+ * debajo del original.
+ *
+ * La frontera es la misma de siempre: dos ítems de la misma lista van con un
+ * salto (`- uno\n- uno` sigue siendo UNA lista) y cualquier otro par, con una
+ * línea en blanco (`a\n\na`). En una lista numerada los números los arregla
+ * `renumberOrderedRun` sobre el documento ya insertado; aquí la copia sale con
+ * el número del original.
+ *
+ * Cada cambio lleva además `copy`: la posición (en coordenadas del texto
+ * original) donde empieza la copia, para que quien aplica sepa qué bloque del
+ * documento nuevo tiene que reenumerar.
+ */
+export function duplicateBlockEdits({ text, blocks, indices }) {
+  const sel = [...new Set([...indices].map(Number))]
+    .filter((i) => Number.isInteger(i) && i >= 0 && i < blocks.length)
+    .sort((a, b) => a - b);
+  if (!sel.length) return [];
+
+  const runs = [];
+  for (const i of sel) {
+    const last = runs[runs.length - 1];
+    if (last && i === last[1] + 1) last[1] = i;
+    else runs.push([i, i]);
+  }
+
+  return runs.map(([a, b]) => {
+    const body = text.slice(blocks[a].from, blocks[b].to);
+    const sameList =
+      isListItem(blocks[a]) && isListItem(blocks[b]) && blocks[a].type === blocks[b].type;
+    const sep = sameList ? "\n" : "\n\n";
+    return { from: blocks[b].to, to: blocks[b].to, insert: sep + body, copy: blocks[b].to + sep.length };
+  });
 }
 
 /**
