@@ -1347,17 +1347,16 @@ class VaultStore:
             log.info("fila %s: %s", page.path, "; ".join(notes))
         return row_id
 
-    def _refuse_erasing_unreadable(
+    def _refuse_touching_unreadable(
         self,
         row: sqlite3.Row,
         rel: str,
         front: fm.Frontmatter,
         properties: dict,
     ) -> None:
-        """`VaultError` si el PATCH vaciaría una celda que el índice no supo leer (B2).
+        """`VaultError` si el PATCH tocaría una celda que el índice no supo leer (B2).
 
-        Dos familias de valor «que el índice no puede representar», en las dos se
-        avisa y no se borra:
+        Dos familias de valor «que el índice no puede representar»:
 
         - el valor es legible para el parser pero no para el tipo del `schema`
           (`valor: A-12` en una propiedad `number`: `reader._coerce` no puede
@@ -1367,18 +1366,27 @@ class VaultStore:
           `{}`, anchors `&`/`*`, tags `!`). El índice tampoco lo tiene, así que
           la tabla enseña `—` igual.
 
-        En los dos casos un cliente que «vacía esa celda» manda `null` creyendo
-        que ya estaba vacía. Escribirlo borraría del fichero un dato que el
-        usuario nunca vio, así que se avisa con un 400 y no se toca nada — una
-        pérdida silenciosa en el `.md` del dueño es peor que un guardado que
-        falla. La comprobación mira **las entradas del frontmatter** (`entries`),
-        no solo `data`: una clave `opaque` está en el fichero aunque el índice no
-        la vea, y vaciarla también sería una pérdida.
+        Sobre la primera familia el criterio es el de la tarjeta:
 
-        Escribir un valor **representable** sí se permite: es la forma de
-        arreglar esa celda desde la app. Y una celda cuya clave no está en el
-        fichero, o cuyo valor el índice sí entiende, se vacía sin más: eso es
-        una decisión del usuario sobre un dato que ha visto.
+        - **vaciar** la celda (`null`) se rechaza con 400: el cliente cree que
+          estaba vacía porque la tabla enseña `—`, y borrarla se llevaría del
+          `.md` un dato que no ha visto;
+        - **escribir** un valor representable se permite: es cómo se arregla esa
+          celda desde la app, y el usuario está decidiendo sobre el dato (lo
+          sustituye a propósito).
+
+        Sobre una entrada `opaque` no se permite ni lo uno ni lo otro: el
+        escritor no sabe qué representa (puede ser un bloque de varias líneas, un
+        mapa o un ancla compartida con otra clave), así que sustituirla por un
+        escalar también sería destruir contenido que nadie ha leído. Un 400 con
+        el motivo —y sin escribir un byte— es lo único honesto; el arreglo es a
+        mano en el `.md`.
+
+        La comprobación mira **las entradas del frontmatter** (`entries`), no
+        solo `data`: una clave `opaque` está en el fichero aunque el índice no
+        la vea. Una celda cuya clave no está en el fichero, o cuyo valor el
+        índice sí entiende, se vacía o se sobrescribe sin más: eso es una
+        decisión del usuario sobre un dato que ha visto.
         """
         db = self.conn.execute(
             "SELECT schema_json FROM databases WHERE id = ?", (row["database_id"],)
@@ -1399,21 +1407,36 @@ class VaultStore:
                 entradas[entry.key] = entry
 
         for key, value in properties.items():
-            if value is not None:
-                continue
             entry = entradas.get(key)
             if entry is None:
                 continue            # no está en el fichero: no se borra nada
             crudo = _linea_del_fichero(front, entry)
             if entry.opaque:
+                # Ni vaciarla ni escribir encima: el fichero tiene una
+                # construcción que el parser no interpretó (`empresa: |`) y el
+                # índice no tiene la clave, así que el cliente cree que la celda
+                # está vacía. Vaciar se llevaría el bloque; escribir un escalar
+                # lo sustituiría por algo que nadie ha leído. 400 y ni un byte.
+                if value is None:
+                    accion = "vaciar"
+                    consecuencia = (
+                        "Vaciarlo desde aquí borraría del fichero un dato que no "
+                        "se ha visto"
+                    )
+                else:
+                    accion = "escribir"
+                    consecuencia = (
+                        "Escribir aquí sustituiría ese bloque por un valor suelto "
+                        "y se perdería lo que hay dentro, que la app no ha leído"
+                    )
                 raise VaultError(
-                    f"no se puede vaciar «{key}» de {rel}: el .md tiene "
+                    f"no se puede {accion} «{key}» de {rel}: el .md tiene "
                     f"«{crudo}», una construcción YAML que el índice no puede "
-                    "interpretar (por eso la tabla lo enseña vacío). Vaciarlo "
-                    "desde aquí borraría del fichero un dato que no se ha "
-                    "visto: escribe un valor válido en esa celda o corrige la "
-                    "línea del .md a mano."
+                    f"interpretar (por eso la tabla lo enseña vacío). "
+                    f"{consecuencia}: corrige esa línea del .md a mano."
                 )
+            if value is not None:
+                continue            # sobrescribir con un valor válido es del usuario
             valor = entry.value
             if valor is None or str(valor).strip() == "":
                 continue            # el `.md` ya la tiene vacía: no se borra nada
@@ -1465,13 +1488,15 @@ class VaultStore:
             front = fm.parse("")
         data = front.data
 
-        # Propiedades a escribir, validadas **antes** de mover o tocar nada: un
-        # `None` que borraría un valor que el índice no supo leer se rechaza con
-        # su motivo (B2). Mejor un 400 que una pérdida callada en el `.md`.
+        # Propiedades a escribir, validadas **antes** de mover o tocar nada: si el
+        # PATCH toca una celda cuyo valor en el fichero el índice no supo leer, se
+        # rechaza con su motivo (B2). Mejor un 400 que una pérdida callada en el
+        # `.md`: eso vale para vaciarla y también para escribir encima de una
+        # entrada `opaque` (un `empresa: |` que el parser no interpreta).
         props: Optional[dict] = None
         if properties is not UNSET and properties is not None:
             props = writer.sin_reservadas(properties, [], "al guardar la fila")
-            self._refuse_erasing_unreadable(row, old_rel, front, props)
+            self._refuse_touching_unreadable(row, old_rel, front, props)
 
         folder = os.path.dirname(old_rel)
         current_stem = os.path.basename(old_rel)[:-3]

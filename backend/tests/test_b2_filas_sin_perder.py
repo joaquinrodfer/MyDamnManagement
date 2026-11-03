@@ -17,6 +17,9 @@ Lo que se fija aquí:
 4. editar `empresa` en una fila sana no cambia ninguna otra línea;
 5. la invariante: editar cualquier celda de una fila no puede eliminar del
    `.md` ninguna clave que no sea la que se está cambiando.
+6. una entrada que el parser no interpreta (`empresa: |`, flow map, ancla) no se
+   puede vaciar **ni sobrescribir** desde la app: 400 con el motivo y ni un byte
+   escrito, en vez del 200 sin cambio que se tiraba la edición (revisión, ronda 2).
 """
 
 import difflib
@@ -403,6 +406,48 @@ def test_vaciar_una_entrada_opaca_avisa_y_no_borra(
 
 
 @pytest.mark.parametrize("etiqueta, reemplazo", OPACOS, ids=[o[0] for o in OPACOS])
+def test_escribir_un_valor_sobre_una_entrada_opaca_avisa_y_no_borra(
+    client, vault_path, etiqueta, reemplazo
+):
+    """El otro camino de la misma celda: teclear un valor no puede perder el bloque.
+
+    La tabla enseña `—` (el índice no tiene la clave), así que el dueño teclea
+    ahí el valor para arreglarla desde la app. Antes eso devolvía **200 sin
+    escribir nada**: el valor se tiraba y el bloque se quedaba, los dos a medias
+    y sin aviso. Ahora: 400 con el motivo, ni un byte escrito, y el índice igual
+    (nunca 200 sin cambio).
+    """
+    base, fila, fichero = fila_con_empresa_opaca(client, vault_path, reemplazo)
+    antes = texto(fichero)
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"empresa": "Nueva SL"}},
+    )
+    assert respuesta.status_code == 400, f"{etiqueta}: {respuesta.text}"
+    detalle = respuesta.json()["detail"]
+    assert "empresa: " in detalle and "escribir" in detalle, detalle
+    assert texto(fichero) == antes, f"{etiqueta}: el 400 no puede escribir el fichero"
+    assert client.get(
+        f"/databases/{base['id']}/rows/{fila['id']}"
+    ).json()["properties"].get("empresa") is None
+
+
+def test_el_400_de_una_celda_opaca_no_renombra_la_fila(client, vault_path):
+    """El guard va antes de mover: un PATCH mixto no deja el fichero a medias."""
+    base, fila, fichero = fila_con_empresa_opaca(client, vault_path, OPACOS[0][1])
+    antes = texto(fichero)
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"title": "Otro nombre", "properties": {"empresa": "Nueva SL"}},
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    assert texto(fichero) == antes, "ha escrito el fichero antes de rechazar"
+    assert not (vault_path / "Bases" / "Contactos" / "Otro nombre.md").exists()
+
+
+@pytest.mark.parametrize("etiqueta, reemplazo", OPACOS, ids=[o[0] for o in OPACOS])
 def test_editar_otra_celda_conserva_la_entrada_opaca(
     client, vault_path, etiqueta, reemplazo
 ):
@@ -488,11 +533,16 @@ def test_invariante_editar_cualquier_celda_no_borra_entradas_opacas(client, vaul
     )
     assert client.post("/reindex").status_code == 200
 
-    for clave, valor in {
-        "fase": "ganado",
-        "proximo_contacto": "B-7",
-        "valor": 42,   # único caso que sí reemplaza un valor ilegible, a propósito
-    }.items():
+    # La clave opaca entra también como objetivo: editarla no puede ser un 200
+    # que no escribe nada, así que se espera el 400 y el fichero igual. Las
+    # ilegibles por tipo sí admiten un valor válido a propósito (su propio test).
+    casos = {
+        "fase": ("ganado", 200),
+        "proximo_contacto": ("B-7", 200),
+        "valor": (42, 200),
+        "empresa": ("Nueva SL", 400),
+    }
+    for clave, (valor, esperado) in casos.items():
         antes = texto(fichero)
         entrada_antes = {e.key for e in fm.parse(
             fm.split_document(antes)[0] or ""
@@ -501,7 +551,7 @@ def test_invariante_editar_cualquier_celda_no_borra_entradas_opacas(client, vaul
             f"/databases/{base['id']}/rows/{fila['id']}",
             json={"properties": {clave: valor}},
         )
-        assert respuesta.status_code == 200, f"{clave}: {respuesta.text}"
+        assert respuesta.status_code == esperado, f"{clave}: {respuesta.text}"
         despues = texto(fichero)
         entrada_despues = {e.key for e in fm.parse(
             fm.split_document(despues)[0] or ""
@@ -511,8 +561,13 @@ def test_invariante_editar_cualquier_celda_no_borra_entradas_opacas(client, vaul
             f"editar «{clave}» ha cambiado las claves del .md: "
             f"{entrada_antes ^ entrada_despues}"
         )
+        if esperado == 400:
+            assert despues == antes, (
+                f"«{clave}»: el 400 tiene que dejar el fichero byte a byte igual"
+            )
+        else:
+            assert claves_tocadas(antes, despues) <= {clave, "updated"}, (
+                f"editar «{clave}» ha tocado "
+                f"{claves_tocadas(antes, despues) - {clave, 'updated'}}"
+            )
         assert "empresa: |\n  Acme Corp SL" in despues
-        assert claves_tocadas(antes, despues) <= {clave, "updated"}, (
-            f"editar «{clave}» ha tocado "
-            f"{claves_tocadas(antes, despues) - {clave, 'updated'}}"
-        )
