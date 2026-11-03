@@ -80,13 +80,13 @@ function splitBlock(text, pos, block) {
  * - Si no queda nada detrás, la fila se convierte en la línea en blanco que
  *   separa el párrafo nuevo (el `.md` recorta los saltos finales, así que en
  *   disco el resultado es `- uno` a secas, sin `- ` colgando).
- * - Si hay contenido detrás (salir del medio de una lista), se va SOLO el
- *   marcador y el salto de la fila se queda: es el hueco del párrafo nuevo.
- *   El cursor va detrás de ese salto (la fila en blanco), NUNCA delante del
- *   marcador siguiente: si se borraba la fila entera, lo que se tecleaba
- *   quedaba pegado al ítem de abajo (`x- dos`, sin viñeta) y, si el bloque de
- *   debajo era un párrafo, éste se lo tragaba como continuación perezosa del
- *   ítem.
+ * - Si hay contenido detrás (salir del medio de una lista), la fila del cursor
+ *   queda ENTRE dos líneas en blanco: la de arriba, para que el párrafo que se
+ *   teclea no sea continuación perezosa del ítem (`- uno\nparrafo` son un solo
+ *   bloque en Markdown y al recargar la nota el párrafo desaparece), y la de
+ *   abajo, para que la lista que sigue siga siendo un bloque aparte. Las filas
+ *   en blanco que ya hubiera detrás se consumen y se reconstruye el hueco, así
+ *   que el resultado no depende de cuántos saltos hubiera.
  */
 function exitMarkerLine(text, line) {
   const hasBreak = line.to < text.length;
@@ -94,7 +94,16 @@ function exitMarkerLine(text, line) {
   if (nextContent.trim() === "") {
     return { from: line.from, to: hasBreak ? line.to + 1 : line.to, insert: "\n", cursor: line.from + 1 };
   }
-  return { from: line.from, to: line.to, insert: "", cursor: line.from };
+  // Se consume el marcador y las líneas en blanco que hubiera detrás, y se
+  // deja el hueco de un párrafo: una línea en blanco arriba, otra abajo.
+  let contentStart = line.to + 1;
+  while (contentStart < text.length) {
+    const nl = text.indexOf("\n", contentStart);
+    const rowEnd = nl === -1 ? text.length : nl;
+    if (text.slice(contentStart, rowEnd).trim() !== "") break;
+    contentStart = nl === -1 ? text.length : nl + 1;
+  }
+  return { from: line.from, to: contentStart, insert: "\n\n\n", cursor: line.from + 1 };
 }
 
 function listEnter(text, pos, block) {

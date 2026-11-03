@@ -105,41 +105,43 @@ test("⏎ en el punto vacío sale de la lista: con DOS ítems, igual", () => {
   assert.ok(!r.text.slice(12).includes("- "));
 });
 
-test("R1: salir del medio de una lista conserva el hueco y no pega el texto al ítem siguiente", () => {
+test("R1: salir del medio de una lista deja el párrafo entre líneas en blanco", () => {
   // "- uno / -  / - tres" con el cursor en el punto vacío del medio: se va el
-  // marcador, pero el salto se queda como hueco del párrafo nuevo y el cursor
-  // va detrás (fila en blanco), no delante del "- " de "tres".
+  // marcador y el párrafo nuevo queda separado por una línea en blanco ARRIBA
+  // y otra ABAJO. Sin la de arriba, Markdown lee el texto como continuación
+  // perezosa del ítem y al recargar el párrafo desaparece.
   const text = "- uno\n- \n- tres";
   const r = apply(text, 8, { from: 6, to: 8, type: "bullet_list_item" });
-  assert.equal(r.text, "- uno\n\n- tres");
-  assert.equal(r.cursor, 6);
-  // Lo que se teclea cae en la fila en blanco: no toca ninguna viñeta.
-  const typed = r.text.slice(0, r.cursor) + "x" + r.text.slice(r.cursor);
-  assert.equal(typed, "- uno\nx\n- tres");
+  assert.equal(r.text, "- uno\n\n\n\n- tres");
+  assert.equal(r.cursor, 7);
+  // Lo que se teclea cae en su propia fila, entre dos líneas en blanco.
+  const typed = r.text.slice(0, r.cursor) + "parrafo" + r.text.slice(r.cursor);
+  assert.equal(typed, "- uno\n\nparrafo\n\n- tres");
   assert.ok(!typed.includes("x- "), "el texto no puede pegarse al marcador siguiente");
-  assert.ok(typed.includes("\n- tres"), "el ítem de debajo conserva su viñeta");
+  assert.ok(typed.includes("parrafo\n\n- tres"), "la lista de debajo sigue separada");
 });
 
 test("R1 (numerada): salir del medio tampoco pega el texto al número siguiente", () => {
   const text = "1. uno\n2. \n3. tres";
   const r = apply(text, 9, { from: 7, to: 9, type: "ordered_list_item" });
-  assert.equal(r.text, "1. uno\n\n3. tres");
-  assert.equal(r.cursor, 7);
-  const typed = r.text.slice(0, r.cursor) + "x" + r.text.slice(r.cursor);
-  assert.equal(typed, "1. uno\nx\n3. tres");
+  assert.equal(r.text, "1. uno\n\n\n\n3. tres");
+  assert.equal(r.cursor, 8);
+  const typed = r.text.slice(0, r.cursor) + "parrafo" + r.text.slice(r.cursor);
+  assert.equal(typed, "1. uno\n\nparrafo\n\n3. tres");
   assert.ok(!typed.includes("x3."));
 });
 
 test("R2: salir de una lista que tiene un párrafo detrás no se lo traga", () => {
   // Salir con ⏎ del último ítem seguido de un párrafo: el párrafo tiene que
-  // seguir siendo un bloque aparte, no continuación perezosa del ítem.
+  // seguir siendo un bloque aparte, no continuación perezosa del ítem. Los
+  // saltos que ya había detrás se consumen y se reconstruye el hueco.
   const text = "- uno\n- \n\nparrafo\n\nsegundo";
   const r = apply(text, 8, { from: 6, to: 8, type: "bullet_list_item" });
-  assert.equal(r.text, "- uno\n\n\nparrafo\n\nsegundo");
-  assert.equal(r.cursor, 6); // fila en blanco justo debajo del ítem
-  const typed = r.text.slice(0, r.cursor) + "x" + r.text.slice(r.cursor);
-  assert.equal(typed, "- uno\nx\n\nparrafo\n\nsegundo");
-  assert.ok(typed.includes("\n\nparrafo"), "el párrafo sigue separado por una línea en blanco");
+  assert.equal(r.text, "- uno\n\n\n\nparrafo\n\nsegundo");
+  assert.equal(r.cursor, 7);
+  const typed = r.text.slice(0, r.cursor) + "parrafo2" + r.text.slice(r.cursor);
+  assert.equal(typed, "- uno\n\nparrafo2\n\nparrafo\n\nsegundo");
+  assert.ok(typed.includes("parrafo2\n\nparrafo"), "el párrafo viejo sigue siendo un bloque aparte");
 });
 
 // ------------------------------------------------------ listas numeradas
