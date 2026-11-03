@@ -194,6 +194,26 @@ def _linea_del_fichero(front: fm.Frontmatter, entry: fm.Entry) -> str:
     return entry.key or ""
 
 
+def _indice_no_lo_lee(schema: list[dict], key: str, valor) -> bool:
+    """¿El índice guardaría `null` para este valor del `.md`? (B2)
+
+    Usa `reader.row_properties`, el mismo camino que el reindexado (y que el
+    `null` que la tabla enseña), para no inventar una segunda definición de «el
+    índice no lo entiende».
+
+    No cuentan como ilegibles:
+
+    - un valor vacío (`valor:`, o `""`): no hay nada que perder;
+    - una clave que el `schema` no declara: el índice no la mira (es una clave
+      del dueño, la app no la edita y vaciarla desde la API sigue siendo cosa
+      suya).
+    """
+    if valor is None or str(valor).strip() == "":
+        return False
+    leido = reader.row_properties(schema, {key: valor})
+    return key in leido and leido[key] is None
+
+
 def _read_text(abs_path: str) -> tuple[str, list[str]]:
     """Lee un `.md` con la misma tolerancia que el reindexado.
 
@@ -1366,14 +1386,17 @@ class VaultStore:
           `{}`, anchors `&`/`*`, tags `!`). El índice tampoco lo tiene, así que
           la tabla enseña `—` igual.
 
-        Sobre la primera familia el criterio es el de la tarjeta:
+        Sobre la primera familia el criterio es el de la tarjeta, y vale para
+        **los dos sentidos**:
 
         - **vaciar** la celda (`null`) se rechaza con 400: el cliente cree que
           estaba vacía porque la tabla enseña `—`, y borrarla se llevaría del
           `.md` un dato que no ha visto;
-        - **escribir** un valor representable se permite: es cómo se arregla esa
-          celda desde la app, y el usuario está decidiendo sobre el dato (lo
-          sustituye a propósito).
+        - **escribir** encima también se rechaza (400) cuando lo que hay en el
+          fichero no es representable: el valor tecleado se lleva por delante un
+          dato que la tabla nunca ha enseñado (`valor: A-12`), igual de a
+          ciegas. Solo se permite sobrescribir un valor **legible** por el
+          índice (`valor: 10` → `42`), que es un dato que el usuario ve.
 
         Sobre una entrada `opaque` no se permite ni lo uno ni lo otro: el
         escritor no sabe qué representa (puede ser un bloque de varias líneas, un
@@ -1384,9 +1407,13 @@ class VaultStore:
 
         La comprobación mira **las entradas del frontmatter** (`entries`), no
         solo `data`: una clave `opaque` está en el fichero aunque el índice no
-        la vea. Una celda cuya clave no está en el fichero, o cuyo valor el
-        índice sí entiende, se vacía o se sobrescribe sin más: eso es una
-        decisión del usuario sobre un dato que ha visto.
+        la vea, y una clave repetida (`valor: 10` + `valor: A-12`) hay que
+        mirarla **entera** — el índice se queda con la última y `fm.update`
+        escribe o borra todos sus rangos, así que basta con que una de las
+        entradas sea ilegible para que el PATCH tenga que rechazarse. Una celda
+        cuya clave no está en el fichero, o cuyos valores el índice entiende
+        todos, se vacía o se sobrescribe sin más: eso es una decisión del usuario
+        sobre un dato que ha visto.
         """
         db = self.conn.execute(
             "SELECT schema_json FROM databases WHERE id = ?", (row["database_id"],)
@@ -1397,21 +1424,20 @@ class VaultStore:
             for prop in schema
             if isinstance(prop, dict)
         }
-        # Entradas de primer nivel tal y como están en el disco. Si una clave
-        # aparece más de una vez manda la `opaque` (es la que hay que proteger).
-        entradas: dict[str, fm.Entry] = {}
+        # Entradas de primer nivel tal y como están en el disco, **todas**: si
+        # una clave aparece repetida no vale con quedarse con una (antes se
+        # guardaba la `opaque` o la primera, y la ilegible se colaba).
+        entradas: dict[str, list[fm.Entry]] = {}
         for entry in front.entries:
             if entry.key is None:
                 continue
-            if entry.key not in entradas or entry.opaque:
-                entradas[entry.key] = entry
+            entradas.setdefault(entry.key, []).append(entry)
 
         for key, value in properties.items():
-            entry = entradas.get(key)
-            if entry is None:
+            del_fichero = entradas.get(key)
+            if not del_fichero:
                 continue            # no está en el fichero: no se borra nada
-            crudo = _linea_del_fichero(front, entry)
-            if entry.opaque:
+            if any(entry.opaque for entry in del_fichero):
                 # Ni vaciarla ni escribir encima: el fichero tiene una
                 # construcción que el parser no interpretó (`empresa: |`) y el
                 # índice no tiene la clave, así que el cliente cree que la celda
@@ -1429,27 +1455,39 @@ class VaultStore:
                         "Escribir aquí sustituiría ese bloque por un valor suelto "
                         "y se perdería lo que hay dentro, que la app no ha leído"
                     )
+                opaca = next(entry for entry in del_fichero if entry.opaque)
                 raise VaultError(
                     f"no se puede {accion} «{key}» de {rel}: el .md tiene "
-                    f"«{crudo}», una construcción YAML que el índice no puede "
-                    f"interpretar (por eso la tabla lo enseña vacío). "
-                    f"{consecuencia}: corrige esa línea del .md a mano."
+                    f"«{_linea_del_fichero(front, opaca)}», una construcción "
+                    f"YAML que el índice no puede interpretar (por eso la tabla "
+                    f"lo enseña vacío). {consecuencia}: corrige esa línea del "
+                    f".md a mano."
                 )
-            if value is not None:
-                continue            # sobrescribir con un valor válido es del usuario
-            valor = entry.value
-            if valor is None or str(valor).strip() == "":
-                continue            # el `.md` ya la tiene vacía: no se borra nada
-            leido = reader.row_properties(schema, {key: valor})
-            if key not in leido or leido[key] is not None:
-                continue            # el índice lo entiende: vaciarlo es del usuario
+            # Familia «legible para el parser, no para el tipo del schema»:
+            # `valor: A-12` en una propiedad `number`. Se mira cada entrada de
+            # la clave (puede haber duplicados) y se rechazan los dos sentidos.
+            ilegibles = [
+                entry
+                for entry in del_fichero
+                if _indice_no_lo_lee(schema, key, entry.value)
+            ]
+            if not ilegibles:
+                continue            # el índice entiende el valor: es del usuario
+            crudo = _linea_del_fichero(front, ilegibles[0])
+            if value is None:
+                raise VaultError(
+                    f"no se puede vaciar «{key}» de {rel}: el .md tiene "
+                    f"«{crudo}», que no es un valor de tipo «{tipos.get(key)}» "
+                    "y el índice no puede representarlo (por eso la tabla lo "
+                    "enseña vacío). Vaciarlo desde aquí borraría del fichero un "
+                    "dato que no se ha visto: corrige la línea del .md a mano."
+                )
             raise VaultError(
-                f"no se puede vaciar «{key}» de {rel}: el .md tiene "
-                f"«{crudo}», que no es un valor de tipo «{tipos.get(key)}» "
-                "y el índice no puede representarlo (por eso la tabla lo enseña "
-                "vacío). Vaciarlo desde aquí borraría del fichero un dato que no "
-                "se ha visto: escribe un valor válido en esa celda o corrige la "
-                "línea del .md a mano."
+                f"no se puede escribir «{key}» de {rel}: el .md tiene "
+                f"«{crudo}», que no es un valor de tipo «{tipos.get(key)}» y el "
+                "índice no puede representarlo (por eso la tabla lo enseña "
+                "vacío). Escribir aquí borraría del fichero ese dato sin que se "
+                "haya visto: corrige la línea del .md a mano."
             )
 
     def save_row(
@@ -1492,7 +1530,8 @@ class VaultStore:
         # PATCH toca una celda cuyo valor en el fichero el índice no supo leer, se
         # rechaza con su motivo (B2). Mejor un 400 que una pérdida callada en el
         # `.md`: eso vale para vaciarla y también para escribir encima de una
-        # entrada `opaque` (un `empresa: |` que el parser no interpreta).
+        # entrada `opaque` (un `empresa: |` que el parser no interpreta) o de un
+        # valor que el tipo del schema no puede representar (`valor: A-12`).
         props: Optional[dict] = None
         if properties is not UNSET and properties is not None:
             props = writer.sin_reservadas(properties, [], "al guardar la fila")

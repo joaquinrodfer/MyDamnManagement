@@ -20,6 +20,13 @@ Lo que se fija aquí:
 6. una entrada que el parser no interpreta (`empresa: |`, flow map, ancla) no se
    puede vaciar **ni sobrescribir** desde la app: 400 con el motivo y ni un byte
    escrito, en vez del 200 sin cambio que se tiraba la edición (revisión, ronda 2).
+7. lo mismo con lo que el parser sí lee pero el tipo del `schema` no
+   (`valor: A-12`): vaciarlo **o pisarlo** con un número da 400 sin escribir
+   (revisión, ronda 3: antes escribir encima se llevaba el `A-12` del informe);
+   escribir sobre un valor legible sigue siendo 200.
+8. una clave repetida en el frontmatter (`valor: 10` + `valor: A-12`) se mira
+   entera: basta con que una entrada sea ilegible para que el PATCH dé 400 y no
+   borre ninguna de las dos (revisión, ronda 3).
 """
 
 import difflib
@@ -175,15 +182,58 @@ def test_vaciar_la_celda_que_el_indice_no_entiende_avisa_y_no_borra(client, vaul
     assert "valor" in detalle and "A-12" in detalle, detalle
     assert texto(fichero) == antes, "un 400 no puede haber escrito el fichero"
 
-    # La salida buena: escribir un número representable sí se permite (es cómo
-    # se arregla la celda desde la app), y solo cambia esa línea.
-    arreglada = client.patch(
+
+def test_escribir_sobre_la_celda_que_el_indice_no_entiende_avisa_y_no_borra(
+    client, vault_path
+):
+    """El mismo criterio en el otro sentido: teclear encima tampoco es un borrado.
+
+    La tabla enseña `—` en `valor` (el índice lo tiene a `null`), así que el
+    dueño teclea ahí un número para rellenarla. Si el PATCH sustituyera
+    `A-12` —un dato que no ha visto— por `42`, sería una pérdida igual de
+    silenciosa que vaciarla: 400 con el motivo y ni un byte escrito.
+    """
+    base, fila, fichero = fila_del_informe(client, vault_path)
+    antes = texto(fichero)
+
+    respuesta = client.patch(
         f"/databases/{base['id']}/rows/{fila['id']}",
         json={"properties": {"valor": 42}},
     )
-    assert arreglada.status_code == 200, arreglada.text
+    assert respuesta.status_code == 400, respuesta.text
+    detalle = respuesta.json()["detail"]
+    assert "escribir" in detalle and "A-12" in detalle, detalle
+    assert texto(fichero) == antes, "el 400 no puede escribir el fichero"
+    # Y el índice sigue diciendo lo mismo que el fichero: `A-12` no se ha ido.
+    sigue = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert sigue["properties"]["valor"] is None
+    assert "valor: A-12" in texto(fichero)
+
+
+def test_sobrescribir_un_valor_que_el_indice_entiende_sigue_siendo_del_usuario(
+    client, vault_path
+):
+    """El 400 es solo para lo que el índice no pudo leer: editar lo demás, 200."""
+    base, fila, fichero = fila_del_informe(client, vault_path)
+
+    # `valor: A-12` no es representable; se corrige a mano en el `.md`...
+    fichero.write_text(
+        escribir_a_mano(texto(fichero), ("valor: A-12", 'valor: "12"')),
+        encoding="utf-8",
+    )
+    assert client.post("/reindex").status_code == 200
+    assert client.get(
+        f"/databases/{base['id']}/rows/{fila['id']}"
+    ).json()["properties"]["valor"] == 12.0
+
+    # ...y con un valor que el índice sí lee, escribir desde la app es normal.
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"valor": 42}},
+    )
+    assert respuesta.status_code == 200, respuesta.text
     assert datos(texto(fichero))["valor"] == "42"
-    assert arreglada.json()["properties"]["valor"] == 42.0
+    assert respuesta.json()["properties"]["valor"] == 42.0
 
 
 def test_vaciar_una_celda_legible_sigue_borrando_su_clave(client, vault_path):
@@ -324,8 +374,8 @@ def test_invariante_editar_cualquier_celda_no_borra_ninguna_clave(client, vault_
     )
     assert client.post("/reindex").status_code == 200
 
-    # Celdas representables: todas menos las dos ilegibles (escribir un número
-    # válido ahí reemplaza el dato a propósito, y eso tiene su propio test).
+    # Celdas representables: todas menos las dos ilegibles (escribir sobre ellas
+    # es un 400 desde la ronda 3; tienen su propio test).
     nuevas = {
         "empresa": "Acme Corp SL",
         "fase": "ganado",
@@ -490,6 +540,61 @@ def test_el_motivo_del_400_cita_el_yaml_del_fichero_no_el_interpretado(
     assert "valor: [1, 2]" in detalle, detalle
     assert "['1', '2']" not in detalle, f"cita el YAML interpretado: {detalle}"
 
+    # Y escribir encima de esa misma celda tampoco: `[1, 2]` no se ha enseñado
+    # nunca en la tabla (el índice lo tiene a `null`), así que sustituirlo es
+    # perder el dato. 400 y el fichero sin tocar.
+    antes = texto(fichero)
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"valor": 42}},
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    assert "valor: [1, 2]" in respuesta.json()["detail"]
+    assert texto(fichero) == antes
+
+
+# --------------------------------------------------------------------------
+# 7. claves repetidas: el guard mira todas las entradas de la clave (ronda 3)
+# --------------------------------------------------------------------------
+#
+# `valor: 10` + `valor: A-12` en el mismo fichero: el parser se queda con la
+# última (el índice acaba en `null`) y `fm.update` escribe o borra **todos** los
+# rangos de esa clave. Guardarse una sola entrada (`store.py` se quedaba con la
+# primera legible) dejaba que vaciar la celda borrase las dos líneas, incluida
+# la ilegible, con un 200 sin aviso.
+
+
+def test_clave_repetida_con_una_entrada_ilegible_no_se_borra_ni_se_pisa(
+    client, vault_path
+):
+    base = crear_base(client)
+    fila = crear_fila(client, base["id"], empresa="Acme Corp", fase="lead", valor=10)
+    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero.write_text(
+        escribir_a_mano(texto(fichero), ("valor: 10", "valor: 10\nvalor: A-12")),
+        encoding="utf-8",
+    )
+    assert client.post("/reindex").status_code == 200
+    url = f"/databases/{base['id']}/rows/{fila['id']}"
+    # El índice se queda con la última entrada: `null`, igual que en el informe.
+    assert client.get(url).json()["properties"]["valor"] is None
+    antes = texto(fichero)
+
+    # Ninguno de los dos sentidos puede llevarse las dos líneas: 400 y ni un
+    # byte. Antes, vaciar daba 200 y borraba `valor: 10` **y** `valor: A-12`.
+    for valor in (None, 42):
+        respuesta = client.patch(url, json={"properties": {"valor": valor}})
+        assert respuesta.status_code == 400, f"{valor!r}: {respuesta.text}"
+        assert "valor: A-12" in respuesta.json()["detail"], respuesta.text
+        assert texto(fichero) == antes, f"{valor!r}: el 400 ha escrito el fichero"
+
+    # Y editar otra celda conserva las dos entradas tal y como están.
+    respuesta = client.patch(url, json={"properties": {"empresa": "Acme Corp SL"}})
+    assert respuesta.status_code == 200, respuesta.text
+    despues = texto(fichero)
+    assert "valor: 10\nvalor: A-12" in despues
+    assert claves_tocadas(antes, despues) == {"empresa", "updated"}
+
 
 def test_fm_update_no_borra_una_entrada_opaca_ni_pidiendolo():
     """El escritor también protege solo: `None`/`delete` no se llevan lo opaco."""
@@ -534,12 +639,13 @@ def test_invariante_editar_cualquier_celda_no_borra_entradas_opacas(client, vaul
     assert client.post("/reindex").status_code == 200
 
     # La clave opaca entra también como objetivo: editarla no puede ser un 200
-    # que no escribe nada, así que se espera el 400 y el fichero igual. Las
-    # ilegibles por tipo sí admiten un valor válido a propósito (su propio test).
+    # que no escribe nada, así que se espera el 400 y el fichero igual. Lo mismo
+    # con la ilegible por tipo (`valor: A-12`): escribir encima la borraría sin
+    # haberla enseñado nunca, así que también 400 y ni un byte (ronda 3).
     casos = {
         "fase": ("ganado", 200),
         "proximo_contacto": ("B-7", 200),
-        "valor": (42, 200),
+        "valor": (42, 400),
         "empresa": ("Nueva SL", 400),
     }
     for clave, (valor, esperado) in casos.items():
