@@ -31,8 +31,12 @@ var hs=[],Ua=[];(()=>{let n="lc,34,7n,7,7b,19,,,,2,,2,,,20,b,1c,l,g,,2t,7,2,6,2,
 `)?`
 `:`
 
-`;return{from:i,to:r,insert:o,cursor:i+o.length+Nb(s)}}function $O(n,e){let t=e.to<n.length;return(t?n.slice(e.to+1):"").trim()===""?{from:e.from,to:t?e.to+1:e.to,insert:`
-`,cursor:e.from+1}:{from:e.from,to:e.to,insert:"",cursor:e.from}}function Gb(n,e,t){let i=ss(n,e),r=n.slice(i.from,i.to),s=(t.type==="ordered_list_item"?xO:QO).exec(r);if(!s)return null;let o=i.from+s[0].length;if(n.slice(o,t.to).trim()==="")return $O(n,i);let l=Math.max(e,o),a=t.type==="ordered_list_item"?s[1]+String(parseInt(s[2],10)+1)+s[3]+s[4]:s[1]+s[2]+s[3];return Xa(l,`
+`;return{from:i,to:r,insert:o,cursor:i+o.length+Nb(s)}}function $O(n,e){let t=e.to<n.length;if((t?n.slice(e.to+1):"").trim()==="")return{from:e.from,to:t?e.to+1:e.to,insert:`
+`,cursor:e.from+1};let r=e.to+1;for(;r<n.length;){let s=n.indexOf(`
+`,r),o=s===-1?n.length:s;if(n.slice(r,o).trim()!=="")break;r=s===-1?n.length:s+1}return{from:e.from,to:r,insert:`
+
+
+`,cursor:e.from+1}}function Gb(n,e,t){let i=ss(n,e),r=n.slice(i.from,i.to),s=(t.type==="ordered_list_item"?xO:QO).exec(r);if(!s)return null;let o=i.from+s[0].length;if(n.slice(o,t.to).trim()==="")return $O(n,i);let l=Math.max(e,o),a=t.type==="ordered_list_item"?s[1]+String(parseInt(s[2],10)+1)+s[3]+s[4]:s[1]+s[2]+s[3];return Xa(l,`
 `+a)}function Ub(n,e,t){let i=ss(n,e),r=n.slice(i.from,i.to),s=(wO.exec(r)||["> "])[0],o=i.from+s.length;if(n.slice(o,t.to).trim()==="")return $O(n,i);let l=Math.max(e,o),{from:a,to:h}=os(n,t.from,Math.min(t.to,i.to),l);return{from:a,to:h,insert:`
 `+s,cursor:a+1+s.length}}function Fb(n,e,t){let i=ss(n,e),r=n.slice(i.from,i.to),s=(t.type==="ordered_list_item"?xO:QO).exec(r);if(!s)return PO(n,e,t);let o=s[1]+" ".repeat(s[0].length-s[1].length),l=Math.max(e,i.from+s[0].length);return Xa(l,`
 `+o)}function Hb(n,e,t){let i=ss(n,e),r=(wO.exec(n.slice(i.from,i.to))||["> "])[0],s=Math.max(e,i.from+r.length),{from:o,to:l}=os(n,t.from,Math.min(t.to,i.to),s);return{from:o,to:l,insert:`
