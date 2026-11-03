@@ -6,20 +6,33 @@
 // prueba con `node --test`; aplicarlo (una transacción de CodeMirror) es cosa
 // de entry.js. Mismo patrón que block-keys.js y link-create.js.
 //
-// La regla, cerrada con el dueño: borrar un bloque se lleva el bloque **y su
-// separador**, así que el `.md` no gana líneas en blanco (D1: `alfa\n\nbeta\n\ngamma`
-// menos `beta` es `alfa\n\ngamma`, nunca `alfa\n\n\n\ngamma`). En una lista, el
-// ítem borrado desaparece con su salto de línea -- la lista sigue siendo UNA
-// lista (D2) -- y los números que quedan se reenumeran desde el primero de la
-// lista (decisión: el editor enseña el fuente, así que enseñar `1, 3, 4` sería
-// mentir sobre cómo se lee la lista; Markdown ignora el número, pero el `.md`
-// es lo que el usuario ve).
+// LA REGLA (una sola, para todas las operaciones que tocan esta frontera):
+// cuando una lista, una cita o un bloque de código queda SEGUIDO de otro
+// bloque, entre ellos va una línea en blanco. Si no, Markdown lee la primera
+// línea del bloque siguiente como continuación del anterior y el `.md` miente
+// sobre lo que se ve: `- uno\n- dos\n\nparrafo` menos `- dos` tiene que ser
+// `- uno\n\nparrafo`, nunca `- uno\nparrafo`. La única frontera que se queda
+// en un salto simple es la de dos ítems de lista seguidos (es el separador que
+// tienen dentro de UNA lista); ahí se conserva el que había, para no convertir
+// una lista suelta en apretada ni al revés.
 //
-// Y el ⌫ al principio de un ítem (D9) fusiona con el ítem de arriba dejando un
-// espacio (`- uno dos`), nunca `- uno- dos`.
+// De ahí salen las cuatro piezas:
+// - borrar (D1/D2): el bloque y su separador, dejando la frontera que toque;
+// - escribir encima de un ítem marcado: el texto hereda el marcador (`2. X`),
+//   así sigue siendo un bloque de la misma lista;
+// - convertir: el bloque convertido queda como bloque propio, con su línea en
+//   blanco si deja de ser un ítem;
+// - ⌫ al principio de un ítem (D9): fusiona con el de arriba dejando un
+//   espacio (`- uno dos`), nunca `- uno- dos`, y solo si el ÁRBOL dice que la
+//   fila es un ítem (dentro de una valla de código `- dos` es texto literal).
 
 const BULLET_RE = /^([ \t]*)([-*+])[ \t]+/;
 const ORDERED_RE = /^([ \t]*)(\d+)([.)])[ \t]+/;
+const LIST_ITEM_TYPES = new Set(["bullet_list_item", "ordered_list_item"]);
+
+function isListItem(block) {
+  return !!block && LIST_ITEM_TYPES.has(block.type);
+}
 
 function isSpace(ch) {
   return ch === " " || ch === "\t" || ch === "\n";
@@ -29,6 +42,11 @@ function onlyWhitespace(s) {
   return /^[ \t\n]*$/.test(s);
 }
 
+/** ¿Hay línea en blanco en este hueco? (un `\n` solo, no). */
+function hasBlankLine(s) {
+  return /\n[ \t]*\n/.test(s);
+}
+
 /** Fila lógica que contiene `pos` (el `\n` de `pos` cuenta como parte de ella). */
 function lineAt(text, pos) {
   const from = text.lastIndexOf("\n", pos - 1) + 1;
@@ -36,41 +54,102 @@ function lineAt(text, pos) {
   return { from, to: nl === -1 ? text.length : nl };
 }
 
+/** ¿El texto nuevo empieza como ítem de lista? (para respetar su frontera) */
+function startsAsListItem(s) {
+  const line = s.split("\n", 1)[0];
+  return BULLET_RE.test(line) || ORDERED_RE.test(line);
+}
+
+/**
+ * Separador que tiene que quedar entre dos bloques que ahora quedan juntos
+ * (`prev` puede no existir: entonces no hay nada que separar).
+ *
+ * - dos ítems de lista que estaban pegados siguen pegados (`\n`) -- una lista,
+ *   no dos listas;
+ * - cualquier otra frontera, una línea en blanco (`\n\n`).
+ */
+function joinSeparator(prev, next, gap) {
+  if (!prev) return "";
+  if (isListItem(prev) && isListItem(next) && !hasBlankLine(gap)) return "\n";
+  return "\n\n";
+}
+
 /**
  * Trozo de texto que se lleva borrar los bloques `a..b` (índices consecutivos
- * ya fusionados), separadores incluidos:
+ * ya fusionados), separadores incluidos, y el que deja en su lugar.
  *
- * - si queda algún bloque detrás, se lleva todo lo que hay entre el bloque y
- *   el siguiente que sobrevive (que son solo saltos de línea: el hueco de D1);
- * - si no queda nada detrás, se lleva además el separador de delante y el
- *   hueco final del documento, para que el `.md` no acabe en líneas en blanco.
+ * - si queda algún bloque detrás, se lleva el hueco de delante y el de detrás
+ *   y deja UN separador (`joinSeparator`): un solo hueco, sin aire de más y
+ *   sin pegar una lista al bloque que venía después;
+ * - si no queda nada detrás, se lleva además el hueco de delante y el del
+ *   final del documento, para que el `.md` no acabe en líneas en blanco.
  */
 function deletedSpan(text, blocks, a, b) {
-  let from = blocks[a].from;
-  let to = blocks[b].to;
-  if (b + 1 < blocks.length) {
-    const next = blocks[b + 1].from;
-    if (next >= to && onlyWhitespace(text.slice(to, next))) to = next;
-    return { from, to };
+  const prev = a > 0 ? blocks[a - 1] : null;
+  const gapStart = prev ? prev.to : 0;
+  const gap = text.slice(gapStart, blocks[a].from);
+  const next = b + 1 < blocks.length ? blocks[b + 1] : null;
+
+  if (next) {
+    // Entre los bloques solo puede haber saltos de línea; si hubiera otra
+    // cosa (un comentario HTML) no se toca el hueco de delante.
+    if (!onlyWhitespace(gap)) return { from: blocks[a].from, to: next.from, insert: "" };
+    return { from: gapStart, to: next.from, insert: joinSeparator(prev, next, gap) };
   }
+
+  let to = blocks[b].to;
   if (to < text.length && onlyWhitespace(text.slice(to))) to = text.length;
-  let p = from;
-  while (p > 0 && isSpace(text[p - 1])) p--;
-  from = p;
-  return { from, to };
+  let from = blocks[a].from;
+  if (onlyWhitespace(text.slice(gapStart, from))) from = gapStart;
+  else while (from > 0 && isSpace(text[from - 1])) from--;
+  return { from, to, insert: "" };
+}
+
+/** Marcador (sangría incluida) de la primera línea de un ítem, o null. */
+function listMarker(text, block) {
+  if (!isListItem(block)) return null;
+  const line = text.slice(block.from, lineAt(text, block.from).to);
+  const mark = BULLET_RE.exec(line) || ORDERED_RE.exec(line);
+  return mark ? mark[0] : null;
+}
+
+/**
+ * Sustituir los bloques `a..b` por `insert` (escribir o pegar encima).
+ *
+ * Si el primer bloque es un ítem de lista y el texto cabe en una línea, hereda
+ * el marcador (`2. X`): el texto tecleado sigue siendo un bloque de la misma
+ * lista, no una línea pegada al ítem de arriba (que es lo que hacía
+ * `1. uno\nX\n2. tres`). Si el texto tiene varias líneas ya no es un ítem: va
+ * como bloque propio con su línea en blanco antes y después.
+ */
+function replaceSpan(text, blocks, a, b, insert) {
+  const first = blocks[a];
+  const marker = listMarker(text, first);
+
+  if (marker) {
+    // El texto hereda el marcador del ítem (`2. X`) y las líneas de
+    // continuación se sangran a la altura del texto: sigue siendo UN bloque de
+    // la misma lista, no una línea pegada al ítem de arriba (`1. uno\nX`).
+    const indent = " ".repeat(marker.length);
+    const [head, ...tail] = insert.split("\n");
+    const body = [head, ...tail.map((line) => (line ? indent + line : ""))].join("\n");
+    return { from: first.from, to: blocks[b].to, insert: marker + body, keepsFirstItem: a };
+  }
+  return { from: first.from, to: blocks[b].to, insert };
 }
 
 /**
  * Cambios de texto para borrar (o sustituir) bloques.
  *
  * `blocks` es la lista de `{from, to, type}` que calcula entry.js, `indices`
- * los bloques marcados y `insert` el texto con el que se sustituyen (vacío =
- * borrar). Con `insert`, el texto entra en el sitio de los bloques marcados y
- * los separadores de alrededor se conservan (escribir encima de un bloque no
- * debe pegar el texto al vecino); sin él, se van también los separadores.
+ * los bloques marcados e `insert` el texto con el que se sustituyen (vacío =
+ * borrar).
  *
- * Devuelve `{changes, cursor}` o `null` si no hay nada que hacer. `changes`
- * nunca se solapan y van en orden de documento.
+ * Devuelve `{changes, cursor, keepsFirstItem}` o `null` si no hay nada que
+ * hacer. `changes` nunca se solapan y van en orden de documento.
+ * `keepsFirstItem` es el índice del bloque que sobrevive como ítem (cuando el
+ * texto hereda el marcador), para que la renumeración no lo cuente como
+ * borrado.
  */
 export function blockDeleteEdits({ text, blocks, indices, insert = "" }) {
   const del = [...new Set([...indices].map(Number))]
@@ -89,55 +168,60 @@ export function blockDeleteEdits({ text, blocks, indices, insert = "" }) {
 
   const changes = [];
   let cursor = null;
+  let keepsFirstItem = null;
   runs.forEach(([a, b], n) => {
     let change;
     if (n === 0 && insert) {
-      // Sustituir: se queda el hueco de antes y el de después.
-      change = { from: blocks[a].from, to: blocks[b].to, insert };
+      change = replaceSpan(text, blocks, a, b, insert);
+      if (change.keepsFirstItem !== undefined) keepsFirstItem = change.keepsFirstItem;
     } else {
-      const { from, to } = deletedSpan(text, blocks, a, b);
-      change = { from, to, insert: "" };
+      change = deletedSpan(text, blocks, a, b);
     }
-    if (cursor === null) cursor = change.from + (change.insert || "").length;
-    // Un trozo que empieza donde acaba el anterior (dos bloques pegados,
-    // p. ej. dos ítems de lista sin línea en blanco en medio) se fusiona en
-    // uno: ChangeSet rechaza dos cambios que se tocan por el mismo borde.
+    const next = { from: change.from, to: change.to, insert: change.insert || "" };
+    if (cursor === null) cursor = next.from + next.insert.length;
+    // Dos trozos que se tocan (bloques de longitud cero) se fusionan en uno:
+    // ChangeSet rechaza cambios que empiezan donde acaba el anterior.
     const prev = changes[changes.length - 1];
-    if (prev && change.from <= prev.to) {
-      prev.to = Math.max(prev.to, change.to);
+    if (prev && next.from < prev.to) {
+      prev.to = Math.max(prev.to, next.to);
     } else {
-      changes.push(change);
+      changes.push(next);
     }
   });
 
-  return { changes, cursor };
+  return { changes, cursor, keepsFirstItem };
 }
 
 /**
  * ⏎ (y ⇧⏎) con bloques marcados: los marcados se sustituyen por UN bloque
  * vacío en su sitio, con el cursor dentro y listo para escribir.
  *
- * Es el mismo trozo que borrar (`blockDeleteEdits` con `insert: ""`, bloque +
- * separador), pero dejando los dos saltos que convierten el hueco en un bloque
- * de verdad. Sin esto, ⏎ sobre un bloque marcado metía su salto DENTRO del
- * rango marcado, entre los separadores que ya había: `uno / dos / tres` menos
- * `dos` acababa en `uno\n\n\n\n\n\ntres` (cinco líneas en blanco) y así se
- * guardaba en el `.md`.
+ * Es el mismo trozo que borrar (bloque + separador), pero dejando los dos
+ * saltos que convierten el hueco en un bloque de verdad. Sin esto, ⏎ sobre un
+ * bloque marcado metía su salto DENTRO del rango marcado, entre los
+ * separadores que ya había: `uno / dos / tres` menos `dos` acababa en
+ * `uno\n\n\n\n\n\ntres` (cinco líneas en blanco) y así se guardaba en el `.md`.
  */
 export function newBlockEdit({ text, blocks, indices }) {
   const edit = blockDeleteEdits({ text, blocks, indices });
   if (!edit) return null;
+  const del = [...new Set([...indices].map(Number))]
+    .filter((i) => Number.isInteger(i) && i >= 0 && i < blocks.length)
+    .sort((a, b) => a - b);
+  const firstIndex = del[0];
+  let last = firstIndex;
+  for (let i = 1; i < del.length && del[i] === last + 1; i++) last = del[i];
+  const atEnd = last + 1 >= blocks.length;
+
   const [first, ...rest] = edit.changes;
-  // El bloque vacío es el hueco que queda ENTRE los dos separadores; dónde
-  // cae el cursor depende de por dónde empieza el trozo borrado: si es el
-  // principio del propio bloque, el hueco está justo ahí; si el trozo se
-  // lleva además el separador de delante (borrar el último bloque), el hueco
-  // empieza después de los dos saltos nuevos.
-  const firstBlock = blocks[[...indices].map(Number).sort((a, b) => a - b)[0]];
-  const cursor = firstBlock && first.from === firstBlock.from ? first.from : first.from + 2;
+  // El bloque vacío es el hueco que queda ENTRE los dos separadores. Si había
+  // bloque detrás, el hueco empieza donde empezaba el bloque borrado; si era
+  // el último, el trozo borrado se llevó el separador de delante y el hueco
+  // son los dos saltos que se insertan al final.
+  const from = atEnd ? first.from : firstIndex > 0 ? blocks[firstIndex].from : first.from;
   return {
-    changes: [{ from: first.from, to: first.to, insert: "\n\n" }, ...rest],
-    cursor,
+    changes: [{ from, to: first.to, insert: "\n\n" }, ...rest],
+    cursor: atEnd ? first.from + 2 : from,
   };
 }
 
@@ -149,13 +233,21 @@ export function newBlockEdit({ text, blocks, indices }) {
  * ítems que sobreviven se numeran desde el número con el que empezaba la
  * lista, conservando la sangría y el separador (`.` o `)`).
  *
+ * Una lista es una tirada de bloques `ordered_list_item` seguidos en el árbol;
+ * el hueco entre ellos puede ser un salto (lista apretada) o una línea en
+ * blanco (lista suelta) -- da igual, Markdown la lee como una sola lista.
+ *
+ * `keepFirst` (opcional) es el índice de un ítem que NO desaparece aunque esté
+ * en `indices`: es el caso de escribir encima de un ítem, donde el texto
+ * hereda el marcador y sigue ocupando el mismo sitio.
+ *
  * Devuelve cambios de texto que sustituyen solo el número (nunca el texto del
- * ítem) y no se solapan con los de `blockDeleteEdits` (empiezan justo donde
- * acaba el borrado del ítem anterior).
+ * ítem) y no se solapan con los de `blockDeleteEdits`.
  */
-export function orderedRenumberEdits({ text, blocks, indices }) {
+export function orderedRenumberEdits({ text, blocks, indices, keepFirst = null }) {
   const del = new Set([...indices].map(Number));
   if (!del.size) return [];
+  const removed = (k) => del.has(k) && k !== keepFirst;
 
   const changes = [];
   let i = 0;
@@ -164,17 +256,11 @@ export function orderedRenumberEdits({ text, blocks, indices }) {
       i++;
       continue;
     }
-    // Una lista = ítems seguidos, cada uno en la línea siguiente al anterior.
     let end = i;
-    while (
-      end + 1 < blocks.length &&
-      blocks[end + 1].type === "ordered_list_item" &&
-      blocks[end + 1].from === blocks[end].to + 1
-    ) {
-      end++;
-    }
+    while (end + 1 < blocks.length && blocks[end + 1].type === "ordered_list_item") end++;
+
     let touched = false;
-    for (let k = i; k <= end; k++) if (del.has(k)) touched = true;
+    for (let k = i; k <= end; k++) if (removed(k)) touched = true;
 
     if (touched) {
       const firstLine = text.slice(blocks[i].from, blocks[i].to);
@@ -182,22 +268,82 @@ export function orderedRenumberEdits({ text, blocks, indices }) {
       if (firstMark) {
         let number = Number(firstMark[2]);
         for (let k = i; k <= end; k++) {
+          if (removed(k)) continue;
           const line = text.slice(blocks[k].from, blocks[k].to);
           const mark = ORDERED_RE.exec(line);
           if (!mark) continue;
-          if (!del.has(k)) {
-            const at = blocks[k].from + mark[1].length;
-            if (mark[2] !== String(number)) {
-              changes.push({ from: at, to: at + mark[2].length, insert: String(number) });
-            }
-            number += 1;
+          const at = blocks[k].from + mark[1].length;
+          if (mark[2] !== String(number)) {
+            changes.push({ from: at, to: at + mark[2].length, insert: String(number) });
           }
+          number += 1;
         }
       }
     }
     i = end + 1;
   }
   return changes;
+}
+
+/**
+ * Cambios de texto para convertir bloques (menú «Convertir a»).
+ *
+ * `convert(raw, block)` devuelve el texto nuevo del bloque. La misma regla de
+ * frontera que al borrar: el bloque convertido queda como bloque propio, así
+ * que si deja de ser un ítem de lista se le pone línea en blanco antes y
+ * después (`1. uno / 2. dos / 3. tres` menos convertir `2. dos` en párrafo
+ * tiene que dar un párrafo, no una línea pegada al ítem de arriba).
+ */
+export function convertBlockEdits({ text, blocks, indices, convert }) {
+  const del = [...new Set([...indices].map(Number))]
+    .filter((i) => Number.isInteger(i) && i >= 0 && i < blocks.length)
+    .sort((a, b) => a - b);
+  if (!del.length) return [];
+
+  const runs = [];
+  for (const i of del) {
+    const last = runs[runs.length - 1];
+    if (last && i === last[1] + 1) last[1] = i;
+    else runs.push([i, i]);
+  }
+
+  return runs.map(([a, b]) => {
+    const prev = a > 0 ? blocks[a - 1] : null;
+    const next = b + 1 < blocks.length ? blocks[b + 1] : null;
+
+    const parts = [];
+    for (let k = a; k <= b; k++) {
+      const out = convert(text.slice(blocks[k].from, blocks[k].to), blocks[k]);
+      parts.push({ text: out, item: startsAsListItem(out) });
+    }
+    let body = parts[0].text;
+    for (let k = 1; k < parts.length; k++) {
+      body += (parts[k - 1].item && parts[k].item ? "\n" : "\n\n") + parts[k].text;
+    }
+    const firstIsItem = parts[0].item;
+    const lastIsItem = parts[parts.length - 1].item;
+
+    let from = blocks[a].from;
+    let lead = "";
+    const gapBefore = text.slice(prev ? prev.to : 0, blocks[a].from);
+    if (onlyWhitespace(gapBefore)) {
+      from = prev ? prev.to : 0;
+      lead = prev ? (isListItem(prev) && firstIsItem ? "\n" : "\n\n") : "";
+    }
+
+    let to = blocks[b].to;
+    let trail = "";
+    if (next) {
+      if (onlyWhitespace(text.slice(blocks[b].to, next.from))) {
+        to = next.from;
+        trail = isListItem(next) && lastIsItem ? "\n" : "\n\n";
+      }
+    } else if (onlyWhitespace(text.slice(to))) {
+      to = text.length;
+    }
+
+    return { from, to, insert: lead + body + trail };
+  });
 }
 
 /**
@@ -209,19 +355,29 @@ export function orderedRenumberEdits({ text, blocks, indices }) {
  * el texto sube a párrafo normal, que es lo que ya hace ⌫ con el resto de
  * marcas de Markdown.
  *
+ * `blocks` es obligatorio: la fila tiene que ser un ítem del ÁRBOL, no solo
+ * parecerlo. Dentro de una valla de código `- dos` es texto literal y ⌫ no
+ * puede comerse el `- ` (se perderían caracteres escritos y la valla
+ * cambiaría de contenido).
+ *
  * Devuelve `{from, to, insert, cursor}` o `null` cuando no aplica (no estamos
  * al principio de la fila, la fila no es un ítem, o estamos en la posición 0).
  */
-export function backspaceJoinEdit({ text, pos }) {
+export function backspaceJoinEdit({ text, pos, blocks }) {
+  if (!Array.isArray(blocks)) {
+    throw new TypeError("backspaceJoinEdit necesita los bloques del árbol (blocks)");
+  }
   const line = lineAt(text, pos);
   if (pos !== line.from) return null;
+
+  const isItemAt = (from) => blocks.some((b) => isListItem(b) && b.from === from);
+  if (!isItemAt(line.from)) return null;
 
   const source = text.slice(line.from, line.to);
   const marker = BULLET_RE.exec(source) || ORDERED_RE.exec(source);
   if (!marker) return null;
 
   const markerEnd = line.from + marker[0].length;
-  const before = text.slice(0, line.from);
 
   if (line.from === 0) {
     // Primer ítem del documento: no hay arriba nada con lo que fusionar; se
@@ -230,8 +386,7 @@ export function backspaceJoinEdit({ text, pos }) {
   }
 
   const prevLine = lineAt(text, line.from - 1);
-  const prevSource = text.slice(prevLine.from, prevLine.to);
-  const prevIsItem = BULLET_RE.test(prevSource) || ORDERED_RE.test(prevSource);
+  const prevIsItem = isItemAt(prevLine.from);
 
   if (prevIsItem) {
     // Los espacios que colgaban del ítem de arriba se van con la fusión.

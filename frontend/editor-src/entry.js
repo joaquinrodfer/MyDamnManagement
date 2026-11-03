@@ -28,7 +28,13 @@ import {
   resolveCreatedLinkTitle,
 } from "./link-create.js";
 import { blockKeyEdit } from "./block-keys.js";
-import { backspaceJoinEdit, blockDeleteEdits, newBlockEdit, orderedRenumberEdits } from "./block-delete.js";
+import {
+  backspaceJoinEdit,
+  blockDeleteEdits,
+  convertBlockEdits,
+  newBlockEdit,
+  orderedRenumberEdits,
+} from "./block-delete.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -802,7 +808,12 @@ function replaceBlocks(view, indices, inserted) {
   const text = view.state.doc.toString();
   const edit = blockDeleteEdits({ text, blocks, indices, insert: inserted });
   if (!edit) return false;
-  const changes = [...edit.changes, ...orderedRenumberEdits({ text, blocks, indices })];
+  // Si el texto hereda el marcador del ítem (`2. X`) ese bloque no ha
+  // desaparecido: la renumeración no puede contarlo como borrado.
+  const changes = [
+    ...edit.changes,
+    ...orderedRenumberEdits({ text, blocks, indices, keepFirst: edit.keepsFirstItem }),
+  ];
   const set = ChangeSet.of(changes, text.length);
   view.dispatch({
     changes: set,
@@ -845,7 +856,11 @@ function typingOverBlocks() {
 function runBackspaceJoin(view) {
   const range = view.state.selection.main;
   if (!range.empty) return false;
-  const edit = backspaceJoinEdit({ text: view.state.doc.toString(), pos: range.head });
+  const edit = backspaceJoinEdit({
+    text: view.state.doc.toString(),
+    pos: range.head,
+    blocks: view.state.field(blockField).blocks,
+  });
   if (!edit) return false;
   view.dispatch({
     changes: { from: edit.from, to: edit.to, insert: edit.insert },
@@ -858,13 +873,18 @@ function runBackspaceJoin(view) {
 
 function convertBlocks(view, indices, targetType) {
   const { blocks } = view.state.field(blockField);
-  const doc = view.state.doc;
-  const changes = [...indices].map((i) => {
-    const b = blocks[i];
-    const raw = doc.sliceString(b.from, b.to);
-    const plain = stripBlockPrefix(raw, b.type);
-    return { from: b.from, to: b.to, insert: applyBlockType(plain, targetType) };
+  const text = view.state.doc.toString();
+  // La misma regla de frontera que al borrar (ver block-delete.js): lo
+  // convertido queda como bloque propio, con su línea en blanco si deja de ser
+  // un ítem de lista -- si no, Markdown leería la primera línea como
+  // continuación del ítem de arriba.
+  const changes = convertBlockEdits({
+    text,
+    blocks,
+    indices,
+    convert: (raw, block) => applyBlockType(stripBlockPrefix(raw, block.type), targetType),
   });
+  if (!changes.length) return;
   view.dispatch({ changes, effects: setSelectedBlocks.of(new Set()) });
   view.focus();
 }
