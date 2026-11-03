@@ -1947,6 +1947,35 @@ function renderNote(page, backlinks) {
   let beaconInFlight = null; // cuerpo del guardado de emergencia que va de camino
   let beaconQueued = false; // se pidió guardar otro contenido mientras había un beacon en vuelo
 
+  // El editor de ESTA nota, fijado al terminar renderNote(). `state.editor` es
+  // el de la nota que se esté pintando AHORA: en cuanto se navega pasa a ser el
+  // de la nota nueva, así que leerlo desde el cierre de la nota que se deja
+  // atrás es leer el cuerpo de otra nota -- y ese texto acababa escrito en el
+  // `.md` de esta. Tras `destroy()` el documento de `noteEditor` sigue siendo
+  // el de esta nota, y es el único texto que este guardado puede mandar.
+  let noteEditor = null;
+  let noteBodyFallback = page.body_markdown || ""; // último texto visto, si el editor ya no está
+  let session = null; // la de esta nota; la crea renderNote() al final
+
+  /** Texto del cuerpo de ESTA nota -- nunca el de la que esté abierta ahora.
+   * El editor de esta nota se destruye al navegar, pero su documento sigue
+   * siendo el suyo: de ahí sale el texto de un guardado que termina tarde. */
+  function bodyText() {
+    if (noteEditor) {
+      try {
+        return noteEditor.getValue();
+      } catch {
+        // editor destruido sin documento legible: vale el último texto visto
+      }
+    }
+    return noteBodyFallback;
+  }
+
+  /** ¿Esta nota (este cierre de renderNote) sigue siendo la que está abierta? */
+  function noteIsOpen() {
+    return session !== null && state.noteSession === session;
+  }
+
   /** Cuerpo del PATCH, compartido por el guardado normal y el de emergencia:
    * uno solo, para que no puedan acabar mandando cosas distintas. */
   function buildSaveBody() {
@@ -1957,7 +1986,7 @@ function renderNote(page, backlinks) {
       title: titleInput.value,
       icon: page.icon,
       description: descInput.value,
-      body_markdown: state.editor.getValue(),
+      body_markdown: bodyText(),
     });
   }
 
@@ -2242,7 +2271,10 @@ function renderNote(page, backlinks) {
       // manda el autoguardado de 2 s o el reenvío del beacon.
       setSaveState(dirty ? "dirty" : "saved");
       await loadTree();
-      markActive(page.id);
+      // El resaltado del árbol es de la nota abierta: si esta se dejó atrás
+      // mientras el PATCH iba de camino, marcarla se lo robaría a la que el
+      // usuario está mirando.
+      if (noteIsOpen()) markActive(page.id);
     } catch (e) {
       setSaveState("error");
       console.error(e);
@@ -2251,7 +2283,10 @@ function renderNote(page, backlinks) {
       savingBody = null;
       if (saveAgain) {
         saveAgain = false;
-        doSave();
+        // Solo si queda algo sin confirmar. Este reenvío se lanzaba a ciegas
+        // desde una nota ya abandonada y, como el cuerpo se leía del editor
+        // global, escribía el texto de la nota nueva en el `.md` de la vieja.
+        if (dirty) doSave();
       }
     }
   }
@@ -2352,6 +2387,7 @@ function renderNote(page, backlinks) {
     resolvePage: (title) => findPageByTitle(title),
     onNavigate: (pageId) => navigateToPage(pageId),
     onChange: () => {
+      noteBodyFallback = bodyText();
       scheduleSave();
       renderOutline();
     },
@@ -2401,6 +2437,7 @@ function renderNote(page, backlinks) {
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
   });
+  noteEditor = state.editor;
 
   // El árbol ya está cargado cuando se abre una nota (lo pide el arranque y
   // cada navegación), pero setLinkTargets es un efecto sobre el estado del
@@ -2796,7 +2833,7 @@ function renderNote(page, backlinks) {
   // P8: lo que `/events` necesita saber de esta nota -- si hay algo sin
   // guardar (para no pisarlo), cómo se tira lo pendiente si el usuario pide
   // recargar, y cómo se refrescan los backlinks sin tocar el editor.
-  const session = {
+  session = {
     id: page.id,
     hasPendingWork: () => dirty || saving || beaconInFlight !== null,
     /** Para el autoguardado mientras el usuario decide (no pisa el disco). */
