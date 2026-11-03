@@ -25,6 +25,10 @@
 // - ⌫ al principio de un ítem (D9): fusiona con el de arriba dejando un
 //   espacio (`- uno dos`), nunca `- uno- dos`, y solo si el ÁRBOL dice que la
 //   fila es un ítem (dentro de una valla de código `- dos` es texto literal).
+// - ⌫ en las filas de una valla de código (apertura, primera de contenido y
+//   cierre): la tecla se consume sin tocar el texto, porque unir esa fila con
+//   la de arriba convierte la valla en parte del párrafo y el `.md` pierde el
+//   bloque de código (o se queda sin cerrar y se traga lo de detrás).
 
 const BULLET_RE = /^([ \t]*)([-*+])[ \t]+/;
 const ORDERED_RE = /^([ \t]*)(\d+)([.)])[ \t]+/;
@@ -404,4 +408,80 @@ export function backspaceJoinEdit({ text, pos, blocks }) {
   // Primero de la lista (o lista suelta): el marcador desaparece y el texto
   // se queda como párrafo. El salto de línea de arriba no se toca.
   return { from: line.from, to: markerEnd, insert: "", cursor: line.from };
+}
+
+
+// ------------------------------------------------------------ valla de código
+//
+// ⌫ al principio de la primera línea de contenido o de la valla de cierre no
+// puede unir esa fila con la de arriba: la valla se convierte en texto
+// (` ```codigo `, `codigo``` `) y el bloque de código deja de existir en el
+// `.md`. En el cierre, además, el bloque se queda sin cerrar y al recargar se
+// traga todo lo que venga detrás -- corrupción del fichero, no un detalle de
+// pintado. También se consume en la valla de apertura cuando la fila de arriba
+// tiene texto (`parrafo``` `); con una línea en blanco encima no hay nada que
+// romper y decide el Backspace de siempre. El resto de ⌫ dentro de la valla
+// (fusionar dos líneas de contenido) sigue como siempre, y para salir del
+// bloque están el borrado del bloque y «Convertir a».
+
+const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
+
+/** Filas de texto que ocupa un bloque, sin la fila vacía del salto final. */
+function blockLines(text, block) {
+  const lines = [];
+  let at = block.from;
+  while (at <= block.to) {
+    const line = lineAt(text, at);
+    lines.push(line);
+    if (line.to >= block.to) break;
+    at = line.to + 1;
+  }
+  while (lines.length > 1 && lines[lines.length - 1].from >= block.to) lines.pop();
+  return lines;
+}
+
+/**
+ * ¿Rompería el ⌫ en `pos` la valla de un bloque de código?
+ *
+ * `true` = la tecla tiene que consumirse sin tocar el texto. Solo pasa en las
+ * filas de un bloque CON valla (uno de código por sangría no tiene valla que
+ * romper) donde unir de verdad rompe el bloque: la primera de contenido, la de
+ * cierre y la de apertura -- esta última solo si la fila de arriba tiene texto.
+ *
+ * `blocks` es obligatorio, igual que en `backspaceJoinEdit`: sin el árbol no se
+ * puede saber si la fila es valla, texto de dentro o un párrafo que empieza por
+ * tres acentos.
+ */
+export function backspaceWouldBreakFence({ text, pos, blocks }) {
+  if (!Array.isArray(blocks)) {
+    throw new TypeError("backspaceWouldBreakFence necesita los bloques del árbol (blocks)");
+  }
+  const block = blocks.find((b) => b.type === "code" && pos >= b.from && pos <= b.to);
+  if (!block) return false;
+
+  const lines = blockLines(text, block);
+  if (!lines.length) return false;
+  const lineText = (line) => text.slice(line.from, line.to);
+  // Bloque de código con sangría (sin valla): unir filas no rompe nada.
+  if (!FENCE_RE.test(lineText(lines[0]))) return false;
+
+  const atLineStart = (line) => !!line && pos === line.from;
+
+  // Primera línea de contenido: unirla mete siempre la fila en la valla.
+  if (atLineStart(lines[1])) return true;
+
+  // Valla de apertura: solo rompe si la fila de arriba tiene texto, porque
+  // entonces la valla pasa a ser el final de ese párrafo (`parrafo``` `). Con
+  // una línea en blanco encima, unir solo quita el hueco y la valla se queda
+  // entera: ahí decide el Backspace de siempre.
+  if (atLineStart(lines[0])) {
+    if (pos === 0) return false;
+    const above = lineAt(text, pos - 1);
+    return text.slice(above.from, above.to).trim() !== "";
+  }
+
+  // Valla de cierre: unirla con el código deja el bloque sin cerrar, y al
+  // recargar se traga todo lo que venga detrás.
+  const closing = lines[lines.length - 1];
+  return lines.length > 2 && atLineStart(closing) && FENCE_RE.test(lineText(closing));
 }

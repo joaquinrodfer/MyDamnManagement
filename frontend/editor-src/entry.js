@@ -30,6 +30,7 @@ import {
 import { blockKeyEdit } from "./block-keys.js";
 import {
   backspaceJoinEdit,
+  backspaceWouldBreakFence,
   blockDeleteEdits,
   convertBlockEdits,
   newBlockEdit,
@@ -852,15 +853,24 @@ function typingOverBlocks() {
  * primero de la lista, el marcador desaparece y el texto sube a párrafo.
  * Va antes del Backspace de Markdown, que si no llega a tiempo pega las dos
  * frases; si esta regla no aplica devuelve `false` y decide aquel.
+ *
+ * Antes de fusionar nada, la valla manda: dentro de un bloque de código, ⌫ en
+ * la primera línea de contenido o en la de cierre (y en la de apertura cuando
+ * arriba hay texto) se consume sin tocar el texto (`return true`, sin
+ * transacción). Si no, el Backspace por defecto unía esa fila con la de arriba
+ * y el `.md` perdía el bloque de código.
+ *
+ * Se exporta para poder probar el comando del keymap tal cual (ver
+ * test/backspace-fence.test.js): el verde de la función pura no cazaba esto,
+ * porque quien rompía la valla era el Backspace de después.
  */
-function runBackspaceJoin(view) {
+export function runBackspaceJoin(view) {
   const range = view.state.selection.main;
   if (!range.empty) return false;
-  const edit = backspaceJoinEdit({
-    text: view.state.doc.toString(),
-    pos: range.head,
-    blocks: view.state.field(blockField).blocks,
-  });
+  const text = view.state.doc.toString();
+  const blocks = view.state.field(blockField).blocks;
+  if (backspaceWouldBreakFence({ text, pos: range.head, blocks })) return true;
+  const edit = backspaceJoinEdit({ text, pos: range.head, blocks });
   if (!edit) return false;
   view.dispatch({
     changes: { from: edit.from, to: edit.to, insert: edit.insert },

@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import {
   blockDeleteEdits,
   backspaceJoinEdit,
+  backspaceWouldBreakFence,
   convertBlockEdits,
   newBlockEdit,
   orderedRenumberEdits,
@@ -429,6 +430,79 @@ test("D9: ⌫ entre dos líneas que parecen lista pero son un párrafo", () => {
 
 test("D9: sin los bloques del árbol no adivina (mejor fallar que comerse texto)", () => {
   assert.throws(() => backspaceJoinEdit({ text: "- uno\n- dos", pos: 6 }), TypeError);
+});
+
+// --------------------------------------------------- ⌫ y la valla del código
+//
+// Un ⌫ que una una valla con la fila de arriba convierte la valla en texto: el
+// `.md` deja de tener bloque de código (` ```codigo `) o, si es el cierre, el
+// bloque se queda sin cerrar y al recargar se traga todo lo que venga detrás.
+// Las tres filas de la valla (apertura, primera de contenido y cierre) se
+// consumen sin tocar nada.
+
+/** Bloques de un documento con una sola valla (y un párrafo detrás, si lo hay). */
+function fenced(text, paragraphAt = -1) {
+  const close = text.lastIndexOf("```");
+  const blocks = [{ from: 0, to: close + 3, type: "code" }];
+  if (paragraphAt >= 0) blocks.push({ from: paragraphAt, to: text.length, type: "paragraph" });
+  return blocks;
+}
+
+test("valla: ⌫ al principio de la primera línea de contenido no une con la apertura", () => {
+  const text = "```\n- uno\n```";
+  assert.equal(backspaceWouldBreakFence({ text, pos: 4, blocks: fenced(text) }), true);
+});
+
+test("valla: ⌫ al principio de la valla de cierre no une el cierre con el código", () => {
+  const text = "```\ncodigo\n```\n\nparrafo";
+  const blocks = fenced(text, text.indexOf("parrafo"));
+  assert.equal(backspaceWouldBreakFence({ text, pos: text.indexOf("```", 3), blocks }), true);
+});
+
+test("valla: con lenguaje, ⌫ en la primera línea de contenido tampoco toca la valla", () => {
+  const text = "```js\nuno\n```";
+  assert.equal(backspaceWouldBreakFence({ text, pos: text.indexOf("uno"), blocks: fenced(text) }), true);
+});
+
+test("valla: ⌫ al principio de la apertura con texto encima se consume (no deja `parrafo``` `)", () => {
+  const text = "parrafo\n```\nuno\n```";
+  const open = text.indexOf("```");
+  const blocks = [para(text, "parrafo"), { from: open, to: text.length, type: "code" }];
+  assert.equal(backspaceWouldBreakFence({ text, pos: open, blocks }), true);
+});
+
+test("valla: con línea en blanco encima, ⌫ en la apertura solo quita el hueco (no se consume)", () => {
+  const text = "parrafo\n\n```\nuno\n```";
+  const open = text.indexOf("```");
+  const blocks = [para(text, "parrafo"), { from: open, to: text.length, type: "code" }];
+  assert.equal(backspaceWouldBreakFence({ text, pos: open, blocks }), false);
+});
+
+test("valla: ⌫ entre dos líneas de contenido sí fusiona (la tecla no se consume)", () => {
+  const text = "```\nuno\ndos\n```";
+  assert.equal(backspaceWouldBreakFence({ text, pos: text.indexOf("dos"), blocks: fenced(text) }), false);
+});
+
+test("valla: ⌫ en mitad de la fila de la valla no es asunto de esta regla", () => {
+  const text = "```\ncodigo\n```";
+  const blocks = fenced(text);
+  assert.equal(backspaceWouldBreakFence({ text, pos: text.indexOf("```", 3) + 1, blocks }), false);
+});
+
+test("valla: un bloque de código con sangría no tiene valla que romper", () => {
+  const text = "    uno\n    dos";
+  const blocks = [{ from: 0, to: text.length, type: "code" }];
+  assert.equal(backspaceWouldBreakFence({ text, pos: text.indexOf("    dos"), blocks }), false);
+});
+
+test("valla: fuera de un bloque de código no aplica", () => {
+  const text = "uno\ndos";
+  const blocks = [{ from: 0, to: text.length, type: "paragraph" }];
+  assert.equal(backspaceWouldBreakFence({ text, pos: 4, blocks }), false);
+});
+
+test("valla: sin los bloques del árbol no adivina (mejor fallar que comerse la valla)", () => {
+  assert.throws(() => backspaceWouldBreakFence({ text: "```\nuno\n```", pos: 4 }), TypeError);
 });
 
 // ------------------------------------------------------------- convertir
