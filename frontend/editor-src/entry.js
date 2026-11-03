@@ -38,7 +38,7 @@ import {
   orderedRenumberEdits,
   renumberOrderedRun,
 } from "./block-delete.js";
-import { canonicalBody, cursorInOuterBlanks } from "./body.js";
+import { canonicalBody, collapseEmptyGaps, cursorInOuterBlanks } from "./body.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -539,6 +539,70 @@ const blockField = StateField.define({
   },
 });
 
+// Huecos vacíos que ha creado el editor en MEDIO del documento: el par de
+// saltos que añaden el «+» del asa y ⏎ (o ⇧⏎) con bloques marcados cuando
+// queda contenido detrás. Mientras el cursor siga dentro son el bloque nuevo
+// que se está creando; en cuanto se sale sin escribir nada se colapsan (D8 a),
+// igual que los de los extremos -- si no, abandonar ese bloque dejaba tres
+// líneas en blanco permanentes en el `.md`, que es justo el aire que (a) dice
+// que no existe.
+//
+// Se marcan SOLO los huecos que crea el editor: un `alfa\n\n\n\nbeta` escrito a
+// mano (o pegado) no lleva marca y se guarda tal cual, que es lo que ya hacía
+// el backend al escribir. La regla de cuándo sigue siendo un hueco vacío está
+// en `emptyGapRange` (body.js).
+const addEmptyGap = StateEffect.define();
+
+const pendingEmptyGaps = StateField.define({
+  create: () => [],
+  update(gaps, tr) {
+    const next = [];
+    // Las marcas viejas se mueven con las ediciones; si una edición se lleva
+    // el par, la marca se queda con un rango de otro tamaño y `emptyGapRange`
+    // la descarta al usarla.
+    for (const gap of gaps) {
+      if (!tr.docChanged) {
+        next.push(gap);
+        continue;
+      }
+      // Las dos puntas se pegan al texto que ya había (assoc -1): si se
+      // escribe justo en el borde del hueco, la marca se queda donde estaba y
+      // `emptyGapRange` ve el texto nuevo -- en vez de desplazarse y seguir
+      // pareciendo un hueco vacío.
+      const from = tr.changes.mapPos(gap.from, -1);
+      const to = tr.changes.mapPos(gap.to, -1);
+      if (to - from === 2) next.push({ from, to });
+    }
+    for (const effect of tr.effects) {
+      if (!effect.is(addEmptyGap)) continue;
+      const from = effect.value;
+      const to = from + 2;
+      // Al final del documento no hay bloque vacío que quitar: ese hueco es
+      // de los extremos y de esos se encarga `dropOuterBlankLines`.
+      if (to >= tr.newDoc.length) continue;
+      if (tr.newDoc.sliceString(from, to) !== "\n\n") continue;
+      // Y que sea un bloque vacío de verdad, no el hueco que deja partir un
+      // párrafo: el cursor tiene que haber quedado DENTRO del tramo de saltos.
+      // Con ⏎ al principio de una línea de un párrafo, los dos saltos nuevos
+      // quedan encima del texto y el cursor se va al texto de debajo; ahí no
+      // hay bloque nuevo que quitar.
+      const run = newlineRunInDoc(tr.newDoc, from + 1);
+      if (!run) continue;
+      if (!tr.state.selection.ranges.some((r) => r.from < run.to && r.to > run.from)) continue;
+      next.push({ from, to });
+    }
+    return next;
+  },
+});
+
+/** Efecto que marca el bloque vacío que acaba de insertar un comando, si lo
+ * que inserta es el par de saltos de un bloque nuevo. Partir un párrafo por
+ * la mitad no deja marca: ahí los dos saltos separan texto que ya existía, y
+ * quitarlos al salir pegaría las dos mitades otra vez. */
+function emptyGapEffect(from, insert = "\n\n") {
+  return insert === "\n\n" ? [addEmptyGap.of(from)] : [];
+}
+
 // El handle de cada bloque NO es un gutter de CodeMirror: se probó primero
 // con gutter() (como lineNumbers()) y las filas no se alineaban con el
 // contenido real -- un gutter asume altura de línea uniforme, y aquí los
@@ -894,7 +958,7 @@ function insertBlockAfter(view, index) {
   view.dispatch({
     changes: { from: pos, to: pos, insert: "\n\n" },
     selection: { anchor: pos + 2 },
-    effects: setSelectedBlocks.of(new Set()),
+    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(pos)],
   });
   view.focus();
 }
@@ -1737,7 +1801,12 @@ function runBlockKey(view, kind) {
       view.dispatch({
         changes: set,
         selection: { anchor: set.mapPos(edit.cursor, 1) },
-        effects: setSelectedBlocks.of(new Set()),
+        // El bloque vacío es el hueco que queda entre los dos separadores (ver
+        // `newBlockEdit`): el primer cambio es el par de saltos que lo forma.
+        effects: [
+          setSelectedBlocks.of(new Set()),
+          ...emptyGapEffect(edit.changes[0].from, edit.changes[0].insert),
+        ],
         userEvent: "input",
         scrollIntoView: true,
       });
@@ -1773,6 +1842,7 @@ function runBlockKey(view, kind) {
     selection: { anchor: edit.cursor },
     scrollIntoView: true,
     userEvent: "input",
+    effects: emptyGapEffect(edit.from, edit.insert),
   });
   return true;
 }
@@ -2352,6 +2422,68 @@ function dropOuterBlankLines(update) {
   });
 }
 
+// El otro extremo de D8 (a): el bloque vacío que se crea EN MEDIO (el «+» del
+// asa, ⏎ al final de un bloque con contenido detrás) tampoco existe. Se
+// colapsa en cuanto el cursor sale de él sin que se haya escrito nada, con la
+// misma mecánica que `dropOuterBlankLines`: microtask (despachar una
+// transacción desde un `updateListener` no está permitido) y fuera del
+// historial, porque deshacer un cambio del usuario no tiene que resucitar un
+// hueco que nunca fue un bloque.
+//
+// No pasa por `onChange`: el aire no llega al fichero porque `getValue()` lo
+// quita igual (ver `collapseEmptyGaps`), así que no hay nada que guardar. Y
+// solo se tocan los huecos marcados por el propio editor: una nota que no se
+// edita no tiene marcas y no se reescribe nunca.
+const trimmingInner = new WeakSet();
+
+/** Tramo de saltos de línea del documento que contiene `pos`. */
+function newlineRunInDoc(doc, pos) {
+  let from = pos;
+  while (from > 0 && doc.sliceString(from - 1, from) === "\n") from--;
+  let to = pos;
+  while (to < doc.length && doc.sliceString(to, to + 1) === "\n") to++;
+  return from === to ? null : { from, to };
+}
+
+/** ¿Hay alguna selección dentro del bloque vacío? Mientras la haya, el hueco
+ * es el bloque que se está creando: quitarlo bajo los dedos sería peor que
+ * dejarlo colapsado. */
+function selectionInEmptyGap(state, gaps) {
+  const doc = state.doc;
+  for (const gap of gaps) {
+    const run = newlineRunInDoc(doc, gap.from + 1);
+    if (!run) continue;
+    if (state.selection.ranges.some((r) => r.from < run.to && r.to > run.from)) return true;
+  }
+  return false;
+}
+
+function dropInnerEmptyGap(update) {
+  if (!update.docChanged && !update.selectionSet) return;
+  const view = update.view;
+  const gaps = view.state.field(pendingEmptyGaps);
+  if (!gaps.length) return;
+  if (trimmingInner.has(view)) return;
+  if (selectionInEmptyGap(view.state, gaps)) return; // se está escribiendo ahí
+  trimmingInner.add(view);
+  queueMicrotask(() => {
+    trimmingInner.delete(view);
+    if (!view.dom.isConnected) return; // el editor ya se destruyó (navegación)
+    const state = view.state;
+    const gaps = state.field(pendingEmptyGaps);
+    if (!gaps.length) return;
+    if (selectionInEmptyGap(state, gaps)) return; // ha vuelto al hueco
+    const text = state.doc.toString();
+    const { text: target, ranges } = collapseEmptyGaps(text, gaps);
+    if (!ranges.length || target === text) return;
+    view.dispatch({
+      changes: ranges,
+      annotations: Transaction.addToHistory.of(false),
+      userEvent: "trim.inner",
+    });
+  });
+}
+
 export function createNoteEditor({
   parent,
   doc,
@@ -2403,6 +2535,7 @@ export function createNoteEditor({
         markdown({ addKeymap: false }),
         syntaxHighlighting(highlightStyle),
         blockField,
+        pendingEmptyGaps,
         // Sin este facet CodeMirror colapsa una selección de varios rangos al
         // rango principal: las asas se pintaban marcadas pero solo actuaba la
         // última (D3). El resto de selecciones múltiples (varios cursores) no
@@ -2430,9 +2563,12 @@ export function createNoteEditor({
           const onlyTrim =
             update.docChanged &&
             update.transactions.length > 0 &&
-            update.transactions.every((tr) => tr.isUserEvent("trim.outer"));
+            update.transactions.every(
+              (tr) => tr.isUserEvent("trim.outer") || tr.isUserEvent("trim.inner"),
+            );
           if (update.docChanged && !onlyTrim) onChange(update.state.doc.toString());
           dropOuterBlankLines(update);
+          dropInnerEmptyGap(update);
         }),
       ],
     }),
@@ -2443,7 +2579,15 @@ export function createNoteEditor({
     // en blanco de los extremos. Decisión D8 (a): esos bloques vacíos no
     // existen -- el `.md` ya los tiraba al escribir (`canonical_body` en
     // backend/app/vault/store.py), así que el editor no los manda siquiera.
-    getValue: () => canonicalBody(view.state.doc.toString()),
+    getValue: () => {
+      const text = view.state.doc.toString();
+      const gaps = view.state.field(pendingEmptyGaps);
+      // Los huecos vacíos que creó el editor y el usuario ha abandonado no
+      // llegan al fichero: lo que se guarda coincide con lo que se ve (el
+      // aire de en medio, igual que el de los extremos). Las líneas en blanco
+      // escritas a mano no llevan marca y se guardan tal cual.
+      return canonicalBody(gaps.length ? collapseEmptyGaps(text, gaps).text : text);
+    },
     /** Destinos posibles de un wikilink -- `[{id, title, type}]` con todas
      * las notas y bases de datos del vault. La app la llama al cargar el
      * árbol y cada vez que el árbol cambia; con la lista vacía el
