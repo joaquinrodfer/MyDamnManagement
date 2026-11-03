@@ -829,6 +829,7 @@ function swallowTapAfterMenu() {
     window.removeEventListener("click", onTap, true);
     window.removeEventListener("pointerdown", drop, true);
     window.removeEventListener("touchstart", drop, true);
+    window.removeEventListener("keydown", drop, true);
     if (timer !== null) clearTimeout(timer);
     timer = null;
   };
@@ -840,6 +841,9 @@ function swallowTapAfterMenu() {
   window.addEventListener("click", onTap, true);
   window.addEventListener("pointerdown", drop, true);
   window.addEventListener("touchstart", drop, true);
+  // Teclado (Escape, Tab, Enter) también quita la valla: con teclado no hay
+  // clic sintético que tragarse.
+  window.addEventListener("keydown", drop, true);
   timer = window.setTimeout(drop, 5000);
 }
 
