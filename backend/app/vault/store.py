@@ -1333,6 +1333,50 @@ class VaultStore:
             log.info("fila %s: %s", page.path, "; ".join(notes))
         return row_id
 
+    def _refuse_erasing_unreadable(
+        self, row: sqlite3.Row, rel: str, data: dict, properties: dict
+    ) -> None:
+        """`VaultError` si el PATCH vaciaría una celda que el índice no supo leer (B2).
+
+        El índice guarda `null` en una propiedad `number` cuyo `.md` trae texto
+        (`valor: A-12`: `reader._coerce` no puede con él): la tabla enseña `—` y
+        un cliente que «vacía esa celda» manda `null` creyendo que ya estaba
+        vacía. Escribirlo borraría del fichero un dato que el usuario nunca vio,
+        así que se avisa con un 400 y no se toca nada — una pérdida silenciosa
+        en el `.md` del dueño es peor que un guardado que falla.
+
+        Escribir un valor **representable** sí se permite: es la forma de
+        arreglar esa celda desde la app. Y una celda cuya clave no está en el
+        fichero, o cuyo valor el índice sí entiende, se vacía sin más: eso es
+        una decisión del usuario sobre un dato que ha visto.
+        """
+        db = self.conn.execute(
+            "SELECT schema_json FROM databases WHERE id = ?", (row["database_id"],)
+        ).fetchone()
+        schema = _load(db["schema_json"], []) if db is not None else []
+        tipos = {
+            prop.get("key"): prop.get("type")
+            for prop in schema
+            if isinstance(prop, dict)
+        }
+        for key, value in properties.items():
+            if value is not None or key not in data:
+                continue
+            crudo = data[key]
+            if crudo is None or str(crudo).strip() == "":
+                continue            # el `.md` ya la tiene vacía: no se borra nada
+            leido = reader.row_properties(schema, {key: crudo})
+            if key not in leido or leido[key] is not None:
+                continue            # el índice lo entiende: vaciarlo es del usuario
+            raise VaultError(
+                f"no se puede vaciar «{key}» de {rel}: el .md tiene "
+                f"«{key}: {crudo}», que no es un valor de tipo «{tipos.get(key)}» "
+                "y el índice no puede representarlo (por eso la tabla lo enseña "
+                "vacío). Vaciarlo desde aquí borraría del fichero un dato que no "
+                "se ha visto: escribe un valor válido en esa celda o corrige la "
+                "línea del .md a mano."
+            )
+
     def save_row(
         self,
         page_id: Any,
@@ -1359,6 +1403,22 @@ class VaultStore:
             )
         text, _warnings = _read_text(abs_old)
 
+        # Frontmatter del fichero tal y como está en el disco (no lo que diga el
+        # índice): es lo que se va a reescribir y lo que hay que respetar.
+        try:
+            raw, _body = fm.split_document(text)
+            data = fm.parse(raw).data if raw is not None else {}
+        except fm.FrontmatterError:
+            data = {}
+
+        # Propiedades a escribir, validadas **antes** de mover o tocar nada: un
+        # `None` que borraría un valor que el índice no supo leer se rechaza con
+        # su motivo (B2). Mejor un 400 que una pérdida callada en el `.md`.
+        props: Optional[dict] = None
+        if properties is not UNSET and properties is not None:
+            props = writer.sin_reservadas(properties, [], "al guardar la fila")
+            self._refuse_erasing_unreadable(row, old_rel, data, props)
+
         folder = os.path.dirname(old_rel)
         current_stem = os.path.basename(old_rel)[:-3]
         if title is not UNSET and title is not None:
@@ -1375,11 +1435,6 @@ class VaultStore:
             suggestions.move_with_note(self.root, old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
-        try:
-            raw, _body = fm.split_document(text)
-            data = fm.parse(raw).data if raw is not None else {}
-        except fm.FrontmatterError:
-            data = {}
         if "created" not in data and row["created_at"]:
             updates["created"] = row["created_at"]
         if icon is not UNSET and icon is not None:
@@ -1388,9 +1443,9 @@ class VaultStore:
             updates["description"] = description
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
-        if properties is not UNSET and properties is not None:
+        if props is not None:
             # `title` no se escribe nunca: el título es el nombre del fichero.
-            updates.update(writer.sin_reservadas(properties, [], "al guardar la fila"))
+            updates.update(props)
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)
