@@ -7,7 +7,7 @@
 // junto al resto del sistema de diseño, para no duplicar el tema en dos
 // sitios.
 
-import { EditorState, EditorSelection, StateField, StateEffect } from "@codemirror/state";
+import { ChangeSet, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
@@ -28,6 +28,7 @@ import {
   resolveCreatedLinkTitle,
 } from "./link-create.js";
 import { blockKeyEdit } from "./block-keys.js";
+import { backspaceJoinEdit, blockDeleteEdits, orderedRenumberEdits } from "./block-delete.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -609,6 +610,11 @@ function blockHandleEventHandlers(onBlockContextMenu) {
         const handle = target.closest(".cm-mdm-block-handle");
         if (handle) {
           event.preventDefault();
+          // El mousedown también llega con el botón derecho. Ahí no se toca la
+          // selección: el menú contextual actúa sobre lo que ya estuviera
+          // marcado (antes, el clic derecho la reducía a ese único bloque y
+          // «Eliminar bloque» borraba uno solo con dos marcados).
+          if (event.button !== 0) return true;
 
           const idx = Number(handle.dataset.blockIndex);
           const { selected } = view.state.field(blockField);
@@ -626,6 +632,13 @@ function blockHandleEventHandlers(onBlockContextMenu) {
             next = new Set([idx]);
           }
           selectBlocks(view, next);
+          // El mousedown del asa va con preventDefault (para no mover el
+          // caret), así que el navegador NO da el foco al editor: sin esto,
+          // marcar un bloque con el asa y pulsar Supr no hacía nada porque la
+          // tecla no llegaba al editor. El foco deja la selección donde la
+          // puso selectBlocks (el bloque marcado), que es donde tiene que
+          // escribir y borrar el teclado.
+          view.focus();
           return true;
         }
       }
@@ -669,6 +682,13 @@ function blockHandleEventHandlers(onBlockContextMenu) {
     // colapsada -- si hubo arrastre para seleccionar texto, se deja tal
     // cual, para no romper esa selección.
     click(event, view) {
+      // Un clic en el asa ya lo ha resuelto el mousedown: esto solo corrige el
+      // caret del texto, y aplicarlo encima de una selección de bloques la
+      // borraría (cualquier cambio de selección que no sea nuestro vacía
+      // `selected`, ver blockField).
+      if (event.target instanceof HTMLElement && event.target.closest(".cm-mdm-block-handle-wrap")) {
+        return false;
+      }
       if (!view.state.selection.main.empty) return false;
       let domPos = null;
       if (document.caretPositionFromPoint) {
@@ -723,6 +743,10 @@ function selectBlocks(view, indices) {
   view.dispatch({
     effects: setSelectedBlocks.of(indices),
     selection: ranges.length ? EditorSelection.create(ranges, ranges.length - 1) : undefined,
+    // Marcar un bloque no es escribir: si esto entrara en el historial, cada
+    // ⌘⇧Z tendría que gastar una pulsación en la selección de por medio antes
+    // de llegar al borrado que de verdad se quiere rehacer.
+    annotations: Transaction.addToHistory.of(false),
   });
 }
 
@@ -744,17 +768,92 @@ function insertBlockAfter(view, index) {
   view.focus();
 }
 
+// Borrar bloque = quitar el bloque Y su separador, para que el `.md` no gane
+// líneas en blanco (D1) ni una lista se parta en dos al perder un ítem (D2).
+// Con varios bloques marcados se borran TODOS de una vez: la selección
+// múltiple se pinta, así que tiene que actuar (D3) -- y es el mismo camino
+// para el asa+Supr, para Retroceso y para el menú «Eliminar bloque».
+// Qué trozo exacto desaparece se decide en block-delete.js (lógica pura, con
+// sus pruebas en node --test); aquí solo se aplica.
 function deleteBlocks(view, indices) {
   const { blocks } = view.state.field(blockField);
-  const doc = view.state.doc;
-  const changes = [...indices].map((i) => {
-    const b = blocks[i];
-    let to = b.to;
-    if (to < doc.length && doc.sliceString(to, to + 1) === "\n") to += 1;
-    return { from: b.from, to, insert: "" };
+  const text = view.state.doc.toString();
+  const edit = blockDeleteEdits({ text, blocks, indices });
+  if (!edit) return false;
+  const changes = [...edit.changes, ...orderedRenumberEdits({ text, blocks, indices })];
+  const set = ChangeSet.of(changes, text.length);
+  view.dispatch({
+    changes: set,
+    selection: { anchor: set.mapPos(edit.cursor, 1) },
+    effects: setSelectedBlocks.of(new Set()),
+    userEvent: "delete.block",
+    scrollIntoView: true,
   });
-  view.dispatch({ changes, effects: setSelectedBlocks.of(new Set()) });
   view.focus();
+  return true;
+}
+
+// Escribir con bloques marcados sustituye a TODOS los marcados (D3), no solo
+// al que lleva la selección de texto: el texto entra en el sitio del primer
+// bloque marcado, los separadores de alrededor se conservan y el resto de
+// bloques marcados desaparece entero (con su separador, como deleteBlocks).
+function replaceBlocks(view, indices, inserted) {
+  const { blocks } = view.state.field(blockField);
+  const text = view.state.doc.toString();
+  const edit = blockDeleteEdits({ text, blocks, indices, insert: inserted });
+  if (!edit) return false;
+  const changes = [...edit.changes, ...orderedRenumberEdits({ text, blocks, indices })];
+  const set = ChangeSet.of(changes, text.length);
+  view.dispatch({
+    changes: set,
+    selection: { anchor: set.mapPos(edit.cursor, 1) },
+    effects: setSelectedBlocks.of(new Set()),
+    userEvent: "input.type",
+    scrollIntoView: true,
+  });
+  return true;
+}
+
+/** Supr/Retroceso con bloques marcados. `false` si no hay nada marcado: la
+ * tecla sigue su curso normal dentro del texto. */
+function deleteSelectedBlocks(view) {
+  const { selected } = view.state.field(blockField);
+  if (!selected.size) return false;
+  return deleteBlocks(view, [...selected]);
+}
+
+/**
+ * El texto que se teclea (o se pega) pasa por aquí antes que CodeMirror: con
+ * bloques marcados se aplica a todos a la vez. Devuelve `false` cuando no hay
+ * bloques marcados, para no tocar la escritura normal.
+ */
+function typingOverBlocks() {
+  return EditorView.inputHandler.of((view, from, to, inserted) => {
+    const { selected } = view.state.field(blockField);
+    if (!selected.size || !inserted) return false;
+    return replaceBlocks(view, [...selected], inserted);
+  });
+}
+
+/**
+ * ⌫ al principio de un ítem de lista (D9): fusiona con el ítem de arriba
+ * dejando un espacio (`- uno dos`), nunca `- uno- dos`. Si el ítem es el
+ * primero de la lista, el marcador desaparece y el texto sube a párrafo.
+ * Va antes del Backspace de Markdown, que si no llega a tiempo pega las dos
+ * frases; si esta regla no aplica devuelve `false` y decide aquel.
+ */
+function runBackspaceJoin(view) {
+  const range = view.state.selection.main;
+  if (!range.empty) return false;
+  const edit = backspaceJoinEdit({ text: view.state.doc.toString(), pos: range.head });
+  if (!edit) return false;
+  view.dispatch({
+    changes: { from: edit.from, to: edit.to, insert: edit.insert },
+    selection: { anchor: edit.cursor },
+    userEvent: "delete.backward",
+    scrollIntoView: true,
+  });
+  return true;
 }
 
 function convertBlocks(view, indices, targetType) {
@@ -1411,6 +1510,17 @@ const blockKeymap = keymap.of([
   { key: "Meta-Enter", run: (view) => runBlockKey(view, "soft") },
 ]);
 
+// Supr y Retroceso con bloques marcados. Van antes que el keymap general (que
+// borra el texto seleccionado y deja el hueco) y que el Backspace de Markdown.
+const blockDeleteKeymap = keymap.of([
+  { key: "Delete", run: (view) => deleteSelectedBlocks(view) },
+  { key: "Backspace", run: (view) => deleteSelectedBlocks(view) },
+]);
+
+// ⌫ que fusiona dos ítems de lista: por delante del Backspace de Markdown, que
+// es el que pegaba las dos frases («- uno- dos», D9).
+const backspaceJoinKeymap = keymap.of([{ key: "Backspace", run: (view) => runBackspaceJoin(view) }]);
+
 /** Bloque (del árbol de Markdown) en el que cae `pos`, o null si el cursor no
  * está dentro de ninguno (nota vacía, fila en blanco entre dos bloques). */
 function blockAt(state, pos) {
@@ -2022,6 +2132,8 @@ export function createNoteEditor({
         // consume teclas mientras está abierto) y luego la lista de "[[".
         linkKeymap,
         blockKeymap,
+        blockDeleteKeymap,
+        backspaceJoinKeymap,
         // El Backspace «que borra el marcador» de Markdown (deleteMarkupBackward)
         // se registra aquí a mano: `markdown()` ya no trae su keymap (ver abajo),
         // porque su Enter (insertNewlineContinueMarkup) competía con el de los
@@ -2037,6 +2149,12 @@ export function createNoteEditor({
         markdown({ addKeymap: false }),
         syntaxHighlighting(highlightStyle),
         blockField,
+        // Sin este facet CodeMirror colapsa una selección de varios rangos al
+        // rango principal: las asas se pintaban marcadas pero solo actuaba la
+        // última (D3). El resto de selecciones múltiples (varios cursores) no
+        // existe por defecto: solo las crea selectBlocks, al marcar asas.
+        EditorState.allowMultipleSelections.of(true),
+        typingOverBlocks(),
         blockHandlesPlugin(),
         blockHandleEventHandlers(onBlockContextMenu),
         blockLinesPlugin(),
