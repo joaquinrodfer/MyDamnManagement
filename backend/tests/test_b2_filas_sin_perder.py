@@ -22,6 +22,8 @@ Lo que se fija aquí:
 import difflib
 from pathlib import Path
 
+import pytest
+
 from app.vault import fm
 
 SCHEMA = [
@@ -344,3 +346,173 @@ def test_invariante_editar_cualquier_celda_no_borra_ninguna_clave(client, vault_
         )
         assert "valor: A-12" in despues and "importe: n/d" in despues
         assert despues.count("nota_del_dueno: revisar") == 1
+
+
+# --------------------------------------------------------------------------
+# 6. entradas `opaque`: también están en el fichero (revisión, ronda 1)
+# --------------------------------------------------------------------------
+#
+# `fm.parse().data` omite a propósito las entradas que el parser no entiende
+# (block scalars `|`/`>`, flow maps `{}`, anchors/tags). Son exactamente «lo que
+# el índice no supo interpretar»: la tabla enseña `—`, y vaciar esa celda desde
+# la app no puede llevarse el bloque del `.md`. El guard tiene que mirar las
+# `entries` del frontmatter, no solo `data`.
+
+OPACOS = [
+    ("block scalar", "empresa: |\n  Acme Corp SL"),
+    ("folded", "empresa: >\n  Acme Corp SL"),
+    ("flow map", "empresa: {nombre: Acme Corp SL}"),
+    ("ancla", "empresa: &acme Acme Corp SL"),
+]
+
+
+def fila_con_empresa_opaca(client, vault_path, reemplazo: str) -> tuple[dict, dict, Path]:
+    base = crear_base(client)
+    fila = crear_fila(
+        client, base["id"], empresa="Acme Corp", fase="lead", valor=10
+    )
+    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero.write_text(
+        escribir_a_mano(texto(fichero), ('empresa: "Acme Corp"', reemplazo)),
+        encoding="utf-8",
+    )
+    assert reemplazo in texto(fichero)
+    assert client.post("/reindex").status_code == 200
+    # El índice no ve la clave (el parser la marca opaca): la tabla enseña `—`.
+    en_indice = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert en_indice["properties"].get("empresa") is None
+    return base, fila, fichero
+
+
+@pytest.mark.parametrize("etiqueta, reemplazo", OPACOS, ids=[o[0] for o in OPACOS])
+def test_vaciar_una_entrada_opaca_avisa_y_no_borra(
+    client, vault_path, etiqueta, reemplazo
+):
+    base, fila, fichero = fila_con_empresa_opaca(client, vault_path, reemplazo)
+    antes = texto(fichero)
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"empresa": None}},
+    )
+    assert respuesta.status_code == 400, f"{etiqueta}: {respuesta.text}"
+    detalle = respuesta.json()["detail"]
+    # El motivo cita la línea del fichero y no se ha escrito nada.
+    assert "empresa" in detalle and "empresa: " in detalle, detalle
+    assert texto(fichero) == antes, f"{etiqueta}: un 400 no puede escribir el fichero"
+
+
+@pytest.mark.parametrize("etiqueta, reemplazo", OPACOS, ids=[o[0] for o in OPACOS])
+def test_editar_otra_celda_conserva_la_entrada_opaca(
+    client, vault_path, etiqueta, reemplazo
+):
+    base, fila, fichero = fila_con_empresa_opaca(client, vault_path, reemplazo)
+    antes = texto(fichero)
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"fase": "ganado"}},
+    )
+    assert respuesta.status_code == 200, f"{etiqueta}: {respuesta.text}"
+    despues = texto(fichero)
+
+    assert reemplazo in despues, f"{etiqueta}: editar otra celda ha borrado el bloque"
+    assert claves_tocadas(antes, despues) == {"fase", "updated"}, etiqueta
+
+
+def test_el_motivo_del_400_cita_el_yaml_del_fichero_no_el_interpretado(
+    client, vault_path
+):
+    """El dueño lee el motivo para arreglar su `.md`: tiene que ver su línea."""
+    base = crear_base(client)
+    fila = crear_fila(client, base["id"], empresa="Acme Corp", valor=10)
+    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero.write_text(
+        escribir_a_mano(texto(fichero), ("valor: 10", "valor: [1, 2]")),
+        encoding="utf-8",
+    )
+    assert client.post("/reindex").status_code == 200
+    assert client.get(
+        f"/databases/{base['id']}/rows/{fila['id']}"
+    ).json()["properties"]["valor"] is None
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/rows/{fila['id']}",
+        json={"properties": {"valor": None}},
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    detalle = respuesta.json()["detail"]
+    assert "valor: [1, 2]" in detalle, detalle
+    assert "['1', '2']" not in detalle, f"cita el YAML interpretado: {detalle}"
+
+
+def test_fm_update_no_borra_una_entrada_opaca_ni_pidiendolo():
+    """El escritor también protege solo: `None`/`delete` no se llevan lo opaco."""
+    raw = "id: 1\nempresa: |\n  Acme Corp SL\nvalor: 2"
+
+    nuevo, avisos = fm.update(raw, {"empresa": None})
+    assert "empresa: |" in nuevo and "  Acme Corp SL" in nuevo
+    assert nuevo == raw
+    assert avisos and "empresa" in avisos[0], avisos
+
+    borrada, avisos = fm.update(raw, {}, delete={"empresa"})
+    assert borrada == raw
+    assert avisos and "empresa" in avisos[0], avisos
+
+    # Y editar otra clave sigue funcionando sin tocar el bloque.
+    otro, avisos = fm.update(raw, {"valor": 3})
+    assert "empresa: |\n  Acme Corp SL" in otro
+    assert "valor: 3" in otro
+    assert avisos == []
+
+
+def test_invariante_editar_cualquier_celda_no_borra_entradas_opacas(client, vault_path):
+    """La invariante, con una entrada opaca: solo puede cambiar la celda editada."""
+    base = crear_base(client)
+    fila = crear_fila(
+        client,
+        base["id"],
+        empresa="Acme Corp",
+        fase="lead",
+        proximo_contacto="A-12",
+        valor=10,
+    )
+    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero.write_text(
+        escribir_a_mano(
+            texto(fichero),
+            ('empresa: "Acme Corp"', "empresa: |\n  Acme Corp SL"),
+            ("valor: 10", "valor: A-12"),
+        ),
+        encoding="utf-8",
+    )
+    assert client.post("/reindex").status_code == 200
+
+    for clave, valor in {
+        "fase": "ganado",
+        "proximo_contacto": "B-7",
+        "valor": 42,   # único caso que sí reemplaza un valor ilegible, a propósito
+    }.items():
+        antes = texto(fichero)
+        entrada_antes = {e.key for e in fm.parse(
+            fm.split_document(antes)[0] or ""
+        ).entries if e.key}
+        respuesta = client.patch(
+            f"/databases/{base['id']}/rows/{fila['id']}",
+            json={"properties": {clave: valor}},
+        )
+        assert respuesta.status_code == 200, f"{clave}: {respuesta.text}"
+        despues = texto(fichero)
+        entrada_despues = {e.key for e in fm.parse(
+            fm.split_document(despues)[0] or ""
+        ).entries if e.key}
+
+        assert entrada_despues == entrada_antes, (
+            f"editar «{clave}» ha cambiado las claves del .md: "
+            f"{entrada_antes ^ entrada_despues}"
+        )
+        assert "empresa: |\n  Acme Corp SL" in despues
+        assert claves_tocadas(antes, despues) <= {clave, "updated"}, (
+            f"editar «{clave}» ha tocado "
+            f"{claves_tocadas(antes, despues) - {clave, 'updated'}}"
+        )
