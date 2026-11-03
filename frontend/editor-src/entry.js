@@ -38,7 +38,7 @@ import {
   orderedRenumberEdits,
   renumberOrderedRun,
 } from "./block-delete.js";
-import { canonicalBody, collapseEmptyGaps, cursorInOuterBlanks } from "./body.js";
+import { canonicalBody, collapseEmptyGaps, cursorInOuterBlanks, shiftEmptyGap } from "./body.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -557,21 +557,26 @@ const pendingEmptyGaps = StateField.define({
   create: () => [],
   update(gaps, tr) {
     const next = [];
-    // Las marcas viejas se mueven con las ediciones; si una edición se lleva
-    // el par, la marca se queda con un rango de otro tamaño y `emptyGapRange`
-    // la descarta al usarla.
+    // Las marcas viejas se mueven con las ediciones. La regla está en
+    // `shiftEmptyGap` (body.js, con sus pruebas): lo que se inserta justo en
+    // el borde de delante del hueco se queda ANTES del par y la marca se
+    // desplaza con él -- si no, un segundo «+» en el mismo bloque tiraba la
+    // marca y el aire volvía al `.md`. Si una edición se lleva el par, la
+    // marca deja de medir 2 y se descarta.
+    let changes = null;
     for (const gap of gaps) {
       if (!tr.docChanged) {
         next.push(gap);
         continue;
       }
-      // Las dos puntas se pegan al texto que ya había (assoc -1): si se
-      // escribe justo en el borde del hueco, la marca se queda donde estaba y
-      // `emptyGapRange` ve el texto nuevo -- en vez de desplazarse y seguir
-      // pareciendo un hueco vacío.
-      const from = tr.changes.mapPos(gap.from, -1);
-      const to = tr.changes.mapPos(gap.to, -1);
-      if (to - from === 2) next.push({ from, to });
+      if (!changes) {
+        changes = [];
+        tr.changes.iterChanges((from, to, fromB, toB, inserted) => {
+          changes.push({ from, to, insert: inserted.toString() });
+        });
+      }
+      const moved = shiftEmptyGap(gap, changes);
+      if (moved) next.push(moved);
     }
     for (const effect of tr.effects) {
       if (!effect.is(addEmptyGap)) continue;

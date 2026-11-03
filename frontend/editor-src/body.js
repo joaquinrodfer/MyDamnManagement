@@ -99,6 +99,54 @@ export function emptyGapRange(text, gap) {
 }
 
 /**
+ * Dónde queda el hueco `{from, to}` después de una transacción, o null si ya
+ * no mide los dos saltos que lo formaban.
+ *
+ * `changes` son los cambios de la transacción en coordenadas del documento
+ * VIEJO (`[{from, to, insert}]`, como los da `ChangeSet.iterChanges`). Las dos
+ * puntas se desplazan con el sesgo que `mapPos` llama «hacia dentro», y es
+ * justo el que hace falta aquí:
+ *
+ * - `from` se queda pegado al par (sesgo a la derecha): lo que se teclea
+ *   justo en el borde de delante queda ANTES del hueco, así que la marca se
+ *   corre con el texto y el par sigue midiendo dos saltos. Con el sesgo
+ *   contrario, un segundo «+» en el mismo bloque (dos toques seguidos; el
+ *   bloque vacío no se ve, así que es fácil) metía su par justo en `from`, la
+ *   marca pasaba a medir 4 y se descartaba: el hueco dejaba de estar vigilado
+ *   y el aire se quedaba en el `.md`.
+ * - `to` se queda pegado al par (sesgo a la izquierda): lo que se escribe
+ *   detrás del hueco no lo alarga -- `emptyGapRange` ve el texto nuevo y
+ *   decide que ese hueco ya es contenido.
+ *
+ * Si un cambio cae DENTRO del par, el rango deja de medir 2 y la marca se
+ * descarta: ya no es un bloque vacío, es texto.
+ */
+export function shiftEmptyGap(gap, changes) {
+  let from = Number(gap?.from);
+  let to = Number(gap?.to);
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return null;
+  const list = [];
+  for (const c of changes || []) {
+    const cf = Number(c?.from);
+    const ct = Number(c?.to);
+    if (!Number.isInteger(cf) || !Number.isInteger(ct) || cf > ct) continue;
+    list.push({ from: cf, to: ct, insert: String(c?.insert ?? "") });
+  }
+  // De atrás hacia delante: los cambios vienen en coordenadas del documento
+  // viejo y los de más abajo no mueven las posiciones de los de más arriba.
+  list.sort((a, b) => a.from - b.from);
+  for (let i = list.length - 1; i >= 0; i--) {
+    const c = list[i];
+    const delta = c.insert.length - (c.to - c.from);
+    if (from > c.to) from += delta;
+    else if (from >= c.from) from = c.from + c.insert.length;
+    if (to > c.to) to += delta;
+    else if (to > c.from) to = c.from;
+  }
+  return to - from === 2 ? { from, to } : null;
+}
+
+/**
  * Texto sin los bloques vacíos que creó el editor y que el usuario abandonó
  * sin escribir nada, más los tramos quitados (para despacharlos como un
  * cambio de CodeMirror). Los huecos de los extremos no salen aquí: esos los

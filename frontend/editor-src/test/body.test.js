@@ -24,6 +24,7 @@ import {
   emptyGapRange,
   newlineRunAt,
   outerBlankRange,
+  shiftEmptyGap,
 } from "../body.js";
 
 test("D8: dos Intro al principio se van con el texto", () => {
@@ -152,4 +153,105 @@ test("newlineRunAt: el tramo de saltos que contiene la posición", () => {
   assert.equal(newlineRunAt("alfa\n\nbeta", 2), null); // dentro de «alfa»
   assert.equal(newlineRunAt("beta", 0), null);
   assert.deepEqual(newlineRunAt("\n\n", 1), { from: 0, to: 2 });
+});
+
+// ------------------------- desplazamiento de la marca con las ediciones
+// El hueco se marca con las posiciones de sus dos saltos y hay que moverlo con
+// cada transacción (`shiftEmptyGap`, que es lo que usa el StateField). Aquí
+// está el fallo que se colaba: con el sesgo de `mapPos` hacia fuera en las dos
+// puntas, un texto insertado justo en `from` alargaba el rango a 4, la marca
+// se descartaba y el aire se quedaba para siempre en el `.md`.
+
+test("dos «+» seguidos en el mismo bloque: la marca vieja se desplaza, no se pierde", () => {
+  // `alfa\n\nbeta` + «+» en el bloque 0 -> `alfa\n\n\n\nbeta` con la marca
+  // {4,6}. El segundo «+» inserta otro par en 4, DELANTE del primer hueco.
+  assert.deepEqual(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 4, to: 4, insert: "\n\n" }]), {
+    from: 6,
+    to: 8,
+  });
+  // Y con las dos marcas el documento vuelve al canónico al abandonarlas.
+  assert.deepEqual(
+    collapseEmptyGaps("alfa\n\n\n\n\n\nbeta", [
+      { from: 6, to: 8 }, // la del primer «+», desplazada
+      { from: 4, to: 6 }, // la que añade el segundo
+    ]),
+    {
+      text: "alfa\n\nbeta",
+      ranges: [
+        { from: 4, to: 6 },
+        { from: 6, to: 8 },
+      ],
+    },
+  );
+});
+
+test("tres «+» seguidos: una marca por par y se quitan todas", () => {
+  const doc = "alfa\n\n\n\n\n\n\n\nbeta";
+  assert.deepEqual(shiftEmptyGap({ from: 6, to: 8 }, [{ from: 4, to: 4, insert: "\n\n" }]), {
+    from: 8,
+    to: 10,
+  });
+  assert.deepEqual(
+    collapseEmptyGaps(doc, [
+      { from: 4, to: 6 },
+      { from: 6, to: 8 },
+      { from: 8, to: 10 },
+    ]),
+    {
+      text: "alfa\n\nbeta",
+      ranges: [
+        { from: 4, to: 6 },
+        { from: 6, to: 8 },
+        { from: 8, to: 10 },
+      ],
+    },
+  );
+});
+
+test("lo que se escribe justo detrás del par no lo alarga: ese hueco ya es contenido", () => {
+  assert.deepEqual(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 6, to: 6, insert: "x" }]), {
+    from: 4,
+    to: 6,
+  });
+  assert.equal(emptyGapRange("alfa\n\nx\n\nbeta", { from: 4, to: 6 }), null);
+});
+
+test("escribir DENTRO del par descarta la marca: ya no mide dos saltos", () => {
+  assert.equal(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 5, to: 5, insert: "x" }]), null);
+});
+
+test("borrar el par, o el texto que lo envuelve, descarta la marca", () => {
+  assert.equal(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 4, to: 6, insert: "" }]), null);
+  assert.equal(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 2, to: 8, insert: "" }]), null);
+});
+
+test("un cambio antes del hueco lo desplaza entero (insertar y reemplazar)", () => {
+  assert.deepEqual(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 0, to: 0, insert: "xy" }]), {
+    from: 6,
+    to: 8,
+  });
+  assert.deepEqual(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 0, to: 3, insert: "z" }]), {
+    from: 2,
+    to: 4,
+  });
+});
+
+test("varios cambios en la misma transacción (el recorte interno) descartan sus propios pares", () => {
+  // `dropInnerEmptyGap` despacha los dos huecos en una sola transacción.
+  const changes = [
+    { from: 4, to: 6, insert: "" },
+    { from: 12, to: 14, insert: "" },
+  ];
+  assert.equal(shiftEmptyGap({ from: 4, to: 6 }, changes), null);
+  assert.equal(shiftEmptyGap({ from: 12, to: 14 }, changes), null);
+});
+
+test("sin cambios la marca se queda donde estaba; una marca inválida no rompe", () => {
+  assert.deepEqual(shiftEmptyGap({ from: 4, to: 6 }, []), { from: 4, to: 6 });
+  assert.equal(shiftEmptyGap(null, []), null);
+  // Un cambio con from > to no es un cambio: se ignora.
+  assert.deepEqual(shiftEmptyGap({ from: 4, to: 6 }, [{ from: 9, to: 3, insert: "x" }]), {
+    from: 4,
+    to: 6,
+  });
 });
