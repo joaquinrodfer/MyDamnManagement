@@ -634,6 +634,7 @@ function blockHandleEventHandlers(onBlockContextMenu) {
         suppressTapUntil = Date.now() + 1200;
         const rect = handle.getBoundingClientRect();
         openBlockMenu(view, indices, rect.left, rect.bottom, onBlockContextMenu);
+        swallowTapAfterMenu();
       }, LONG_PRESS_MS);
       return false;
     },
@@ -813,6 +814,33 @@ function cancelLongPress() {
     longPressTimer = null;
   }
   longPressOrigin = null;
+}
+
+// El dedo sigue apoyado cuando el menú se abre, y el menú se recoloca para
+// caber en la pantalla -- puede quedar justo debajo del dedo. Al soltar, el
+// navegador manda un clic sobre lo que haya ahí, que activaría una opción del
+// menú sin querer (convertir el bloque a párrafo, por ejemplo). Se traga ese
+// clic: el que cierra la pulsación que abrió el menú. El siguiente toque (su
+// `pointerdown`) quita la valla, así que elegir una opción con un toque nuevo
+// funciona igual. Con ratón no se instala nada.
+function swallowTapAfterMenu() {
+  let timer = null;
+  const drop = () => {
+    window.removeEventListener("click", onTap, true);
+    window.removeEventListener("pointerdown", drop, true);
+    window.removeEventListener("touchstart", drop, true);
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+  const onTap = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    drop();
+  };
+  window.addEventListener("click", onTap, true);
+  window.addEventListener("pointerdown", drop, true);
+  window.addEventListener("touchstart", drop, true);
+  timer = window.setTimeout(drop, 5000);
 }
 
 function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
@@ -2284,10 +2312,15 @@ function linkCompletion(onCreateLink) {
 // dentro de un `updateListener` no está permitido, y fuera del historial
 // porque deshacer un cambio del usuario no tiene que resucitar un hueco que
 // nunca fue un bloque.
+//
+// El recorte no es una edición del usuario: no pasa por `onChange` (si no,
+// abrir una nota vieja con una línea en blanco delante y tocar el texto la
+// reescribiría en el vault sin que nadie haya cambiado nada). Lo que se
+// guarda lo decide `getValue()`, que recorta igual.
 const trimming = new WeakSet();
 
 function dropOuterBlankLines(update) {
-  if (!update.docChanged) return;
+  if (!update.docChanged && !update.selectionSet) return;
   const view = update.view;
   if (trimming.has(view)) return;
   const text = view.state.doc.toString();
@@ -2384,7 +2417,11 @@ export function createNoteEditor({
         arrowPlugin(),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChange(update.state.doc.toString());
+          const onlyTrim =
+            update.docChanged &&
+            update.transactions.length > 0 &&
+            update.transactions.every((tr) => tr.isUserEvent("trim.outer"));
+          if (update.docChanged && !onlyTrim) onChange(update.state.doc.toString());
           dropOuterBlankLines(update);
         }),
       ],
