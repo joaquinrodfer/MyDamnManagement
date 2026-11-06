@@ -859,9 +859,16 @@ class Repository:
             return None
         merged: Optional[dict[str, Any]] = None
         if properties is not None:
-            # Merge parcial, como antes: lo que no llega se conserva. Un valor
-            # `None` borra la propiedad del frontmatter.
-            merged = {**(current.properties or {}), **properties}
+            # Solo lo que cambia llega al escritor: el PATCH de una celda escribe
+            # esa clave y **nada más** (B2). Antes se mezclaba el mapa completo
+            # que había en el índice (`{**current.properties, **properties}`) y
+            # reescribía todas las propiedades del fichero, así que un valor que
+            # el índice no supo leer —`valor: A-12` en una propiedad `number`
+            # queda como `null`— desaparecía del `.md` al guardar cualquier otra
+            # celda. El merge con lo que dice el fichero lo hace `fm.rewrite`,
+            # que sustituye la línea de esa clave y deja el resto byte a byte.
+            # `None` sigue significando «borra esa clave», como antes.
+            merged = dict(properties)
         if merged is None and title is None and icon is None:
             return current
         self.vault.save_row(

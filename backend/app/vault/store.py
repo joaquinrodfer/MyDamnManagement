@@ -180,6 +180,61 @@ def _from_mtime(mtime: float) -> datetime:
     return datetime.fromtimestamp(mtime, tz=timezone.utc)
 
 
+def _linea_del_fichero(front: fm.Frontmatter, entry: fm.Entry) -> str:
+    """Primera línea de `entry` tal y como está escrita en el `.md`.
+
+    El motivo del 400 lo lee el dueño para arreglar su fichero a mano: tiene que
+    citar **su** YAML, no lo que el parser interpretó de él (`valor: [1, 2]` no
+    es `valor: ['1', '2']`). Para un block scalar basta con la cabecera
+    (`empresa: |`), que es la línea que hay que localizar.
+    """
+    lineas = front.lines[entry.start:entry.end]
+    if lineas and lineas[0].strip():
+        return lineas[0].strip()
+    return entry.key or ""
+
+
+def _tipo_del_schema(schema: list[dict], key: str) -> Optional[str]:
+    """Tipo que el `schema` declara para `key` (o `None` si no la declara)."""
+    for prop in schema:
+        if isinstance(prop, dict) and prop.get("key") == key:
+            return prop.get("type")
+    return None
+
+
+# Literales que `reader._coerce` acepta como booleanos de un `checkbox`. Lo
+# demás lo convierte en `False` sin avisar (ni a `null`), así que un
+# `hecho: quizá` llega al índice como «false» y la tabla lo enseña vacío.
+_LITERALES_BOOLEANOS = frozenset(
+    {"true", "false", "yes", "no", "1", "0", "sí", "si"}
+)
+
+
+def _indice_no_lo_lee(schema: list[dict], key: str, valor) -> bool:
+    """¿El índice no puede representar este valor del `.md`? (B2)
+
+    Usa `reader.row_properties`, el mismo camino que el reindexado (y que el
+    `null` que la tabla enseña), para no inventar una segunda definición de «el
+    índice no lo entiende». El `checkbox` es la excepción: `_coerce` convierte
+    en `False` cualquier texto que no sea true-ish (no en `None`), así que el
+    guard tiene que decidir por los literales booleanos que el lector acepta.
+
+    No cuentan como ilegibles:
+
+    - un valor vacío (`valor:`, o `""`): no hay nada que perder;
+    - una clave que el `schema` no declara: el índice no la mira (es una clave
+      del dueño, la app no la edita y vaciarla desde la API sigue siendo cosa
+      suya).
+    """
+    if valor is None or str(valor).strip() == "":
+        return False
+    tipo = _tipo_del_schema(schema, key)
+    if tipo == "checkbox":
+        return str(valor).strip().lower() not in _LITERALES_BOOLEANOS
+    leido = reader.row_properties(schema, {key: valor})
+    return key in leido and leido[key] is None
+
+
 def _read_text(abs_path: str) -> tuple[str, list[str]]:
     """Lee un `.md` con la misma tolerancia que el reindexado.
 
@@ -1333,6 +1388,141 @@ class VaultStore:
             log.info("fila %s: %s", page.path, "; ".join(notes))
         return row_id
 
+    def _refuse_touching_unreadable(
+        self,
+        row: sqlite3.Row,
+        rel: str,
+        front: fm.Frontmatter,
+        properties: dict,
+    ) -> None:
+        """`VaultError` si el PATCH tocaría una celda que el índice no supo leer (B2).
+
+        Tres familias de valor «que el índice no puede representar»:
+
+        - el valor es legible para el parser pero no para el tipo del `schema`
+          (`valor: A-12` en una propiedad `number`: `reader._coerce` no puede
+          con él y el índice guarda `null`);
+        - el valor es un `checkbox` que no es un literal booleano
+          (`hecho: quizá`): `_coerce` lo convierte en `false` —no en `null`— y
+          la tabla lo enseña vacío igual, así que editar la celda borraría del
+          `.md` un texto que el índice ha leído como un booleano que nadie ha
+          visto;
+        - el valor es una construcción que el parser **marca `opaque`** y por eso
+          ni siquiera aparece en `front.data` (block scalars `|`/`>`, flow maps
+          `{}`, anchors `&`/`*`, tags `!`). El índice tampoco lo tiene, así que
+          la tabla enseña `—` igual.
+
+        Sobre las familias «legible para el parser, no para el índice» el
+        criterio es el de la tarjeta, y vale para **los dos sentidos**:
+
+        - **vaciar** la celda (`null`) se rechaza con 400: el cliente cree que
+          estaba vacía porque la tabla enseña `—`, y borrarla se llevaría del
+          `.md` un dato que no ha visto;
+        - **escribir** encima también se rechaza (400) cuando lo que hay en el
+          fichero no es representable: el valor tecleado se lleva por delante un
+          dato que la tabla nunca ha enseñado (`valor: A-12`), igual de a
+          ciegas. Solo se permite sobrescribir un valor **legible** por el
+          índice (`valor: 10` → `42`), que es un dato que el usuario ve.
+
+        Sobre una entrada `opaque` no se permite ni lo uno ni lo otro: el
+        escritor no sabe qué representa (puede ser un bloque de varias líneas, un
+        mapa o un ancla compartida con otra clave), así que sustituirla por un
+        escalar también sería destruir contenido que nadie ha leído. Un 400 con
+        el motivo —y sin escribir un byte— es lo único honesto; el arreglo es a
+        mano en el `.md`.
+
+        La comprobación mira **las entradas del frontmatter** (`entries`), no
+        solo `data`: una clave `opaque` está en el fichero aunque el índice no
+        la vea, y una clave repetida (`valor: 10` + `valor: A-12`) hay que
+        mirarla **entera** — el índice se queda con la última y `fm.update`
+        escribe o borra todos sus rangos, así que basta con que una de las
+        entradas sea ilegible para que el PATCH tenga que rechazarse. Una celda
+        cuya clave no está en el fichero, o cuyos valores el índice entiende
+        todos, se vacía o se sobrescribe sin más: eso es una decisión del usuario
+        sobre un dato que ha visto.
+        """
+        db = self.conn.execute(
+            "SELECT schema_json FROM databases WHERE id = ?", (row["database_id"],)
+        ).fetchone()
+        schema = _load(db["schema_json"], []) if db is not None else []
+        tipos = {
+            prop.get("key"): prop.get("type")
+            for prop in schema
+            if isinstance(prop, dict)
+        }
+        # Entradas de primer nivel tal y como están en el disco, **todas**: si
+        # una clave aparece repetida no vale con quedarse con una (antes se
+        # guardaba la `opaque` o la primera, y la ilegible se colaba).
+        entradas: dict[str, list[fm.Entry]] = {}
+        for entry in front.entries:
+            if entry.key is None:
+                continue
+            entradas.setdefault(entry.key, []).append(entry)
+
+        for key, value in properties.items():
+            del_fichero = entradas.get(key)
+            if not del_fichero:
+                continue            # no está en el fichero: no se borra nada
+            if any(entry.opaque for entry in del_fichero):
+                # Ni vaciarla ni escribir encima: el fichero tiene una
+                # construcción que el parser no interpretó (`empresa: |`) y el
+                # índice no tiene la clave, así que el cliente cree que la celda
+                # está vacía. Vaciar se llevaría el bloque; escribir un escalar
+                # lo sustituiría por algo que nadie ha leído. 400 y ni un byte.
+                if value is None:
+                    accion = "vaciar"
+                    consecuencia = (
+                        "Vaciarlo desde aquí borraría del fichero un dato que no "
+                        "se ha visto"
+                    )
+                else:
+                    accion = "escribir"
+                    consecuencia = (
+                        "Escribir aquí sustituiría ese bloque por un valor suelto "
+                        "y se perdería lo que hay dentro, que la app no ha leído"
+                    )
+                opaca = next(entry for entry in del_fichero if entry.opaque)
+                raise VaultError(
+                    f"no se puede {accion} «{key}» de {rel}: el .md tiene "
+                    f"«{_linea_del_fichero(front, opaca)}», una construcción "
+                    f"YAML que el índice no puede interpretar (por eso la tabla "
+                    f"lo enseña vacío). {consecuencia}: corrige esa línea del "
+                    f".md a mano."
+                )
+            # Familia «legible para el parser, no para el tipo del schema»:
+            # `valor: A-12` en una propiedad `number`. Se mira cada entrada de
+            # la clave (puede haber duplicados) y se rechazan los dos sentidos.
+            ilegibles = [
+                entry
+                for entry in del_fichero
+                if _indice_no_lo_lee(schema, key, entry.value)
+            ]
+            if not ilegibles:
+                continue            # el índice entiende el valor: es del usuario
+            crudo = _linea_del_fichero(front, ilegibles[0])
+            tipo = tipos.get(key)
+            if tipo == "checkbox":
+                detalle = (
+                    f"«{crudo}», que no es un valor booleano (true/false): el "
+                    "índice lo está leyendo como «false» y la tabla lo enseña vacío"
+                )
+            else:
+                detalle = (
+                    f"«{crudo}», que no es un valor de tipo «{tipo}» y el índice "
+                    "no puede representarlo (por eso la tabla lo enseña vacío)"
+                )
+            if value is None:
+                raise VaultError(
+                    f"no se puede vaciar «{key}» de {rel}: el .md tiene {detalle}. "
+                    "Vaciarlo desde aquí borraría del fichero un dato que no se "
+                    "ha visto: corrige la línea del .md a mano."
+                )
+            raise VaultError(
+                f"no se puede escribir «{key}» de {rel}: el .md tiene {detalle}. "
+                "Escribir aquí borraría del fichero ese dato sin que se haya "
+                "visto: corrige la línea del .md a mano."
+            )
+
     def save_row(
         self,
         page_id: Any,
@@ -1346,8 +1536,9 @@ class VaultStore:
     ) -> None:
         """Reescribe la fila (renombrándola si toca) y actualiza el índice.
 
-        `properties` llega ya mezclada por el repositorio (PATCH parcial): un
-        `None` en un valor borra esa clave del frontmatter, como en las notas.
+        `properties` trae **solo las claves del `PATCH`** (no el mapa del
+        índice: B2); un `None` en un valor borra esa clave del frontmatter, como
+        en las notas. El resto del fichero lo preserva `fm.rewrite` byte a byte.
         """
         row = self._row_row(page_id)
         old_rel = row["path"]
@@ -1358,6 +1549,26 @@ class VaultStore:
                 "lanza POST /reindex para reconciliar el índice con el disco"
             )
         text, _warnings = _read_text(abs_old)
+
+        # Frontmatter del fichero tal y como está en el disco (no lo que diga el
+        # índice): es lo que se va a reescribir y lo que hay que respetar.
+        try:
+            raw, _body = fm.split_document(text)
+            front = fm.parse(raw) if raw is not None else fm.parse("")
+        except fm.FrontmatterError:
+            front = fm.parse("")
+        data = front.data
+
+        # Propiedades a escribir, validadas **antes** de mover o tocar nada: si el
+        # PATCH toca una celda cuyo valor en el fichero el índice no supo leer, se
+        # rechaza con su motivo (B2). Mejor un 400 que una pérdida callada en el
+        # `.md`: eso vale para vaciarla y también para escribir encima de una
+        # entrada `opaque` (un `empresa: |` que el parser no interpreta) o de un
+        # valor que el tipo del schema no puede representar (`valor: A-12`).
+        props: Optional[dict] = None
+        if properties is not UNSET and properties is not None:
+            props = writer.sin_reservadas(properties, [], "al guardar la fila")
+            self._refuse_touching_unreadable(row, old_rel, front, props)
 
         folder = os.path.dirname(old_rel)
         current_stem = os.path.basename(old_rel)[:-3]
@@ -1375,11 +1586,6 @@ class VaultStore:
             suggestions.move_with_note(self.root, old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
-        try:
-            raw, _body = fm.split_document(text)
-            data = fm.parse(raw).data if raw is not None else {}
-        except fm.FrontmatterError:
-            data = {}
         if "created" not in data and row["created_at"]:
             updates["created"] = row["created_at"]
         if icon is not UNSET and icon is not None:
@@ -1388,9 +1594,9 @@ class VaultStore:
             updates["description"] = description
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
-        if properties is not UNSET and properties is not None:
+        if props is not None:
             # `title` no se escribe nunca: el título es el nombre del fichero.
-            updates.update(writer.sin_reservadas(properties, [], "al guardar la fila"))
+            updates.update(props)
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)

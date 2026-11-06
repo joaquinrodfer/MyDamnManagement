@@ -346,6 +346,19 @@ def update(raw: str, updates: dict, delete: set[str] | None = None
         if entry.key is None:
             out.extend(lines[entry.start:entry.end])
             continue
+        # Una entrada `opaque` (block scalar `|`/`>`, flow map `{}`, ancla, tag)
+        # no se interpretó, así que el escritor no sabe qué valor representa:
+        # se preserva tal cual **aunque el llamante pida borrarla**. Si no, un
+        # `None` se la llevaría por delante sin aviso (B2, ronda 1), que es justo
+        # la pérdida que el módulo promete no hacer.
+        if entry.opaque:
+            seen.add(entry.key)
+            if entry.key in delete or entry.key in updates:
+                warnings.append(
+                    f"clave '{entry.key}' tiene YAML no soportado: se preserva sin tocar"
+                )
+            out.extend(lines[entry.start:entry.end])
+            continue
         if entry.key in delete or (entry.key in updates and updates[entry.key] is None):
             seen.add(entry.key)
             continue
@@ -353,12 +366,6 @@ def update(raw: str, updates: dict, delete: set[str] | None = None
             out.extend(lines[entry.start:entry.end])
             continue
         seen.add(entry.key)
-        if entry.opaque:
-            warnings.append(
-                f"clave '{entry.key}' tiene YAML no soportado: se preserva sin tocar"
-            )
-            out.extend(lines[entry.start:entry.end])
-            continue
         # conserva el comentario de la línea si era un escalar simple
         if entry.end - entry.start == 1 and " #" in lines[entry.start] \
                 and not isinstance(updates[entry.key], (list, dict)):
