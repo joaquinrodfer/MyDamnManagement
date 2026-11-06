@@ -99,6 +99,20 @@ export function databaseFilterRange(doc, from) {
 }
 
 /**
+ * El cambio que borra el filtro tecleado en el selector, o `null` si no hay
+ * nada que borrar (filtro vacío: despachar una transacción vacía solo
+ * estorbaría en el historial).
+ *
+ * Es `databaseFilterRange` con el caso «no hay texto» resuelto, para que quien
+ * lo despacha -- el plugin de entry.js, al cerrar el selector desde fuera --
+ * no tenga que repetir el recorte.
+ */
+export function databaseFilterClear(doc, from) {
+  const { from: start, to } = databaseFilterRange(doc, from);
+  return to > start ? { from: start, to } : null;
+}
+
+/**
  * Lo que se escribe en la nota al elegir una base: la valla cerrada y un
  * párrafo nuevo debajo, con el cursor en él (`cursorOffset`).
  *

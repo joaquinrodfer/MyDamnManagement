@@ -43,6 +43,7 @@ import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./d
 import {
   databaseBlockInsert,
   databaseChoices,
+  databaseFilterClear,
   databaseFilterRange,
   normalizeDatabaseEntries,
 } from "./database-choice.js";
@@ -1752,9 +1753,15 @@ function slashMenuExtension({
   onPickDatabase,
   onCreateDatabase,
 }) {
+  // La instancia viva, para que la app pueda cerrar el selector desde fuera
+  // (`discardTransientText`, más abajo): el plugin es la única pieza que sabe
+  // qué hay escrito en el documento por culpa del menú.
+  let instancia = null;
+
   const plugin = ViewPlugin.fromClass(
     class {
       constructor(view) {
+        instancia = this;
         this.view = view;
         this.mode = null; // null | "menu" | "database" | "naming"
         this.from = -1;
@@ -1957,6 +1964,30 @@ function slashMenuExtension({
         });
       }
 
+      /**
+       * Cierra el menú que hubiera abierto y borra lo que haya escrito en el
+       * documento lo que NO es texto de la nota -- hoy, solo el filtro del
+       * selector de bases.
+       *
+       * Despacha en el acto (no en un microtask como `dropFilter`): la app lo
+       * llama justo ANTES del guardado pendiente, al dejar la nota, y el `.md`
+       * que se escribe tiene que salir ya sin el filtro. Ahí no hay ninguna
+       * actualización en curso, así que el dispatch es seguro; `close()` sí
+       * puede caer dentro de `update()` y de ahí el microtask.
+       *
+       * Lo tecleado en el menú "/" es texto de la nota y no se toca. En el modo
+       * "nombre" el nombre se queda, igual que con /page (decisión de la
+       * revisión de P17.3-fix).
+       */
+      discardTransientText() {
+        if (this.mode !== "database") return false;
+        const filtro = databaseFilterClear(this.view.state.doc, this.from);
+        this.dismiss();
+        if (!filtro) return false;
+        this.view.dispatch({ changes: { from: filtro.from, to: filtro.to, insert: "" } });
+        return true;
+      }
+
       moveSelection(delta) {
         if (this.mode !== "menu" && this.mode !== "database") return false;
         const n = this.activeOptions.length;
@@ -2097,6 +2128,7 @@ function slashMenuExtension({
       }
 
       destroy() {
+        if (instancia === this) instancia = null;
         onMenuUpdate(null);
       }
     }
@@ -2127,7 +2159,21 @@ function slashMenuExtension({
     },
   ]);
 
-  return [plugin, menuKeymap];
+  return {
+    extensions: [plugin, menuKeymap],
+    /**
+     * Cierra desde fuera el menú abierto y tira lo que escribió en el
+     * documento (el filtro de /base). Lo llama la app al dejar la nota,
+     * antes de guardarla.
+     *
+     * No se hace desde `destroy()` del plugin: ahí ya se está desmontando la
+     * vista y despachar una transacción no es seguro (y el documento ya no es
+     * de nadie). Quien navega sabe cuándo hay que limpiar; el plugin, qué.
+     */
+    discardTransientText() {
+      return instancia ? instancia.discardTransientText() : false;
+    },
+  };
 }
 
 // ---------------------------------------------- ⏎ / ⇧⏎ / ⌘⏎ / ⌃⏎
@@ -2906,6 +2952,17 @@ export function createNoteEditor({
   linkTargets,
   renderDatabaseBlock,
 }) {
+  // El menú "/" y el selector de bases van en una variable y no sueltos en la
+  // lista de extensiones: la app tiene que poder cerrarlos desde fuera al
+  // dejar la nota (ver `discardTransientText` en el objeto que se devuelve).
+  const slashMenu = slashMenuExtension({
+    onMenuUpdate: onSlashMenu ?? (() => {}),
+    onCreatePage,
+    onListDatabases,
+    onPickDatabase,
+    onCreateDatabase,
+  });
+
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -2921,13 +2978,7 @@ export function createNoteEditor({
         // combinaciones (Enter/flechas/Escape mientras el menú está activo)
         // deben ganar; cuando no hacen nada (devuelven false) caen al
         // keymap normal sin más.
-        ...slashMenuExtension({
-          onMenuUpdate: onSlashMenu ?? (() => {}),
-          onCreatePage,
-          onListDatabases,
-          onPickDatabase,
-          onCreateDatabase,
-        }),
+        ...slashMenu.extensions,
         // El del autocompletado, justo detrás: primero el menú "/" (que solo
         // consume teclas mientras está abierto) y luego la lista de "[[".
         linkKeymap,
@@ -3021,6 +3072,11 @@ export function createNoteEditor({
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || "" } });
     },
     focus: () => view.focus(),
+    /** Cierra el selector de bases si está abierto y borra del documento el
+     * filtro que llevara escrito. La app lo llama al dejar la nota, ANTES del
+     * guardado pendiente: ese texto no es contenido de la nota y no puede
+     * acabar en el `.md`. Devuelve si borró algo. */
+    discardTransientText: () => slashMenu.discardTransientText(),
     destroy: () => view.destroy(),
     /** Pinta las sugerencias pendientes de esta nota, en su sitio.
      *

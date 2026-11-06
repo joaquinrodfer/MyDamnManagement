@@ -239,6 +239,13 @@ function pageIconProps(type, icon) {
  * memoria) aunque su DOM ya no exista, porque quitarle el nodo padre no lo
  * destruye por sí solo. */
 function clearMain() {
+  // El selector de bases (/base) escribe su filtro DENTRO del documento
+  // mientras está abierto. Al dejar la nota su ViewPlugin se destruye y nadie
+  // borraba ese tramo: el filtro se quedaba de párrafo suelto y el
+  // autoguardado lo escribía en el `.md`. Se tira aquí y ANTES del guardado
+  // pendiente, para que el fichero de la nota que se deja salga limpio; el
+  // aviso deja de estar en pantalla porque el propio editor lo cierra.
+  state.editor?.discardTransientText?.();
   if (state.flushPendingSave) {
     state.flushPendingSave();
     state.flushPendingSave = null;

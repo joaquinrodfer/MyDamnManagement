@@ -16,6 +16,7 @@ import { Text } from "@codemirror/state";
 import {
   databaseBlockInsert,
   databaseChoices,
+  databaseFilterClear,
   databaseFilterRange,
   filterDatabases,
   normalizeDatabaseEntries,
@@ -133,6 +134,23 @@ test("el tramo no se sale de su línea ni del documento", () => {
   assert.deepEqual(databaseFilterRange(doc, -3), { from: 0, to: 0 });
   assert.deepEqual(databaseFilterRange(doc, 999), { from: 18, to: 18 });
   assert.deepEqual(databaseFilterRange(Text.of([""]), 0), { from: 0, to: 0 });
+});
+
+test("cerrar el selector desde fuera borra el filtro, o nada si está vacío", () => {
+  // Lo que despacha la app al dejar la nota con el selector abierto: el tramo
+  // entero de la línea, para que el `.md` guardado no se lleve el filtro.
+  // "Pendiente" 0..9, línea vacía 10..10, "filtro" 11..17.
+  const doc = Text.of(["Pendiente", "", "filtro"]);
+  assert.deepEqual(databaseFilterClear(doc, 11), { from: 11, to: 17 });
+  // Con el caret a mitad da igual: manda el final de la línea (lo tecleado
+  // detrás también es filtro).
+  assert.deepEqual(databaseFilterClear(doc, 14), { from: 14, to: 17 });
+  // Nada que borrar: el filtro vacío (el final de la línea) no despacha.
+  assert.equal(databaseFilterClear(doc, 17), null);
+  assert.equal(databaseFilterClear(Text.of([""]), 0), null);
+  // Posiciones de un estado viejo: se recortan al documento.
+  assert.equal(databaseFilterClear(doc, 999), null);
+  assert.deepEqual(databaseFilterClear(doc, -5), { from: 0, to: 9 });
 });
 
 test("un bloque sin id no se puede insertar", () => {
