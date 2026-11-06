@@ -133,8 +133,16 @@ def materialize(repo: Repository, body: str) -> str:
         info = opening.group("info").strip()
         close = _find_close(lines, i + 1, fence)
         if info != DATABASE_FENCE or close is None:
-            out.append(lines[i])
-            i += 1
+            # Una valla normal se copia **entera**, sin mirar dentro: el ejemplo
+            # de un bloque `mdm-database` dentro de un ```python es texto (el
+            # caso típico, una nota que documenta el formato), no una base que
+            # exportar. Sin valla de cierre no hay cuerpo que leer: se copia el
+            # resto tal cual y se acaba.
+            if close is None:
+                out.extend(lines[i:])
+                break
+            out.extend(lines[i:close + 1])
+            i = close + 1
             continue
 
         block = "\n".join(lines[i + 1:close])

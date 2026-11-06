@@ -450,6 +450,25 @@ def test_una_valla_normal_con_un_ejemplo_dentro_no_se_materializa(client):
     assert "Base no encontrada" not in texto
 
 
+def test_un_bloque_de_base_dentro_de_un_ejemplo_de_codigo_es_texto(client):
+    """Una nota que documenta el formato (` ```python ` con un bloque dentro)
+    exporta su ejemplo tal cual: mirar dentro de una valla normal metería una
+    tabla —o un aviso— en mitad de un snippet."""
+    cuerpo = (
+        "```python\n"
+        "```mdm-database\n"
+        "id: 7a3f9c21-4b0e-4c8a-9f31-2d5e6b7a8c90\n"
+        "```\n"
+        "```"
+    )
+    nota = crear_nota(client, "Formato", cuerpo)
+
+    texto = exportar(client, nota).text
+
+    assert texto.endswith(cuerpo)
+    assert "Base no encontrada" not in texto
+
+
 def test_una_valla_de_base_sin_cerrar_se_deja_como_esta(client):
     cuerpo = "```mdm-database\nid: 7a3f9c21-4b0e-4c8a-9f31-2d5e6b7a8c90"
     nota = crear_nota(client, "Abierta", cuerpo)
