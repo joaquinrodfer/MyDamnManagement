@@ -2704,10 +2704,12 @@ function renderNote(page, backlinks) {
     if (!nombre) return null;
     const ocupada = childTitleTaken(page.id, nombre);
     if (ocupada) {
+      // El título que ya existe, no lo que se acaba de teclear: es el que el
+      // usuario verá en el árbol.
       showError(
         ocupada.type === "database"
-          ? `Ya hay una base llamada «${nombre}» en esta carpeta.`
-          : `Ya hay una página llamada «${nombre}» en esta carpeta.`,
+          ? `Ya hay una base llamada «${ocupada.title}» en esta carpeta.`
+          : `Ya hay una página llamada «${ocupada.title}» en esta carpeta.`,
       );
       return null;
     }
@@ -2723,11 +2725,15 @@ function renderNote(page, backlinks) {
       return null;
     }
     await loadTree();
-    // Si el fichero chocó con algo que el índice todavía no conocía, el
-    // servidor le puso sufijo: se dice, en vez de escribir un bloque con un
-    // nombre que el usuario no eligió.
+    // El servidor puede haber cambiado el nombre: si en el disco ya había un
+    // fichero con ese nombre (aunque el índice aún no lo conociera) le pone
+    // sufijo, y si el nombre no cabe en un fichero lo sanea. Se dice lo que
+    // quedó de verdad -- el bloque apunta a esa base, no a lo tecleado.
     if (!sameTitle(created.title, nombre)) {
-      showError(`Se creó «${created.title}»: ya existía «${nombre}» en el vault.`);
+      showError(
+        `La base se creó como «${created.title}»: «${nombre}» no estaba libre ` +
+          "o no vale como nombre de fichero.",
+      );
     }
     return { id: created.id, title: created.title, view: null };
   }
