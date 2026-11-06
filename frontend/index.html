@@ -1615,6 +1615,26 @@
   .form-note { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--ink-muted); }
   .form-note.form-error { color: var(--down); }
   .form-note.form-ok { color: var(--ok); }
+  /* --- «Procesar» hacia un nombre que ya existe (M1) ---
+     Una página nueva con un nombre repetido la duplica el backend
+     («Hitos (2)»): aquí se ofrecen las que ya están, con su ruta, y
+     crear otra hay que marcarlo a mano. */
+  .proc-existing-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  .proc-existing-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink-muted);
+  }
+  .proc-existing-item .btn { flex: none; }
   .field-inline { flex-direction: row; align-items: center; gap: 8px; }
   .field-inline label { text-transform: none; letter-spacing: 0; font-size: var(--text-xs); }
   .field-inline input { min-height: 0; }
@@ -2117,6 +2137,17 @@
       <input type="text" id="proc-new" placeholder="Nombre de la página nueva" autocomplete="off" />
     </div>
     <p class="form-note" id="proc-note">La nota pasa a colgar de la página elegida (que hace de carpeta) y se abre. Si escribes un nombre nuevo, se crea ahí.</p>
+    <!-- Nombre ocupado (M1): se enseñan las páginas que ya se llaman así,
+         con su ruta, y crear otra es una casilla, no lo que pasa por
+         defecto. Lo rellena `paintCoincidencias()` en app.js. -->
+    <div id="proc-existing" hidden>
+      <p class="form-note" id="proc-existing-note"></p>
+      <div id="proc-existing-list"></div>
+      <div class="field field-inline">
+        <input type="checkbox" id="proc-force" />
+        <label for="proc-force">Crear una página nueva igualmente</label>
+      </div>
+    </div>
     <div class="dialog-actions">
       <button type="button" class="btn" id="btn-cancel-procesar">Cancelar</button>
       <button type="button" class="btn btn-primary" id="btn-do-procesar">Procesar</button>
