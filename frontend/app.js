@@ -908,9 +908,13 @@ function paintInbox() {
   if (!section || !list || !label) return;
 
   const { count = 0, pages = [] } = state.inbox || {};
-  // Vacía: la sección no existe (ni un «Bandeja (0)» que no dice nada).
+  // Vacía: la sección no existe (ni un «Bandeja (0)» que no dice nada) y la
+  // etiqueta se queda sin número. Antes se ocultaba la sección pero el
+  // «Bandeja (N)» de la vez anterior seguía en el DOM, así que el contador
+  // decía que había algo pendiente cuando ya no había nada (C1).
   section.hidden = count === 0;
   if (count === 0) {
+    label.textContent = "Bandeja";
     list.textContent = "";
     list.hidden = true;
     return;
@@ -967,6 +971,7 @@ function initInbox() {
   // van a hacer las dos cosas.
   procesarNew?.addEventListener("input", () => {
     if (procesarNew.value.trim()) procesarSelect.value = "";
+    paintCoincidencias();
   });
   procesarSelect?.addEventListener("change", () => {
     if (procesarSelect.value) procesarNew.value = "";
@@ -1011,6 +1016,106 @@ function carpetasPosibles(pageId) {
     .sort((a, b) => (a.title || "").localeCompare(b.title || "", "es"));
 }
 
+/** Nombre comparable: sin espacios de sobra, sin mayúsculas y en NFC, para
+ * que «Hitos», «hitos » y «HITOS» cuenten como el mismo nombre. */
+function nombreNormalizado(titulo) {
+  return (titulo || "")
+    .normalize("NFC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("es");
+}
+
+/** Dónde vive la página en el árbol («Páginas / Proyectos / Hitos»): es lo
+ * que distingue dos páginas con el mismo título. La API no da la ruta, así
+ * que se sube por los `parent_id`. */
+function rutaDePagina(id) {
+  const nombres = [];
+  const visto = new Set();
+  let node = state.pagesById.get(id);
+  while (node && !visto.has(node.id)) {
+    visto.add(node.id);
+    nombres.unshift(node.title || "Sin título");
+    node = node.parent_id ? state.pagesById.get(node.parent_id) : null;
+  }
+  return ["Páginas", ...nombres].join(" / ");
+}
+
+/** Las notas que ya se llaman así. La que se está procesando no cuenta (ni
+ * las de la bandeja, que no son carpetas: `carpetasPosibles` las filtra). */
+function notasConEseNombre(titulo, pageId) {
+  const buscado = nombreNormalizado(titulo);
+  if (!buscado) return [];
+  return [...state.pagesById.values()]
+    .filter((n) => n.type === "note" && n.id !== pageId && nombreNormalizado(n.title) === buscado)
+    .sort((a, b) => rutaDePagina(a.id).localeCompare(rutaDePagina(b.id), "es"));
+}
+
+/** Pinta (o esconde) el bloque de «ya existe» del diálogo Procesar. */
+function paintCoincidencias() {
+  const caja = document.getElementById("proc-existing");
+  const lista = document.getElementById("proc-existing-list");
+  const cabecera = document.getElementById("proc-existing-note");
+  if (!caja || !lista || !cabecera) return;
+  const nueva = procesarNew.value.trim();
+  const iguales = nueva && procesarPage ? notasConEseNombre(nueva, procesarPage.id) : [];
+  caja.hidden = iguales.length === 0;
+  lista.textContent = "";
+  if (!iguales.length) {
+    // Sin coincidencias no hay nada que forzar: si se marcó para otro
+    // nombre, la casilla no puede quedarse marcada.
+    const forzar = document.getElementById("proc-force");
+    if (forzar) forzar.checked = false;
+    return;
+  }
+  cabecera.textContent =
+    iguales.length === 1
+      ? "Ya existe una página con ese nombre. Puedes usar esa o crear otra igualmente."
+      : `Ya hay ${iguales.length} páginas con ese nombre. Elige cuál usar, o crea otra igualmente.`;
+  const posibles = new Set(carpetasPosibles(procesarPage.id).map((n) => n.id));
+  iguales.forEach((nodo) => {
+    const fila = document.createElement("div");
+    fila.className = "proc-existing-item";
+    const ruta = document.createElement("span");
+    ruta.className = "proc-existing-path";
+    ruta.textContent = rutaDePagina(nodo.id);
+    const usar = document.createElement("button");
+    usar.type = "button";
+    usar.className = "btn";
+    usar.textContent = "Usar esta";
+    if (posibles.has(nodo.id)) {
+      usar.setAttribute("aria-label", `Usar «${nodo.title}» (${rutaDePagina(nodo.id)})`);
+      usar.addEventListener("click", () => {
+        // Elegir la existente es lo mismo que elegirla en la lista de arriba:
+        // la nota cuelga de ella y no se crea nada.
+        procesarSelect.value = nodo.id;
+        procesarNew.value = "";
+        paintCoincidencias();
+        setFormNote(
+          procesarNote,
+          `La nota pasará a colgar de «${nodo.title}» (${rutaDePagina(nodo.id)}).`,
+          "ok",
+        );
+      });
+    } else {
+      // Está en la bandeja: todavía no es una carpeta del wiki.
+      usar.disabled = true;
+      usar.title = "Está en la bandeja: procésala antes de usarla como carpeta.";
+    }
+    fila.append(ruta, usar);
+    lista.appendChild(fila);
+  });
+}
+
+/** Deja el diálogo como recién abierto: sin coincidencias y sin permiso
+ * para duplicar. */
+function reiniciarCoincidencias() {
+  const caja = document.getElementById("proc-existing");
+  if (caja) caja.hidden = true;
+  const forzar = document.getElementById("proc-force");
+  if (forzar) forzar.checked = false;
+}
+
 function openProcesarDialog(page) {
   if (!procesarDialog) return;
   procesarPage = page;
@@ -1027,6 +1132,7 @@ function openProcesarDialog(page) {
     procesarSelect.appendChild(option);
   });
   procesarNew.value = "";
+  reiniciarCoincidencias();
   setFormNote(procesarNote, PROCESAR_NOTE);
   const boton = document.getElementById("btn-do-procesar");
   if (boton) boton.disabled = false;
@@ -1043,6 +1149,23 @@ async function procesarNota() {
     return setFormNote(
       procesarNote,
       "Elige una página o escribe el nombre de una nueva.",
+      "error",
+    );
+  }
+
+  // Un nombre que ya existe no crea una página nueva a la callada: el
+  // backend resolvería la colisión con un sufijo («Hitos (2)») y el árbol
+  // acabaría con dos «Hitos» sin decir cuál es cuál (M1). O se usa la que
+  // hay, o se marca la casilla de crear otra.
+  const iguales = nueva ? notasConEseNombre(nueva, page.id) : [];
+  const forzar = document.getElementById("proc-force");
+  if (iguales.length && !forzar?.checked) {
+    paintCoincidencias();
+    return setFormNote(
+      procesarNote,
+      iguales.length === 1
+        ? `Ya existe «${nueva}» (${rutaDePagina(iguales[0].id)}): usa esa página o marca «crear una nueva igualmente».`
+        : `Ya hay ${iguales.length} páginas llamadas «${nueva}»: usa una de ellas o marca «crear una nueva igualmente».`,
       "error",
     );
   }
@@ -2512,10 +2635,13 @@ function renderNote(page, backlinks) {
     const result = state.editor?.setSuggestions?.(pending, suggestionCallbacks);
     placedIds = new Set(result?.placed ?? []);
     sugBtn.hidden = suggestionItems.length === 0;
-    sugBtn.textContent = `Sugerencias (${pending.length})`;
+    // Sin pendientes no se enseña un «(0)», que parece un aviso habiendo
+    // nada que decidir (C3). El botón sigue: es la puerta a las ya
+    // decididas, y su title dice lo que hay.
+    sugBtn.textContent = pending.length ? `Sugerencias (${pending.length})` : "Sugerencias";
     sugBtn.title = pending.length
       ? `${pending.length} sugerencia${pending.length > 1 ? "s" : ""} por decidir`
-      : "Sugerencias ya decididas";
+      : "No queda nada pendiente: aquí están las ya decididas";
     paintSuggestionsPanel();
   }
 
@@ -3418,6 +3544,28 @@ async function selectDatabase(id) {
   }
 }
 
+/** ¿Otra base de datos de la misma carpeta se llama ya así?
+ *
+ * Las bases viven en `Bases/<título>.md` (una carpeta por base), así que la
+ * colisión es entre bases del mismo padre: se compara el título normalizado
+ * y, para no confundir dos carpetas distintas, el `parent_id`.
+ *
+ * @returns la otra base (nodo del árbol) o `null`. */
+function baseConEseNombre(database, titulo) {
+  const buscado = nombreNormalizado(titulo);
+  if (!buscado) return null;
+  const propia = [...state.pagesById.values()].find(
+    (n) => n.type === "database" && n.database_id === database.id,
+  );
+  const carpeta = propia?.parent_id ?? null;
+  for (const n of state.pagesById.values()) {
+    if (n.type !== "database" || n.database_id === database.id) continue;
+    if ((n.parent_id ?? null) !== carpeta) continue;
+    if (nombreNormalizado(n.title) === buscado) return n;
+  }
+  return null;
+}
+
 async function renderDatabase(database, views, activeViewId) {
   const main = clearMain();
   // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
@@ -3435,9 +3583,21 @@ async function renderDatabase(database, views, activeViewId) {
   const title = document.createElement("input");
   title.className = "db-title";
   title.value = database.title;
-  title.addEventListener("blur", async () => {
+  // Enter guarda igual que salir del campo (como el título de una nota).
+  // Antes solo guardaba el `blur`, así que Enter dejaba el campo con el
+  // nombre nuevo y el árbol y el `.md` con el viejo, sin decir nada (M2).
+  const guardarTitulo = async () => {
     const newTitle = title.value.trim() || "Sin título";
     if (newTitle === database.title) return;
+    const ocupada = baseConEseNombre(database, newTitle);
+    if (ocupada) {
+      // El backend resolvería la colisión con un sufijo («Clientes (2)») y
+      // quedarían dos bases con el mismo nombre a la vista: se avisa y no
+      // se toca nada.
+      alert(`Ya hay una base de datos «${ocupada.title}» en esa carpeta. Elige otro nombre.`);
+      title.value = database.title;
+      return;
+    }
     try {
       await api(`/databases/${database.id}`, { method: "PATCH", body: JSON.stringify({ title: newTitle }) });
       database.title = newTitle;
@@ -3447,6 +3607,12 @@ async function renderDatabase(database, views, activeViewId) {
       alert("Error al renombrar: " + e.message);
       title.value = database.title;
     }
+  };
+  title.addEventListener("blur", guardarTitulo);
+  title.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    title.blur(); // un solo camino: el mismo que salir del campo
   });
 
   const headerActions = document.createElement("div");
@@ -4117,7 +4283,24 @@ function renderAddRowForm(database) {
   const submitBtn = document.createElement("button");
   submitBtn.className = "btn btn-primary";
   submitBtn.textContent = "Añadir fila";
+  // El título de la fila ES el nombre del fichero (`Bases/<base>/<título>.md`):
+  // una fila sin título no tiene identidad, y crearla dejaba un «Sin título.md»
+  // de frontmatter y nada más que había que borrar a mano (M4).
+  const SIN_TITULO = "Escribe un título: es el nombre del fichero de la fila.";
+  const refrescarBoton = () => {
+    submitBtn.disabled = !titleInput.value.trim();
+    submitBtn.title = submitBtn.disabled ? SIN_TITULO : "";
+  };
+  submitBtn.disabled = true;
+  submitBtn.title = SIN_TITULO;
+  titleInput.addEventListener("input", refrescarBoton);
   submitBtn.addEventListener("click", async () => {
+    const titulo = titleInput.value.trim();
+    if (!titulo) {
+      refrescarBoton();
+      titleInput.focus();
+      return;
+    }
     const properties = {};
     for (const { prop, input, read } of propInputs) {
       // Al crear se guarda también un checkbox desmarcado; el resto de tipos
@@ -4132,7 +4315,7 @@ function renderAddRowForm(database) {
     try {
       await api(`/databases/${database.id}/rows`, {
         method: "POST",
-        body: JSON.stringify({ title: titleInput.value || "Sin título", properties }),
+        body: JSON.stringify({ title: titulo, properties }),
       });
       selectDatabase(database.id);
     } catch (e) {
@@ -4511,9 +4694,26 @@ function esMovil() {
 function cajonAbierto() {
   return layoutEl.classList.contains("sidebar-drawer-open");
 }
+/** Deja la sección de la bandeja dentro del cajón.
+ *
+ * La barra lateral es la misma columna con o sin cajón: conserva el
+ * `scrollTop` que tuviera, así que con el árbol desplazado la bandeja se
+ * abría por encima del borde superior (y no se podía ni tocar). Al abrir se
+ * corrige el scroll lo justo para que se vea; si ya se veía, no se mueve
+ * (C2). */
+function mostrarBandejaEnElCajon() {
+  const section = document.getElementById("inbox-section");
+  if (!sidebarEl || !section || section.hidden) return;
+  const caja = sidebarEl.getBoundingClientRect();
+  const bandeja = section.getBoundingClientRect();
+  if (bandeja.top < caja.top) sidebarEl.scrollTop -= caja.top - bandeja.top;
+  else if (bandeja.bottom > caja.bottom) sidebarEl.scrollTop += bandeja.bottom - caja.bottom;
+}
+
 function setCajonAbierto(open) {
   const abierto = Boolean(open) && esMovil();
   layoutEl.classList.toggle("sidebar-drawer-open", abierto);
+  if (abierto) mostrarBandejaEnElCajon();
   if (scrimEl) scrimEl.hidden = !abierto;
   if (!toggleSidebarBtn) return;
   // aria-expanded solo tiene sentido en el cajón: en escritorio el botón no
