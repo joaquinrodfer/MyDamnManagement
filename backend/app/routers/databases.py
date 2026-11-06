@@ -1,6 +1,6 @@
 import contextlib
 import uuid
-from typing import Any, Iterator, List, Optional
+from typing import Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -13,6 +13,7 @@ from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app.templates import TEMPLATES
 from app.vault.store import VaultError
+from app.views import apply_view
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
@@ -194,7 +195,7 @@ def list_rows(
         view_def = repo.get_view(database_id, view)
         if view_def is None:
             raise HTTPException(404, "Vista no encontrada")
-        rows = _apply_view(rows, view_def.config or {})
+        rows = apply_view(rows, view_def.config or {})
 
     return [_serialize_row(r) for r in rows]
 
@@ -288,44 +289,5 @@ def delete_view(
 
 
 # ------------------------------------------------------------- aplicar vista
-
-def _apply_view(rows: list[Page], config: dict) -> list[Page]:
-    """Filtra y ordena en Python (no en SQL): a escala personal, con todas
-    las filas ya en memoria, es más simple y suficientemente rápido que
-    construir predicados dinámicos sobre JSON. group_by/visible_properties
-    son metadatos para que el frontend decida cómo dibujar la vista (tablero,
-    calendario...) — no se aplican aquí.
-    """
-    for f in config.get("filters") or []:
-        key, op, value = f.get("key"), f.get("op", "eq"), f.get("value")
-        rows = [r for r in rows if _match((r.properties or {}).get(key), op, value)]
-
-    sort = config.get("sort")
-    if sort and sort.get("key"):
-        key = sort["key"]
-        rows = sorted(
-            rows,
-            key=lambda r: _sort_key((r.properties or {}).get(key)),
-            reverse=(sort.get("dir") == "desc"),
-        )
-
-    return rows
-
-
-def _match(actual: Any, op: str, value: Any) -> bool:
-    if op == "eq":
-        return actual == value
-    if op == "neq":
-        return actual != value
-    if op == "contains":
-        return isinstance(actual, list) and value in actual
-    if op == "is_empty":
-        return actual in (None, "", [])
-    if op == "is_not_empty":
-        return actual not in (None, "", [])
-    return True
-
-
-def _sort_key(value: Any) -> tuple:
-    # None siempre al final, con independencia del tipo del valor real
-    return (value is None, str(value) if isinstance(value, (list, dict)) else value)
+# `apply_view` (filtros y orden de una vista) vive en `app.views`: lo usan este
+# router y la exportación a Markdown, y no puede haber dos versiones del filtro.

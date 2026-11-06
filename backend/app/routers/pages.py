@@ -2,9 +2,9 @@ import uuid
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile
 
-from app import auth, schemas
+from app import auth, export, schemas
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
@@ -115,6 +115,23 @@ def get_backlinks(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
     _get_or_404(repo, page_id)
     colors = repo.author_colors()
     return [serialize_page(p, colors) for p in repo.backlinks(page_id)]
+
+
+@router.get("/{page_id}/export.md", response_class=Response)
+def export_page_markdown(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    """El `.md` de la nota, con cada bloque de base sustituido por su tabla (P17.4).
+
+    Descarga de verdad (`Content-Disposition: attachment`), y **solo lectura**:
+    compone un texto a partir de lo que ya está en el índice. El navegador ya no
+    tiene que pedir N veces la API y montar la tabla; el `.md` que se guarda se
+    lee fuera de la app.
+    """
+    page = _get_or_404(repo, page_id)
+    return Response(
+        content=export.export_page(repo, page),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": export.content_disposition(page.title)},
+    )
 
 
 @router.post("/{page_id}/header-image", response_model=schemas.PageRead)
