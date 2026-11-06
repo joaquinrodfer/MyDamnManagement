@@ -1052,7 +1052,19 @@ function initInbox() {
     paintCoincidencias();
   });
   procesarSelect?.addEventListener("change", () => {
-    if (procesarSelect.value) procesarNew.value = "";
+    if (!procesarSelect.value) return;
+    // Elegir una página descarta lo que dijera el servidor: la coincidencia
+    // era del nombre que ya no se va a crear. Sin esto el bloque «ya existe»
+    // se quedaba pintado sobre ese nombre viejo y «Procesar» seguía
+    // rechazando la página recién elegida, sin más salida que reabrir el
+    // diálogo o pulsar «Usar esta» (que pisa la elección hecha).
+    const pendiente = Boolean(coincidenciasDelServidor?.length);
+    procesarNew.value = "";
+    coincidenciasDelServidor = null;
+    paintCoincidencias();
+    // El aviso de la colisión también era del nombre viejo: la nota vuelve a
+    // su texto de siempre en vez de seguir anunciando «ya existe» ahí abajo.
+    if (pendiente) setFormNote(procesarNote, PROCESAR_NOTE);
   });
 }
 
@@ -1189,8 +1201,10 @@ function avisoDeCoincidencia({ nodo, ruta }) {
  * que chocó: «Proyectos.» se guarda como «Proyectos»). */
 let coincidenciasDelServidor = null;
 function coincidenciasActuales() {
-  if (coincidenciasDelServidor) return coincidenciasDelServidor;
   const nueva = procesarNew.value.trim();
+  // Lo del servidor vale mientras se siga creando ese nombre: si el campo
+  // está vacío no se crea nada nuevo y no hay colisión que enseñar.
+  if (coincidenciasDelServidor?.length && nueva) return coincidenciasDelServidor;
   if (!nueva || !procesarPage) return [];
   return notasConEseNombre(nueva, procesarPage.id);
 }
@@ -1296,11 +1310,14 @@ async function procesarNota() {
   // subcarpetas no comparten carpeta con la página nueva y no bloquean.
   const forzar = document.getElementById("proc-force");
   const permitirOtra = Boolean(forzar?.checked);
-  const iguales = coincidenciasDelServidor?.length
-    ? coincidenciasDelServidor
-    : nueva
-      ? notasConEseNombre(nueva, page.id)
-      : [];
+  // La coincidencia del servidor es de un nombre que se intentó crear; con el
+  // campo vacío (se ha elegido una página en «Mover a») no hay nada que
+  // choque y no puede bloquear el movimiento.
+  const iguales = nueva
+    ? coincidenciasDelServidor?.length
+      ? coincidenciasDelServidor
+      : notasConEseNombre(nueva, page.id)
+    : [];
   if (iguales.length && !permitirOtra) {
     paintCoincidencias();
     return setFormNote(
