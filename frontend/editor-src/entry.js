@@ -40,6 +40,11 @@ import {
 } from "./block-delete.js";
 import { canonicalBody, collapseEmptyGaps, cursorInOuterBlanks, shiftEmptyGap } from "./body.js";
 import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./database-embed.js";
+import {
+  databaseBlockInsert,
+  databaseChoices,
+  normalizeDatabaseEntries,
+} from "./database-choice.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -551,7 +556,14 @@ const BLOCK_TYPE_LABEL = Object.fromEntries(BLOCK_TYPES.map((t) => [t.type, t.la
 // transformación de texto). Por eso viven en una lista aparte y solo se
 // añaden a las opciones del menú "/" (ver slashMenuExtension), nunca a
 // BLOCK_TYPES.
-const SLASH_EXTRA_COMMANDS = [{ type: "page", label: "Página", abbrev: "page" }];
+const SLASH_EXTRA_COMMANDS = [
+  { type: "page", label: "Página", abbrev: "page" },
+  // "/base" (P17.3): escribe el bloque ```mdm-database de una base que ya
+  // existe, o crea una colgando de la nota en la que se está. Como "/page", no
+  // es una conversión de bloque: tiene efectos fuera del texto (lista de la
+  // API, altas), así que vive aquí y no en BLOCK_TYPES.
+  { type: "database", label: "Base", abbrev: "base" },
+];
 const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
 
 function computeBlocks(state) {
@@ -1699,21 +1711,60 @@ async function createPageFromName(view, from, to, onCreatePage) {
   view.focus();
 }
 
-function slashMenuExtension(onMenuUpdate, onCreatePage) {
+// La base del comando "/base" con nombre nuevo: mismo patrón que
+// `createPageFromName` -- si la app dice que no se creó (nombre ocupado, error
+// de la API) no se inserta nada y el nombre escrito se queda en la nota, para
+// poder cambiarlo y reintentar. Cuando sí se crea, lo que queda es el bloque
+// apuntando a la base de verdad y el cursor en el párrafo de debajo.
+async function createDatabaseFromName(view, from, to, onCreateDatabase) {
+  const title = view.state.doc.sliceString(from, to).trim();
+  if (!title) {
+    view.focus();
+    return;
+  }
+  let creada = null;
+  try {
+    creada = await onCreateDatabase?.(title);
+  } catch {
+    creada = null;
+  }
+  // Mientras se creaba (es una llamada a la API y el árbol se recarga) el
+  // usuario ha podido seguir escribiendo: si el tramo del nombre ya no es el
+  // que era, no se pisa nada.
+  if (!creada || view.state.doc.sliceString(from, to) !== title) {
+    view.focus();
+    return;
+  }
+  const { text, cursorOffset } = databaseBlockInsert(creada);
+  view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + cursorOffset } });
+  view.focus();
+}
+
+function slashMenuExtension({
+  onMenuUpdate,
+  onCreatePage,
+  onListDatabases,
+  onPickDatabase,
+  onCreateDatabase,
+}) {
   const plugin = ViewPlugin.fromClass(
     class {
       constructor(view) {
         this.view = view;
-        this.mode = null; // null | "menu" | "naming"
+        this.mode = null; // null | "menu" | "database" | "naming"
         this.from = -1;
         this.selectedIndex = 0;
+        this.namingKind = "page"; // a qué comando pertenece el modo "naming"
+        this.entries = []; // bases del vault, pedidas al abrir el selector
       }
 
       get query() {
-        if (this.mode !== "menu") return "";
+        if (this.mode !== "menu" && this.mode !== "database") return "";
         const pos = this.view.state.selection.main.head;
         if (pos < this.from) return "";
-        return this.view.state.doc.sliceString(this.from + 1, pos);
+        // En el menú "/" la consulta empieza detrás de la barra; en el selector
+        // de bases no hay barra: lo escrito (el filtro) empieza en `from`.
+        return this.view.state.doc.sliceString(this.from + (this.mode === "menu" ? 1 : 0), pos);
       }
 
       get filteredOptions() {
@@ -1721,6 +1772,16 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         const q = this.query.trim().toLowerCase();
         if (!q) return all;
         return all.filter((t) => t.abbrev.startsWith(q) || t.label.toLowerCase().includes(q));
+      }
+
+      /** Selector de bases: las del vault y, al final, la de crear una. */
+      get databaseOptions() {
+        return databaseChoices(this.entries, this.query);
+      }
+
+      /** Las opciones que se están enseñando (menú "/" o selector de bases). */
+      get activeOptions() {
+        return this.mode === "database" ? this.databaseOptions : this.filteredOptions;
       }
 
       update(update) {
@@ -1740,20 +1801,24 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
           return;
         }
 
-        if (this.mode === "menu") {
+        // El menú "/" y el selector de bases se comportan igual: viven en
+        // una línea y se cierran en cuanto el cursor se sale de ella. La única
+        // diferencia es que el menú exige que la barra siga detrás.
+        if (this.mode === "menu" || this.mode === "database") {
           const sel = update.state.selection;
           const pos = sel.main.head;
           const line = update.state.doc.lineAt(Math.min(this.from, update.state.doc.length));
           const slashStillThere =
-            this.from < update.state.doc.length &&
-            update.state.doc.sliceString(this.from, this.from + 1) === "/";
+            this.mode !== "menu" ||
+            (this.from < update.state.doc.length &&
+              update.state.doc.sliceString(this.from, this.from + 1) === "/");
 
           if (!slashStillThere || sel.ranges.length !== 1 || !sel.main.empty || pos < this.from || pos > line.to) {
             this.close();
             return;
           }
 
-          this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredOptions.length - 1));
+          this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.activeOptions.length - 1));
           this.notify();
           return;
         }
@@ -1778,14 +1843,15 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         }
         if (this.mode === "naming") {
           const from = this.from;
+          const target = this.namingKind; // "page" | "database": qué se está nombrando
           setTimeout(() => {
             if (this.mode !== "naming" || this.from < 0) return; // pudo cerrarse mientras tanto
             const coords = this.view.coordsAtPos(Math.min(from, this.view.state.doc.length));
-            onMenuUpdate({ kind: "naming", x: coords?.left ?? 0, y: coords?.bottom ?? 0 });
+            onMenuUpdate({ kind: "naming", target, x: coords?.left ?? 0, y: coords?.bottom ?? 0 });
           });
           return;
         }
-        const opts = this.filteredOptions;
+        const opts = this.activeOptions;
         const selectedIndex = Math.min(this.selectedIndex, Math.max(0, opts.length - 1));
         const options = opts.map((o, i) => ({
           ...o,
@@ -1794,6 +1860,12 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
             this.confirmSelection();
           },
         }));
+        // Un vault sin bases enseña igualmente el selector (con la opción de
+        // crear): el aviso dice por qué la lista está vacía.
+        const note =
+          this.mode === "database" && this.entries.length === 0
+            ? "Aún no hay ninguna base en el vault."
+            : null;
         // coordsAtPos() lee el layout del DOM -- CodeMirror no permite
         // hacerlo dentro del propio ciclo de update() ("Reading the editor
         // layout isn't allowed during an update"), así que se difiere fuera
@@ -1802,9 +1874,16 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         // curso, no esperar a un frame de composición real (que además no
         // se dispara si la pestaña no está pintando).
         setTimeout(() => {
-          if (this.mode !== "menu" || this.from < 0) return; // pudo cerrarse mientras tanto
+          if ((this.mode !== "menu" && this.mode !== "database") || this.from < 0) return; // pudo cerrarse mientras tanto
           const coords = this.view.coordsAtPos(this.from);
-          onMenuUpdate({ kind: "menu", x: coords?.left ?? 0, y: coords?.bottom ?? 0, selectedIndex, options });
+          onMenuUpdate({
+            kind: "menu",
+            x: coords?.left ?? 0,
+            y: coords?.bottom ?? 0,
+            selectedIndex,
+            options,
+            note,
+          });
         });
       }
 
@@ -1816,8 +1895,8 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
       }
 
       moveSelection(delta) {
-        if (this.mode !== "menu") return false;
-        const n = this.filteredOptions.length;
+        if (this.mode !== "menu" && this.mode !== "database") return false;
+        const n = this.activeOptions.length;
         if (n === 0) return true;
         this.selectedIndex = (this.selectedIndex + delta + n) % n;
         this.notify();
@@ -1825,8 +1904,8 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
       }
 
       confirmSelection() {
-        if (this.mode !== "menu") return false;
-        const opts = this.filteredOptions;
+        if (this.mode !== "menu" && this.mode !== "database") return false;
+        const opts = this.activeOptions;
         const from = this.from;
         const to = this.view.state.selection.main.head;
         if (opts.length === 0) {
@@ -1835,6 +1914,24 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         }
         const chosen = opts[Math.min(this.selectedIndex, opts.length - 1)];
 
+        // ---- selector de bases
+        if (chosen.kind === "item") {
+          this.close();
+          this.pickDatabase(from, to, chosen.entry);
+          return true;
+        }
+        if (chosen.kind === "create") {
+          // Lo escrito como filtro se queda y pasa a ser el nombre de la base:
+          // es lo mismo que el «Crear «…»» del autocompletado de "[[".
+          this.startNaming(from, to, "database");
+          return true;
+        }
+
+        // ---- menú "/"
+        if (chosen.type === "database") {
+          this.openDatabasePicker(from, to);
+          return true;
+        }
         if (chosen.type === "page") {
           // Borra "/consulta" y pasa a modo "naming" -- no se cierra del
           // todo (el usuario sigue escribiendo, ahora el nombre en vez del
@@ -1843,9 +1940,7 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
           // el propio update() de este plugin de forma síncrona, y si
           // this.mode siguiera siendo "menu" en ese momento, detectaría el
           // "/page" ya borrado como si el menú debiera cerrarse.
-          this.mode = "naming";
-          this.from = from;
-          this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+          this.startNaming(from, to, "page");
           return true;
         }
 
@@ -1854,14 +1949,71 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         return true;
       }
 
+      /** Abre el selector de bases: borra "/base" y lista las del vault. */
+      openDatabasePicker(from, to) {
+        this.mode = "database";
+        this.from = from;
+        this.selectedIndex = 0;
+        // La lista se pide UNA vez, al abrir: filtrar mientras se escribe no
+        // puede ir a la API en cada tecla. El dispatch de abajo dispara el
+        // update() de este plugin, que ya en modo "database" pinta el selector.
+        this.entries = normalizeDatabaseEntries(onListDatabases?.());
+        this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+      }
+
+      /** Escribe el bloque de la base elegida, con el cursor debajo. */
+      pickDatabase(from, to, entry) {
+        const esperado = this.view.state.doc.sliceString(from, to);
+        // El id que va al bloque es el de la fila `databases`, y la vista con
+        // la que se abre hay que preguntarla: la lista del selector solo trae
+        // título y carpeta.
+        const pending = Promise.resolve()
+          .then(() => onPickDatabase?.(entry.id))
+          .catch(() => null);
+        pending.then((info) => {
+          const view = this.view;
+          if (!view.dom.isConnected) return; // la nota se cerró mientras tanto
+          // Si lo escrito ya no está donde estaba, el usuario ha seguido
+          // tecleando: no se inserta nada a ciegas.
+          const actual = view.state.doc.sliceString(from, Math.min(to, view.state.doc.length));
+          if (!info || actual !== esperado) {
+            view.focus();
+            return;
+          }
+          const { text, cursorOffset } = databaseBlockInsert(info);
+          view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + cursorOffset } });
+          view.focus();
+        });
+      }
+
+      /** Pasa del menú al aviso de nombre: una página nueva o una base nueva. */
+      startNaming(from, to, kind) {
+        this.mode = "naming";
+        this.namingKind = kind;
+        this.from = from;
+        if (kind === "page") {
+          // "/page" (y el filtro escrito detrás) fuera: el nombre empieza de
+          // cero. El dispatch dispara este update(), ya en "naming", que pinta
+          // el aviso.
+          this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+          return;
+        }
+        // Al crear una base, lo escrito es el nombre que va a llevar: se queda
+        // tal cual, con el cursor al final, listo para Enter.
+        this.notify();
+      }
+
       confirmNaming() {
         if (this.mode !== "naming") return false;
         const from = this.from;
         const to = this.view.state.selection.main.head;
+        const kind = this.namingKind;
         this.mode = null;
         this.from = -1;
+        this.namingKind = "page";
         this.notify();
-        createPageFromName(this.view, from, to, onCreatePage);
+        if (kind === "database") createDatabaseFromName(this.view, from, to, onCreateDatabase);
+        else createPageFromName(this.view, from, to, onCreatePage);
         return true;
       }
 
@@ -2534,6 +2686,17 @@ function linkCompletion(onCreateLink) {
  * @param {() => void} [opts.onWikilinkHoverEnd]
  * @param {(state: object|null) => void} [opts.onSlashMenu]
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreatePage]
+ * @param {() => {id: string, title: string, folder?: string}[]} [opts.onListDatabases]
+ *   Bases del vault para el comando "/base": el `id` es el de la fila
+ *   `databases` (el que va en el bloque) y `folder` la carpeta, para distinguir
+ *   dos que se llamen igual.
+ * @param {(databaseId: string) => Promise<{id: string, title: string, view: string|null}|null>} [opts.onPickDatabase]
+ *   Lo que hace falta para escribir el bloque de una base que ya existe (su id
+ *   y la vista con la que se abre). `null` = no se inserta nada.
+ * @param {(title: string) => Promise<{id: string, title: string, view: string|null}|null>} [opts.onCreateDatabase]
+ *   Crea una base con ese nombre colgando de la página abierta y devuelve lo
+ *   mismo que `onPickDatabase`. `null` = no se creó (nombre ocupado, error):
+ *   el editor no inserta nada.
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreateLink]
  * @param {(list: {id: string, title: string, type: string}[]) => void} [opts.linkTargets]
  * @param {(block: {id: string, view: string|null, title: string|null}, container: HTMLElement) => Promise<void>|void} [opts.renderDatabaseBlock]
@@ -2658,6 +2821,9 @@ export function createNoteEditor({
   onSlashMenu,
   onCreatePage,
   onCreateLink,
+  onListDatabases,
+  onPickDatabase,
+  onCreateDatabase,
   linkTargets,
   renderDatabaseBlock,
 }) {
@@ -2676,7 +2842,13 @@ export function createNoteEditor({
         // combinaciones (Enter/flechas/Escape mientras el menú está activo)
         // deben ganar; cuando no hacen nada (devuelven false) caen al
         // keymap normal sin más.
-        ...slashMenuExtension(onSlashMenu ?? (() => {}), onCreatePage),
+        ...slashMenuExtension({
+          onMenuUpdate: onSlashMenu ?? (() => {}),
+          onCreatePage,
+          onListDatabases,
+          onPickDatabase,
+          onCreateDatabase,
+        }),
         // El del autocompletado, justo detrás: primero el menú "/" (que solo
         // consume teclas mientras está abierto) y luego la lista de "[[".
         linkKeymap,

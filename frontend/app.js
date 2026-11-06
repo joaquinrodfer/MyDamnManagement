@@ -2692,6 +2692,46 @@ function renderNote(page, backlinks) {
     }
   }
 
+  // Comando "/base" (P17.3): crear la base aquí, colgando de ESTA nota -- el
+  // mismo camino que el panel (POST /databases con parent_id), que la guarda
+  // en la carpeta de hijas de la nota (`Notas/Proyectos/Contactos.md`), no en
+  // `Bases/`. Sin `parent_id` acabaría suelta en la raíz.
+  //
+  // Si en esa carpeta ya hay algo con ese nombre no se crea nada: el servidor
+  // desambigua en silencio y ese duplicado es justo lo que no queremos (M1).
+  async function createDatabaseInNote(title) {
+    const nombre = title.trim();
+    if (!nombre) return null;
+    const ocupada = childTitleTaken(page.id, nombre);
+    if (ocupada) {
+      showError(
+        ocupada.type === "database"
+          ? `Ya hay una base llamada «${nombre}» en esta carpeta.`
+          : `Ya hay una página llamada «${nombre}» en esta carpeta.`,
+      );
+      return null;
+    }
+    let created;
+    try {
+      created = await api("/databases", {
+        method: "POST",
+        body: JSON.stringify({ title: nombre, parent_id: page.id, schema_def: [] }),
+      });
+    } catch (e) {
+      if (e?.status === 401) return null;
+      reportError(`No se pudo crear la base «${nombre}»`, e);
+      return null;
+    }
+    await loadTree();
+    // Si el fichero chocó con algo que el índice todavía no conocía, el
+    // servidor le puso sufijo: se dice, en vez de escribir un bloque con un
+    // nombre que el usuario no eligió.
+    if (!sameTitle(created.title, nombre)) {
+      showError(`Se creó «${created.title}»: ya existía «${nombre}» en el vault.`);
+    }
+    return { id: created.id, title: created.title, view: null };
+  }
+
   createOutlinePanel(topbarRight);
 
   state.editor = createNoteEditor({
@@ -2749,6 +2789,9 @@ function renderNote(page, backlinks) {
     onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
+    onListDatabases: listDatabaseEntries,
+    onPickDatabase: databaseBlockFor,
+    onCreateDatabase: createDatabaseInNote,
     renderDatabaseBlock: renderDatabaseEmbed,
   });
   noteEditor = state.editor;
@@ -3623,13 +3666,16 @@ function renderSlashMenu(menuState) {
   closeSlashMenu();
   if (!menuState) return;
 
-  // Modo "naming": el usuario eligió "Página" y ahora está escribiendo el
-  // nombre directamente en el documento -- aquí solo hace falta un aviso
-  // flotante, no una lista (no hay nada que elegir).
+  // Modo "naming": el usuario eligió "Página" o "Nueva base" y ahora está
+  // escribiendo el nombre directamente en el documento -- aquí solo hace falta
+  // un aviso flotante, no una lista (no hay nada que elegir).
   if (menuState.kind === "naming") {
     const hint = document.createElement("div");
     hint.className = "mdm-slash-naming";
-    hint.textContent = "Nombre de la página · Enter para crear · Esc para cancelar";
+    hint.textContent =
+      menuState.target === "database"
+        ? "Nombre de la base · Enter para crear · Esc para cancelar"
+        : "Nombre de la página · Enter para crear · Esc para cancelar";
     positionFloating(hint, menuState.x, menuState.y);
     slashMenuEl = hint;
     return;
@@ -3637,6 +3683,15 @@ function renderSlashMenu(menuState) {
 
   const menu = document.createElement("div");
   menu.className = "mdm-slash-menu";
+
+  // Aviso corto encima de la lista: lo manda el selector de bases cuando el
+  // vault no tiene ninguna (la lista sigue teniendo la opción de crear).
+  if (menuState.note) {
+    const note = document.createElement("div");
+    note.className = "search-empty";
+    note.textContent = menuState.note;
+    menu.appendChild(note);
+  }
 
   if (menuState.options.length === 0) {
     menu.innerHTML = '<div class="search-empty">Sin coincidencias.</div>';
@@ -3646,11 +3701,20 @@ function renderSlashMenu(menuState) {
       item.className = "mdm-slash-menu-item" + (i === menuState.selectedIndex ? " active" : "");
 
       const label = document.createElement("span");
+      label.className = "mdm-slash-menu-label";
       label.textContent = opt.label;
-      const abbrev = document.createElement("span");
-      abbrev.className = "mdm-slash-menu-abbrev";
-      abbrev.textContent = `/${opt.abbrev}`;
-      item.append(label, abbrev);
+      const right = document.createElement("span");
+      // Las opciones del selector de bases llevan su carpeta en vez de la
+      // abreviatura "/x": es lo único que distingue dos bases con el mismo
+      // título ("Contactos" en Bases y en Clientes).
+      if (opt.hint) {
+        right.className = "mdm-slash-menu-hint";
+        right.textContent = opt.hint;
+      } else {
+        right.className = "mdm-slash-menu-abbrev";
+        right.textContent = `/${opt.abbrev}`;
+      }
+      item.append(label, right);
 
       // mousedown (no click) + preventDefault: que el editor no pierda el
       // foco/selección antes de que onClick aplique el tipo elegido.
@@ -3671,6 +3735,95 @@ function renderSlashMenu(menuState) {
   menu.querySelector(".mdm-slash-menu-item.active")?.scrollIntoView({ block: "nearest" });
 
   slashMenuEl = menu;
+}
+
+// --------------------------------------------------- bases del comando "/base"
+// El editor pide esta lista al abrir el selector de "/base" (ver
+// slashMenuExtension en entry.js). El `id` es el de la fila `databases` -- el
+// que espera /databases/{id} y el que va dentro del bloque ```mdm-database --,
+// no el de la página que representa la base.
+
+/** ¿Los dos títulos son el mismo nombre para el vault (NFC, sin mayúsculas)? */
+function sameTitle(a, b) {
+  const norm = (s) => String(s ?? "").normalize("NFC").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** Carpeta en la que vive una base, deducida del árbol.
+ *
+ * El árbol no trae rutas: la jerarquía son carpetas (D4), así que la cadena de
+ * notas padre es la carpeta. En la raíz, `Bases/` (donde viven las bases
+ * sueltas); colgando de una nota, sus títulos -- bastante para no confundir dos
+ * bases que se llamen igual.
+ */
+function nodeFolderLabel(node) {
+  const partes = [];
+  let actual = node;
+  // Tope de seguridad: esto corre al abrir un menú, no puede colgarse.
+  for (let i = 0; i < 32 && actual?.parent_id; i++) {
+    actual = state.pagesById.get(actual.parent_id);
+    if (!actual) break;
+    partes.unshift(actual.title || "Sin título");
+  }
+  return partes.length ? partes.join(" / ") : "Bases";
+}
+
+/** Las bases del vault, por título, con su carpeta. */
+function listDatabaseEntries() {
+  const bases = [];
+  for (const node of state.pagesById.values()) {
+    if (node.type !== "database" || !node.database_id) continue;
+    bases.push({
+      id: node.database_id,
+      title: node.title || "Sin título",
+      folder: nodeFolderLabel(node),
+    });
+  }
+  return bases.sort(
+    (a, b) => a.title.localeCompare(b.title, "es") || a.folder.localeCompare(b.folder, "es"),
+  );
+}
+
+/** ¿Ya hay una página (nota o base) con ese nombre en la carpeta de `parentId`?
+ *
+ * El servidor desambigua en silencio (`Contactos (2).md`) porque el disco no
+ * admite dos ficheros con el mismo nombre; al crear desde la nota eso sería el
+ * defecto M1 -- un duplicado que nadie pidió --, así que se pregunta antes y no
+ * se llega a la API.
+ */
+function childTitleTaken(parentId, title) {
+  for (const node of state.pagesById.values()) {
+    if (String(node.parent_id || "") !== String(parentId)) continue;
+    if (sameTitle(node.title, title)) return node;
+  }
+  return null;
+}
+
+/** Lo que hace falta para escribir el bloque de una base que ya existe: su id y
+ * la vista con la que se abre.
+ *
+ * Vista: la primera, que es la que abre el bloque cuando no dice ninguna (la
+ * «vista activa» no se guarda en ningún sitio: al abrir la base se pinta la
+ * primera). Se escribe solo si hay más de una -- con una sola, dejarla fuera
+ * hace que el .md siga abriendo la que toca aunque mañana se añada otra.
+ */
+async function databaseBlockFor(databaseId) {
+  let database;
+  let views;
+  try {
+    [database, views] = await Promise.all([
+      api(`/databases/${databaseId}`),
+      api(`/databases/${databaseId}/views`),
+    ]);
+  } catch (e) {
+    if (e?.status !== 401) reportError("No se pudo leer la base de datos", e);
+    return null;
+  }
+  return {
+    id: database.id,
+    title: database.title,
+    view: views.length > 1 ? views[0].name : null,
+  };
 }
 
 // ------------------------------------------------------------- menú contextual
