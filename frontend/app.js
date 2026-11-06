@@ -487,6 +487,82 @@ function initTreeRovingTabIndex(container) {
 }
 
 
+/** `id` de un control a partir de la clave de su propiedad, con el índice de
+ * la propiedad delante: `nueva-fila-0-empresa`. El índice mantiene el id
+ * estable y único aunque dos propiedades se llamen igual, y el prefijo separa
+ * los del alta inline de los del diálogo de edición. */
+function idDeCampo(prefijo, indice, clave) {
+  const limpio = String(clave ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${prefijo}-${indice}-${limpio || "campo"}`;
+}
+
+// ----------------------------------------------- focus trap de los <dialog>
+// `showModal()` deja inerte lo de detrás, pero NO encierra el Tab: al pasar del
+// último control el foco se queda en el <body>, una parada sin indicador
+// visible (hallazgo M6), y desde ahí sigue al primer control del diálogo. Un
+// solo keydown en captura lo arregla para todos los <dialog>, también para los
+// que se rellenan después de abrirse (tokens, usuarios).
+const TABBABLES = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+/** Las paradas de Tab reales dentro de un diálogo: ni ocultas con `hidden` (el
+ * bloque del token recién creado), ni plegadas, ni con tabindex negativo. */
+function focusablesDe(dialog) {
+  return [...dialog.querySelectorAll(TABBABLES)].filter(
+    (el) => el.tabIndex >= 0 && !el.closest("[hidden]") && el.getClientRects().length > 0,
+  );
+}
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key !== "Tab" || event.ctrlKey || event.altKey || event.metaKey) return;
+    const abiertos = document.querySelectorAll("dialog[open]");
+    if (!abiertos.length) return;
+    const dialog = abiertos[abiertos.length - 1]; // el de más arriba, si hubiera dos
+    const controles = focusablesDe(dialog);
+    if (!controles.length) {
+      // Un diálogo sin controles enfocables no debe soltar el foco al body.
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const primero = controles[0];
+    const ultimo = controles[controles.length - 1];
+    const activo = document.activeElement;
+    if (!dialog.contains(activo)) {
+      // El foco se ha ido fuera (p. ej. al body): vuelve al extremo que toca.
+      event.preventDefault();
+      (event.shiftKey ? ultimo : primero).focus();
+      return;
+    }
+    if (!controles.includes(activo)) {
+      // Foco en el propio <dialog> o en algo que no es parada de Tab: el
+      // siguiente Tab entra por el principio (o por el final, hacia atrás).
+      event.preventDefault();
+      (event.shiftKey ? ultimo : primero).focus();
+      return;
+    }
+    if (event.shiftKey && activo === primero) {
+      event.preventDefault();
+      ultimo.focus();
+    } else if (!event.shiftKey && activo === ultimo) {
+      event.preventDefault();
+      primero.focus();
+    }
+  },
+  true,
+);
+
 // --------------------------------------------------------- quién eres (P11b)
 // El backend guarda `created_by` como el `display_name` del usuario (texto, no
 // un id), así que para pintar el punto de su color hay que saber de quién se
@@ -3809,7 +3885,12 @@ async function renderDatabase(database, views, activeViewId) {
     content.appendChild(renderTable(database, rows));
   }
 
-  content.appendChild(renderAddRowForm(database));
+  const addRowForm = renderAddRowForm(database);
+  content.appendChild(addRowForm);
+  // El primer campo del alta lleva el foco al abrir la base: con teclado había
+  // que recorrer la tabla entera para llegar a «Nueva fila». `preventScroll`
+  // porque si el formulario cae bajo el pliegue no queremos dar un salto.
+  addRowForm.querySelector("#nueva-fila-titulo")?.focus({ preventScroll: true });
 }
 
 function formatPropValue(value, prop) {
@@ -4324,12 +4405,17 @@ function openRowDialog(database, row, refresh) {
   const fields = [];
   rowPropsContainer.innerHTML = "";
   document.getElementById("row-title").value = row.title || "";
-  database.schema_def.forEach((p) => {
+  database.schema_def.forEach((p, index) => {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
     label.textContent = `${p.name} (${p.type})`;
     const { input, read } = buildPropertyInput(p, row.properties?.[p.key]);
+    // Mismo nombre accesible que en el alta inline: `for` + `id` (el prefijo
+    // `fila-dialogo` evita chocar con los del formulario, que vive a la vez).
+    const inputId = idDeCampo("fila-dialogo", index, p.key);
+    input.id = inputId;
+    label.htmlFor = inputId;
     field.append(label, input);
     rowPropsContainer.appendChild(field);
     fields.push({ prop: p, read });
@@ -4393,18 +4479,25 @@ function renderAddRowForm(database) {
   titleField.className = "field";
   const titleLabel = document.createElement("label");
   titleLabel.textContent = "Título";
+  titleLabel.htmlFor = "nueva-fila-titulo";
   const titleInput = document.createElement("input");
   titleInput.type = "text";
+  titleInput.id = "nueva-fila-titulo";
   titleField.append(titleLabel, titleInput);
   wrap.appendChild(titleField);
 
   const propInputs = [];
-  database.schema_def.forEach((p) => {
+  database.schema_def.forEach((p, index) => {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
     label.textContent = `${p.name} (${p.type})`;
     const { input, read } = buildPropertyInput(p, undefined);
+    // Sin `for`/`id` un lector anuncia seis «cuadro de edición» iguales y la
+    // etiqueta no enfoca nada al pulsarla (M5).
+    const inputId = idDeCampo("nueva-fila", index, p.key);
+    input.id = inputId;
+    label.htmlFor = inputId;
     field.append(label, input);
     wrap.appendChild(field);
     propInputs.push({ prop: p, input, read });
