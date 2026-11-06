@@ -39,6 +39,7 @@ import {
   renumberOrderedRun,
 } from "./block-delete.js";
 import { canonicalBody, collapseEmptyGaps, cursorInOuterBlanks, shiftEmptyGap } from "./body.js";
+import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./database-embed.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -363,6 +364,158 @@ function arrowPlugin() {
     },
     { decorations: (v) => v.decorations }
   );
+}
+
+// ------------------------------------------------- bases dentro de la nota
+// (P17.2) Una valla ```mdm-database (ver database-block.js) no se lee como
+// código: mientras el cursor NO está dentro se sustituye ENTERA por la tabla
+// de la base, y en cuanto entra vuelve el texto crudo editable -- el mismo
+// trato que los wikilinks, pero en bloque.
+//
+// Por eso esto es un StateField y no un ViewPlugin, como hrField: CodeMirror
+// no admite un reemplazo que cruce saltos de línea declarado desde un plugin
+// ("Decorations that replace line breaks may not be specified via plugins").
+// El reemplazo va alineado con líneas enteras (de la apertura al final del
+// cierre), así que la valla ocupa exactamente su sitio en el documento.
+//
+// Nada de esto toca el documento: pintar el bloque (o pasar el cursor por el
+// bloque) no cambia una sola letra del `.md` -- no hay `docChanged`, así que
+// tampoco hay autoguardado ni un guardado a medias.
+
+class DatabaseBlockWidget extends WidgetType {
+  constructor(block, render) {
+    super();
+    this.from = block.from;
+    this.parse = block.parse;
+    this.render = render;
+  }
+  eq(other) {
+    // Mismo bloque, mismo sitio y misma app: CodeMirror reutiliza el DOM (y no
+    // se vuelve a pedir nada a la API) en cada repintado por mover el cursor.
+    return (
+      other.render === this.render &&
+      other.from === this.from &&
+      other.parse.ok === this.parse.ok &&
+      other.parse.id === this.parse.id &&
+      other.parse.view === this.parse.view &&
+      other.parse.title === this.parse.title &&
+      other.parse.motivo === this.parse.motivo
+    );
+  }
+  ignoreEvent() {
+    return true; // los clics del bloque (encabezado, «abrir») son nuestros
+  }
+  toDOM(view) {
+    const wrap = document.createElement("div");
+    wrap.className = "cm-mdm-dblock";
+    wrap.dataset.databaseBlock = "1";
+    // Aquí no se edita nada: para cambiar la vista o los datos se abre la
+    // base entera. Ni una celda con contenteditable dentro del bloque.
+    wrap.contentEditable = "false";
+
+    // Un clic en el bloque (menos en lo que ya es un botón, como el
+    // encabezado: eso lleva a la base) pone el cursor en la valla, que
+    // reaparece en crudo. Con ignoreEvent() este clic no lo ve CodeMirror.
+    // Vale también para la tarjeta de error: una valla rota se arregla con el
+    // ratón, no solo con las flechas.
+    wrap.addEventListener("mousedown", (event) => {
+      if (event.target.closest("[data-db-action]")) return;
+      event.preventDefault();
+      view.dispatch({ selection: { anchor: this.from } });
+      view.focus();
+    });
+
+    if (!this.parse.ok) {
+      // Valla rota (id que no es un uuid, YAML inválido...): la tarjeta dice
+      // el motivo y el texto sigue en el documento, así que se puede arreglar.
+      const card = document.createElement("div");
+      card.className = "cm-mdm-dblock-card";
+      card.textContent = databaseErrorText(this.parse);
+      wrap.appendChild(card);
+      return wrap;
+    }
+
+    // Cargando: dos líneas de esqueleto con altura fija. El hueco ya está
+    // reservado, así que la nota no pega un salto cuando llega la tabla.
+    const skeleton = document.createElement("div");
+    skeleton.className = "cm-mdm-dblock-skeleton";
+    skeleton.setAttribute("aria-hidden", "true");
+    skeleton.append(document.createElement("span"), document.createElement("span"));
+    const body = document.createElement("div");
+    body.className = "cm-mdm-dblock-body";
+    body.setAttribute("aria-busy", "true"); // lo que hay ahora es el esqueleto
+    wrap.append(skeleton, body);
+
+    const info = { id: this.parse.id, view: this.parse.view, title: this.parse.title };
+    const settle = () => {
+      if (skeleton.isConnected) skeleton.remove();
+      if (body.isConnected) body.removeAttribute("aria-busy");
+    };
+    const pending = (() => {
+      try {
+        return Promise.resolve(this.render(info, body));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    })();
+    pending.then(settle, (error) => {
+      if (!body.isConnected) return; // el editor ya repintó o se marchó
+      settle();
+      const card = document.createElement("div");
+      card.className = "cm-mdm-dblock-card";
+      card.textContent =
+        error && error.notFound
+          ? databaseNotFoundText(info.title, info.id)
+          : `No se pudo pintar la base: ${(error && error.message) || "error"}`;
+      body.textContent = "";
+      body.appendChild(card);
+    });
+
+    return wrap;
+  }
+}
+
+/** Reemplaza cada valla cerrada que el cursor no toca por su widget.
+ *
+ * Se recalcula entero con cada cambio de texto o de selección, porque lo que
+ * se ve (crudo o pintado) depende de dónde está el cursor. Cambiar de
+ * decoración NO mueve el cursor: la selección sigue en el mismo offset y la
+ * valla, que nunca salió del documento, reaparece en su sitio.
+ *
+ * Sin callback (una app que no pinte bases) no se sustituye nada: la valla se
+ * queda en crudo, que es lo benigno.
+ */
+function databaseBlockDecorations(state, render) {
+  const ranges = [];
+  if (render) {
+    const doc = state.doc;
+    for (const block of scanDatabaseBlocks(doc.toString())) {
+      if (selectionIntersects(state, block.from, block.to)) continue;
+      const widget = new DatabaseBlockWidget(block, render);
+      ranges.push(
+        Decoration.replace({ widget, block: true }).range(
+          doc.lineAt(block.from).from,
+          doc.lineAt(block.to).to
+        )
+      );
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function databaseBlockField(render) {
+  return StateField.define({
+    create(state) {
+      return databaseBlockDecorations(state, render);
+    },
+    update(deco, tr) {
+      if (tr.docChanged || !tr.state.selection.eq(tr.startState.selection)) {
+        return databaseBlockDecorations(tr.state, render);
+      }
+      return deco;
+    },
+    provide: (f) => EditorView.decorations.from(f),
+  });
 }
 
 // ------------------------------------------------------------------ bloques
@@ -2383,6 +2536,10 @@ function linkCompletion(onCreateLink) {
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreatePage]
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreateLink]
  * @param {(list: {id: string, title: string, type: string}[]) => void} [opts.linkTargets]
+ * @param {(block: {id: string, view: string|null, title: string|null}, container: HTMLElement) => Promise<void>|void} [opts.renderDatabaseBlock]
+ *   Pinta una base incrustada (bloque ```mdm-database) dentro de la nota. Sin
+ *   este callback la valla se queda en crudo; con él, `container` es el hueco
+ *   donde va la tabla (ver DatabaseBlockWidget).
  */
 // D8 (a): los bloques vacíos de los extremos no existen. En cuanto el cursor
 // sale de ese hueco (deja de ser el bloque que se está creando), las líneas en
@@ -2502,6 +2659,7 @@ export function createNoteEditor({
   onCreatePage,
   onCreateLink,
   linkTargets,
+  renderDatabaseBlock,
 }) {
   const view = new EditorView({
     parent,
@@ -2555,6 +2713,7 @@ export function createNoteEditor({
         blankLinePlugin(),
         syntaxMarkPlugin(),
         hrField,
+        databaseBlockField(renderDatabaseBlock),
         suggestionField,
         suggestionPlugin(),
         wikilinkPlugin(resolvePage),

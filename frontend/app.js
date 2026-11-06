@@ -2749,6 +2749,7 @@ function renderNote(page, backlinks) {
     onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
+    renderDatabaseBlock: renderDatabaseEmbed,
   });
   noteEditor = state.editor;
 
@@ -3956,6 +3957,70 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   }
 }
 
+// ------------------------------------- bases dentro de una nota (P17.2)
+/** Pinta, dentro de la nota, la base de un bloque ```mdm-database.
+ *
+ * Solo lectura: la tabla es la MISMA de la base (`renderTable` con
+ * `readOnly`), sin celdas editables y sin borrado; el encabezado (un botón)
+ * lleva a la base entera, que es donde se edita. Pintar no toca el documento
+ * ni guarda nada -- lo único que hace es leer de la API.
+ *
+ * Si la base ya no está, se avisa con `notFound` para que el editor pinte
+ * «Base no encontrada: <title|id>»; cualquier otro fallo se propaga con su
+ * motivo. En los dos casos el texto de la valla se queda intacto en la nota.
+ */
+async function renderDatabaseEmbed(block, container) {
+  const { id, view, title } = block;
+  let database;
+  let views;
+  try {
+    [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
+  } catch (e) {
+    if (e && e.status === 404) {
+      const err = new Error("Base no encontrada");
+      err.notFound = true;
+      throw err;
+    }
+    throw new Error(describeError(e));
+  }
+
+  // La vista se busca por nombre; si el bloque no la dice (o ya no existe), la
+  // primera -- el mismo criterio que selectDatabase.
+  const activeView = views.find((v) => view && v.name === view) || views[0] || null;
+
+  let rows;
+  try {
+    rows = await api(
+      `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
+    );
+  } catch (e) {
+    throw new Error(describeError(e));
+  }
+
+  const head = document.createElement("div");
+  head.className = "db-embed-head";
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "db-embed-title";
+  // El editor no trata este clic como «entrar en el bloque» (ver entry.js).
+  open.dataset.dbAction = "open";
+  open.textContent = database.title || title || "Base de datos";
+  open.title = "Abrir la base";
+  // Mismo camino que el árbol: deja entrada en el historial, así que
+  // «atrás» vuelve a la nota desde la que se abrió.
+  open.addEventListener("click", () => goTo("database", database.id));
+
+  const meta = document.createElement("span");
+  meta.className = "db-embed-meta";
+  meta.textContent = `${activeView ? activeView.name : "Todas"} · ${rows.length} ${
+    rows.length === 1 ? "fila" : "filas"
+  }`;
+
+  head.append(open, meta);
+  container.append(head, renderTable(database, rows, { readOnly: true }));
+}
+
 function formatPropValue(value, prop) {
   if (value === undefined || value === null || value === "") return "—";
   if (prop.type === "checkbox") return value ? "✓" : "—";
@@ -4082,7 +4147,12 @@ async function saveRow(database, row, changes) {
   return saved;
 }
 
-function renderTable(database, rows) {
+/** La tabla de una base. `readOnly` es la variante que se incrusta en una
+ * nota (P17.2, bloque ```mdm-database): mismos valores y mismas clases, pero
+ * sin celdas editables, sin columna de borrado y sin alta -- ahí solo se lee,
+ * y para cambiar algo se abre la base. Es la MISMA tabla a propósito: dos
+ * renders distintos acabarían enseñando cosas distintas. */
+function renderTable(database, rows, { readOnly = false } = {}) {
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
 
@@ -4094,14 +4164,14 @@ function renderTable(database, rows) {
   headRow.innerHTML =
     '<th scope="col">Título</th>' +
     database.schema_def.map((p) => `<th scope="col">${escapeHtml(p.name)}</th>`).join("") +
-    '<th scope="col"><span class="sr-only">Acciones</span></th>';
+    (readOnly ? "" : '<th scope="col"><span class="sr-only">Acciones</span></th>');
   thead.appendChild(headRow);
 
   const tbody = document.createElement("tbody");
   if (rows.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = database.schema_def.length + 2;
+    td.colSpan = database.schema_def.length + (readOnly ? 1 : 2);
     td.className = "search-empty";
     td.textContent = "Sin filas todavía.";
     tr.appendChild(td);
@@ -4112,16 +4182,24 @@ function renderTable(database, rows) {
     const tr = document.createElement("tr");
 
     // Título y celdas editables en el sitio: lo que se ve es el valor del
-    // `.md`, y un clic abre el control del tipo de esa propiedad.
+    // `.md`, y un clic abre el control del tipo de esa propiedad. En la tabla
+    // incrustada (readOnly) las celdas son solo texto: no hay nada que abrir.
     const titleTd = document.createElement("td");
-    paintCell(titleTd, database, row, null);
+    if (readOnly) paintReadOnlyCell(titleTd, row, null);
+    else paintCell(titleTd, database, row, null);
     tr.appendChild(titleTd);
 
     database.schema_def.forEach((p) => {
       const td = document.createElement("td");
-      paintCell(td, database, row, p);
+      if (readOnly) paintReadOnlyCell(td, row, p);
+      else paintCell(td, database, row, p);
       tr.appendChild(td);
     });
+
+    if (readOnly) {
+      tbody.appendChild(tr); // sin columna de acciones: no hay nada que borrar
+      return;
+    }
 
     const delTd = document.createElement("td");
     const delBtn = document.createElement("button");
@@ -4230,6 +4308,15 @@ function paintCell(td, database, row, prop) {
     prop && prop.type === "checkbox"
       ? () => toggleCheckbox(td, database, row, prop)
       : () => editCell(td, database, row, prop);
+}
+
+/** El valor de una celda, sin nada que editar: desde la tabla incrustada en una
+ * nota no se guarda nada (un clic no puede abrir un control ni un PATCH). Sin
+ * `data-editable` tampoco entra en el recorrido de teclado de la tabla. */
+function paintReadOnlyCell(td, row, prop) {
+  td.innerHTML = prop
+    ? formatPropValueHtml(row.properties?.[prop.key], prop)
+    : escapeHtml(row.title || "Sin título");
 }
 
 /** Un booleano no tiene "modo edición": el clic lo cambia y se guarda. */

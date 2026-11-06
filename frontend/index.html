@@ -924,6 +924,33 @@
     cursor: pointer;
   }
   .cm-mdm-wikilink-rendered:hover { text-decoration-color: var(--accent-ink); }
+  /* Base incrustada en la nota (P17.2): la valla ```mdm-database se sustituye
+     por la tabla de la base -- ver DatabaseBlockWidget en entry.js. El borde,
+     el scroll y el aspecto de la tabla ya son los de `.table-wrap`; aquí solo
+     el hueco, el esqueleto de carga y las tarjetas benignas (bloque roto o
+     base que ya no está), que nunca borran el texto del documento. */
+  .cm-mdm-dblock { margin: 8px 0; }
+  .cm-mdm-dblock-body:empty { display: none; }
+  .cm-mdm-dblock-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 11px 12px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+  }
+  .cm-mdm-dblock-skeleton span { height: 11px; border-radius: 6px; background: var(--code-bg); }
+  .cm-mdm-dblock-skeleton span:first-child { width: 38%; }
+  .cm-mdm-dblock-skeleton span:last-child { width: 62%; }
+  .cm-mdm-dblock-card {
+    padding: 9px 12px;
+    border: 1px dashed var(--border-input);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    color: var(--ink-muted);
+    font-size: 12.5px;
+  }
   /* Enlace Markdown "[texto](url)" resuelto y sin editar: sustituye todo el
      "[texto](url)" por solo "texto" con pinta de enlace -- ver
      MarkdownLinkWidget en entry.js. Mismo aspecto que un wikilink resuelto,
@@ -1335,6 +1362,21 @@
     min-width: 160px;
   }
   .db-schema-hint { font-size: 12px; color: var(--ink-muted); margin-bottom: 16px; }
+  /* Cabecera de una base incrustada en una nota (P17.2): el título es el
+     botón que abre la base entera, que es donde se edita. */
+  .db-embed-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+  .db-embed-title {
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    border: none;
+    background: none;
+    color: var(--accent-ink);
+    padding: 0;
+    cursor: pointer;
+  }
+  .db-embed-title:hover { text-decoration: underline; }
+  .db-embed-meta { font-size: 12px; color: var(--ink-muted); }
   .view-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
   .view-tab {
     font-size: 12.5px;
