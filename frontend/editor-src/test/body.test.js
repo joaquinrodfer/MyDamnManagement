@@ -25,6 +25,7 @@ import {
   newlineRunAt,
   outerBlankRange,
   shiftEmptyGap,
+  withoutRange,
 } from "../body.js";
 
 test("D8: dos Intro al principio se van con el texto", () => {
@@ -254,4 +255,66 @@ test("sin cambios la marca se queda donde estaba; una marca inválida no rompe",
     from: 4,
     to: 6,
   });
+});
+
+// ---- el filtro del selector de bases no es texto de la nota ----------------
+//
+// Se escribe dentro del documento para poder filtrar, pero lo que se guarda es
+// el documento sin él: el autoguardado y el guardado de emergencia al cerrar o
+// recargar la pestaña no pasan por ningún cierre del selector (`getValue` en
+// entry.js -> `withoutRange` aquí).
+
+test("withoutRange: quita el tramo y deja el texto de alrededor", () => {
+  const out = withoutRange("abcdef", [], { from: 2, to: 4 });
+  assert.equal(out.text, "abef");
+  assert.deepEqual(out.gaps, []);
+});
+
+test("withoutRange: una marca de hueco que cae DENTRO del tramo desaparece", () => {
+  // "ab\n\ncd" -> se quita 1..4 ("b\n\n"): el par deja de medir dos saltos.
+  const out = withoutRange("ab\n\ncd", [{ from: 2, to: 4 }], { from: 1, to: 4 });
+  assert.equal(out.text, "acd");
+  assert.deepEqual(out.gaps, []);
+});
+
+test("withoutRange: las marcas de DELANTE del tramo se quedan donde estaban", () => {
+  const out = withoutRange("ab\n\ncdefgh", [{ from: 2, to: 4 }], { from: 6, to: 8 });
+  assert.equal(out.text, "ab\n\ncdgh");
+  assert.deepEqual(out.gaps, [{ from: 2, to: 4 }]);
+});
+
+test("withoutRange: las marcas de DETRÁS se corren lo que se ha quitado", () => {
+  const out = withoutRange("abcdefgh\n\n", [{ from: 4, to: 6 }], { from: 0, to: 4 });
+  assert.equal(out.text, "efgh\n\n");
+  assert.deepEqual(out.gaps, [{ from: 0, to: 2 }]);
+});
+
+test("withoutRange: sin tramo (filtro vacío) no cambia nada", () => {
+  const gaps = [{ from: 2, to: 4 }];
+  assert.deepEqual(withoutRange("ab\n\ncd", gaps, { from: 3, to: 3 }), {
+    text: "ab\n\ncd",
+    gaps,
+  });
+  assert.deepEqual(withoutRange("ab\n\ncd", gaps, null), { text: "ab\n\ncd", gaps });
+});
+
+test("withoutRange: un tramo al revés o fuera del documento no rompe nada", () => {
+  assert.equal(withoutRange("abcdef", [], { from: 4, to: 1 }).text, "abcdef");
+  const out = withoutRange("abcdef", [], { from: 50, to: 90 });
+  assert.equal(out.text, "abcdef");
+  // Se recorta al documento, no se sale de él.
+  assert.equal(withoutRange("abcdef", [], { from: 2, to: 99 }).text, "ab");
+  assert.equal(withoutRange("abcdef", [], { from: -5, to: 2 }).text, "cdef");
+});
+
+test("withoutRange: el caso de la tarjeta -- el filtro no llega al .md", () => {
+  // "# T\n\ncontactos.\n\nfiltro", con el selector abierto al final.
+  const text = "# T\n\ncontactos.\n\nfiltro";
+  const from = text.indexOf("filtro");
+  const out = withoutRange(text, [{ from: 15, to: 17 }], { from, to: text.length });
+  assert.equal(canonicalBody(out.text), "# T\n\ncontactos.");
+  // La marca del separador sigue siendo válida para el recorte normal: cae ya
+  // al final del documento, así que no colapsa nada.
+  assert.equal(out.gaps.length, 1);
+  assert.equal(canonicalBody(collapseEmptyGaps(out.text, out.gaps).text), "# T\n\ncontactos.");
 });

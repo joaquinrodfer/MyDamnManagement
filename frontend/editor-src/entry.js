@@ -38,7 +38,13 @@ import {
   orderedRenumberEdits,
   renumberOrderedRun,
 } from "./block-delete.js";
-import { canonicalBody, collapseEmptyGaps, cursorInOuterBlanks, shiftEmptyGap } from "./body.js";
+import {
+  canonicalBody,
+  collapseEmptyGaps,
+  cursorInOuterBlanks,
+  shiftEmptyGap,
+  withoutRange,
+} from "./body.js";
 import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./database-embed.js";
 import {
   databaseBlockInsert,
@@ -1816,6 +1822,14 @@ function slashMenuExtension({
         return databaseFilterRange(this.view.state.doc, this.from);
       }
 
+      /** Tramo que ocupa el filtro del selector, o `null` si no hay selector
+       * abierto o el filtro está vacío. Es lo escrito en el documento que NO
+       * es texto de la nota (ver `getValue`, más abajo). */
+      transientRange() {
+        if (this.mode !== "database") return null;
+        return databaseFilterClear(this.view.state.doc, this.from);
+      }
+
       update(update) {
         if (!update.docChanged && !update.selectionSet) return;
 
@@ -2172,6 +2186,12 @@ function slashMenuExtension({
      */
     discardTransientText() {
       return instancia ? instancia.discardTransientText() : false;
+    },
+    /** Tramo del filtro del selector abierto (`{from, to}`), o `null`. Lo usa
+     * `getValue` para dejar ese texto fuera de lo que se guarda, sin tocar el
+     * documento. */
+    transientRange() {
+      return instancia ? instancia.transientRange() : null;
     },
   };
 }
@@ -3040,14 +3060,34 @@ export function createNoteEditor({
     }),
   });
 
+  /** Documento tal como se GUARDA: sin el filtro del selector de bases, que
+   * se escribe dentro del documento para poder filtrar pero no es texto de la
+   * nota.
+   *
+   * Se recorta aquí, en el texto que sale, y no solo al cerrar el selector
+   * (`discardTransientText`) porque hay guardados que no pasan por ese cierre:
+   * el autoguardado de 2 s y el de emergencia al cerrar, recargar u ocultar la
+   * pestaña (`flushSaveBeacon` en app.js) -- este último sin pasar por
+   * `clearMain()`, así que el filtro se quedaba escrito en el `.md`.
+   *
+   * Y se recorta SIN despachar ni tocar la vista (ver `withoutRange`): en
+   * `visibilitychange` la pestaña sigue viva y lo que hay en pantalla -- el
+   * selector con su filtro -- no puede cambiar bajo los dedos. */
+  function durableDoc() {
+    const text = view.state.doc.toString();
+    const gaps = view.state.field(pendingEmptyGaps);
+    const filtro = slashMenu.transientRange();
+    return filtro ? withoutRange(text, gaps, filtro) : { text, gaps };
+  }
+
   return {
     // Lo que se guarda y lo que se exporta: el cuerpo canónico, sin las líneas
-    // en blanco de los extremos. Decisión D8 (a): esos bloques vacíos no
-    // existen -- el `.md` ya los tiraba al escribir (`canonical_body` en
-    // backend/app/vault/store.py), así que el editor no los manda siquiera.
+    // en blanco de los extremos ni el filtro del selector de bases. Decisión
+    // D8 (a): esos bloques vacíos no existen -- el `.md` ya los tiraba al
+    // escribir (`canonical_body` en backend/app/vault/store.py), así que el
+    // editor no los manda siquiera.
     getValue: () => {
-      const text = view.state.doc.toString();
-      const gaps = view.state.field(pendingEmptyGaps);
+      const { text, gaps } = durableDoc();
       // Los huecos vacíos que creó el editor y el usuario ha abandonado no
       // llegan al fichero: lo que se guarda coincide con lo que se ve (el
       // aire de en medio, igual que el de los extremos). Las líneas en blanco
