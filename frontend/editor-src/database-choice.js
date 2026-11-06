@@ -79,6 +79,26 @@ export function databaseChoices(entries, query) {
 }
 
 /**
+ * Tramo que ocupa lo tecleado en el selector de bases: desde `from` hasta el
+ * FINAL DE LA LÍNEA, no hasta el caret.
+ *
+ * El filtro -- y, al crear, el nombre que llevará la base -- se escribe dentro
+ * del documento, así que lo que hay que sustituir (o borrar al cancelar) es
+ * todo lo escrito en esa línea. Cortando en el caret, con el cursor a mitad del
+ * texto la base se creaba con el nombre truncado y el resto del filtro se
+ * quedaba de párrafo suelto detrás del bloque.
+ *
+ * `doc` es el documento del editor: basta con que tenga `length` y
+ * `lineAt(pos).to` (el `Text` de CodeMirror). Sin DOM ni red, como el resto del
+ * módulo; `from` se recorta al documento por si llega de un estado viejo.
+ */
+export function databaseFilterRange(doc, from) {
+  const length = Math.max(0, Number(doc?.length) || 0);
+  const start = Math.min(Math.max(Number(from) || 0, 0), length);
+  return { from: start, to: doc.lineAt(start).to };
+}
+
+/**
  * Lo que se escribe en la nota al elegir una base: la valla cerrada y un
  * párrafo nuevo debajo, con el cursor en él (`cursorOffset`).
  *

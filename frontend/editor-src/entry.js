@@ -43,6 +43,7 @@ import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./d
 import {
   databaseBlockInsert,
   databaseChoices,
+  databaseFilterRange,
   normalizeDatabaseEntries,
 } from "./database-choice.js";
 
@@ -1717,7 +1718,8 @@ async function createPageFromName(view, from, to, onCreatePage) {
 // poder cambiarlo y reintentar. Cuando sí se crea, lo que queda es el bloque
 // apuntando a la base de verdad y el cursor en el párrafo de debajo.
 async function createDatabaseFromName(view, from, to, onCreateDatabase) {
-  const title = view.state.doc.sliceString(from, to).trim();
+  const escrito = view.state.doc.sliceString(from, to);
+  const title = escrito.trim();
   if (!title) {
     view.focus();
     return;
@@ -1730,8 +1732,11 @@ async function createDatabaseFromName(view, from, to, onCreateDatabase) {
   }
   // Mientras se creaba (es una llamada a la API y el árbol se recarga) el
   // usuario ha podido seguir escribiendo: si el tramo del nombre ya no es el
-  // que era, no se pisa nada.
-  if (!creada || view.state.doc.sliceString(from, to) !== title) {
+  // que era, no se pisa nada. Se compara con lo escrito TAL CUAL: el nombre va
+  // sin espacios de sobra, pero los del texto siguen ahí y también hay que
+  // sustituirlos (comparando con el nombre recortado, un nombre tecleado con
+  // un espacio detrás creaba la base y dejaba el nombre entero en la nota).
+  if (!creada || view.state.doc.sliceString(from, to) !== escrito) {
     view.focus();
     return;
   }
@@ -1762,9 +1767,15 @@ function slashMenuExtension({
         if (this.mode !== "menu" && this.mode !== "database") return "";
         const pos = this.view.state.selection.main.head;
         if (pos < this.from) return "";
-        // En el menú "/" la consulta empieza detrás de la barra; en el selector
-        // de bases no hay barra: lo escrito (el filtro) empieza en `from`.
-        return this.view.state.doc.sliceString(this.from + (this.mode === "menu" ? 1 : 0), pos);
+        // En el menú "/" la consulta empieza detrás de la barra y acaba en el
+        // caret, como en cualquier autocompletado. En el selector de bases no
+        // hay barra y manda la línea entera: el filtro es lo que se ve escrito
+        // en el documento, no lo que queda a la izquierda del cursor (ver
+        // `filterRange`).
+        if (this.mode === "database") {
+          return this.view.state.doc.sliceString(this.from, this.filterRange().to);
+        }
+        return this.view.state.doc.sliceString(this.from + 1, pos);
       }
 
       get filteredOptions() {
@@ -1782,6 +1793,20 @@ function slashMenuExtension({
       /** Las opciones que se están enseñando (menú "/" o selector de bases). */
       get activeOptions() {
         return this.mode === "database" ? this.databaseOptions : this.filteredOptions;
+      }
+
+      /**
+       * Tramo que ocupa lo tecleado en el selector de bases: `from` (donde
+       * empezó el filtro) hasta el FINAL DE LA LÍNEA, no hasta el caret.
+       *
+       * El filtro -- y, al crear, el nombre de la base -- se escribe dentro del
+       * documento, así que lo que hay que sustituir (o borrar al cancelar) es
+       * todo lo escrito en esa línea. Tomando el caret como final, con el
+       * cursor a mitad del texto el nombre se creaba cortado y el resto del
+       * filtro se quedaba de párrafo suelto detrás del bloque.
+       */
+      filterRange() {
+        return databaseFilterRange(this.view.state.doc, this.from);
       }
 
       update(update) {
@@ -1887,11 +1912,49 @@ function slashMenuExtension({
         });
       }
 
-      close() {
+      /** Cierra el menú sin tocar el documento, y limpia su estado. */
+      dismiss() {
         if (!this.mode) return;
         this.mode = null;
         this.from = -1;
+        this.namingKind = "page";
         onMenuUpdate(null);
+      }
+
+      close() {
+        if (!this.mode) return;
+        // Cancelar el selector de bases se lleva por delante el filtro
+        // tecleado: se escribió dentro del documento como UI efímera, no como
+        // texto de la nota (si no, «zzz» se queda de párrafo). En el menú "/"
+        // no se borra nada: ahí lo escrito es texto de la nota y el menú se
+        // cierra por cualquier motivo.
+        const filtro = this.mode === "database" ? this.filterRange() : null;
+        this.dismiss();
+        if (filtro) this.dropFilter(filtro);
+      }
+
+      /**
+       * Borra del documento el filtro de un selector ya cerrado.
+       *
+       * Va en un microtask y no en el acto porque `close()` también se llama
+       * desde `update()` (cuando el caret sale de la línea) y ahí despachar una
+       * transacción no está permitido -- "Calls to EditorView.update are not
+       * allowed while an update is in progress" --, la misma mecánica que
+       * `dropOuterBlankLines`. Si mientras tanto ese tramo ha cambiado, no se
+       * borra a ciegas.
+       */
+      dropFilter({ from, to }) {
+        const view = this.view;
+        const escrito = view.state.doc.sliceString(from, Math.min(to, view.state.doc.length));
+        queueMicrotask(() => {
+          if (!view.dom.isConnected) return; // la nota se cerró mientras tanto
+          const doc = view.state.doc;
+          const fin = Math.min(to, doc.length);
+          // Cancelar con el filtro vacío no despacha nada: no hay nada que
+          // borrar (y una transacción vacía solo estorbaría en el historial).
+          if (fin <= from || doc.sliceString(from, fin) !== escrito) return;
+          view.dispatch({ changes: { from, to: fin, insert: "" } });
+        });
       }
 
       moveSelection(delta) {
@@ -1907,7 +1970,11 @@ function slashMenuExtension({
         if (this.mode !== "menu" && this.mode !== "database") return false;
         const opts = this.activeOptions;
         const from = this.from;
-        const to = this.view.state.selection.main.head;
+        // En el selector de bases el tramo es todo lo escrito en la línea (ver
+        // `filterRange`); en el menú "/" lo escrito es lo que hay a la
+        // izquierda del caret, como en cualquier completado.
+        const to =
+          this.mode === "database" ? this.filterRange().to : this.view.state.selection.main.head;
         if (opts.length === 0) {
           this.close();
           return true;
@@ -1916,7 +1983,9 @@ function slashMenuExtension({
 
         // ---- selector de bases
         if (chosen.kind === "item") {
-          this.close();
+          // `dismiss` y no `close`: el tramo no se borra antes de tiempo, lo
+          // sustituye `pickDatabase` por el bloque cuando llega la API.
+          this.dismiss();
           this.pickDatabase(from, to, chosen.entry);
           return true;
         }
@@ -1929,7 +1998,7 @@ function slashMenuExtension({
 
         // ---- menú "/"
         if (chosen.type === "database") {
-          this.openDatabasePicker(from, to);
+          this.openDatabasePicker(from);
           return true;
         }
         if (chosen.type === "page") {
@@ -1950,7 +2019,7 @@ function slashMenuExtension({
       }
 
       /** Abre el selector de bases: borra "/base" y lista las del vault. */
-      openDatabasePicker(from, to) {
+      openDatabasePicker(from) {
         this.mode = "database";
         this.from = from;
         this.selectedIndex = 0;
@@ -1958,7 +2027,14 @@ function slashMenuExtension({
         // puede ir a la API en cada tecla. El dispatch de abajo dispara el
         // update() de este plugin, que ya en modo "database" pinta el selector.
         this.entries = normalizeDatabaseEntries(onListDatabases?.());
-        this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+        // Lo escrito detrás de "/base" es el filtro: se borra la línea entera
+        // -- no solo hasta el caret --, el mismo tramo que sustituirá el bloque
+        // al elegir. Con el caret a mitad, lo que quedara detrás se colaría
+        // como filtro del selector recién abierto.
+        this.view.dispatch({
+          changes: { from, to: this.filterRange().to, insert: "" },
+          selection: { anchor: from },
+        });
       }
 
       /** Escribe el bloque de la base elegida, con el cursor debajo. */
@@ -2006,8 +2082,11 @@ function slashMenuExtension({
       confirmNaming() {
         if (this.mode !== "naming") return false;
         const from = this.from;
-        const to = this.view.state.selection.main.head;
         const kind = this.namingKind;
+        // Con una base nueva el nombre es todo lo escrito en la línea (el mismo
+        // tramo que era el filtro, ver `filterRange`); con una página, lo
+        // escrito desde que empezó el nombre.
+        const to = kind === "database" ? this.filterRange().to : this.view.state.selection.main.head;
         this.mode = null;
         this.from = -1;
         this.namingKind = "page";

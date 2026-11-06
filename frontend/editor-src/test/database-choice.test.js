@@ -11,9 +11,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { Text } from "@codemirror/state";
+
 import {
   databaseBlockInsert,
   databaseChoices,
+  databaseFilterRange,
   filterDatabases,
   normalizeDatabaseEntries,
 } from "../database-choice.js";
@@ -104,6 +107,32 @@ test("sin vista no se escribe `view` (abre la primera, como el bloque pintado)",
   const { text } = databaseBlockInsert({ id: ID, title: "Contactos", view: null });
   assert.ok(!text.includes("view:"));
   assert.ok(text.includes("title: Contactos"));
+});
+
+// El filtro (y el nombre de la base que se crea) es TODO lo escrito en la
+// línea, no lo que quede a la izquierda del caret: si no, con el cursor a mitad
+// del texto la base se crea con el nombre cortado y el resto queda de párrafo.
+test("el tramo del selector llega al final de la línea, no al caret", () => {
+  const line = "Nueva base X";
+  const doc = Text.of([line]);
+  // El tramo empieza donde empezó el filtro y acaba al final de la línea. El
+  // caret no entra en la cuenta: con el cursor entre «bas» y «e X» (donde
+  // estaría el 8 de «Nueva ba|se X») el selector sigue tomando la línea
+  // entera, que es lo que se sustituye y el nombre que se crea.
+  assert.deepEqual(databaseFilterRange(doc, 0), { from: 0, to: line.length });
+  assert.deepEqual(databaseFilterRange(doc, 3), { from: 3, to: line.length });
+});
+
+test("el tramo no se sale de su línea ni del documento", () => {
+  // "\nNueva base X\notra": línea 2 = 1..13, línea 3 = 14..18.
+  const doc = Text.of(["", "Nueva base X", "otra"]);
+  assert.deepEqual(databaseFilterRange(doc, 1), { from: 1, to: 13 });
+  assert.deepEqual(databaseFilterRange(doc, 5), { from: 5, to: 13 });
+  assert.deepEqual(databaseFilterRange(doc, 14), { from: 14, to: 18 });
+  // Posiciones imposibles (estado viejo): se recortan al documento.
+  assert.deepEqual(databaseFilterRange(doc, -3), { from: 0, to: 0 });
+  assert.deepEqual(databaseFilterRange(doc, 999), { from: 18, to: 18 });
+  assert.deepEqual(databaseFilterRange(Text.of([""]), 0), { from: 0, to: 0 });
 });
 
 test("un bloque sin id no se puede insertar", () => {
