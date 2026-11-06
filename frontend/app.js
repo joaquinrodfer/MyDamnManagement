@@ -1947,6 +1947,35 @@ function renderNote(page, backlinks) {
   let beaconInFlight = null; // cuerpo del guardado de emergencia que va de camino
   let beaconQueued = false; // se pidió guardar otro contenido mientras había un beacon en vuelo
 
+  // El editor de ESTA nota, fijado al terminar renderNote(). `state.editor` es
+  // el de la nota que se esté pintando AHORA: en cuanto se navega pasa a ser el
+  // de la nota nueva, así que leerlo desde el cierre de la nota que se deja
+  // atrás es leer el cuerpo de otra nota -- y ese texto acababa escrito en el
+  // `.md` de esta. Tras `destroy()` el documento de `noteEditor` sigue siendo
+  // el de esta nota, y es el único texto que este guardado puede mandar.
+  let noteEditor = null;
+  let noteBodyFallback = page.body_markdown || ""; // último texto visto, si el editor ya no está
+  let session = null; // la de esta nota; la crea renderNote() al final
+
+  /** Texto del cuerpo de ESTA nota -- nunca el de la que esté abierta ahora.
+   * El editor de esta nota se destruye al navegar, pero su documento sigue
+   * siendo el suyo: de ahí sale el texto de un guardado que termina tarde. */
+  function bodyText() {
+    if (noteEditor) {
+      try {
+        return noteEditor.getValue();
+      } catch {
+        // editor destruido sin documento legible: vale el último texto visto
+      }
+    }
+    return noteBodyFallback;
+  }
+
+  /** ¿Esta nota (este cierre de renderNote) sigue siendo la que está abierta? */
+  function noteIsOpen() {
+    return session !== null && state.noteSession === session;
+  }
+
   /** Cuerpo del PATCH, compartido por el guardado normal y el de emergencia:
    * uno solo, para que no puedan acabar mandando cosas distintas. */
   function buildSaveBody() {
@@ -1957,7 +1986,7 @@ function renderNote(page, backlinks) {
       title: titleInput.value,
       icon: page.icon,
       description: descInput.value,
-      body_markdown: state.editor.getValue(),
+      body_markdown: bodyText(),
     });
   }
 
@@ -2180,12 +2209,23 @@ function renderNote(page, backlinks) {
     // con Ctrl+S): primero se decide recargar o quedarse con lo de aquí.
     if (blocked) return;
     clearTimeout(saveTimer);
+    // Un guardado de ESTA nota solo puede aplicarse a su `.md`. Si la nota ya
+    // se dejó atrás y no queda nada suyo sin confirmar, se descarta: reenviarlo
+    // escribiría su texto viejo encima de lo que tenga ahora el fichero (una
+    // edición de fuera, por ejemplo) sin ganar nada. El flush de navegación
+    // sigue pasando -- clearMain() lo llama ANTES de anular la sesión, así que
+    // en ese momento esta nota todavía es la abierta --, y también los
+    // reintentos de contenido que el servidor nunca confirmó (`dirty`).
+    if (!noteIsOpen() && !dirty) return;
     if (saving) {
       saveAgain = true;
       return;
     }
     saving = true;
-    setSaveState("saving");
+    // El indicador es el de la nota ABIERTA: un guardado que termina tarde en
+    // una nota que ya no se está mirando no puede moverlo (diría «Guardando…»
+    // de una nota que no es la de la pantalla).
+    if (noteIsOpen()) setSaveState("saving");
 
     const seqAtSave = changeSeq;
     const body = buildSaveBody();
@@ -2216,7 +2256,7 @@ function renderNote(page, backlinks) {
       // Desde P14 el título es un <textarea>: repintarlo cambia el número de
       // líneas, así que hay que volver a medir el alto. Y también cubre pegar
       // un título con saltos, que en disco se guarda saneado.
-      if (changeSeq === seqAtSave && titleInput.value !== updated.title) {
+      if (noteIsOpen() && changeSeq === seqAtSave && titleInput.value !== updated.title) {
         titleInput.value = updated.title;
         autoResizeTitle();
         if (updated.title !== sentTitle) showError(
@@ -2235,23 +2275,36 @@ function renderNote(page, backlinks) {
       if (changeSeq === seqAtSave && (!beaconInFlight || beaconInFlight === body)) {
         dirty = false;
         lastSentBody = body; // si hubiera que salir justo después, ya está guardado
-        state.flushPendingSave = null;
+        // `flushPendingSave` es el disparador de la nota ABIERTA: si esta ya
+        // se dejó atrás, el suyo lo puso (y lo consumió) la nota nueva al
+        // navegar, y anularlo aquí dejaría a esa sin flush al salir.
+        if (noteIsOpen()) state.flushPendingSave = null;
       }
-      // Si sigue habiendo algo pendiente (se escribió durante el guardado, o va
-      // otro PATCH de camino), el indicador no puede decir "Guardado": lo
-      // manda el autoguardado de 2 s o el reenvío del beacon.
-      setSaveState(dirty ? "dirty" : "saved");
-      await loadTree();
-      markActive(page.id);
+      // El indicador, el árbol y el resaltado son de la nota que se está
+      // mirando: si esta se dejó atrás mientras el PATCH iba de camino, no se
+      // tocan -- un cierre ajeno no puede repintar el estado de otra nota.
+      if (noteIsOpen()) {
+        // Si sigue habiendo algo pendiente (se escribió durante el guardado, o
+        // va otro PATCH de camino), el indicador no puede decir "Guardado": lo
+        // manda el autoguardado de 2 s o el reenvío del beacon.
+        setSaveState(dirty ? "dirty" : "saved");
+        await loadTree();
+        markActive(page.id);
+      }
     } catch (e) {
-      setSaveState("error");
+      // El indicador de error también es el de la nota abierta: si el PATCH
+      // fallido era de una que ya se dejó atrás, el aviso sería de otra nota.
+      if (noteIsOpen()) setSaveState("error");
       console.error(e);
     } finally {
       saving = false;
       savingBody = null;
       if (saveAgain) {
         saveAgain = false;
-        doSave();
+        // Solo si queda algo sin confirmar. Este reenvío se lanzaba a ciegas
+        // desde una nota ya abandonada y, como el cuerpo se leía del editor
+        // global, escribía el texto de la nota nueva en el `.md` de la vieja.
+        if (dirty) doSave();
       }
     }
   }
@@ -2289,16 +2342,6 @@ function renderNote(page, backlinks) {
   noteWidthObserver.observe(titleInput);
   state.refitNoteText = refitNoteText;
   state.noteWidthObserver = noteWidthObserver;
-
-  // Ctrl/Cmd+S fuerza el guardado ya, sin esperar el debounce (y sin pasar
-  // por el diálogo del navegador). Delegado en #main: pulsarlo desde
-  // cualquier campo de la nota funciona.
-  main.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-      e.preventDefault();
-      doSave();
-    }
-  });
 
   // Comando "/page" del editor: crea una página hija de ÉSTA (page.id, la
   // que está abierta ahora mismo) con el título que el usuario ya escribió
@@ -2352,6 +2395,7 @@ function renderNote(page, backlinks) {
     resolvePage: (title) => findPageByTitle(title),
     onNavigate: (pageId) => navigateToPage(pageId),
     onChange: () => {
+      noteBodyFallback = bodyText();
       scheduleSave();
       renderOutline();
     },
@@ -2401,6 +2445,7 @@ function renderNote(page, backlinks) {
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
   });
+  noteEditor = state.editor;
 
   // El árbol ya está cargado cuando se abre una nota (lo pide el arranque y
   // cada navegación), pero setLinkTargets es un efecto sobre el estado del
@@ -2796,7 +2841,7 @@ function renderNote(page, backlinks) {
   // P8: lo que `/events` necesita saber de esta nota -- si hay algo sin
   // guardar (para no pisarlo), cómo se tira lo pendiente si el usuario pide
   // recargar, y cómo se refrescan los backlinks sin tocar el editor.
-  const session = {
+  session = {
     id: page.id,
     hasPendingWork: () => dirty || saving || beaconInFlight !== null,
     /** Para el autoguardado mientras el usuario decide (no pisa el disco). */
@@ -4561,6 +4606,20 @@ function flushOnExit(alive) {
 window.addEventListener("beforeunload", () => flushOnExit(false));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flushOnExit(true);
+});
+
+// Ctrl/Cmd+S fuerza el guardado ya, sin esperar el debounce (y sin pasar por el
+// diálogo del navegador). UN solo listener para toda la sesión, delegado en la
+// nota abierta: registrarlo dentro de renderNote() dejaba uno por nota visitada
+// sobre el mismo #main (nadie los quitaba), y cada Ctrl+S reenviaba el guardado
+// de TODAS las notas abiertas en la sesión con el cuerpo congelado de cada una
+// -- el texto viejo de una pisaba lo que tuviera ahora su fichero. Si no hay
+// nada pendiente no se manda nada.
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+    e.preventDefault();
+    state.flushPendingSave?.();
+  }
 });
 
 // Giro del móvil o cambio de tamaño de la ventana: el alto del título y de la
