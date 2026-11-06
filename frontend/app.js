@@ -970,6 +970,8 @@ function initInbox() {
   // toca es lo que manda, y el otro campo se vacía para que no parezca que se
   // van a hacer las dos cosas.
   procesarNew?.addEventListener("input", () => {
+    // Otro nombre, otra comprobación: lo que dijo el servidor era de este.
+    coincidenciasDelServidor = null;
     if (procesarNew.value.trim()) procesarSelect.value = "";
     paintCoincidencias();
   });
@@ -1028,11 +1030,15 @@ function nombreNormalizado(titulo) {
 
 /** Dónde vive la página en el árbol («Páginas / Proyectos / Hitos»): es lo
  * que distingue dos páginas con el mismo título. La API no da la ruta, así
- * que se sube por los `parent_id`. */
+ * que se sube por los `parent_id`. Una captura no está en «Páginas» —vive en
+ * `Bandeja/`— y no se le inventa una ruta que no tiene. */
 function rutaDePagina(id) {
+  const nodo = state.pagesById.get(id);
+  if (!nodo) return "Páginas";
+  if (state.inboxIds.has(id)) return ["Bandeja", nodo.title || "Sin título"].join(" / ");
   const nombres = [];
   const visto = new Set();
-  let node = state.pagesById.get(id);
+  let node = nodo;
   while (node && !visto.has(node.id)) {
     visto.add(node.id);
     nombres.unshift(node.title || "Sin título");
@@ -1041,24 +1047,87 @@ function rutaDePagina(id) {
   return ["Páginas", ...nombres].join(" / ");
 }
 
-/** Las notas que ya se llaman así. La que se está procesando no cuenta (ni
- * las de la bandeja, que no son carpetas: `carpetasPosibles` las filtra). */
+/** Las notas que ocupan un nombre en la raíz de `Notas/`, que es donde nace
+ * una página nueva (`POST /pages` sin padre). Son las únicas con las que
+ * colisiona ese nombre: las de una subcarpeta viven en la suya, y las
+ * capturas de la bandeja están en `Bandeja/` (no son páginas del wiki y no
+ * hacen de carpeta). */
+function notasEnLaRaiz() {
+  return [...state.pagesById.values()].filter(
+    (n) => n.type === "note" && !n.parent_id && !state.inboxIds.has(n.id),
+  );
+}
+
+/** Las notas de la raíz que ya se llaman así, con su ruta. La que se está
+ * procesando no cuenta. */
 function notasConEseNombre(titulo, pageId) {
   const buscado = nombreNormalizado(titulo);
   if (!buscado) return [];
-  return [...state.pagesById.values()]
-    .filter((n) => n.type === "note" && n.id !== pageId && nombreNormalizado(n.title) === buscado)
-    .sort((a, b) => rutaDePagina(a.id).localeCompare(rutaDePagina(b.id), "es"));
+  return notasEnLaRaiz()
+    .filter((n) => n.id !== pageId && nombreNormalizado(n.title) === buscado)
+    .map((n) => ({ nodo: n, ruta: rutaDePagina(n.id) }))
+    .sort((a, b) => a.ruta.localeCompare(b.ruta, "es"));
 }
 
-/** Pinta (o esconde) el bloque de «ya existe» del diálogo Procesar. */
+/** Las notas de la raíz indexadas por nombre comparable: el estado de antes
+ * de crear, contra el que se comprueba el título que guarde el servidor. */
+function indiceDeLaRaiz(pageId) {
+  const mapa = new Map();
+  for (const n of notasEnLaRaiz()) {
+    if (n.id === pageId) continue;
+    mapa.set(nombreNormalizado(n.title), { nodo: n, ruta: rutaDePagina(n.id) });
+  }
+  return mapa;
+}
+
+/** ¿El servidor ha guardado el nombre como otro que ya existía?
+ *
+ * El saneado del backend no se copia aquí (`< > : " / \ | ? *`, corchetes,
+ * puntos y espacios finales…): manda lo que ha quedado en el fichero. Si el
+ * título que vuelve no es el tecleado pero coincide con una entrada que ya
+ * estaba —o con la base de un « (2)» que el backend pone al chocar—, es que
+ * el nombre estaba ocupado.
+ *
+ * @param {string} devuelto título final que ha guardado el servidor
+ * @param {string} tecleado título que escribió el usuario
+ * @param {Map<string,{nodo:object,ruta:string}>} antes entradas de la carpeta antes de escribir
+ * @returns {{nodo:object,ruta:string}|null} la entrada que ocupa el nombre, o `null`
+ */
+function ocupadaPorElServidor(devuelto, tecleado, antes) {
+  if (!devuelto) return null;
+  if (nombreNormalizado(devuelto) === nombreNormalizado(tecleado)) return null;
+  const talCual = antes.get(nombreNormalizado(devuelto));
+  if (talCual) return talCual;
+  const sufijo = /^(.*?) \((\d+)\)$/u.exec(devuelto);
+  if (sufijo && Number(sufijo[2]) >= 2) return antes.get(nombreNormalizado(sufijo[1])) || null;
+  return null;
+}
+
+/** El aviso de «ya existe» de Procesar, para no escribirlo dos veces. */
+function avisoDeCoincidencia({ nodo, ruta }) {
+  return `Ya existe «${nodo.title}» (${ruta}): no se ha creado nada. Usa esa página o marca «crear una nueva igualmente».`;
+}
+
+/** Las coincidencias que toca enseñar: las del nombre tecleado o, si el
+ * servidor acaba de toparse con una, esa (lo tecleado puede no ser el nombre
+ * que chocó: «Proyectos.» se guarda como «Proyectos»). */
+let coincidenciasDelServidor = null;
+function coincidenciasActuales() {
+  if (coincidenciasDelServidor) return coincidenciasDelServidor;
+  const nueva = procesarNew.value.trim();
+  if (!nueva || !procesarPage) return [];
+  return notasConEseNombre(nueva, procesarPage.id);
+}
+
+/** Pinta (o esconde) el bloque de «ya existe» del diálogo Procesar. Todas las
+ * que salen ocupan un nombre en la raíz de `Notas/`, así que todas pueden
+ * hacer de carpeta: ni botones deshabilitados ni rutas inventadas. */
 function paintCoincidencias() {
   const caja = document.getElementById("proc-existing");
   const lista = document.getElementById("proc-existing-list");
   const cabecera = document.getElementById("proc-existing-note");
   if (!caja || !lista || !cabecera) return;
-  const nueva = procesarNew.value.trim();
-  const iguales = nueva && procesarPage ? notasConEseNombre(nueva, procesarPage.id) : [];
+  const iguales = coincidenciasActuales();
   caja.hidden = iguales.length === 0;
   lista.textContent = "";
   if (!iguales.length) {
@@ -1072,37 +1141,27 @@ function paintCoincidencias() {
     iguales.length === 1
       ? "Ya existe una página con ese nombre. Puedes usar esa o crear otra igualmente."
       : `Ya hay ${iguales.length} páginas con ese nombre. Elige cuál usar, o crea otra igualmente.`;
-  const posibles = new Set(carpetasPosibles(procesarPage.id).map((n) => n.id));
-  iguales.forEach((nodo) => {
+  iguales.forEach(({ nodo, ruta }) => {
     const fila = document.createElement("div");
     fila.className = "proc-existing-item";
-    const ruta = document.createElement("span");
-    ruta.className = "proc-existing-path";
-    ruta.textContent = rutaDePagina(nodo.id);
+    const rutaEl = document.createElement("span");
+    rutaEl.className = "proc-existing-path";
+    rutaEl.textContent = ruta;
     const usar = document.createElement("button");
     usar.type = "button";
     usar.className = "btn";
     usar.textContent = "Usar esta";
-    if (posibles.has(nodo.id)) {
-      usar.setAttribute("aria-label", `Usar «${nodo.title}» (${rutaDePagina(nodo.id)})`);
-      usar.addEventListener("click", () => {
-        // Elegir la existente es lo mismo que elegirla en la lista de arriba:
-        // la nota cuelga de ella y no se crea nada.
-        procesarSelect.value = nodo.id;
-        procesarNew.value = "";
-        paintCoincidencias();
-        setFormNote(
-          procesarNote,
-          `La nota pasará a colgar de «${nodo.title}» (${rutaDePagina(nodo.id)}).`,
-          "ok",
-        );
-      });
-    } else {
-      // Está en la bandeja: todavía no es una carpeta del wiki.
-      usar.disabled = true;
-      usar.title = "Está en la bandeja: procésala antes de usarla como carpeta.";
-    }
-    fila.append(ruta, usar);
+    usar.setAttribute("aria-label", `Usar «${nodo.title}» (${ruta})`);
+    usar.addEventListener("click", () => {
+      // Elegir la existente es lo mismo que elegirla en la lista de arriba:
+      // la nota cuelga de ella y no se crea nada.
+      coincidenciasDelServidor = null;
+      procesarSelect.value = nodo.id;
+      procesarNew.value = "";
+      paintCoincidencias();
+      setFormNote(procesarNote, `La nota pasará a colgar de «${nodo.title}» (${ruta}).`, "ok");
+    });
+    fila.append(rutaEl, usar);
     lista.appendChild(fila);
   });
 }
@@ -1110,6 +1169,7 @@ function paintCoincidencias() {
 /** Deja el diálogo como recién abierto: sin coincidencias y sin permiso
  * para duplicar. */
 function reiniciarCoincidencias() {
+  coincidenciasDelServidor = null;
   const caja = document.getElementById("proc-existing");
   if (caja) caja.hidden = true;
   const forzar = document.getElementById("proc-force");
@@ -1153,18 +1213,24 @@ async function procesarNota() {
     );
   }
 
-  // Un nombre que ya existe no crea una página nueva a la callada: el
-  // backend resolvería la colisión con un sufijo («Hitos (2)») y el árbol
-  // acabaría con dos «Hitos» sin decir cuál es cuál (M1). O se usa la que
-  // hay, o se marca la casilla de crear otra.
-  const iguales = nueva ? notasConEseNombre(nueva, page.id) : [];
+  // Un nombre que ya ocupa una nota de la raíz de `Notas/` —donde nace la
+  // página nueva— no crea otra a la callada: el backend le pondría un sufijo
+  // («Hitos (2)») y el árbol acabaría con dos «Hitos» (M1). O se usa la que
+  // hay, o se marca la casilla. Las capturas de la bandeja y las notas de
+  // subcarpetas no comparten carpeta con la página nueva y no bloquean.
   const forzar = document.getElementById("proc-force");
-  if (iguales.length && !forzar?.checked) {
+  const permitirOtra = Boolean(forzar?.checked);
+  const iguales = coincidenciasDelServidor?.length
+    ? coincidenciasDelServidor
+    : nueva
+      ? notasConEseNombre(nueva, page.id)
+      : [];
+  if (iguales.length && !permitirOtra) {
     paintCoincidencias();
     return setFormNote(
       procesarNote,
       iguales.length === 1
-        ? `Ya existe «${nueva}» (${rutaDePagina(iguales[0].id)}): usa esa página o marca «crear una nueva igualmente».`
+        ? avisoDeCoincidencia(iguales[0])
         : `Ya hay ${iguales.length} páginas llamadas «${nueva}»: usa una de ellas o marca «crear una nueva igualmente».`,
       "error",
     );
@@ -1175,12 +1241,35 @@ async function procesarNota() {
   setFormNote(procesarNote, "Moviendo…");
   try {
     if (nueva) {
-      // Una carpeta nueva es una página nueva en la raíz: su carpeta de hijas
-      // es donde acaba la nota (la jerarquía del vault son carpetas).
+      // Estado de la raíz antes de crear: contra él se comprueba el título
+      // que el servidor guarde de verdad (su saneado no se copia aquí).
+      const antes = permitirOtra ? new Map() : indiceDeLaRaiz(page.id);
       const creada = await api("/pages", {
         method: "POST",
         body: JSON.stringify({ title: nueva }),
       });
+      const ocupada = permitirOtra ? null : ocupadaPorElServidor(creada.title, nueva, antes);
+      if (ocupada) {
+        // El nombre saneado sí estaba ocupado y el servidor ha creado
+        // «Hitos (2)»: se deshace la página vacía antes de mover la nota.
+        let deshecho = true;
+        try {
+          await api(`/pages/${creada.id}`, { method: "DELETE" });
+        } catch (_) {
+          deshecho = false;
+        }
+        if (!deshecho) {
+          return setFormNote(
+            procesarNote,
+            `El servidor ha creado «${creada.title}» y no se ha podido deshacer. Revísala en el árbol antes de seguir.`,
+            "error",
+          );
+        }
+        coincidenciasDelServidor = [ocupada];
+        await loadTree();
+        paintCoincidencias();
+        return setFormNote(procesarNote, avisoDeCoincidencia(ocupada), "error");
+      }
       parentId = creada.id;
     }
     await api(`/pages/${page.id}`, {
@@ -3544,26 +3633,31 @@ async function selectDatabase(id) {
   }
 }
 
-/** ¿Otra base de datos de la misma carpeta se llama ya así?
- *
- * Las bases viven en `Bases/<título>.md` (una carpeta por base), así que la
- * colisión es entre bases del mismo padre: se compara el título normalizado
- * y, para no confundir dos carpetas distintas, el `parent_id`.
- *
- * @returns la otra base (nodo del árbol) o `null`. */
-function baseConEseNombre(database, titulo) {
-  const buscado = nombreNormalizado(titulo);
-  if (!buscado) return null;
+/** Las entradas que ya ocupan un nombre en la carpeta de esta base: las
+ * otras bases de su mismo padre y —si cuelga de una nota— las notas
+ * hermanas, que comparten carpeta (`Notas/<nota>/`). Dentro de una misma
+ * carpeta es donde el backend resuelve la colisión (`unique_stem`). */
+function hermanasDeLaBase(database) {
   const propia = [...state.pagesById.values()].find(
     (n) => n.type === "database" && n.database_id === database.id,
   );
   const carpeta = propia?.parent_id ?? null;
+  const mapa = new Map();
   for (const n of state.pagesById.values()) {
-    if (n.type !== "database" || n.database_id === database.id) continue;
+    if (n.type === "database" && n.database_id === database.id) continue;
     if ((n.parent_id ?? null) !== carpeta) continue;
-    if (nombreNormalizado(n.title) === buscado) return n;
+    // En la raíz las notas viven en `Notas/` y las bases en `Bases/`: solo
+    // comparten carpeta cuando la base cuelga de una nota.
+    if (n.type !== "database" && !carpeta) continue;
+    mapa.set(nombreNormalizado(n.title), { nodo: n, ruta: rutaDePagina(n.id) });
   }
-  return null;
+  return mapa;
+}
+
+/** El aviso de nombre ocupado al renombrar una base. */
+function avisoDeNombreOcupado(ocupada, accion) {
+  const que = ocupada.nodo.type === "database" ? "base de datos" : "página";
+  return `Ya hay una ${que} «${ocupada.nodo.title}» en esa carpeta (${ocupada.ruta}). ${accion}`;
 }
 
 async function renderDatabase(database, views, activeViewId) {
@@ -3589,21 +3683,57 @@ async function renderDatabase(database, views, activeViewId) {
   const guardarTitulo = async () => {
     const newTitle = title.value.trim() || "Sin título";
     if (newTitle === database.title) return;
-    const ocupada = baseConEseNombre(database, newTitle);
+    // Lo que ya ocupa un nombre en esta carpeta, antes de tocar nada: sirve
+    // para la comprobación de antes y para la de después.
+    const hermanas = hermanasDeLaBase(database);
+    const ocupada = hermanas.get(nombreNormalizado(newTitle));
     if (ocupada) {
       // El backend resolvería la colisión con un sufijo («Clientes (2)») y
       // quedarían dos bases con el mismo nombre a la vista: se avisa y no
       // se toca nada.
-      alert(`Ya hay una base de datos «${ocupada.title}» en esa carpeta. Elige otro nombre.`);
+      alert(avisoDeNombreOcupado(ocupada, "Elige otro nombre."));
       title.value = database.title;
       return;
     }
     try {
-      await api(`/databases/${database.id}`, { method: "PATCH", body: JSON.stringify({ title: newTitle }) });
-      database.title = newTitle;
+      const guardada = await api(`/databases/${database.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: newTitle }),
+      });
+      const final = guardada?.title || newTitle;
+      // El saneado del backend no se copia aquí: manda el título que ha
+      // quedado en el fichero. Si vuelve con otro nombre y ese nombre ya lo
+      // tenía una hermana («Clientes.» -> «Clientes (2)»), estaba ocupado:
+      // se deshace el renombrado para no dejar dos iguales.
+      const choque = ocupadaPorElServidor(final, newTitle, hermanas);
+      if (choque) {
+        let deshecho = true;
+        try {
+          await api(`/databases/${database.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ title: database.title }),
+          });
+        } catch (_) {
+          deshecho = false;
+        }
+        title.value = database.title;
+        await loadTree();
+        alert(
+          avisoDeNombreOcupado(
+            choque,
+            deshecho
+              ? `Se ha dejado «${database.title}» como estaba.`
+              : `No se ha podido deshacer el renombrado: la base se llama ahora «${final}».`,
+          ),
+        );
+        return;
+      }
+      database.title = final;
+      title.value = final;
       await loadTree();
       markActive(database.id);
     } catch (e) {
+      if (e?.status === 401) return;
       alert("Error al renombrar: " + e.message);
       title.value = database.title;
     }
