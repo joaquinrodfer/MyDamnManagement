@@ -38,6 +38,7 @@ from app import schemas
 from app.agent_auth import Agent, require_agent
 from app.config import settings
 from app.dependencies import get_repo
+from app.events import publish_suggestion
 from app.limits import check_size
 from app.links import fold_title
 from app.repository import Repository
@@ -312,6 +313,12 @@ def create_agent_suggestion(
         repo.page_path(page.id),
         kind,
         len(payload.old_text.encode("utf-8")) + len(payload.new_text.encode("utf-8")),
+    )
+    # M3: el dueño se entera en el momento, sin cambiar de nota y volver. Es un
+    # aviso `suggestion`, no `page`: la nota no ha cambiado, solo la lista de
+    # lo que hay que decidir en ella.
+    publish_suggestion(
+        repo, suggestion, "created" if suggestion.status == "pending" else "orphaned"
     )
     return suggestion.as_dict()
 

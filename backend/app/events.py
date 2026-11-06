@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import uuid
 from typing import Any
 
 log = logging.getLogger("mdm.events")
@@ -108,3 +109,39 @@ class EventBus:
 # Uno solo para todo el proceso: el vigilante publica aquí y `/events` lee de
 # aquí. Se instancia al importar, sin tocar la red ni el disco.
 bus = EventBus()
+
+
+def publish_suggestion(repo: Any, suggestion: Any, action: str) -> None:
+    """Avisa de que la lista de sugerencias de una nota ya no es la misma (M3).
+
+    Va por el mismo bus que los avisos del vigilante, con su propio tipo para
+    que la app no confunda «el `.md` cambió» (evento `page`, que recarga la
+    nota) con «ha nacido o se ha decidido una sugerencia» (evento `suggestion`,
+    que solo refresca el contador, el panel y las marcas del texto).
+
+    `action` es la vida de la sugerencia: `created`, `accepted`, `rejected` u
+    `orphaned` (nace desanclada o se descarta al aceptarla). `page_id` y `path`
+    son los de la nota a la que pertenece, que es con lo que el cliente decide
+    si el aviso le importa o no.
+
+    `repo` y `suggestion` se usan por su forma (`page_path`, `id`, `page_id`)
+    a propósito: este módulo no importa el repositorio ni el modelo del vault,
+    que sería una dependencia de ida y vuelta. Si `page_id` no es un UUID (un
+    `.json` tocado a mano), el aviso sale igual sin `path`.
+    """
+    page_id = getattr(suggestion, "page_id", None)
+    if page_id is None:  # pragma: no cover - lo escribe siempre `create_suggestion`
+        return
+    event: dict[str, Any] = {
+        "type": "suggestion",
+        "action": action,
+        "page_id": str(page_id),
+    }
+    suggestion_id = getattr(suggestion, "id", None)
+    if suggestion_id:
+        event["suggestion_id"] = str(suggestion_id)
+    try:
+        event["path"] = repo.page_path(uuid.UUID(str(page_id)))
+    except (TypeError, ValueError, AttributeError):  # pragma: no cover
+        pass
+    bus.publish(event)

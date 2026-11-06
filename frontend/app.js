@@ -2888,6 +2888,13 @@ function renderNote(page, backlinks) {
         })
         .catch((e) => console.error("No se pudieron refrescar los backlinks:", e));
     },
+    /** Ha nacido o se ha decidido una sugerencia de esta nota (M3): se relee
+     * solo su lista y se repintan el contador, el panel y las marcas del
+     * texto. El documento no se toca, así que el cursor y lo que se esté
+     * escribiendo siguen donde estaban, y el panel no se abre solo. */
+    refreshSuggestions() {
+      loadSuggestions();
+    },
   };
   state.noteSession = session;
   loadSuggestions(); // pendientes en el editor + panel (si no hay, no se pinta nada)
@@ -3051,6 +3058,19 @@ function handleVaultEvent(data) {
   reloadNoteFromDisk(session.id);
 }
 
+/** Un evento `suggestion` de `/events` (M3): una sugerencia ha nacido o se ha
+ * decidido. Se refresca lo mínimo: el contador «Sugerencias (N)», el estado del
+ * panel y las decoraciones inline de la nota abierta —y solo si el aviso es de
+ * esa nota—. No se recarga el documento (el cursor y lo que se esté escribiendo
+ * se quedan como están) y el panel no se abre solo: si estaba cerrado, lo único
+ * que se nota es el contador. */
+function handleSuggestionEvent(data) {
+  if (!data || data.type !== "suggestion") return;
+  const session = state.noteSession;
+  if (!session || session.id !== data.page_id) return; // otra nota: aquí nada
+  session.refreshSuggestions?.();
+}
+
 function connectVaultEvents() {
   if (typeof EventSource === "undefined") return; // sin SSE, sin avisos en vivo
   try {
@@ -3068,6 +3088,16 @@ function connectVaultEvents() {
       return; // un evento que no es JSON se ignora: el siguiente sí vale
     }
     handleVaultEvent(data);
+  });
+  // `event: suggestion` (M3): la lista de sugerencias de una nota cambió.
+  vaultEvents.addEventListener("suggestion", (ev) => {
+    let data;
+    try {
+      data = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    handleSuggestionEvent(data);
   });
   // El navegador reconecta solo; esto solo deja constancia de que se cayó.
   let reconnecting = false;

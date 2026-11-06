@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 from app import auth, schemas
 from app.dependencies import get_current_user, get_repo
-from app.events import bus
+from app.events import bus, publish_suggestion
 from app.limits import check_size as _check_size
 from app.repository import Repository
 from app.vault import suggestions
@@ -56,6 +56,17 @@ def _publish(repo: Repository, page_id: uuid.UUID, action: str) -> None:
             "path": repo.page_path(page_id),
         }
     )
+
+
+def _publish_suggestion(repo: Repository, suggestion, action: str) -> None:
+    """Avisa de la sugerencia en sí, aparte del aviso del `.md` (M3).
+
+    El evento `page` recarga la nota entera; este solo dice «la lista de
+    sugerencias de esta nota ha cambiado», que es lo que la app necesita para
+    mover el contador y las marcas del texto sin tocar el documento. Se manda
+    siempre, también al rechazar, que no escribe ni un byte en disco.
+    """
+    publish_suggestion(repo, suggestion, action)
 
 
 @router.post(
@@ -104,6 +115,11 @@ def create_suggestion(
         raise HTTPException(400, str(exc)) from exc
     if suggestion is None:      # pragma: no cover - ya comprobado arriba
         raise HTTPException(404, "Página no encontrada")
+    # Nace `pending` o ya `orphaned` (el `old_text` no estaba). Las dos cosas
+    # son novedad para la pestaña que tenga la nota abierta.
+    _publish_suggestion(
+        repo, suggestion, "created" if suggestion.status == "pending" else "orphaned"
+    )
     return suggestion.as_dict()
 
 
@@ -151,6 +167,12 @@ def accept_suggestion(suggestion_id: uuid.UUID, repo: Repository = Depends(get_r
             content={"error": "ya_resuelta", "status": exc.status},
         )
     except SuggestionUnanchored:
+        # El `.md` no se ha tocado, pero la sugerencia acaba de quedarse
+        # `orphaned`: la pestaña que la esté mirando tiene que verlo sin
+        # cambiar de nota (M3).
+        desanclada = repo.get_suggestion(str(suggestion_id))
+        if desanclada is not None:
+            _publish_suggestion(repo, desanclada, "orphaned")
         return JSONResponse(status_code=409, content={"error": "desanclada"})
     except VaultError as exc:
         # El ancla estaba, pero el vault no pudo escribir (fichero borrado por
@@ -162,6 +184,7 @@ def accept_suggestion(suggestion_id: uuid.UUID, repo: Repository = Depends(get_r
 
     page = result["page"]
     _publish(repo, page.id, "added" if result["created"] else "modified")
+    _publish_suggestion(repo, result["suggestion"], "accepted")
     return {
         "suggestion": result["suggestion"].as_dict(),
         "page_id": page.id,
@@ -192,6 +215,7 @@ def reject_suggestion(
             status_code=409,
             content={"error": "ya_resuelta", "status": exc.status},
         )
+    _publish_suggestion(repo, suggestion, "rejected")
     return suggestion.as_dict()
 
 

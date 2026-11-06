@@ -6,14 +6,21 @@ SSE eso es `StreamingResponse` y un `EventSource` en el cliente, sin
 dependencias nuevas ni protocolo de handshake; el navegador además reconecta
 solo si se cae la conexión.
 
-El formato es el de la especificación:
+El formato es el de la especificación, con el nombre del evento en la línea
+`event:` —el `type` del propio aviso, que es lo que el cliente usa para elegir
+su `addEventListener`—:
 
     event: page
     data: {"type":"page","action":"modified","page_id":"...","path":"Notas/X.md"}
 
+    event: suggestion
+    data: {"type":"suggestion","action":"created","page_id":"...","suggestion_id":"..."}
+
 más un comentario `: ping` cada `PING_INTERVAL` segundos. Los comentarios no
 llegan a `onmessage` (el cliente los ignora por especificación) y sirven para
 que ni un proxy ni el navegador cierren una conexión que lleva un rato callada.
+Un aviso sin `type` sale como `page`, que es lo que era todo lo que había hasta
+que las sugerencias empezaron a publicar (M3).
 
 Cada cliente tiene su cola (`app.events.bus`); al desconectar, el generador se
 cancela, el `finally` suelta la cola y no queda nada colgado.
@@ -57,7 +64,11 @@ async def stream_events() -> StreamingResponse:
                     # El cliente se ha ido (o la app se para): sale por el
                     # `finally`, que es donde se suelta la cola.
                     raise
-                yield f"event: page\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                # El nombre del evento es su `type`: la app escucha `page`
+                # (el `.md` cambió) y `suggestion` (nace o se decide una
+                # sugerencia) por separado, con el mismo formato de `data`.
+                name = str(event.get("type") or "page")
+                yield f"event: {name}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
             bus.unsubscribe(queue)
 
