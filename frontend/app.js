@@ -3212,7 +3212,10 @@ async function goTo(kind, id, { fromHistory = false } = {}) {
     state.history.push({ kind, id });
     state.historyPos = state.history.length - 1;
   }
-  if (kind === "database") await selectDatabase(id);
+  // Abrir una base con una navegación nueva (árbol, recientes, búsqueda, una
+  // plantilla) deja el foco en el primer campo del alta; volver con atrás o
+  // adelante no, que el foco es del usuario, no del historial.
+  if (kind === "database") await selectDatabase(id, { focus: fromHistory ? null : "addRow" });
   else if (kind === "home") await showEmpty();
   else await selectNote(id);
   updateNavButtons();
@@ -3478,13 +3481,13 @@ function showContextMenu(x, y, sections) {
 
 // -------------------------------------------------------------- databases
 
-async function selectDatabase(id) {
+async function selectDatabase(id, { focus = null } = {}) {
   const previous = state.current;
   state.current = { kind: "database", id };
   markActive(id);
   try {
     const [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
-    await renderDatabase(database, views, views[0]?.id ?? null);
+    await renderDatabase(database, views, views[0]?.id ?? null, { focus });
   } catch (e) {
     // Igual que en selectNote: si falla la carga, no se ha pintado nada y el
     // estado vuelve a donde estaba.
@@ -3494,7 +3497,7 @@ async function selectDatabase(id) {
   }
 }
 
-async function renderDatabase(database, views, activeViewId) {
+async function renderDatabase(database, views, activeViewId, { focus = null } = {}) {
   const main = clearMain();
   // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
   // usan el tablero tras mover una tarjeta y el diálogo de propiedades, para no
@@ -3562,18 +3565,23 @@ async function renderDatabase(database, views, activeViewId) {
 
   const tabs = document.createElement("div");
   tabs.className = "view-tabs";
+  // La pestaña de cada vista (null = «sin vista»). El repintado destruye estos
+  // botones, así que se guardan aquí para poder devolver el foco al activo.
+  const tabButtons = new Map();
 
   const defaultTab = document.createElement("button");
   defaultTab.className = "view-tab" + (activeViewId === null ? " active" : "");
   defaultTab.textContent = "Todas (sin vista)";
-  defaultTab.addEventListener("click", () => renderDatabase(database, views, null));
+  defaultTab.addEventListener("click", () => renderDatabase(database, views, null, { focus: "viewTab" }));
+  tabButtons.set(null, defaultTab);
   tabs.appendChild(defaultTab);
 
   views.forEach((v) => {
     const tab = document.createElement("button");
     tab.className = "view-tab" + (v.id === activeViewId ? " active" : "");
     tab.textContent = `${v.name} (${v.type})`;
-    tab.addEventListener("click", () => renderDatabase(database, views, v.id));
+    tab.addEventListener("click", () => renderDatabase(database, views, v.id, { focus: "viewTab" }));
+    tabButtons.set(v.id, tab);
     tabs.appendChild(tab);
   });
 
@@ -3591,10 +3599,18 @@ async function renderDatabase(database, views, activeViewId) {
 
   const addRowForm = renderAddRowForm(database);
   content.appendChild(addRowForm);
-  // El primer campo del alta lleva el foco al abrir la base: con teclado había
-  // que recorrer la tabla entera para llegar a «Nueva fila». `preventScroll`
-  // porque si el formulario cae bajo el pliegue no queremos dar un salto.
-  addRowForm.querySelector("#nueva-fila-titulo")?.focus({ preventScroll: true });
+  // El foco se mueve solo cuando hay un motivo, no en cada repintado: abrir la
+  // base (el primer campo del alta, que si no hay que recorrer la tabla entera
+  // para llegar a «Nueva fila») o cambiar de vista (la pestaña, que acaba de
+  // repintarse). `refresh` —mover una tarjeta, guardar una fila, guardar el
+  // esquema— no pide nada: antes el foco acababa en el alta, al final del
+  // contenido, y el siguiente Tab seguía desde ahí. `preventScroll` porque si
+  // el destino cae bajo el pliegue no queremos dar un salto.
+  if (focus === "addRow") {
+    addRowForm.querySelector("#nueva-fila-titulo")?.focus({ preventScroll: true });
+  } else if (focus === "viewTab") {
+    tabButtons.get(activeViewId)?.focus({ preventScroll: true });
+  }
 }
 
 function formatPropValue(value, prop) {
@@ -4227,7 +4243,7 @@ function renderAddRowForm(database) {
         method: "POST",
         body: JSON.stringify({ title: titleInput.value || "Sin título", properties }),
       });
-      selectDatabase(database.id);
+      selectDatabase(database.id, { focus: "addRow" });
     } catch (e) {
       alert("Error al crear la fila: " + e.message);
     }
