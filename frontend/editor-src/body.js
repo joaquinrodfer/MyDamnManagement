@@ -147,6 +147,38 @@ export function shiftEmptyGap(gap, changes) {
 }
 
 /**
+ * Texto y marcas de hueco después de quitar del documento el tramo
+ * `{from, to}`.
+ *
+ * Sirve para el texto que se GUARDA cuando el selector de bases tiene algo
+ * escrito: lo tecleado ahí es interfaz (el filtro), no contenido de la nota, y
+ * tiene que quedarse fuera del `.md` pase lo que pase -- también si la pestaña
+ * se cierra o se recarga de golpe, que es un guardado que no pasa por cerrar el
+ * selector (ver `getValue` en entry.js).
+ *
+ * Por eso se resuelve sobre el texto y las marcas, sin despachar ninguna
+ * transacción: lo que hay en pantalla no puede cambiar bajo los dedos cuando el
+ * guardado sale con la pestaña todavía viva (`visibilitychange`).
+ *
+ * Las marcas se desplazan con `shiftEmptyGap`, la misma regla que aplica la
+ * transacción de verdad: las que caen dentro del tramo dejan de medir dos
+ * saltos y desaparecen, y las de detrás se corren lo que se ha quitado.
+ */
+export function withoutRange(text, gaps, range) {
+  const s = String(text ?? "");
+  const from = Math.max(0, Math.min(Number(range?.from) || 0, s.length));
+  const to = Math.max(from, Math.min(Number(range?.to) || 0, s.length));
+  if (to <= from) return { text: s, gaps: Array.from(gaps || []) };
+  const changes = [{ from, to, insert: "" }];
+  return {
+    text: s.slice(0, from) + s.slice(to),
+    gaps: Array.from(gaps || [])
+      .map((gap) => shiftEmptyGap(gap, changes))
+      .filter(Boolean),
+  };
+}
+
+/**
  * Texto sin los bloques vacíos que creó el editor y que el usuario abandonó
  * sin escribir nada, más los tramos quitados (para despacharlos como un
  * cambio de CodeMirror). Los huecos de los extremos no salen aquí: esos los

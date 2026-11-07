@@ -38,8 +38,21 @@ import {
   orderedRenumberEdits,
   renumberOrderedRun,
 } from "./block-delete.js";
-import { canonicalBody, collapseEmptyGaps, cursorInOuterBlanks, shiftEmptyGap } from "./body.js";
+import {
+  canonicalBody,
+  collapseEmptyGaps,
+  cursorInOuterBlanks,
+  shiftEmptyGap,
+  withoutRange,
+} from "./body.js";
 import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./database-embed.js";
+import {
+  databaseBlockInsert,
+  databaseChoices,
+  databaseFilterClear,
+  databaseFilterRange,
+  normalizeDatabaseEntries,
+} from "./database-choice.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -551,7 +564,14 @@ const BLOCK_TYPE_LABEL = Object.fromEntries(BLOCK_TYPES.map((t) => [t.type, t.la
 // transformación de texto). Por eso viven en una lista aparte y solo se
 // añaden a las opciones del menú "/" (ver slashMenuExtension), nunca a
 // BLOCK_TYPES.
-const SLASH_EXTRA_COMMANDS = [{ type: "page", label: "Página", abbrev: "page" }];
+const SLASH_EXTRA_COMMANDS = [
+  { type: "page", label: "Página", abbrev: "page" },
+  // "/base" (P17.3): escribe el bloque ```mdm-database de una base que ya
+  // existe, o crea una colgando de la nota en la que se está. Como "/page", no
+  // es una conversión de bloque: tiene efectos fuera del texto (lista de la
+  // API, altas), así que vive aquí y no en BLOCK_TYPES.
+  { type: "database", label: "Base", abbrev: "base" },
+];
 const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
 
 function computeBlocks(state) {
@@ -1699,20 +1719,75 @@ async function createPageFromName(view, from, to, onCreatePage) {
   view.focus();
 }
 
-function slashMenuExtension(onMenuUpdate, onCreatePage) {
+// La base del comando "/base" con nombre nuevo: mismo patrón que
+// `createPageFromName` -- si la app dice que no se creó (nombre ocupado, error
+// de la API) no se inserta nada y el nombre escrito se queda en la nota, para
+// poder cambiarlo y reintentar. Cuando sí se crea, lo que queda es el bloque
+// apuntando a la base de verdad y el cursor en el párrafo de debajo.
+async function createDatabaseFromName(view, from, to, onCreateDatabase) {
+  const escrito = view.state.doc.sliceString(from, to);
+  const title = escrito.trim();
+  if (!title) {
+    view.focus();
+    return;
+  }
+  let creada = null;
+  try {
+    creada = await onCreateDatabase?.(title);
+  } catch {
+    creada = null;
+  }
+  // Mientras se creaba (es una llamada a la API y el árbol se recarga) el
+  // usuario ha podido seguir escribiendo: si el tramo del nombre ya no es el
+  // que era, no se pisa nada. Se compara con lo escrito TAL CUAL: el nombre va
+  // sin espacios de sobra, pero los del texto siguen ahí y también hay que
+  // sustituirlos (comparando con el nombre recortado, un nombre tecleado con
+  // un espacio detrás creaba la base y dejaba el nombre entero en la nota).
+  if (!creada || view.state.doc.sliceString(from, to) !== escrito) {
+    view.focus();
+    return;
+  }
+  const { text, cursorOffset } = databaseBlockInsert(creada);
+  view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + cursorOffset } });
+  view.focus();
+}
+
+function slashMenuExtension({
+  onMenuUpdate,
+  onCreatePage,
+  onListDatabases,
+  onPickDatabase,
+  onCreateDatabase,
+}) {
+  // La instancia viva, para que la app pueda cerrar el selector desde fuera
+  // (`discardTransientText`, más abajo): el plugin es la única pieza que sabe
+  // qué hay escrito en el documento por culpa del menú.
+  let instancia = null;
+
   const plugin = ViewPlugin.fromClass(
     class {
       constructor(view) {
+        instancia = this;
         this.view = view;
-        this.mode = null; // null | "menu" | "naming"
+        this.mode = null; // null | "menu" | "database" | "naming"
         this.from = -1;
         this.selectedIndex = 0;
+        this.namingKind = "page"; // a qué comando pertenece el modo "naming"
+        this.entries = []; // bases del vault, pedidas al abrir el selector
       }
 
       get query() {
-        if (this.mode !== "menu") return "";
+        if (this.mode !== "menu" && this.mode !== "database") return "";
         const pos = this.view.state.selection.main.head;
         if (pos < this.from) return "";
+        // En el menú "/" la consulta empieza detrás de la barra y acaba en el
+        // caret, como en cualquier autocompletado. En el selector de bases no
+        // hay barra y manda la línea entera: el filtro es lo que se ve escrito
+        // en el documento, no lo que queda a la izquierda del cursor (ver
+        // `filterRange`).
+        if (this.mode === "database") {
+          return this.view.state.doc.sliceString(this.from, this.filterRange().to);
+        }
         return this.view.state.doc.sliceString(this.from + 1, pos);
       }
 
@@ -1721,6 +1796,38 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         const q = this.query.trim().toLowerCase();
         if (!q) return all;
         return all.filter((t) => t.abbrev.startsWith(q) || t.label.toLowerCase().includes(q));
+      }
+
+      /** Selector de bases: las del vault y, al final, la de crear una. */
+      get databaseOptions() {
+        return databaseChoices(this.entries, this.query);
+      }
+
+      /** Las opciones que se están enseñando (menú "/" o selector de bases). */
+      get activeOptions() {
+        return this.mode === "database" ? this.databaseOptions : this.filteredOptions;
+      }
+
+      /**
+       * Tramo que ocupa lo tecleado en el selector de bases: `from` (donde
+       * empezó el filtro) hasta el FINAL DE LA LÍNEA, no hasta el caret.
+       *
+       * El filtro -- y, al crear, el nombre de la base -- se escribe dentro del
+       * documento, así que lo que hay que sustituir (o borrar al cancelar) es
+       * todo lo escrito en esa línea. Tomando el caret como final, con el
+       * cursor a mitad del texto el nombre se creaba cortado y el resto del
+       * filtro se quedaba de párrafo suelto detrás del bloque.
+       */
+      filterRange() {
+        return databaseFilterRange(this.view.state.doc, this.from);
+      }
+
+      /** Tramo que ocupa el filtro del selector, o `null` si no hay selector
+       * abierto o el filtro está vacío. Es lo escrito en el documento que NO
+       * es texto de la nota (ver `getValue`, más abajo). */
+      transientRange() {
+        if (this.mode !== "database") return null;
+        return databaseFilterClear(this.view.state.doc, this.from);
       }
 
       update(update) {
@@ -1740,20 +1847,24 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
           return;
         }
 
-        if (this.mode === "menu") {
+        // El menú "/" y el selector de bases se comportan igual: viven en
+        // una línea y se cierran en cuanto el cursor se sale de ella. La única
+        // diferencia es que el menú exige que la barra siga detrás.
+        if (this.mode === "menu" || this.mode === "database") {
           const sel = update.state.selection;
           const pos = sel.main.head;
           const line = update.state.doc.lineAt(Math.min(this.from, update.state.doc.length));
           const slashStillThere =
-            this.from < update.state.doc.length &&
-            update.state.doc.sliceString(this.from, this.from + 1) === "/";
+            this.mode !== "menu" ||
+            (this.from < update.state.doc.length &&
+              update.state.doc.sliceString(this.from, this.from + 1) === "/");
 
           if (!slashStillThere || sel.ranges.length !== 1 || !sel.main.empty || pos < this.from || pos > line.to) {
             this.close();
             return;
           }
 
-          this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredOptions.length - 1));
+          this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.activeOptions.length - 1));
           this.notify();
           return;
         }
@@ -1778,14 +1889,15 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         }
         if (this.mode === "naming") {
           const from = this.from;
+          const target = this.namingKind; // "page" | "database": qué se está nombrando
           setTimeout(() => {
             if (this.mode !== "naming" || this.from < 0) return; // pudo cerrarse mientras tanto
             const coords = this.view.coordsAtPos(Math.min(from, this.view.state.doc.length));
-            onMenuUpdate({ kind: "naming", x: coords?.left ?? 0, y: coords?.bottom ?? 0 });
+            onMenuUpdate({ kind: "naming", target, x: coords?.left ?? 0, y: coords?.bottom ?? 0 });
           });
           return;
         }
-        const opts = this.filteredOptions;
+        const opts = this.activeOptions;
         const selectedIndex = Math.min(this.selectedIndex, Math.max(0, opts.length - 1));
         const options = opts.map((o, i) => ({
           ...o,
@@ -1794,6 +1906,12 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
             this.confirmSelection();
           },
         }));
+        // Un vault sin bases enseña igualmente el selector (con la opción de
+        // crear): el aviso dice por qué la lista está vacía.
+        const note =
+          this.mode === "database" && this.entries.length === 0
+            ? "Aún no hay ninguna base en el vault."
+            : null;
         // coordsAtPos() lee el layout del DOM -- CodeMirror no permite
         // hacerlo dentro del propio ciclo de update() ("Reading the editor
         // layout isn't allowed during an update"), así que se difiere fuera
@@ -1802,22 +1920,91 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         // curso, no esperar a un frame de composición real (que además no
         // se dispara si la pestaña no está pintando).
         setTimeout(() => {
-          if (this.mode !== "menu" || this.from < 0) return; // pudo cerrarse mientras tanto
+          if ((this.mode !== "menu" && this.mode !== "database") || this.from < 0) return; // pudo cerrarse mientras tanto
           const coords = this.view.coordsAtPos(this.from);
-          onMenuUpdate({ kind: "menu", x: coords?.left ?? 0, y: coords?.bottom ?? 0, selectedIndex, options });
+          onMenuUpdate({
+            kind: "menu",
+            x: coords?.left ?? 0,
+            y: coords?.bottom ?? 0,
+            selectedIndex,
+            options,
+            note,
+          });
         });
+      }
+
+      /** Cierra el menú sin tocar el documento, y limpia su estado. */
+      dismiss() {
+        if (!this.mode) return;
+        this.mode = null;
+        this.from = -1;
+        this.namingKind = "page";
+        onMenuUpdate(null);
       }
 
       close() {
         if (!this.mode) return;
-        this.mode = null;
-        this.from = -1;
-        onMenuUpdate(null);
+        // Cancelar el selector de bases se lleva por delante el filtro
+        // tecleado: se escribió dentro del documento como UI efímera, no como
+        // texto de la nota (si no, «zzz» se queda de párrafo). En el menú "/"
+        // no se borra nada: ahí lo escrito es texto de la nota y el menú se
+        // cierra por cualquier motivo.
+        const filtro = this.mode === "database" ? this.filterRange() : null;
+        this.dismiss();
+        if (filtro) this.dropFilter(filtro);
+      }
+
+      /**
+       * Borra del documento el filtro de un selector ya cerrado.
+       *
+       * Va en un microtask y no en el acto porque `close()` también se llama
+       * desde `update()` (cuando el caret sale de la línea) y ahí despachar una
+       * transacción no está permitido -- "Calls to EditorView.update are not
+       * allowed while an update is in progress" --, la misma mecánica que
+       * `dropOuterBlankLines`. Si mientras tanto ese tramo ha cambiado, no se
+       * borra a ciegas.
+       */
+      dropFilter({ from, to }) {
+        const view = this.view;
+        const escrito = view.state.doc.sliceString(from, Math.min(to, view.state.doc.length));
+        queueMicrotask(() => {
+          if (!view.dom.isConnected) return; // la nota se cerró mientras tanto
+          const doc = view.state.doc;
+          const fin = Math.min(to, doc.length);
+          // Cancelar con el filtro vacío no despacha nada: no hay nada que
+          // borrar (y una transacción vacía solo estorbaría en el historial).
+          if (fin <= from || doc.sliceString(from, fin) !== escrito) return;
+          view.dispatch({ changes: { from, to: fin, insert: "" } });
+        });
+      }
+
+      /**
+       * Cierra el menú que hubiera abierto y borra lo que haya escrito en el
+       * documento lo que NO es texto de la nota -- hoy, solo el filtro del
+       * selector de bases.
+       *
+       * Despacha en el acto (no en un microtask como `dropFilter`): la app lo
+       * llama justo ANTES del guardado pendiente, al dejar la nota, y el `.md`
+       * que se escribe tiene que salir ya sin el filtro. Ahí no hay ninguna
+       * actualización en curso, así que el dispatch es seguro; `close()` sí
+       * puede caer dentro de `update()` y de ahí el microtask.
+       *
+       * Lo tecleado en el menú "/" es texto de la nota y no se toca. En el modo
+       * "nombre" el nombre se queda, igual que con /page (decisión de la
+       * revisión de P17.3-fix).
+       */
+      discardTransientText() {
+        if (this.mode !== "database") return false;
+        const filtro = databaseFilterClear(this.view.state.doc, this.from);
+        this.dismiss();
+        if (!filtro) return false;
+        this.view.dispatch({ changes: { from: filtro.from, to: filtro.to, insert: "" } });
+        return true;
       }
 
       moveSelection(delta) {
-        if (this.mode !== "menu") return false;
-        const n = this.filteredOptions.length;
+        if (this.mode !== "menu" && this.mode !== "database") return false;
+        const n = this.activeOptions.length;
         if (n === 0) return true;
         this.selectedIndex = (this.selectedIndex + delta + n) % n;
         this.notify();
@@ -1825,16 +2012,40 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
       }
 
       confirmSelection() {
-        if (this.mode !== "menu") return false;
-        const opts = this.filteredOptions;
+        if (this.mode !== "menu" && this.mode !== "database") return false;
+        const opts = this.activeOptions;
         const from = this.from;
-        const to = this.view.state.selection.main.head;
+        // En el selector de bases el tramo es todo lo escrito en la línea (ver
+        // `filterRange`); en el menú "/" lo escrito es lo que hay a la
+        // izquierda del caret, como en cualquier completado.
+        const to =
+          this.mode === "database" ? this.filterRange().to : this.view.state.selection.main.head;
         if (opts.length === 0) {
           this.close();
           return true;
         }
         const chosen = opts[Math.min(this.selectedIndex, opts.length - 1)];
 
+        // ---- selector de bases
+        if (chosen.kind === "item") {
+          // `dismiss` y no `close`: el tramo no se borra antes de tiempo, lo
+          // sustituye `pickDatabase` por el bloque cuando llega la API.
+          this.dismiss();
+          this.pickDatabase(from, to, chosen.entry);
+          return true;
+        }
+        if (chosen.kind === "create") {
+          // Lo escrito como filtro se queda y pasa a ser el nombre de la base:
+          // es lo mismo que el «Crear «…»» del autocompletado de "[[".
+          this.startNaming(from, to, "database");
+          return true;
+        }
+
+        // ---- menú "/"
+        if (chosen.type === "database") {
+          this.openDatabasePicker(from);
+          return true;
+        }
         if (chosen.type === "page") {
           // Borra "/consulta" y pasa a modo "naming" -- no se cierra del
           // todo (el usuario sigue escribiendo, ahora el nombre en vez del
@@ -1843,9 +2054,7 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
           // el propio update() de este plugin de forma síncrona, y si
           // this.mode siguiera siendo "menu" en ese momento, detectaría el
           // "/page" ya borrado como si el menú debiera cerrarse.
-          this.mode = "naming";
-          this.from = from;
-          this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+          this.startNaming(from, to, "page");
           return true;
         }
 
@@ -1854,18 +2063,86 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
         return true;
       }
 
+      /** Abre el selector de bases: borra "/base" y lista las del vault. */
+      openDatabasePicker(from) {
+        this.mode = "database";
+        this.from = from;
+        this.selectedIndex = 0;
+        // La lista se pide UNA vez, al abrir: filtrar mientras se escribe no
+        // puede ir a la API en cada tecla. El dispatch de abajo dispara el
+        // update() de este plugin, que ya en modo "database" pinta el selector.
+        this.entries = normalizeDatabaseEntries(onListDatabases?.());
+        // Lo escrito detrás de "/base" es el filtro: se borra la línea entera
+        // -- no solo hasta el caret --, el mismo tramo que sustituirá el bloque
+        // al elegir. Con el caret a mitad, lo que quedara detrás se colaría
+        // como filtro del selector recién abierto.
+        this.view.dispatch({
+          changes: { from, to: this.filterRange().to, insert: "" },
+          selection: { anchor: from },
+        });
+      }
+
+      /** Escribe el bloque de la base elegida, con el cursor debajo. */
+      pickDatabase(from, to, entry) {
+        const esperado = this.view.state.doc.sliceString(from, to);
+        // El id que va al bloque es el de la fila `databases`, y la vista con
+        // la que se abre hay que preguntarla: la lista del selector solo trae
+        // título y carpeta.
+        const pending = Promise.resolve()
+          .then(() => onPickDatabase?.(entry.id))
+          .catch(() => null);
+        pending.then((info) => {
+          const view = this.view;
+          if (!view.dom.isConnected) return; // la nota se cerró mientras tanto
+          // Si lo escrito ya no está donde estaba, el usuario ha seguido
+          // tecleando: no se inserta nada a ciegas.
+          const actual = view.state.doc.sliceString(from, Math.min(to, view.state.doc.length));
+          if (!info || actual !== esperado) {
+            view.focus();
+            return;
+          }
+          const { text, cursorOffset } = databaseBlockInsert(info);
+          view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + cursorOffset } });
+          view.focus();
+        });
+      }
+
+      /** Pasa del menú al aviso de nombre: una página nueva o una base nueva. */
+      startNaming(from, to, kind) {
+        this.mode = "naming";
+        this.namingKind = kind;
+        this.from = from;
+        if (kind === "page") {
+          // "/page" (y el filtro escrito detrás) fuera: el nombre empieza de
+          // cero. El dispatch dispara este update(), ya en "naming", que pinta
+          // el aviso.
+          this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+          return;
+        }
+        // Al crear una base, lo escrito es el nombre que va a llevar: se queda
+        // tal cual, con el cursor al final, listo para Enter.
+        this.notify();
+      }
+
       confirmNaming() {
         if (this.mode !== "naming") return false;
         const from = this.from;
-        const to = this.view.state.selection.main.head;
+        const kind = this.namingKind;
+        // Con una base nueva el nombre es todo lo escrito en la línea (el mismo
+        // tramo que era el filtro, ver `filterRange`); con una página, lo
+        // escrito desde que empezó el nombre.
+        const to = kind === "database" ? this.filterRange().to : this.view.state.selection.main.head;
         this.mode = null;
         this.from = -1;
+        this.namingKind = "page";
         this.notify();
-        createPageFromName(this.view, from, to, onCreatePage);
+        if (kind === "database") createDatabaseFromName(this.view, from, to, onCreateDatabase);
+        else createPageFromName(this.view, from, to, onCreatePage);
         return true;
       }
 
       destroy() {
+        if (instancia === this) instancia = null;
         onMenuUpdate(null);
       }
     }
@@ -1896,7 +2173,27 @@ function slashMenuExtension(onMenuUpdate, onCreatePage) {
     },
   ]);
 
-  return [plugin, menuKeymap];
+  return {
+    extensions: [plugin, menuKeymap],
+    /**
+     * Cierra desde fuera el menú abierto y tira lo que escribió en el
+     * documento (el filtro de /base). Lo llama la app al dejar la nota,
+     * antes de guardarla.
+     *
+     * No se hace desde `destroy()` del plugin: ahí ya se está desmontando la
+     * vista y despachar una transacción no es seguro (y el documento ya no es
+     * de nadie). Quien navega sabe cuándo hay que limpiar; el plugin, qué.
+     */
+    discardTransientText() {
+      return instancia ? instancia.discardTransientText() : false;
+    },
+    /** Tramo del filtro del selector abierto (`{from, to}`), o `null`. Lo usa
+     * `getValue` para dejar ese texto fuera de lo que se guarda, sin tocar el
+     * documento. */
+    transientRange() {
+      return instancia ? instancia.transientRange() : null;
+    },
+  };
 }
 
 // ---------------------------------------------- ⏎ / ⇧⏎ / ⌘⏎ / ⌃⏎
@@ -2534,6 +2831,17 @@ function linkCompletion(onCreateLink) {
  * @param {() => void} [opts.onWikilinkHoverEnd]
  * @param {(state: object|null) => void} [opts.onSlashMenu]
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreatePage]
+ * @param {() => {id: string, title: string, folder?: string}[]} [opts.onListDatabases]
+ *   Bases del vault para el comando "/base": el `id` es el de la fila
+ *   `databases` (el que va en el bloque) y `folder` la carpeta, para distinguir
+ *   dos que se llamen igual.
+ * @param {(databaseId: string) => Promise<{id: string, title: string, view: string|null}|null>} [opts.onPickDatabase]
+ *   Lo que hace falta para escribir el bloque de una base que ya existe (su id
+ *   y la vista con la que se abre). `null` = no se inserta nada.
+ * @param {(title: string) => Promise<{id: string, title: string, view: string|null}|null>} [opts.onCreateDatabase]
+ *   Crea una base con ese nombre colgando de la página abierta y devuelve lo
+ *   mismo que `onPickDatabase`. `null` = no se creó (nombre ocupado, error):
+ *   el editor no inserta nada.
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreateLink]
  * @param {(list: {id: string, title: string, type: string}[]) => void} [opts.linkTargets]
  * @param {(block: {id: string, view: string|null, title: string|null}, container: HTMLElement) => Promise<void>|void} [opts.renderDatabaseBlock]
@@ -2658,9 +2966,23 @@ export function createNoteEditor({
   onSlashMenu,
   onCreatePage,
   onCreateLink,
+  onListDatabases,
+  onPickDatabase,
+  onCreateDatabase,
   linkTargets,
   renderDatabaseBlock,
 }) {
+  // El menú "/" y el selector de bases van en una variable y no sueltos en la
+  // lista de extensiones: la app tiene que poder cerrarlos desde fuera al
+  // dejar la nota (ver `discardTransientText` en el objeto que se devuelve).
+  const slashMenu = slashMenuExtension({
+    onMenuUpdate: onSlashMenu ?? (() => {}),
+    onCreatePage,
+    onListDatabases,
+    onPickDatabase,
+    onCreateDatabase,
+  });
+
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -2676,7 +2998,7 @@ export function createNoteEditor({
         // combinaciones (Enter/flechas/Escape mientras el menú está activo)
         // deben ganar; cuando no hacen nada (devuelven false) caen al
         // keymap normal sin más.
-        ...slashMenuExtension(onSlashMenu ?? (() => {}), onCreatePage),
+        ...slashMenu.extensions,
         // El del autocompletado, justo detrás: primero el menú "/" (que solo
         // consume teclas mientras está abierto) y luego la lista de "[[".
         linkKeymap,
@@ -2738,14 +3060,34 @@ export function createNoteEditor({
     }),
   });
 
+  /** Documento tal como se GUARDA: sin el filtro del selector de bases, que
+   * se escribe dentro del documento para poder filtrar pero no es texto de la
+   * nota.
+   *
+   * Se recorta aquí, en el texto que sale, y no solo al cerrar el selector
+   * (`discardTransientText`) porque hay guardados que no pasan por ese cierre:
+   * el autoguardado de 2 s y el de emergencia al cerrar, recargar u ocultar la
+   * pestaña (`flushSaveBeacon` en app.js) -- este último sin pasar por
+   * `clearMain()`, así que el filtro se quedaba escrito en el `.md`.
+   *
+   * Y se recorta SIN despachar ni tocar la vista (ver `withoutRange`): en
+   * `visibilitychange` la pestaña sigue viva y lo que hay en pantalla -- el
+   * selector con su filtro -- no puede cambiar bajo los dedos. */
+  function durableDoc() {
+    const text = view.state.doc.toString();
+    const gaps = view.state.field(pendingEmptyGaps);
+    const filtro = slashMenu.transientRange();
+    return filtro ? withoutRange(text, gaps, filtro) : { text, gaps };
+  }
+
   return {
     // Lo que se guarda y lo que se exporta: el cuerpo canónico, sin las líneas
-    // en blanco de los extremos. Decisión D8 (a): esos bloques vacíos no
-    // existen -- el `.md` ya los tiraba al escribir (`canonical_body` en
-    // backend/app/vault/store.py), así que el editor no los manda siquiera.
+    // en blanco de los extremos ni el filtro del selector de bases. Decisión
+    // D8 (a): esos bloques vacíos no existen -- el `.md` ya los tiraba al
+    // escribir (`canonical_body` en backend/app/vault/store.py), así que el
+    // editor no los manda siquiera.
     getValue: () => {
-      const text = view.state.doc.toString();
-      const gaps = view.state.field(pendingEmptyGaps);
+      const { text, gaps } = durableDoc();
       // Los huecos vacíos que creó el editor y el usuario ha abandonado no
       // llegan al fichero: lo que se guarda coincide con lo que se ve (el
       // aire de en medio, igual que el de los extremos). Las líneas en blanco
@@ -2770,6 +3112,11 @@ export function createNoteEditor({
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || "" } });
     },
     focus: () => view.focus(),
+    /** Cierra el selector de bases si está abierto y borra del documento el
+     * filtro que llevara escrito. La app lo llama al dejar la nota, ANTES del
+     * guardado pendiente: ese texto no es contenido de la nota y no puede
+     * acabar en el `.md`. Devuelve si borró algo. */
+    discardTransientText: () => slashMenu.discardTransientText(),
     destroy: () => view.destroy(),
     /** Pinta las sugerencias pendientes de esta nota, en su sitio.
      *

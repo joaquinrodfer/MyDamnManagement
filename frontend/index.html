@@ -1288,10 +1288,29 @@
     cursor: pointer;
   }
   .mdm-slash-menu-item.active { background: var(--accent-soft); color: var(--accent-ink); }
+  .mdm-slash-menu-label {
+    /* Un título largo no puede empujar la carpeta fuera del menú. */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .mdm-slash-menu-abbrev { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
   .mdm-slash-menu-item.active .mdm-slash-menu-abbrev { color: var(--accent-ink); opacity: 0.75; }
-  /* Aviso flotante del modo "naming" del comando /page (ver slashMenuExtension
-     en entry.js) -- solo texto, no hay nada que elegir aquí. */
+  /* Carpeta de una base en el selector del comando "/base" (ver renderSlashMenu
+     en app.js): ocupa el sitio de la abreviatura y distingue dos bases con el
+     mismo título. */
+  .mdm-slash-menu-hint {
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+  .mdm-slash-menu-item.active .mdm-slash-menu-hint { color: var(--accent-ink); opacity: 0.75; }
+  /* Aviso flotante del modo "naming" de los comandos /page y /base (ver
+     slashMenuExtension en entry.js) -- solo texto, no hay nada que elegir. */
   .mdm-slash-naming {
     position: fixed;
     z-index: 1000;
