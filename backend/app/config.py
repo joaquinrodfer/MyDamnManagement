@@ -124,6 +124,13 @@ class Settings(BaseSettings):
     agent_max_pending_note: int = 20
     agent_max_pending_agent: int = 20
 
+    # --- Exportación de páginas (P17.4) -----------------------------------
+    # Tope de filas por base en `GET /pages/{id}/export.md`. Un `.md` exportado
+    # se abre fuera de la app (un editor, un visor, un LLM), así que no puede
+    # crecer sin freno con la base entera: se recortan las filas y el propio
+    # documento dice cuántas quedaron fuera (`_Mostrando 200 de 340 filas._`).
+    export_max_rows: int = 200
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
