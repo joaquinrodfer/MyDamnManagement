@@ -930,6 +930,16 @@
      el hueco, el esqueleto de carga y las tarjetas benignas (bloque roto o
      base que ya no está), que nunca borran el texto del documento. */
   .cm-mdm-dblock { margin: 8px 0; }
+  /* La tabla del bloque incrustado tiene que desplazarse DENTRO de la nota.
+     `table.rows-table` lleva `min-width: max-content` (las columnas no se
+     comprimen), y eso fijaba el ancho intrínseco de `.cm-content` al de la
+     tabla: a 375 px la nota entera medía lo que la tabla (~950 px), el
+     scroller del editor se iba a scroll horizontal y las columnas de la
+     derecha quedaban fuera de la vista. `contain: inline-size` saca la tabla
+     del cálculo de ancho intrínseco del editor, así que el `.table-wrap` toma
+     el ancho de la nota y la tabla desplaza dentro de él -- el mismo scroll
+     propio que la vista de la base, con el mismo borde y aspecto. */
+  .cm-mdm-dblock .table-wrap { contain: inline-size; }
   .cm-mdm-dblock-body:empty { display: none; }
   .cm-mdm-dblock-skeleton {
     display: flex;
