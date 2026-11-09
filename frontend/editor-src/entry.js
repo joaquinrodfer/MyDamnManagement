@@ -1743,12 +1743,22 @@ async function createDatabaseFromName(view, from, to, onCreateDatabase) {
   // sin espacios de sobra, pero los del texto siguen ahí y también hay que
   // sustituirlos (comparando con el nombre recortado, un nombre tecleado con
   // un espacio detrás creaba la base y dejaba el nombre entero en la nota).
-  if (!creada || view.state.doc.sliceString(from, to) !== escrito) {
+  const doc = view.state.doc;
+  if (!creada || doc.sliceString(from, to) !== escrito) {
     view.focus();
     return;
   }
-  const { text, cursorOffset } = databaseBlockInsert(creada);
-  view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + cursorOffset } });
+  // Misma separación que al elegir una base existente (ver `pickDatabase`):
+  // una línea en blanco a cada lado, sin pegar el bloque al párrafo de arriba
+  // ni dejar saltos de más detrás.
+  const { text, cursorOffset, dropAfter } = databaseBlockInsert(creada, {
+    before: doc.sliceString(0, from),
+    after: doc.sliceString(to),
+  });
+  view.dispatch({
+    changes: { from, to: to + dropAfter, insert: text },
+    selection: { anchor: from + cursorOffset },
+  });
   view.focus();
 }
 
@@ -2096,13 +2106,25 @@ function slashMenuExtension({
           if (!view.dom.isConnected) return; // la nota se cerró mientras tanto
           // Si lo escrito ya no está donde estaba, el usuario ha seguido
           // tecleando: no se inserta nada a ciegas.
-          const actual = view.state.doc.sliceString(from, Math.min(to, view.state.doc.length));
+          const doc = view.state.doc;
+          const actual = doc.sliceString(from, Math.min(to, doc.length));
           if (!info || actual !== esperado) {
             view.focus();
             return;
           }
-          const { text, cursorOffset } = databaseBlockInsert(info);
-          view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + cursorOffset } });
+          // El bloque tiene que quedar separado por UNA línea en blanco a cada
+          // lado (P17-M1/C2): el texto de alrededor decide cuántos saltos hacen
+          // falta delante y cuáles se lleva por delante el cambio detrás. Sin
+          // esto, insertar al principio de la línea que sigue a un párrafo
+          // dejaba la valla pegada arriba y dos o tres líneas en blanco debajo.
+          const { text, cursorOffset, dropAfter } = databaseBlockInsert(info, {
+            before: doc.sliceString(0, from),
+            after: doc.sliceString(to),
+          });
+          view.dispatch({
+            changes: { from, to: to + dropAfter, insert: text },
+            selection: { anchor: from + cursorOffset },
+          });
           view.focus();
         });
       }

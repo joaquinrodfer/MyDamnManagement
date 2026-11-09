@@ -116,10 +116,46 @@ export function databaseFilterClear(doc, from) {
  * Lo que se escribe en la nota al elegir una base: la valla cerrada y un
  * párrafo nuevo debajo, con el cursor en él (`cursorOffset`).
  *
+ * `context` (`{before, after}`: el texto del documento a cada lado del tramo
+ * que se sustituye) decide las líneas en blanco que hacen falta para que el
+ * bloque quede separado como cualquier otro -- UNA por delante y UNA por
+ * detrás, ni pegado al párrafo ni con aire de más:
+ *
+ *   - Antes: a mitad de una línea con texto, el bloque necesita su propia
+ *     línea y una en blanco (`"\n\n"`); al principio de una línea cuya de
+ *     arriba tiene texto, falta solo la blanca (`"\n"`); si ya hay una
+ *     blanca (o el bloque abre el documento), ninguna.
+ *   - Después: el cambio se lleva por delante los saltos de línea que siguen
+ *     al tramo (`dropAfter`), de modo que lo que venía detrás quede a UNA
+ *     línea en blanco de la valla -- sin esto el salto de la propia línea más
+ *     el `"\n\n"` dejaban dos o tres.
+ *
+ * Sin `context` se mantiene el texto de siempre (valla + `"\n\n"`, cursor al
+ * final): es el caso de una nota que acaba ahí.
+ *
  * Lanza `TypeError` sin `id` (lo mismo que `serializeDatabaseBlock`): un bloque
  * de base sin id no apunta a nada.
  */
-export function databaseBlockInsert(block) {
-  const text = serializeDatabaseBlock(block) + "\n\n";
-  return { text, cursorOffset: text.length };
+export function databaseBlockInsert(block, context) {
+  const fence = serializeDatabaseBlock(block);
+  const withContext = context !== undefined && context !== null;
+  const before = withContext && typeof context.before === "string" ? context.before : "";
+  const after = withContext && typeof context.after === "string" ? context.after : "";
+
+  let prefix = "";
+  if (withContext) {
+    const lineas = before.split("\n");
+    const actual = lineas[lineas.length - 1]; // lo escrito antes del tramo en su línea
+    const anterior = lineas.length > 1 ? lineas[lineas.length - 2] : null;
+    if (actual.trim() !== "") prefix = "\n\n"; // a mitad de párrafo: línea propia + blanca
+    else if (anterior !== null && anterior.trim() !== "") prefix = "\n"; // falta la blanca
+  }
+
+  const text = prefix + fence + "\n\n";
+  const salto = withContext ? /^\n+/.exec(after) : null;
+  const dropAfter = salto ? salto[0].length : 0;
+  // Con contexto el cursor va en la línea en blanco de debajo (lo que venía
+  // detrás se escribe después); sin contexto, al final del texto, como antes.
+  const cursorOffset = withContext ? prefix.length + fence.length + 1 : text.length;
+  return { text, cursorOffset, dropAfter };
 }
