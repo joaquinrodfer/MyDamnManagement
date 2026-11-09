@@ -1036,8 +1036,27 @@ function inboxRow(page) {
   process.setAttribute("aria-label", `Procesar «${page.title}»`);
   process.addEventListener("click", () => openProcesarDialog(page));
 
-  row.append(open, process);
+  // Borrar una captura es borrar una nota: el mismo icono de basura del árbol,
+  // con el `.icon-btn` que ya existe (nada nuevo que estilar).
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "icon-btn";
+  remove.title = `Borrar «${page.title}»`;
+  remove.setAttribute("aria-label", `Borrar «${page.title}»`);
+  remove.innerHTML = svgIcon("i-trash");
+  remove.addEventListener("click", () => borrarCaptura(page));
+
+  row.append(open, process, remove);
   return row;
+}
+
+/** Borra una captura por el camino de siempre: `bulkDeletePages` —con su
+ * confirmación— y `DELETE /pages/{id}`, que manda el `.md` a
+ * `.trash/<fecha>/Bandeja/`, nunca un borrado directo. Refresca el árbol y con
+ * él la bandeja: la fila desaparece, el contador se limpia y, si era la
+ * última, la sección se va. */
+function borrarCaptura(page) {
+  bulkDeletePages([page]);
 }
 
 function initInbox() {
