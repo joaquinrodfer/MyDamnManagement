@@ -25,3 +25,8 @@ class ViewType(str, enum.Enum):
 class LinkKind(str, enum.Enum):
     wikilink = "wikilink"
     relation = "relation"
+    # Base incrustada en el cuerpo (valla ```mdm-database, P17.6): es una arista
+    # de la página que la lleva a la página de la base. Se guarda aparte de
+    # `wikilink` para que el bloque y un `[[título]]` a la misma base no choquen
+    # en el UNIQUE de `links` ni se confundan al contar.
+    embed = "embed"
