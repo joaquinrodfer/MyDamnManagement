@@ -4869,7 +4869,20 @@ async function moveCard(row, value, database, groupKey, refresh) {
 function claveDeFecha(value) {
   if (value === null || value === undefined) return null;
   const m = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+  if (!m) return null;
+  // Un `YYYY-MM-DD` con mes o día imposibles (`2026-11-31`, `2026-13-01`) no
+  // es una fecha: aceptarlo lo mandaba a una celda que no existe y la fila
+  // desaparecía del calendario sin contarse en ningún aviso. Se valida contra
+  // el mes real y sin `Date`, que además desplaza los años de cuatro cifras
+  // pequeñas (año 99 -> 1999).
+  const anio = Number(m[1]);
+  const mes = Number(m[2]);
+  const dia = Number(m[3]);
+  if (mes < 1 || mes > 12) return null;
+  const bisiesto = (anio % 4 === 0 && anio % 100 !== 0) || anio % 400 === 0;
+  const diasDelMes = [31, bisiesto ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (dia < 1 || dia > diasDelMes[mes - 1]) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
 }
 
 /** El día de hoy en el huso del navegador, con la misma forma que
@@ -4887,6 +4900,16 @@ const MESES = [
 // Semana que empieza en lunes, como los calendarios de aquí.
 const DIAS_SEMANA = ["L", "M", "X", "J", "V", "S", "D"];
 
+// El mes que está mirando el usuario, por vista. `refresh` (guardar una fila,
+// mover una tarjeta) reconstruye la vista entera; sin esto, editar un evento
+// de otro mes devolvía el calendario al mes de hoy y se perdía el sitio desde
+// el que se estaba editando.
+const mesDeCalendario = new Map();
+
+function claveDeMesDeVista(database, view) {
+  return `${database.id}:${view.id}`;
+}
+
 /** El aviso de una vista que no puede pintarse: un título y qué hacer. Nunca
  * una vista en blanco: si el calendario no tiene fecha, lo dice. */
 function avisoDeVista(titulo, detalle) {
@@ -4903,6 +4926,19 @@ function avisoDeVista(titulo, detalle) {
     box.appendChild(p);
   }
   return box;
+}
+
+/** El recuento de las filas que el calendario no puede colocar: las que no
+ * tienen valor en la propiedad de fecha y las que tienen un valor que no es un
+ * día real (`2026-11-31`). Las dos se cuentan y se dicen; antes la segunda
+ * desaparecía en silencio. */
+function textoDeFilasFuera(sueltas, invalidas) {
+  const partes = [];
+  if (sueltas) partes.push(sueltas === 1 ? "1 fila sin fecha" : `${sueltas} filas sin fecha`);
+  if (invalidas) {
+    partes.push(invalidas === 1 ? "1 fila con fecha no válida" : `${invalidas} filas con fecha no válida`);
+  }
+  return partes.join(" · ");
 }
 
 /** Vista de calendario: cada fila en el día que tiene en una propiedad de
@@ -4928,8 +4964,12 @@ function renderCalendar(database, rows, view, refresh) {
 
   const hoy = claveDeHoy();
   const [anioHoy, mesHoy] = [Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1];
-  let anio = anioHoy;
-  let mes = mesHoy;
+  // Si esta vista ya estaba abierta en otro mes, se vuelve a ese mes: un
+  // repintado (guardar una fila desde un chip) no puede devolver al de hoy.
+  const mesGuardado = mesDeCalendario.get(claveDeMesDeVista(database, view));
+  let anio = mesGuardado?.anio ?? anioHoy;
+  let mes = mesGuardado?.mes ?? mesHoy;
+  const recordarMes = () => mesDeCalendario.set(claveDeMesDeVista(database, view), { anio, mes });
 
   const wrap = document.createElement("div");
   wrap.className = "calendar-wrap";
@@ -5022,7 +5062,7 @@ function renderCalendar(database, rows, view, refresh) {
     return chip;
   };
 
-  const repaintAgenda = (porDia, dias, sueltas) => {
+  const repaintAgenda = (porDia, dias, sueltas, invalidas) => {
     let pintados = 0;
     for (let dia = 1; dia <= dias; dia++) {
       const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
@@ -5055,16 +5095,29 @@ function renderCalendar(database, rows, view, refresh) {
           : `${sueltas} filas sin fecha no se pueden colocar: rellena «${dateProp.name}».`;
       grid.appendChild(nota);
     }
+    if (invalidas) {
+      const nota = document.createElement("p");
+      nota.className = "cal-agenda-empty is-warn";
+      nota.textContent =
+        invalidas === 1
+          ? `1 fila tiene una fecha no válida en «${dateProp.name}» y no se puede colocar: corrige el día y el mes.`
+          : `${invalidas} filas tienen una fecha no válida en «${dateProp.name}» y no se pueden colocar: corrige el día y el mes.`;
+      grid.appendChild(nota);
+    }
   };
 
   const repaint = () => {
-    // Una pasada por fila: las que no tienen fecha no se colocan, se cuentan.
+    // Una pasada por fila: las que no tienen fecha o tienen una imposible no se
+    // colocan, se cuentan y se avisa de cada grupo por separado.
     const porDia = new Map();
     let sueltas = 0;
+    let invalidas = 0;
     rows.forEach((row) => {
-      const key = claveDeFecha(row.properties?.[dateProp.key]);
+      const valor = row.properties?.[dateProp.key];
+      const key = claveDeFecha(valor);
       if (!key) {
-        sueltas += 1;
+        if (valor === null || valor === undefined || String(valor).trim() === "") sueltas += 1;
+        else invalidas += 1;
         return;
       }
       if (!porDia.has(key)) porDia.set(key, []);
@@ -5072,15 +5125,18 @@ function renderCalendar(database, rows, view, refresh) {
     });
 
     titulo.textContent = `${MESES[mes]} de ${anio}`;
-    sinFecha.textContent = sueltas === 1 ? "1 fila sin fecha" : `${sueltas} filas sin fecha`;
-    sinFecha.title = "Filas que no se pueden colocar: no tienen valor en esta propiedad de fecha.";
-    sinFecha.hidden = sueltas === 0 || estrecho.matches;
+    sinFecha.textContent = textoDeFilasFuera(sueltas, invalidas);
+    sinFecha.title = invalidas
+      ? "«Sin fecha»: no tienen valor en esta propiedad. «Fecha no válida»: el valor no es un día real (por ejemplo, 31 de noviembre) y hay que corregirlo."
+      : "Filas que no se pueden colocar: no tienen valor en esta propiedad de fecha.";
+    sinFecha.classList.toggle("is-warn", invalidas > 0);
+    sinFecha.hidden = sueltas + invalidas === 0 || estrecho.matches;
 
     grid.innerHTML = "";
     const dias = new Date(anio, mes + 1, 0).getDate(); // día 0 del mes siguiente
     if (estrecho.matches) {
       grid.className = "calendar-agenda";
-      repaintAgenda(porDia, dias, sueltas);
+      repaintAgenda(porDia, dias, sueltas, invalidas);
       return;
     }
     grid.className = "calendar-grid";
@@ -5139,6 +5195,7 @@ function renderCalendar(database, rows, view, refresh) {
       mes = 0;
       anio += 1;
     }
+    recordarMes();
     repaint();
   };
   prevBtn.addEventListener("click", () => mover(-1));
@@ -5146,6 +5203,7 @@ function renderCalendar(database, rows, view, refresh) {
   todayBtn.addEventListener("click", () => {
     anio = anioHoy;
     mes = mesHoy;
+    recordarMes();
     repaint();
   });
 

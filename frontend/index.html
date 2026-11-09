@@ -1542,6 +1542,8 @@
     padding: 3px 6px;
   }
   .cal-undated { font-size: var(--text-xs); color: var(--ink-muted); }
+  /* Filas con una fecha imposible: el aviso importa más que «sin fecha». */
+  .cal-undated.is-warn, .cal-agenda-empty.is-warn { color: var(--warn); }
   .calendar-grid {
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
