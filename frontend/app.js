@@ -1670,21 +1670,20 @@ async function loadTree() {
     // Las notas de la bandeja no se repiten aquí: ya están en su sección. Una
     // que tenga hijas se queda en el árbol —esconderla se llevaría por delante
     // su subárbol— y entonces sale en los dos sitios, que es lo menos malo.
+    //
+    // Las bases de datos son páginas del árbol como cualquier otra (P17.6):
+    // con su icono propio y su clic, que las abre en su vista completa. Antes
+    // vivían en una sección aparte del panel y esa era su única entrada; ahora
+    // una base sin ninguna nota que la incruste sigue estando aquí.
     const notes = tree.filter(
-      (n) => n.type !== "database" && !(state.inboxIds.has(n.id) && !n.children?.length),
+      (n) => !(state.inboxIds.has(n.id) && !n.children?.length),
     );
-    const dbs = tree.filter((n) => n.type === "database");
 
     const treeContainer = document.getElementById("tree-container");
-    const dbContainer = document.getElementById("db-tree-container");
     treeContainer.innerHTML = "";
-    dbContainer.innerHTML = "";
 
     if (notes.length === 0) treeContainer.innerHTML = '<div class="search-empty">Sin páginas aún.</div>';
     notes.forEach((n) => treeContainer.appendChild(renderTreeNode(n)));
-
-    if (dbs.length === 0) dbContainer.innerHTML = '<div class="search-empty">Sin bases de datos.</div>';
-    dbs.forEach((n) => dbContainer.appendChild(renderTreeNode(n)));
 
     if (state.current) markActive(state.current.id);
     applyPageSelectionClasses();
@@ -5111,29 +5110,11 @@ function readSchemaFromDialog() {
   return schema_def;
 }
 
-document.getElementById("btn-new-database").addEventListener("click", () => openDatabaseDialog());
 document.getElementById("btn-add-prop").addEventListener("click", () => addPropertyRow());
 document.getElementById("btn-cancel-database").addEventListener("click", () => {
   dbDialogContext = null;
   dbDialog.close();
 });
-
-// -------------------------------------------------- plantillas (Fase 3)
-// Un clic: crea la database ya con schema_def + vistas por defecto.
-// No hay diálogo — si el nombre no convence, el título es editable luego.
-
-document.getElementById("btn-template-crm").addEventListener("click", () => createFromTemplate("crm"));
-document.getElementById("btn-template-tasks").addEventListener("click", () => createFromTemplate("tasks"));
-
-async function createFromTemplate(templateKey) {
-  try {
-    const database = await api("/databases/from-template", { method: "POST", body: JSON.stringify({ template: templateKey }) });
-    await loadTree();
-    await goTo("database", database.id);
-  } catch (e) {
-    alert("Error al crear desde plantilla: " + e.message);
-  }
-}
 
 document.getElementById("btn-save-database").addEventListener("click", async () => {
   const title = document.getElementById("db-name").value.trim() || "Sin título";
