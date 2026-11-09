@@ -1036,8 +1036,27 @@ function inboxRow(page) {
   process.setAttribute("aria-label", `Procesar «${page.title}»`);
   process.addEventListener("click", () => openProcesarDialog(page));
 
-  row.append(open, process);
+  // Borrar una captura es borrar una nota: el mismo icono de basura del árbol,
+  // con el `.icon-btn` que ya existe (nada nuevo que estilar).
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "icon-btn";
+  remove.title = `Borrar «${page.title}»`;
+  remove.setAttribute("aria-label", `Borrar «${page.title}»`);
+  remove.innerHTML = svgIcon("i-trash");
+  remove.addEventListener("click", () => borrarCaptura(page));
+
+  row.append(open, process, remove);
   return row;
+}
+
+/** Borra una captura por el camino de siempre: `bulkDeletePages` —con su
+ * confirmación— y `DELETE /pages/{id}`, que manda el `.md` a
+ * `.trash/<fecha>/Bandeja/`, nunca un borrado directo. Refresca el árbol y con
+ * él la bandeja: la fila desaparece, el contador se limpia y, si era la
+ * última, la sección se va. */
+function borrarCaptura(page) {
+  bulkDeletePages([page]);
 }
 
 function initInbox() {
@@ -1140,6 +1159,27 @@ function rutaDePagina(id) {
     node = node.parent_id ? state.pagesById.get(node.parent_id) : null;
   }
   return ["Páginas", ...nombres].join(" / ");
+}
+
+/** Los títulos que enlaza un cuerpo, normalizados (sin alias: el `|` de
+ * `[[Título|Alias]]` no es parte del título que resuelve). */
+function titulosEnlazados(cuerpo) {
+  const vistos = new Set();
+  for (const m of (cuerpo || "").matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)) {
+    vistos.add(nombreNormalizado(m[1]));
+  }
+  return vistos;
+}
+
+/** El cuerpo con `[[titulo]]` añadido al final, separado del texto por una
+ * línea en blanco; `null` si el título ya estaba enlazado (no se duplica).
+ * Los títulos del vault no llevan `[`, `]` ni `|` —`names.sanitize` los cambia
+ * por paréntesis o espacio—, así que el enlace no puede salir partido. */
+function cuerpoConEnlace(cuerpo, titulo) {
+  const actual = cuerpo || "";
+  if (titulosEnlazados(actual).has(nombreNormalizado(titulo))) return null;
+  const texto = actual.replace(/\s+$/, "");
+  return texto ? `${texto}\n\n[[${titulo}]]\n` : `[[${titulo}]]\n`;
 }
 
 /** Las notas que ocupan un nombre en la raíz de `Notas/`, que es donde nace
@@ -1372,10 +1412,81 @@ async function procesarNota() {
       }
       parentId = creada.id;
     }
-    await api(`/pages/${page.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ parent_id: parentId }),
-    });
+    // Al procesar, la página destino tiene que mencionar la captura: sin
+    // `[[Título]]` no hay arista en el grafo ni backlink desde la captura a su
+    // contenedor (decisión del dueño, 9 nov).
+    //
+    // El enlace se escribe ANTES de mover, y no después: el fallo que importa
+    // —el PATCH del cuerpo— deja entonces la captura donde estaba, sin nada a
+    // medias; y si el que falla es el movimiento, el cuerpo del destino se
+    // restaura con el texto que se acaba de leer. Al revés no habría vuelta:
+    // una captura no cuelga de ninguna página (vive en `Bandeja/`, sin
+    // `parent_id`), así que no existe un PATCH que la devuelva a la bandeja y
+    // deshacer el movimiento sería imposible.
+    const titulo = page.title || "Sin título";
+    const destino = await api(`/pages/${parentId}`);
+    // Una base de datos no enlaza: sus filas no son páginas del árbol y una
+    // nota tampoco cuelga de ella (el vault lo rechaza). Ahí solo se mueve.
+    const cuerpoAntes = destino.body_markdown || "";
+    const conEnlace =
+      destino.type === "database" ? null : cuerpoConEnlace(cuerpoAntes, titulo);
+    if (conEnlace !== null) {
+      await api(`/pages/${parentId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ body_markdown: conEnlace }),
+      });
+    }
+
+    let movida;
+    try {
+      movida = await api(`/pages/${page.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ parent_id: parentId }),
+      });
+    } catch (e) {
+      // No se ha movido nada: se retira el enlace para no dejar la página
+      // destino mencionando una captura que sigue en la bandeja.
+      if (conEnlace !== null) {
+        try {
+          await api(`/pages/${parentId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ body_markdown: cuerpoAntes }),
+          });
+        } catch (_) {
+          setFormNote(
+            procesarNote,
+            "No se ha podido procesar la captura y el enlace añadido a la página destino se ha quedado ahí. Revísala antes de reintentar.",
+            "error",
+          );
+          return;
+        }
+      }
+      throw e;
+    }
+
+    // Si el vault resolvió una colisión de nombre al moverla («Ideas» →
+    // «Ideas (2)»), el enlace vale el título REAL que devuelve el servidor: el
+    // que se escribió antes ya no resuelve. El cuerpo se rehace desde el texto
+    // original, así que no se duplica nada.
+    if (movida.title !== page.title) {
+      const conTituloReal = cuerpoConEnlace(cuerpoAntes, movida.title);
+      if (conTituloReal !== null) {
+        try {
+          await api(`/pages/${parentId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ body_markdown: conTituloReal }),
+          });
+        } catch (_) {
+          setFormNote(
+            procesarNote,
+            `La captura se ha movido como «${movida.title}», pero no se ha podido corregir el enlace de la página destino, que sigue apuntando a «${titulo}». Corrígelo a mano.`,
+            "error",
+          );
+          return;
+        }
+      }
+    }
+
     procesarDialog.close();
     // El árbol refrescado (incluida la bandeja, que pierde esta nota) y
     // después la nota abierta, ya en su sitio.
