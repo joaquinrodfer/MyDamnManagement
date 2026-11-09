@@ -3624,7 +3624,13 @@ function handleVaultEvent(data) {
   const propio = state.ownRemoteEvents.get(String(data.page_id));
   if (propio !== undefined) {
     state.ownRemoteEvents.delete(String(data.page_id));
-    if (Date.now() - propio < 10000) return;
+    if (Date.now() - propio < 10000) {
+      // Los backlinks de la nota abierta sí se refrescan: el título acaba de
+      // cambiar, y un enlace entrante escrito con el nombre viejo ya no la
+      // encuentra. Lo que no se hace es recargar el documento ni avisar.
+      state.noteSession?.refreshBacklinks?.();
+      return;
+    }
   }
 
   const session = state.noteSession;
