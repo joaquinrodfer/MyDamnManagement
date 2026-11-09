@@ -396,17 +396,21 @@ function arrowPlugin() {
 // tampoco hay autoguardado ni un guardado a medias.
 
 class DatabaseBlockWidget extends WidgetType {
-  constructor(block, render) {
+  constructor(block, render, epoch = 0) {
     super();
     this.from = block.from;
     this.parse = block.parse;
     this.render = render;
+    this.epoch = epoch;
   }
   eq(other) {
     // Mismo bloque, mismo sitio y misma app: CodeMirror reutiliza el DOM (y no
     // se vuelve a pedir nada a la API) en cada repintado por mover el cursor.
+    // `epoch` cambia solo cuando la app avisa de que la base cambió (M2): ahí
+    // SÍ interesa un widget nuevo, que vuelva a leerla.
     return (
       other.render === this.render &&
+      other.epoch === this.epoch &&
       other.from === this.from &&
       other.parse.ok === this.parse.ok &&
       other.parse.id === this.parse.id &&
@@ -488,23 +492,18 @@ class DatabaseBlockWidget extends WidgetType {
   }
 }
 
-/** Reemplaza cada valla cerrada que el cursor no toca por su widget.
- *
- * Se recalcula entero con cada cambio de texto o de selección, porque lo que
- * se ve (crudo o pintado) depende de dónde está el cursor. Cambiar de
- * decoración NO mueve el cursor: la selección sigue en el mismo offset y la
- * valla, que nunca salió del documento, reaparece en su sitio.
- *
- * Sin callback (una app que no pinte bases) no se sustituye nada: la valla se
- * queda en crudo, que es lo benigno.
- */
-function databaseBlockDecorations(state, render) {
+// M2: «la base ha cambiado en otra ventana, vuelve a pintar los bloques».
+// Un efecto (y no un cambio de texto) porque el documento no se toca: la
+// valla sigue intacta, el cursor no se mueve y no hay autoguardado.
+const refreshDatabaseBlocks = StateEffect.define();
+
+function databaseBlockDecorations(state, render, epoch = 0) {
   const ranges = [];
   if (render) {
     const doc = state.doc;
     for (const block of scanDatabaseBlocks(doc.toString())) {
       if (selectionIntersects(state, block.from, block.to)) continue;
-      const widget = new DatabaseBlockWidget(block, render);
+      const widget = new DatabaseBlockWidget(block, render, epoch);
       ranges.push(
         Decoration.replace({ widget, block: true }).range(
           doc.lineAt(block.from).from,
@@ -519,15 +518,20 @@ function databaseBlockDecorations(state, render) {
 function databaseBlockField(render) {
   return StateField.define({
     create(state) {
-      return databaseBlockDecorations(state, render);
+      return { decos: databaseBlockDecorations(state, render, 0), epoch: 0 };
     },
-    update(deco, tr) {
-      if (tr.docChanged || !tr.state.selection.eq(tr.startState.selection)) {
-        return databaseBlockDecorations(tr.state, render);
+    update(value, tr) {
+      // `epoch` sube con cada aviso de base: los widgets nuevos no son `eq` de
+      // los viejos, así que CodeMirror rehace su DOM y vuelven a pedir los
+      // datos. Sin el aviso, mover el cursor reutiliza el DOM (que es lo que
+      // se quiere) y no se pide nada a la API.
+      const epoch = value.epoch + (tr.effects.some((e) => e.is(refreshDatabaseBlocks)) ? 1 : 0);
+      if (epoch !== value.epoch || tr.docChanged || !tr.state.selection.eq(tr.startState.selection)) {
+        return { decos: databaseBlockDecorations(tr.state, render, epoch), epoch };
       }
-      return deco;
+      return value;
     },
-    provide: (f) => EditorView.decorations.from(f),
+    provide: (f) => EditorView.decorations.from(f, (value) => value.decos),
   });
 }
 
@@ -3110,6 +3114,18 @@ export function createNoteEditor({
     },
     setValue(text) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || "" } });
+    },
+    /** Vuelve a pintar las bases incrustadas (bloques ```mdm-database).
+     *
+     * La app lo llama cuando `/events` avisa de que una base de la nota
+     * abierta ha cambiado en otra ventana (M2). No es una edición: no toca el
+     * documento, no mueve el cursor y no pasa por `onChange`, así que no hay
+     * autoguardado. Cada bloque pide otra vez sus datos, y si la base ya no
+     * existe el widget pinta su tarjeta de «Base no encontrada» con la valla
+     * intacta en el texto.
+     */
+    refreshDatabaseBlocks() {
+      view.dispatch({ effects: refreshDatabaseBlocks.of(null) });
     },
     focus: () => view.focus(),
     /** Cierra el selector de bases si está abierto y borra del documento el

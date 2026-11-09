@@ -111,6 +111,24 @@ class EventBus:
 bus = EventBus()
 
 
+def publish_database(database_id: Any, action: str) -> None:
+    """Avisa de que una base de datos ha cambiado en otra pestaña (M2).
+
+    Una nota abierta que incrusta una base pinta su tabla, pero nadie le
+    contaba que la base hubiera cambiado: si se borraba en otra ventana, la
+    tabla vieja se quedaba en pantalla hasta reabrir la nota. Va por el mismo
+    bus que los avisos de páginas y sugerencias, con su propio tipo para que el
+    cliente lo distinga de «este `.md` cambió» (evento `page`).
+
+    `action` es qué le pasó a la base: `deleted` (ya no está: el bloque tiene
+    que pasar a su tarjeta de error), `updated` (título, esquema o vistas) o
+    `rows` (alta, cambio o borrado de una fila). `database_id` es el id que va
+    dentro de la valla ```mdm-database, así que el cliente puede mirar si la
+    nota abierta lo menciona antes de repintar nada.
+    """
+    bus.publish({"type": "database", "action": action, "database_id": str(database_id)})
+
+
 def publish_suggestion(repo: Any, suggestion: Any, action: str) -> None:
     """Avisa de que la lista de sugerencias de una nota ya no es la misma (M3).
 

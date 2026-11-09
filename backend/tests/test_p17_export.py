@@ -123,7 +123,7 @@ def test_pagina_sin_bases_es_identica_a_la_de_hoy(client):
         f'created_at: "{nota["created_at"]}"\n'
         f'updated_at: "{nota["updated_at"]}"\n'
         "---\n\n"
-        f"{cuerpo}"
+        f"{cuerpo}\n"
     )
     assert respuesta.text == esperado
 
@@ -254,7 +254,7 @@ def test_la_base_sin_vistas_usa_todas_las_propiedades_del_esquema(client):
 
     texto = exportar(client, nota).text
 
-    assert "**Sin vistas** (1 fila)" in texto
+    assert "**Sin vistas** — todas las columnas (1 fila)" in texto
     assert "| Título | Empresa | Fase | Próximo |" in texto
     assert "| Acme | Acme | lead | 2026-11-12 |" in texto
 
@@ -357,7 +357,7 @@ def test_el_limite_es_configurable(client, monkeypatch):
 
     texto = exportar(client, nota).text
 
-    assert "**Corta** (3 filas)" in texto
+    assert "**Corta** — todas las columnas (3 filas)" in texto
     assert len(filas_de_tabla(texto)) == 2
     assert "_Mostrando 2 de 3 filas._" in texto
 
@@ -446,7 +446,7 @@ def test_una_valla_normal_con_un_ejemplo_dentro_no_se_materializa(client):
 
     texto = exportar(client, nota).text
 
-    assert texto.endswith(cuerpo)
+    assert texto.endswith(cuerpo + "\n")
     assert "Base no encontrada" not in texto
 
 
@@ -465,7 +465,7 @@ def test_un_bloque_de_base_dentro_de_un_ejemplo_de_codigo_es_texto(client):
 
     texto = exportar(client, nota).text
 
-    assert texto.endswith(cuerpo)
+    assert texto.endswith(cuerpo + "\n")
     assert "Base no encontrada" not in texto
 
 
@@ -475,5 +475,62 @@ def test_una_valla_de_base_sin_cerrar_se_deja_como_esta(client):
 
     texto = exportar(client, nota).text
 
-    assert texto.endswith(cuerpo)
+    assert texto.endswith(cuerpo + "\n")
     assert "Base no encontrada" not in texto
+
+
+# --------------------------------------------------------------------------
+# 7. cosméticos del export (C1): rótulo separado, salto final y un formato
+# --------------------------------------------------------------------------
+
+def test_el_rotulo_se_separa_aunque_la_valla_no_llevara_linea_en_blanco(client):
+    """El caso del informe: `Antes` y la valla pegados (sin línea en blanco).
+    El rótulo no puede quedar como continuación del párrafo."""
+    base = crear_base(client, "Contactos", SIMPLE)
+    crear_fila(client, base["id"], "Acme", empresa="Acme S.L.", fase="lead")
+
+    nota = crear_nota(client, "Pegada", f"Antes\n{bloque(base['id'])}\nDespués")
+
+    texto = exportar(client, nota).text
+
+    # Sin vista en la base: el rótulo es el de «todas las columnas».
+    assert "Antes\n\n**Contactos** — todas las columnas (1 fila)" in texto
+    # Y tampoco se pega al párrafo siguiente: la tabla acaba y hay aire.
+    assert "| Acme | Acme S.L. | lead |\n\nDespués" in texto
+
+
+def test_el_export_termina_en_salto_de_linea(client):
+    nota = crear_nota(client, "Sin salto", "# Título\n\nUn párrafo")
+
+    texto = exportar(client, nota).text
+
+    assert texto.endswith("Un párrafo\n")
+    # Un solo salto: no se le añade una línea en blanco de regalo.
+    assert not texto.endswith("Un párrafo\n\n")
+
+
+def test_el_rotulo_tiene_el_mismo_formato_con_y_sin_vista(client):
+    """Las dos formas que había (`**X** — vista Y (N filas)` y `**X** (N filas)`)
+    se unifican: siempre título — alcance — cuenta."""
+    con_vista = crear_base(client, "Con vista", SIMPLE)
+    crear_vista(client, con_vista["id"], "Tabla")
+    crear_fila(client, con_vista["id"], "A")
+
+    sin_vista = crear_base(client, "Sin vista", SIMPLE)
+    crear_fila(client, sin_vista["id"], "B")
+
+    texto = exportar(
+        client,
+        crear_nota(
+            client,
+            "Formatos",
+            f"{bloque(con_vista['id'], 'Tabla')}\n\n{bloque(sin_vista['id'])}",
+        ),
+    ).text
+
+    rotulos = [linea for linea in texto.split("\n") if linea.startswith("**")]
+    assert rotulos == [
+        "**Con vista** — vista Tabla (1 fila)",
+        "**Sin vista** — todas las columnas (1 fila)",
+    ]
+
