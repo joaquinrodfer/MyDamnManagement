@@ -1,13 +1,19 @@
-"""Resolución de wikilinks contra el índice.
+"""Resolución de los enlaces del cuerpo contra el índice.
 
 Vive aparte de `repository.py` porque la usan los dos lados de P1.2: el
 repositorio (guardado de una nota) y `app/vault/store.py` (reindexado desde los
 ficheros). Si estuviera en `repository`, el puente del vault tendría que
 importar el repositorio y habría un ciclo.
 
-La resolución sigue siendo la de siempre: por título, sin distinguir mayúsculas
-en todo Unicode, dentro del mismo workspace y enlazando a **todas** las páginas
-con ese título.
+Hay dos clases de enlace, y las dos se recalculan en el mismo sitio (guardar,
+vigilante, reindexar):
+
+- **wikilink** (`[[Título]]`): se resuelve por título, sin distinguir mayúsculas
+  en todo Unicode, dentro del mismo workspace y enlazando a **todas** las
+  páginas con ese título.
+- **embed** (```mdm-database): la base incrustada en el cuerpo. El bloque lleva
+  el id de la fila `databases`, así que aquí se resuelve a la **página** de esa
+  base; el grafo y los backlinks son entre páginas.
 """
 
 from __future__ import annotations
@@ -17,11 +23,20 @@ import unicodedata
 import uuid
 
 from app.enums import LinkKind
-from app.wikilinks import extract_titles
+from app.wikilinks import extract_database_ids, extract_titles
 
 # Namespace fijo para ids de enlaces (uuid5): el índice tiene que ser
 # reconstruible de forma idéntica, así que nada de uuid4 aquí.
 _LINK_NAMESPACE = uuid.UUID("a3d1c0d2-3a0e-5b9e-8f5c-2c7b1f0d9e21")
+
+# La página que representa la base incrustada. `databases.id` no es el id de
+# página (son dos UUID distintos): este JOIN es toda la resolución. La base
+# tiene que ser del mismo workspace que la nota que la incrusta, y una página no
+# se enlaza a sí misma, igual que con los wikilinks.
+_EMBED_TARGET_SQL = (
+    "SELECT d.page_id FROM databases d JOIN pages p ON p.id = d.page_id"
+    " WHERE d.id = ? AND p.workspace_id = ? AND p.id != ?"
+)
 
 
 def fold_title(title: str) -> str:
@@ -40,23 +55,41 @@ def fold_title(title: str) -> str:
 def sync_wikilinks(
     conn: sqlite3.Connection, page_id: str, workspace_id: str, body_markdown: str
 ) -> None:
-    """Recalcula los wikilinks salientes de una página a partir de su cuerpo.
+    """Recalcula los enlaces salientes de una página a partir de su cuerpo.
 
-    Una fila por página destino, no por forma del enlace: si el cuerpo nombra
-    el mismo destino dos veces (`[[REUNIÓN DE EQUIPO]]` y `[[Reunión de
-    equipo]]`, o la misma cadena en NFC y en NFD) hay un solo vínculo, como
-    cuando la resolución era un `IN` sobre `pages` (que devuelve cada página
-    una vez). De las formas se queda la primera del cuerpo, para que dos
-    guardados del mismo texto den la misma fila.
+    Son dos: los wikilinks de siempre y las bases incrustadas. Se borran y se
+    reinsertan los dos en cada pasada, porque el cuerpo puede haber perdido
+    cualquiera de ellos.
+
+    **Wikilinks.** Una fila por página destino, no por forma del enlace: si el
+    cuerpo nombra el mismo destino dos veces (`[[REUNIÓN DE EQUIPO]]` y
+    `[[Reunión de equipo]]`, o la misma cadena en NFC y en NFD) hay un solo
+    vínculo, como cuando la resolución era un `IN` sobre `pages` (que devuelve
+    cada página una vez). De las formas se queda la primera del cuerpo, para
+    que dos guardados del mismo texto den la misma fila.
+
+    **Bases incrustadas.** Una fila por base distinta: dos bloques que
+    incrustan la misma base son un solo enlace (el bloque se repite, la
+    relación no); dos bases distintas son dos. `target_title` guarda el id de
+    la base — es lo que dice el bloque y no cambia al renombrarla, así que el
+    id determinista de la fila también se queda quieto.
 
     Limitación conocida, igual que antes de P1.1: renombrar una página no
-    repara los enlaces ya guardados en otras; se corrigen cuando esa página se
-    vuelve a guardar (o, desde P1.2, al reindexar el vault entero).
+    repara los wikilinks ya guardados en otras; se corrigen cuando esa página
+    se vuelve a guardar (o, desde P1.2, al reindexar el vault entero). Con las
+    bases no pasa: se resuelven por id.
     """
     conn.execute(
-        "DELETE FROM links WHERE from_id = ? AND kind = ?",
-        (page_id, LinkKind.wikilink.value),
+        "DELETE FROM links WHERE from_id = ? AND kind IN (?, ?)",
+        (page_id, LinkKind.wikilink.value, LinkKind.embed.value),
     )
+    _sync_title_links(conn, page_id, workspace_id, body_markdown)
+    _sync_embedded_databases(conn, page_id, workspace_id, body_markdown)
+
+
+def _sync_title_links(
+    conn: sqlite3.Connection, page_id: str, workspace_id: str, body_markdown: str
+) -> None:
     titles = extract_titles(body_markdown or "")
     if not titles:
         return
@@ -86,6 +119,35 @@ def sync_wikilinks(
                 target_id,
                 LinkKind.wikilink.value,
                 title,
+            ),
+        )
+
+
+def _sync_embedded_databases(
+    conn: sqlite3.Connection, page_id: str, workspace_id: str, body_markdown: str
+) -> None:
+    """Arista página -> base por cada bloque ```mdm-database del cuerpo.
+
+    Un id que no existe (base borrada, copiada de otro vault, escrito a mano)
+    no produce arista y no es un error: el bloque se queda en el documento y la
+    app lo pinta como «Base no encontrada».
+    """
+    for database_id in extract_database_ids(body_markdown or ""):
+        row = conn.execute(
+            _EMBED_TARGET_SQL, (database_id, str(workspace_id), page_id)
+        ).fetchone()
+        if row is None:
+            continue
+        target_id = row["page_id"]
+        conn.execute(
+            "INSERT INTO links (id, from_id, to_id, kind, target_title)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                link_id(page_id, target_id, LinkKind.embed.value, database_id),
+                page_id,
+                target_id,
+                LinkKind.embed.value,
+                database_id,
             ),
         )
 

@@ -495,10 +495,18 @@ class Repository:
         return roots
 
     def backlinks(self, page_id: uuid.UUID) -> list[Page]:
+        """Páginas que enlazan a esta: con un wikilink o incrustando una base.
+
+        Desde P17.6 un bloque ```mdm-database cuenta como enlace, así que la
+        página de la base lista la nota que la incrusta igual que si llevara su
+        `[[título]]`. El `GROUP BY` deja una fila por página aunque la nota la
+        enlace de las dos formas; el grafo, en cambio, pinta las dos aristas.
+        """
         rows = self.conn.execute(
             f"SELECT {PAGE_FIELDS_P} FROM links l JOIN pages p ON p.id = l.from_id"
-            " WHERE l.to_id = ? AND l.kind = ? ORDER BY p.title COLLATE NOCASE",
-            (str(page_id), LinkKind.wikilink.value),
+            " WHERE l.to_id = ? AND l.kind IN (?, ?)"
+            " GROUP BY p.id ORDER BY p.title COLLATE NOCASE",
+            (str(page_id), LinkKind.wikilink.value, LinkKind.embed.value),
         ).fetchall()
         return [_page(r) for r in rows]
 
