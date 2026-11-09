@@ -90,6 +90,10 @@ def test_extractor_descarta_ids_invalidos_sin_reventar():
     assert extract_database_ids("```mdm-database\nid:\n```") == []
     assert extract_database_ids("```mdm-database\n```") == []
     assert extract_database_ids("") == []
+    # Listas/mapas: el YAML de juguete no los admite y el editor no pinta el
+    # bloque, así que tampoco cuenta como enlace aunque el id sea válido.
+    con_lista = f"```mdm-database\nid: {BASE_ID}\ntags: [a, b]\n```"
+    assert extract_database_ids(con_lista) == []
 
 
 def test_extractor_ignora_bloques_sin_cerrar_y_las_vallas_de_otro_lenguaje():

@@ -33,6 +33,11 @@ _UUID_RE = re.compile(
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
+# Valores que el YAML de juguete del bloque no admite (listas, mapas, anclas,
+# bloques multilínea): las mismas dos reglas que `parseScalar` en el editor.
+# Un bloque así no se pinta en la nota, así que tampoco puede ser un enlace.
+_UNSUPPORTED_VALUE_RE = re.compile(r"^[\[\{>\|&\*!%@]|^-([ \t]|$)")
+
 
 def extract_titles(body_markdown: str) -> list[str]:
     seen: list[str] = []
@@ -110,6 +115,8 @@ def _database_id_from_block(lines: list[str]) -> str | None:
             if len(value) < 2 or value[-1] != value[0]:
                 return None
             value = value[1:-1]
+        elif _UNSUPPORTED_VALUE_RE.match(value):
+            return None
         if not value:
             continue
         if key.strip() == "id":
