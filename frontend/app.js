@@ -3981,7 +3981,10 @@ function renderSlashMenu(menuState) {
   }
 
   if (menuState.options.length === 0) {
-    menu.innerHTML = '<div class="search-empty">Sin coincidencias.</div>';
+    // Un vault sin páginas ya trae su explicación en `note` («Aún no hay
+    // ninguna página…»): añadir «Sin coincidencias» debajo sería decir dos
+    // veces lo mismo, y lo segundo es mentira (no hay nada que buscar).
+    menu.innerHTML = menuState.note ? "" : '<div class="search-empty">Sin coincidencias.</div>';
   } else {
     menuState.options.forEach((opt, i) => {
       const item = document.createElement("div");
