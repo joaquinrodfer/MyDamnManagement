@@ -3260,6 +3260,12 @@ function renderNote(page, backlinks) {
     refreshSuggestions() {
       loadSuggestions();
     },
+    /** Una base incrustada en esta nota ha cambiado en otra ventana (M2): se
+     * repintan los bloques sin tocar el documento. La valla sigue intacta, el
+     * cursor no se mueve y no se dispara ningún guardado. */
+    refreshDatabaseEmbeds() {
+      state.editor?.refreshDatabaseBlocks?.();
+    },
   };
   state.noteSession = session;
   loadSuggestions(); // pendientes en el editor + panel (si no hay, no se pinta nada)
@@ -3436,6 +3442,20 @@ function handleSuggestionEvent(data) {
   session.refreshSuggestions?.();
 }
 
+/** Un evento `database` de `/events` (M2): una base ha sido borrada,
+ * renombrada o ha cambiado de filas en otra pestaña/ventana. Se repintan los
+ * bloques incrustados de la nota abierta —y solo si el `.md` menciona esa
+ * base—. No se recarga el documento: el texto de la valla no se toca, el
+ * cursor se queda donde estaba y el autoguardado no se entera. */
+function handleDatabaseEvent(data) {
+  if (!data || data.type !== "database" || !data.database_id) return;
+  const session = state.noteSession;
+  if (!session) return;
+  // El id va dentro de la valla; si no está en esta nota, el aviso no es suyo.
+  if (!state.editor?.getValue?.().includes(data.database_id)) return;
+  session.refreshDatabaseEmbeds?.();
+}
+
 function connectVaultEvents() {
   if (typeof EventSource === "undefined") return; // sin SSE, sin avisos en vivo
   try {
@@ -3463,6 +3483,16 @@ function connectVaultEvents() {
       return;
     }
     handleSuggestionEvent(data);
+  });
+  // `event: database` (M2): una base incrustada ha cambiado en otra ventana.
+  vaultEvents.addEventListener("database", (ev) => {
+    let data;
+    try {
+      data = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    handleDatabaseEvent(data);
   });
   // El navegador reconecta solo; esto solo deja constancia de que se cayó.
   let reconnecting = false;
