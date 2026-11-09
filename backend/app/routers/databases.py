@@ -8,6 +8,7 @@ from app import schemas
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
+from app.events import publish_database
 from app.properties import validate_properties
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
@@ -156,6 +157,8 @@ def update_database(
         )
     if db_def is None:
         raise HTTPException(404, "Base de datos no encontrada")
+    # M2: otra pestaña con una nota que incrusta esta base repinta su bloque.
+    publish_database(db_def.id, "updated")
     return _serialize_database(db_def)
 
 
@@ -165,6 +168,9 @@ def delete_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)
         borrada = repo.delete_database(database_id)
     if not borrada:
         raise HTTPException(404, "Base de datos no encontrada")
+    # M2: la base ya no está; el bloque incrustado tiene que enseñar «Base no
+    # encontrada» sin esperar a que se reabra la nota.
+    publish_database(database_id, "deleted")
 
 
 # --------------------------------------------------------------------- rows
@@ -179,6 +185,8 @@ def create_row(
         row = repo.create_row(
             database_id, title=payload.title, icon=payload.icon, properties=cleaned
         )
+    # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
+    publish_database(database_id, "rows")
     return _serialize_row(row)
 
 
@@ -231,6 +239,7 @@ def update_row(
         )
     if row is None:
         raise HTTPException(404, "Fila no encontrada")
+    publish_database(database_id, "rows")
     return _serialize_row(row)
 
 
@@ -242,6 +251,7 @@ def delete_row(
         borrada = repo.delete_row(database_id, row_id)
     if not borrada:
         raise HTTPException(404, "Fila no encontrada")
+    publish_database(database_id, "rows")
 
 
 # -------------------------------------------------------------------- views
@@ -253,6 +263,7 @@ def create_view(
     _get_database_or_404(repo, database_id)
     with _vault_errors():
         view = repo.create_view(database_id, name=payload.name, type=payload.type, config=payload.config)
+    publish_database(database_id, "updated")
     return _serialize_view(view)
 
 
@@ -275,6 +286,7 @@ def update_view(
         )
     if view is None:
         raise HTTPException(404, "Vista no encontrada")
+    publish_database(database_id, "updated")
     return _serialize_view(view)
 
 
@@ -286,6 +298,7 @@ def delete_view(
         borrada = repo.delete_view(database_id, view_id)
     if not borrada:
         raise HTTPException(404, "Vista no encontrada")
+    publish_database(database_id, "updated")
 
 
 # ------------------------------------------------------------- aplicar vista

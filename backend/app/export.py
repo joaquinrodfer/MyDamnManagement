@@ -62,7 +62,11 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 def export_page(repo: Repository, page: Page) -> str:
     """El `.md` completo de `page`: frontmatter + cuerpo con las bases dentro."""
-    return front_matter(page) + materialize(repo, page.body_markdown or "")
+    texto = front_matter(page) + materialize(repo, page.body_markdown or "")
+    # Un `.md` es un fichero de texto: termina en salto de línea, como el que
+    # escribe el resto de la app en el vault. Antes salía sin él cuando el
+    # cuerpo no lo llevaba, y `cat`/`git diff` lo enseñaban pegado al prompt.
+    return texto if texto.endswith("\n") else texto + "\n"
 
 
 def front_matter(page: Page) -> str:
@@ -146,7 +150,16 @@ def materialize(repo: Repository, body: str) -> str:
             continue
 
         block = "\n".join(lines[i + 1:close])
-        out.extend(_render_block(repo, lines[i:close + 1], block))
+        rendered = _render_block(repo, lines[i:close + 1], block)
+        # El rótulo de la tabla nunca se pega a lo que hubiera antes: un
+        # párrafo acabado en la línea anterior dejaría el `**Contactos**` como
+        # continuación suya. Y el bloque tampoco se pega a lo que venga
+        # después, que si no la tabla y el párrafo siguiente se leen como uno.
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(rendered)
+        if close + 1 < len(lines) and lines[close + 1].strip():
+            out.append("")
         i = close + 1
 
     return "\n".join(out)
@@ -253,11 +266,15 @@ def _visible_columns(database: Database, view: Optional[View]) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def _caption(database: Database, view: Optional[View], total: int) -> str:
-    """`**Contactos** — vista Tablero (12 filas)`."""
-    parts = [f"**{database.title}**"]
-    if view is not None:
-        parts.append(f"vista {view.name}")
-    return " — ".join(parts) + f" ({_row_count(total)})"
+    """`**Contactos** — vista Tablero (12 filas)`.
+
+    Un solo formato para todos los casos: título en negrita, raya, qué se está
+    enseñando y la cuenta. Cuando la base no tiene vistas se exportan todas las
+    columnas, y el rótulo lo dice en ese mismo hueco (`todas las columnas`) en
+    vez de cambiar la forma de la frase.
+    """
+    alcance = f"vista {view.name}" if view is not None else "todas las columnas"
+    return f"**{database.title}** — {alcance} ({_row_count(total)})"
 
 
 def _row_count(total: int) -> str:
