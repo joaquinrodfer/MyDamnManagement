@@ -1683,6 +1683,10 @@
 
   /* ---------- formularios ---------- */
   .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  /* `display: flex` gana al `[hidden]` del user-agent: sin esta regla los
+     campos que app.js marca hidden (#view-groupby-field, #view-date-field)
+     se pintan igual (el de fecha incluso vacío). */
+  .field[hidden] { display: none; }
   .field label {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
