@@ -1929,8 +1929,8 @@
   .inline-form > .btn-primary { height: var(--control-size); align-self: end; justify-self: start; }
 
   /* ---------- dialogs ---------- */
-  /* 520 px (antes 440): con menos ancho las dos columnas de .prop-row
-     truncaban los inputs de clave y nombre visible. */
+  /* 520 px (antes 440): con menos ancho la columna del nombre de la
+     propiedad se truncaba. */
   dialog {
     border: 1px solid var(--border-input);
     border-radius: var(--radius-lg);
@@ -1968,12 +1968,17 @@
   dialog h3 { font-family: var(--font-body); font-weight: 700; margin: 0 0 14px; font-size: var(--text-lg); }
   .prop-row-wrap { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--panel-border); }
   .prop-row-wrap:last-child { border-bottom: none; }
-  /* minmax(0, 1fr) y no 1fr: las dos columnas de texto tienen un mínimo de
-     min-content (el ancho del <select> de tipo) y con el diálogo a 520 px la
-     rejilla medía 504 px dentro de 478 y sacaba una barra horizontal que no
-     hacía falta. */
-  .prop-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 110px 28px; gap: 6px; align-items: center; }
+  /* Solo hay un campo de texto (el nombre visible): la clave snake_case se
+     deriva detrás y no se pide. minmax(0, 1fr) y no 1fr: el <select> de tipo
+     tiene un mínimo de min-content y con el diálogo a 520 px la rejilla sacaba
+     una barra horizontal que no hacía falta. */
+  .prop-row { display: grid; grid-template-columns: minmax(0, 1fr) 110px 28px; gap: 6px; align-items: center; }
   .prop-row input, .prop-row select, .prop-options-input { min-width: 0; padding: 5px 8px; min-height: var(--control-size); border-radius: var(--radius-sm); border: 1px solid var(--border-input); background: var(--panel); color: var(--ink); font-size: 12.5px; }
+  /* El tipo de la columna del título: no se elige (es texto), pero se enseña
+     en el mismo sitio que el de las demás propiedades. */
+  .prop-type-fixed { display: flex; align-items: center; min-height: var(--control-size); padding: 5px 8px; border-radius: var(--radius-sm); border: 1px dashed var(--panel-border); color: var(--ink-muted); font-size: 12.5px; }
+  /* Quitada en el diálogo: el nombre queda apagado y se puede volver a poner. */
+  .prop-title-row.is-off .prop-name { opacity: 0.55; }
   .prop-options-input { width: 100%; margin-top: 6px; }
   /* Las listas de propiedades de los diálogos hacen su propio scroll: con
      muchas filas el diálogo crecía más que la ventana y los botones de
@@ -2339,8 +2344,8 @@
        alto y 16 px de letra (por debajo, iOS hace zoom al enfocar). El botón
        ya mide 44 por la regla general de `.btn`. */
     .db-add-row-input { min-height: 44px; font-size: 16px; }
-    .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 92px 44px; }
-    .prop-row input, .prop-row select, .prop-options-input { font-size: 16px; min-height: 44px; }
+    .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
+    .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed { font-size: 16px; min-height: 44px; }
     #prop-rows, #row-props { max-height: 50dvh; }
 
     /* --- panel de sugerencias: hoja inferior a todo el ancho --- */
@@ -2400,12 +2405,9 @@
     header .brand { display: none; }
   }
 
-  /* Móvil pequeño: las cuatro columnas de una propiedad (clave, nombre, tipo,
-     quitar) no caben legibles en 375 px. Clave y nombre arriba, el tipo debajo
-     a lo ancho y la X a su lado. */
+  /* Móvil pequeño: el nombre, el tipo y el botón de quitar, en una línea. */
   @media (max-width: 480px) {
-    .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
-    .prop-row .prop-type { grid-column: 1 / 3; }
+    .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
   }
 
   /* Movimiento apagado del todo, y comprobado: `transition`/`animation` a

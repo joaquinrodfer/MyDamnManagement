@@ -27,6 +27,7 @@ from app import index as index_mod
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
+from app.properties import DEFAULT_TITLE_NAME, plan_schema
 from app.vault import suggestions
 from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultError, VaultStore
 from app.vault.suggestions import (
@@ -85,6 +86,10 @@ class Database:
     schema_def: list[dict[str, Any]]
     created_at: datetime
     updated_at: datetime
+    # La columna del título: cómo se llama y si la tabla la enseña. Una base
+    # sin estas claves en su `.md` sale con «Título» y visible.
+    title_name: str = DEFAULT_TITLE_NAME
+    title_hidden: bool = False
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,10 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         "SELECT title, icon, created_at, updated_at FROM pages WHERE id = ?",
         (row["page_id"],),
     ).fetchone()
+    title = conn.execute(
+        "SELECT name, hidden FROM database_titles WHERE database_id = ?",
+        (row["id"],),
+    ).fetchone()
     return Database(
         id=uuid.UUID(row["id"]),
         page_id=uuid.UUID(row["page_id"]),
@@ -144,6 +153,8 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         schema_def=_load(row["schema_json"], []),
         created_at=_dt(page["created_at"]),
         updated_at=_dt(page["updated_at"]),
+        title_name=(title["name"] or DEFAULT_TITLE_NAME) if title else DEFAULT_TITLE_NAME,
+        title_hidden=bool(title["hidden"]) if title else False,
     )
 
 
@@ -803,20 +814,149 @@ class Repository:
         title: Optional[str] = None,
         icon: Optional[str] = None,
         schema_def: Optional[list[dict[str, Any]]] = None,
+        title_name: Optional[str] = None,
+        title_hidden: Optional[bool] = None,
     ) -> Optional[Database]:
+        """Actualiza la base, migrando lo que dependa de una propiedad renombrada.
+
+        El diálogo manda el **nombre** de cada propiedad y la clave que tenía
+        (la identidad de la fila); `plan_schema` devuelve el schema final y qué
+        claves cambian de nombre. Un renombrado escribe la clave nueva en
+        **todas** las filas y en las vistas que la nombran (`group_by`,
+        `date_property`, `filters`, `sort`, `visible_properties`): un rename
+        que deja filas con la clave vieja es peor que no poder renombrar.
+
+        Borrar una propiedad **no** borra los valores de las filas (el `.md` es
+        del usuario): solo desaparece del schema y de las vistas que la usan.
+        Las filas siguen abriendo; al volver a guardar una fila se filtran las
+        claves que ya no están en el schema, como antes.
+        """
         current = self.get_database(database_id)
         if current is None:
             return None
-        # Nota (v1): las filas existentes no se revalidan contra el schema
-        # nuevo; pueden quedar con propiedades que ya no están definidas hasta
-        # que se vuelvan a guardar (y entonces se filtran al escribir).
+
+        renames: dict[str, str] = {}
+        deleted: list[str] = []
+        final_schema: Optional[list[dict[str, Any]]] = None
+        if schema_def is not None:
+            final_schema, renames, deleted = plan_schema(current.schema_def, schema_def)
+
+        if renames:
+            # Las filas primero: si una no se puede migrar, el `.md` de la base
+            # todavía dice el schema viejo y el renombrado se puede reintentar
+            # entero (el segundo intento no encuentra nada que cambiar en las
+            # filas ya migradas). El vault puede ajustar la clave de destino
+            # (una clave que solo sobrevive como valor huérfano de una
+            # propiedad borrada no se pisa): el mapa que vuelve es el de verdad,
+            # y es el que hay que escribir en el schema y en las vistas.
+            ajustados = self.vault.rename_row_properties(
+                database_id,
+                renames,
+                names={
+                    str(p["key"]): str(p.get("name") or "")
+                    for p in current.schema_def
+                    if isinstance(p, dict) and p.get("key")
+                },
+                reserved={
+                    str(p["key"])
+                    for p in list(current.schema_def or []) + list(final_schema or [])
+                    if isinstance(p, dict) and p.get("key")
+                }
+                # El destino de cada renombrado no está «ocupado por otra»: es
+                # la clave que se está poniendo ahora.
+                - set(renames.values()),
+            )
+            if ajustados != renames:
+                traducir = {nuevo: ajustados[viejo] for viejo, nuevo in renames.items()}
+                final_schema = [
+                    {**p, "key": traducir.get(p.get("key"), p.get("key"))}
+                    for p in (final_schema or [])
+                ]
+            renames = ajustados
+
+        views: Optional[list[dict[str, Any]]] = None
+        if renames or deleted:
+            views = self._views_with_keys(
+                database_id, {**renames, **{key: None for key in deleted}}
+            )
+
         self.vault.save_database(
             current.page_id,
             title=UNSET if title is None else title,
             icon=UNSET if icon is None else icon,
-            schema=UNSET if schema_def is None else schema_def,
+            schema=UNSET if final_schema is None else final_schema,
+            views=UNSET if views is None else views,
+            title_name=UNSET if title_name is None else title_name,
+            title_hidden=UNSET if title_hidden is None else title_hidden,
         )
+        if schema_def is not None:
+            # El índice de una fila se filtra contra el schema de su base: si
+            # el juego de claves cambia (rename, alta o borrado) hay que releer
+            # los `.md`, o las filas se quedarían sin los valores de la clave
+            # nueva. Cambiar solo el tipo no reindexa: el `.md` no se toca y el
+            # índice sigue como estaba hasta que se guarde una fila (lo de
+            # siempre). Una propiedad que se vuelve a añadir con la misma clave
+            # recupera así los valores que ya estaban en el fichero.
+            antes = {p.get("key") for p in current.schema_def if isinstance(p, dict)}
+            despues = {p["key"] for p in final_schema or []}
+            if antes != despues:
+                self.vault.reindex_rows(database_id)
         return self.get_database(database_id)
+
+    def _views_with_keys(
+        self, database_id: uuid.UUID, mapping: dict[str, Optional[str]]
+    ) -> list[dict[str, Any]]:
+        """Las vistas de la base con las claves de propiedad traducidas.
+
+        `mapping` va de clave vieja a nueva, y a `None` cuando la propiedad ha
+        desaparecido: una vista que agrupa por una propiedad borrada se queda
+        sin `group_by` (y sin ese filtro u orden), que es un estado que la
+        interfaz ya sabe enseñar. Es la misma forma del fichero que usa
+        `_views_with`, para que guardar la base y migrar las vistas sea una
+        sola escritura del frontmatter.
+        """
+        def mapped(value: Any) -> Any:
+            return mapping.get(value, value) if isinstance(value, str) else value
+
+        views = self._views_with(database_id)
+        for view in views:
+            config = dict(view.get("config") or {})
+            for field in ("group_by", "date_property"):
+                if field not in config:
+                    continue
+                new = mapped(config[field])
+                if new is None:
+                    config.pop(field)
+                else:
+                    config[field] = new
+            filters = config.get("filters")
+            if isinstance(filters, list):
+                kept = []
+                for item in filters:
+                    if isinstance(item, dict) and isinstance(item.get("key"), str):
+                        new = mapped(item["key"])
+                        if new is None:
+                            continue  # el filtro hablaba de una propiedad borrada
+                        item = {**item, "key": new}
+                    kept.append(item)
+                if kept:
+                    config["filters"] = kept
+                else:
+                    config.pop("filters", None)
+            sort = config.get("sort")
+            if isinstance(sort, dict) and isinstance(sort.get("key"), str):
+                new = mapped(sort["key"])
+                if new is None:
+                    config.pop("sort")
+                else:
+                    config["sort"] = {**sort, "key": new}
+            visible = config.get("visible_properties")
+            if isinstance(visible, list):
+                config["visible_properties"] = [
+                    mapped(key) for key in visible if mapped(key) is not None
+                ]
+            view["config"] = config
+        return views
 
     def delete_database(self, database_id: uuid.UUID) -> bool:
         current = self.get_database(database_id)

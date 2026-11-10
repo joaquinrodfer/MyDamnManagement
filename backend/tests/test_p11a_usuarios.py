@@ -790,13 +790,14 @@ def test_una_base_v3_migra_a_la_actual_y_conserva_sus_notas(client, index_path):
         conn.close()
 
     info = ensure_index(str(index_path))
-    # P13 subió el esquema a la 5 (tokens de captura): la migración encadena
-    # 4 y 5 sobre el mismo fichero, que es lo que se comprueba aquí.
-    assert info.version == SCHEMA_VERSION == 5
+    # P13 subió el esquema a la 5 (tokens de captura) y la columna del título
+    # a la 6 (tabla `database_titles`): la migración encadena 4, 5 y 6 sobre el
+    # mismo fichero, que es lo que se comprueba aquí.
+    assert info.version == SCHEMA_VERSION == 6
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
         tablas = {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }

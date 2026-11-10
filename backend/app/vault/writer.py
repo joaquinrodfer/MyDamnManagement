@@ -6,6 +6,7 @@ import enum
 import os
 import uuid
 
+from app.properties import DEFAULT_TITLE_NAME
 from . import fm, names, reader, suggestions, vaultfs
 
 
@@ -240,12 +241,20 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
                       updated: str | None = None,
                       description: str | None = None,
                       created_by: str | None = None,
-                      header_image: str | None = None) -> str:
+                      header_image: str | None = None,
+                      title_name: str | None = None,
+                      title_hidden: bool = False) -> str:
     """`Bases/<slug>.md`: `type: database`, `schema` y `views` en el frontmatter.
 
     Cada vista se escribe con `id`, `name`, `type` y su `config` **al mismo
     nivel**, que es la forma del ejemplo del ROADMAP §2.3 (`group_by: fase`)
     y la que `reader.views_from_frontmatter` vuelve a leer sin ambigüedad.
+
+    La columna del título se guarda aparte del `schema` porque no es una
+    propiedad de la fila (su clave es `title`, reservada): `title_name` es su
+    nombre visible y `title_hidden` dice si la tabla la enseña. Los valores por
+    defecto («Título», visible) no se escriben, así que una base nueva sigue
+    teniendo un `.md` mínimo.
     """
     now = created or reader.now_iso()
     updates: dict = {"id": id_, "type": "database"}
@@ -261,6 +270,10 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
     updates["updated"] = updated or now
     updates["schema"] = schema_entries(schema)
     updates["views"] = [view_entry(view) for view in views]
+    if title_name and str(title_name).strip() and str(title_name).strip() != DEFAULT_TITLE_NAME:
+        updates["title_name"] = str(title_name).strip()
+    if title_hidden:
+        updates["title_hidden"] = True
     raw, _ = fm.update("", updates)
     return fm.compose(raw, "\n")
 
@@ -268,7 +281,8 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
 def create_database(vault_root: str, folder: str, title: str, schema: list[dict],
                     views: list[dict] | None = None, *, icon: str | None = "🗄",
                     db_id: str | None = None, description: str | None = None,
-                    created_by: str | None = None
+                    created_by: str | None = None,
+                    title_name: str | None = None, title_hidden: bool = False
                     ) -> tuple[reader.Page, list[str]]:
     """Crea `folder/title.md` y su carpeta de filas (mismo nombre sin .md)."""
     stem, notes = names.sanitize(title)
@@ -281,7 +295,8 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
     rel = f"{rel_dir}/{stem}.md" if rel_dir else f"{stem}.md"
     text = database_markdown(id_=db_id or new_id(), icon=icon, schema=schema,
                              views=views or [], description=description,
-                             created_by=created_by)
+                             created_by=created_by, title_name=title_name,
+                             title_hidden=title_hidden)
     vaultfs.atomic_write(os.path.join(vault_root, rel), text)
     os.makedirs(os.path.join(vault_root, rel[:-3]), exist_ok=True)
     return reader.read_file(os.path.join(vault_root, rel), rel), notes

@@ -4327,6 +4327,26 @@ function avisoDeNombreOcupado(ocupada, accion) {
   return `Ya hay una ${que} «${ocupada.nodo.title}» en esa carpeta (${ocupada.ruta}). ${accion}`;
 }
 
+/** Cómo se llama cada tipo de propiedad en la interfaz.
+ *
+ * `text`, `select`... son la clave interna del `.md` y del schema; al usuario
+ * se le enseña el nombre del tipo, igual que el nombre de la propiedad. No se
+ * escribe «snake_case» en ninguna parte de la interfaz. */
+const TIPOS_VISIBLES = {
+  text: "Texto",
+  number: "Número",
+  date: "Fecha",
+  select: "Selección",
+  multiselect: "Multiselección",
+  checkbox: "Casilla",
+  url: "Enlace",
+  relation: "Relación",
+};
+
+function tipoVisible(tipo) {
+  return TIPOS_VISIBLES[tipo] || "Texto";
+}
+
 async function renderDatabase(database, views, activeViewId, { focus = null } = {}) {
   const main = clearMain();
   // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
@@ -4337,6 +4357,27 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     renderDatabase(database, views, activeViewId).catch((e) =>
       reportError("No se pudo refrescar la base de datos", e),
     );
+
+  // Guardar el esquema reescribe en el servidor lo que depende de cada
+  // propiedad: `group_by`, `date_property`, `filters` y `sort` de las vistas.
+  // Repintar con el array de `views` capturado al pintar enseñaría la
+  // configuración vieja sobre los datos nuevos (el tablero se quedaba en una
+  // columna «sin valor» y el calendario pintaba las fechas de otra propiedad),
+  // así que este repintado vuelve a pedir la base y las vistas.
+  const recargarVistas = () =>
+    (async () => {
+      const [fresca, vistas] = await Promise.all([
+        api(`/databases/${database.id}`),
+        api(`/databases/${database.id}/views`),
+      ]);
+      // `null` es la pestaña «Todas (sin vista)», un estado legítimo: sólo se
+      // cae a la primera vista si la activa era una vista y ya no viene.
+      const activa =
+        activeViewId === null || vistas.some((v) => v.id === activeViewId)
+          ? activeViewId
+          : (vistas[0]?.id ?? null);
+      await renderDatabase(fresca, vistas, activa);
+    })().catch((e) => reportError("No se pudo refrescar la base de datos", e));
 
   const header = document.createElement("div");
   header.className = "db-header";
@@ -4422,7 +4463,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const schemaBtn = document.createElement("button");
   schemaBtn.className = "btn";
   schemaBtn.textContent = "Propiedades";
-  schemaBtn.addEventListener("click", () => openDatabaseDialog(database, refresh));
+  schemaBtn.addEventListener("click", () => openDatabaseDialog(database, recargarVistas));
 
   const newViewBtn = document.createElement("button");
   newViewBtn.className = "btn";
@@ -4492,7 +4533,9 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 
   const hint = document.createElement("div");
   hint.className = "db-schema-hint";
-  hint.textContent = database.schema_def.map((p) => `${p.name} (${p.type})`).join(" · ") || "Sin propiedades definidas.";
+  hint.textContent =
+    database.schema_def.map((p) => `${p.name} (${tipoVisible(p.type)})`).join(" · ") ||
+    "Sin propiedades definidas.";
 
   const tabs = document.createElement("div");
   tabs.className = "view-tabs";
@@ -5049,8 +5092,13 @@ function renderTable(database, rows, { readOnly = false } = {}) {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
+  // La columna del título es una columna más: se puede renombrar
+  // (`title_name`) y quitar (`title_hidden`). Si se quita, la tabla deja de
+  // enseñarla; la fila se sigue llamando por su `id`, que es su fichero.
+  const muestraTitulo = !database.title_hidden;
+  const rotuloTitulo = database.title_name || "Título";
   headRow.innerHTML =
-    '<th scope="col">Título</th>' +
+    (muestraTitulo ? `<th scope="col">${escapeHtml(rotuloTitulo)}</th>` : "") +
     database.schema_def.map((p) => `<th scope="col">${escapeHtml(p.name)}</th>`).join("") +
     (readOnly ? "" : '<th scope="col"><span class="sr-only">Acciones</span></th>');
   thead.appendChild(headRow);
@@ -5059,7 +5107,8 @@ function renderTable(database, rows, { readOnly = false } = {}) {
   if (rows.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = database.schema_def.length + (readOnly ? 1 : 2);
+    td.colSpan =
+      database.schema_def.length + (muestraTitulo ? 1 : 0) + (readOnly ? 0 : 1);
     td.className = "search-empty";
     td.textContent = "Sin filas todavía.";
     tr.appendChild(td);
@@ -5075,10 +5124,12 @@ function renderTable(database, rows, { readOnly = false } = {}) {
     // Título y celdas editables en el sitio: lo que se ve es el valor del
     // `.md`, y un clic abre el control del tipo de esa propiedad. En la tabla
     // incrustada (readOnly) las celdas son solo texto: no hay nada que abrir.
-    const titleTd = document.createElement("td");
-    if (readOnly) paintReadOnlyCell(titleTd, row, null);
-    else paintCell(titleTd, database, row, null);
-    tr.appendChild(titleTd);
+    if (muestraTitulo) {
+      const titleTd = document.createElement("td");
+      if (readOnly) paintReadOnlyCell(titleTd, row, null);
+      else paintCell(titleTd, database, row, null);
+      tr.appendChild(titleTd);
+    }
 
     database.schema_def.forEach((p) => {
       const td = document.createElement("td");
@@ -5899,7 +5950,7 @@ function openRowDialog(database, row, refresh) {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
-    label.textContent = `${p.name} (${p.type})`;
+    label.textContent = `${p.name} (${tipoVisible(p.type)})`;
     const { input, read } = buildPropertyInput(p, row.properties?.[p.key]);
     // Mismo nombre accesible que en el alta inline: `for` + `id` (el prefijo
     // `fila-dialogo` evita chocar con los del formulario, que vive a la vez).
@@ -5981,7 +6032,7 @@ function renderAddRowForm(database) {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
-    label.textContent = `${p.name} (${p.type})`;
+    label.textContent = `${p.name} (${tipoVisible(p.type)})`;
     const { input, read } = buildPropertyInput(p, undefined);
     // Sin `for`/`id` un lector anuncia seis «cuadro de edición» iguales y la
     // etiqueta no enfoca nada al pulsarla (M5).
@@ -6048,30 +6099,97 @@ function renderAddRowForm(database) {
 
 const dbDialog = document.getElementById("dialog-database");
 const propRowsContainer = document.getElementById("prop-rows");
-let dbDialogContext = null; // { database: Database|null, refresh }
+// `titleHidden` es el estado de la columna del título en el diálogo (se quita
+// y se vuelve a poner sin cerrarlo); `database` es null al crear.
+let dbDialogContext = null; // { database: Database|null, refresh, titleHidden }
 
-/** Añade una fila de propiedad al diálogo. Con `prop`, la rellena (edición). */
-function addPropertyRow(prop = null) {
+/** La fila de la columna del título.
+ *
+ * El título es una columna más —se renombra y se quita—, pero su clave
+ * (`title`) es de la fila y no viaja en el `schema_def`: por eso su nombre y su
+ * visibilidad van aparte (`title_name`, `title_hidden`) y tiene su propia fila
+ * en el diálogo. Al quitarla, la tabla deja de pintarla; cada fila se sigue
+ * llamando por su `id`, que es su fichero.
+ */
+function addTitlePropertyRow(database) {
   const wrap = document.createElement("div");
-  wrap.className = "prop-row-wrap";
+  wrap.className = "prop-row-wrap prop-title-row";
 
   const row = document.createElement("div");
   row.className = "prop-row";
 
-  const keyInput = document.createElement("input");
-  keyInput.placeholder = "clave (snake_case)";
-  keyInput.className = "prop-key";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "prop-name";
+  nameInput.id = "title-prop-name";
+  nameInput.placeholder = "Título";
+  nameInput.setAttribute("aria-label", "Nombre de la columna del título");
+  nameInput.value = database?.title_name || "Título";
+
+  // El tipo no se elige: el título es texto. Se enseña igual que el de las
+  // demás propiedades para que la fila se lea como una columna más.
+  const tipo = document.createElement("span");
+  tipo.className = "prop-type-fixed";
+  tipo.textContent = tipoVisible("text");
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "icon-btn";
+  toggle.id = "btn-title-prop";
+
+  const aplicar = () => {
+    const oculta = Boolean(dbDialogContext?.titleHidden);
+    toggle.innerHTML = svgIcon(oculta ? "i-plus" : "i-x");
+    toggle.title = oculta
+      ? "Volver a mostrar la columna del título"
+      : "Quitar la columna del título (las filas se siguen llamando por su id)";
+    toggle.setAttribute("aria-label", toggle.title);
+    nameInput.disabled = oculta;
+    wrap.classList.toggle("is-off", oculta);
+  };
+  toggle.addEventListener("click", () => {
+    dbDialogContext.titleHidden = !dbDialogContext.titleHidden;
+    aplicar();
+  });
+  aplicar();
+
+  row.append(nameInput, tipo, toggle);
+  wrap.appendChild(row);
+  propRowsContainer.appendChild(wrap);
+}
+
+/** Añade una fila de propiedad al diálogo. Con `prop`, la rellena (edición).
+ *
+ * Solo se pide el **nombre**: la clave snake_case se deriva en el servidor
+ * (`app.properties.slug_key`) y no se enseña en ningún sitio. La clave que
+ * tenía la propiedad viaja en el nodo (`__propKey`) porque es su identidad: si
+ * el nombre cambia, el servidor sabe qué migrar en las filas y en las vistas.
+ * No se escribe en el HTML: la clave interna no se enseña en ningún sitio.
+ */
+function addPropertyRow(prop = null) {
+  const wrap = document.createElement("div");
+  wrap.className = "prop-row-wrap";
+  // La clave que tenía la propiedad es su identidad y solo la usa este
+  // diálogo: va en una propiedad del nodo, no en un atributo `data-*`, para
+  // que la clave interna no aparezca ni en el HTML del diálogo.
+  if (prop?.key) wrap.__propKey = prop.key;
+
+  const row = document.createElement("div");
+  row.className = "prop-row";
 
   const nameInput = document.createElement("input");
-  nameInput.placeholder = "Nombre visible";
+  nameInput.type = "text";
+  nameInput.placeholder = "Nombre de la propiedad";
   nameInput.className = "prop-name";
+  nameInput.setAttribute("aria-label", "Nombre de la propiedad");
 
   const typeSelect = document.createElement("select");
   typeSelect.className = "prop-type";
-  ["text", "number", "select", "multiselect", "date", "checkbox", "url", "relation"].forEach((t) => {
+  typeSelect.setAttribute("aria-label", "Tipo de la propiedad");
+  Object.entries(TIPOS_VISIBLES).forEach(([value, label]) => {
     const opt = document.createElement("option");
-    opt.value = t;
-    opt.textContent = t;
+    opt.value = value;
+    opt.textContent = label;
     typeSelect.appendChild(opt);
   });
 
@@ -6083,23 +6201,18 @@ function addPropertyRow(prop = null) {
   removeBtn.setAttribute("aria-label", "Quitar esta propiedad");
   removeBtn.addEventListener("click", () => wrap.remove());
 
-  row.append(keyInput, nameInput, typeSelect, removeBtn);
+  row.append(nameInput, typeSelect, removeBtn);
 
   const optionsInput = document.createElement("input");
-  optionsInput.placeholder = "opciones separadas por coma (select / multiselect)";
+  optionsInput.placeholder = "opciones separadas por coma (Selección / Multiselección)";
   optionsInput.className = "prop-options-input";
   optionsInput.hidden = true;
 
   if (prop) {
-    keyInput.value = prop.key;
     nameInput.value = prop.name;
     typeSelect.value = prop.type;
     optionsInput.value = (prop.options || []).join(", ");
     optionsInput.hidden = !["select", "multiselect"].includes(prop.type);
-    if (dbDialogContext?.database) {
-      keyInput.readOnly = true;
-      keyInput.title = "La clave no se cambia: las filas guardan sus valores por clave";
-    }
   }
 
   typeSelect.addEventListener("change", () => {
@@ -6111,37 +6224,54 @@ function addPropertyRow(prop = null) {
 }
 
 /** Abre el diálogo en alta (`database` nulo) o para editar una existente.
- * `refresh` repinta la vista actual cuando el PATCH del schema termina. */
+ * `refresh` repinta la vista actual cuando el PATCH del schema termina; el
+ * diálogo recibe uno que relee las vistas, porque el servidor ha podido
+ * reescribir su configuración al migrar el rename. */
 function openDatabaseDialog(database = null, refresh = null) {
-  dbDialogContext = { database, refresh };
+  dbDialogContext = {
+    database,
+    refresh,
+    titleHidden: Boolean(database?.title_hidden),
+  };
   document.getElementById("db-dialog-title").textContent = database
     ? "Propiedades de la base de datos"
     : "Nueva base de datos";
   document.getElementById("btn-save-database").textContent = database ? "Guardar" : "Crear";
   document.getElementById("db-name").value = database ? database.title : "";
   propRowsContainer.innerHTML = "";
-  const props = database?.schema_def || [];
-  if (props.length === 0) addPropertyRow();
-  else props.forEach((p) => addPropertyRow(p));
+  addTitlePropertyRow(database);
+  // Sin propiedades de serie: una base nueva nace con `schema_def: []`. Para
+  // añadir una columna está el botón «Propiedad».
+  (database?.schema_def || []).forEach((p) => addPropertyRow(p));
   dbDialog.showModal();
 }
 
 /** El `schema_def` que describen las filas del diálogo, en el formato de la API. */
 function readSchemaFromDialog() {
   const schema_def = [];
-  propRowsContainer.querySelectorAll(".prop-row-wrap").forEach((wrap) => {
-    const key = wrap.querySelector(".prop-key").value.trim();
+  propRowsContainer.querySelectorAll(".prop-row-wrap:not(.prop-title-row)").forEach((wrap) => {
     const name = wrap.querySelector(".prop-name").value.trim();
     const type = wrap.querySelector(".prop-type").value;
     const optionsRaw = wrap.querySelector(".prop-options-input").value.trim();
-    if (!key || !name) return;
-    const prop = { key, name, type };
+    // Una fila sin nombre no es una propiedad: no se inventa una clave con el
+    // tipo por nombre (y así el botón «Propiedad» puede quedarse vacío).
+    if (!name) return;
+    const prop = { name, type };
+    if (wrap.__propKey) prop.key = wrap.__propKey;
     if (["select", "multiselect"].includes(type) && optionsRaw) {
       prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
     }
     schema_def.push(prop);
   });
   return schema_def;
+}
+
+/** El nombre y la visibilidad de la columna del título tal y como están en el
+ * diálogo. Vaciar el nombre no la deja sin nombre: vuelve a «Título». */
+function readTitleColumnFromDialog() {
+  const input = document.getElementById("title-prop-name");
+  const title_name = (input?.value || "").trim() || "Título";
+  return { title_name, title_hidden: Boolean(dbDialogContext?.titleHidden) };
 }
 
 document.getElementById("btn-add-prop").addEventListener("click", () => addPropertyRow());
@@ -6153,11 +6283,20 @@ document.getElementById("btn-cancel-database").addEventListener("click", () => {
 document.getElementById("btn-save-database").addEventListener("click", async () => {
   const title = document.getElementById("db-name").value.trim() || "Sin título";
   const schema_def = readSchemaFromDialog();
+  const { title_name, title_hidden } = readTitleColumnFromDialog();
   const { database, refresh } = dbDialogContext || {};
 
   if (!database) {
     try {
       const created = await api("/databases", { method: "POST", body: JSON.stringify({ title, schema_def }) });
+      // La columna del título también se renombra/quita desde el diálogo de
+      // alta: solo se manda el PATCH si no son los valores de serie.
+      if (title_name !== "Título" || title_hidden) {
+        await api(`/databases/${created.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ title_name, title_hidden }),
+        });
+      }
       dbDialogContext = null;
       dbDialog.close();
       await loadTree();
@@ -6168,12 +6307,13 @@ document.getElementById("btn-save-database").addEventListener("click", async () 
     return;
   }
 
-  // Editar el schema es escribir `schema` en el `.md` de la base (PATCH). Si
-  // falla, el diálogo sigue abierto y el servidor no ha cambiado nada.
+  // Editar el schema es escribir `schema` en el `.md` de la base (PATCH). El
+  // servidor deriva las claves nuevas y migra las filas y las vistas de lo que
+  // se renombre; si falla, el diálogo sigue abierto y no ha cambiado nada.
   try {
     const updated = await api(`/databases/${database.id}`, {
       method: "PATCH",
-      body: JSON.stringify({ title, schema_def }),
+      body: JSON.stringify({ title, schema_def, title_name, title_hidden }),
     });
     Object.assign(database, updated); // el título puede haber renombrado el fichero
   } catch (e) {
@@ -6184,7 +6324,9 @@ document.getElementById("btn-save-database").addEventListener("click", async () 
   dbDialog.close();
   await loadTree();
   markActive(database.id);
-  refresh?.();
+  // El repintado que llega aquí relee las vistas: el servidor ha podido
+  // reescribir `group_by`/`date_property`/… al migrar el rename.
+  await refresh?.();
 });
 
 // ------------------------------------------------------- diálogo: nueva vista
