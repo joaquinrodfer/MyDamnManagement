@@ -1,4 +1,6 @@
-// Movimiento de bloques: lógica pura, sin CodeMirror.
+// Movimiento de bloques: lógica pura, sin CodeMirror. Lo único de fuera es el
+// parser de Markdown (`markdownLanguage.parser`): a él se le pregunta cuántos
+// saltos necesita cada frontera, en vez de mantener una tabla de tipos.
 //
 // Un bloque no es un objeto del modelo: es un rango de texto calculado con el
 // árbol de Markdown (ver `blocksFromTree` en block-ranges.js). Moverlo es, por
@@ -31,6 +33,10 @@
 //   esté (aunque sus números no sean 1..n): nadie la ha reordenado.
 // - El resultado es UN cambio de texto (y quien lo aplica lo despacha en UNA
 //   transacción): un solo ⌘Z deshace el movimiento entero.
+
+import { markdownLanguage } from "@codemirror/lang-markdown";
+
+import { blocksFromTree } from "./block-ranges.js";
 
 const ORDERED_RE = /^([ \t]*)(\d+)([.)])/;
 const LIST_ITEM_TYPES = new Set(["bullet_list_item", "ordered_list_item"]);
@@ -94,32 +100,110 @@ function freshSeparator(prev, next) {
 }
 
 /**
- * Tipos que empiezan bloque aunque estén pegados al de arriba: un marcador de
- * lista al principio de una línea es un ítem nuevo, y una cabecera, una valla
- * o una cita interrumpen lo que tengan encima. Con esos, un salto basta.
- * (Una línea horizontal NO: `texto\n---` es una cabecera setext, no un `---`.)
+ * El hueco que va entre dos bloques con el número de saltos pedido, sin tirar
+ * lo que se pueda conservar: un hueco puede llevar espacios en sus líneas «en
+ * blanco» (`a\n\n   \n\nb`) y esos espacios son texto del `.md` como
+ * cualquier otro. Si faltan saltos se añaden al final (la línea en blanco queda
+ * pegada al bloque de abajo); si sobran, se quitan líneas en blanco enteras,
+ * empezando por las que no llevan nada, para que las que llevan espacios duren
+ * lo que puedan.
  */
-const INTERRUPTING = new Set([
-  "bullet_list_item",
-  "ordered_list_item",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "code",
-  "quote",
-]);
+function fitGap(gap, count) {
+  const parts = gap.split("\n");
+  const have = parts.length - 1;
+  if (count === have) return gap;
+  if (count > have) return gap + "\n".repeat(count - have);
+  let left = have - count;
+  for (const blankOnly of [true, false]) {
+    for (let i = parts.length - 2; i >= 1 && left > 0; i--) {
+      if (parts.length <= 2) break;
+      if (blankOnly ? parts[i] !== "" : !/^[ \t]*$/.test(parts[i])) continue;
+      parts.splice(i, 1);
+      left--;
+    }
+  }
+  // Un hueco de puros saltos no tiene nada que quitar de en medio: se rehace.
+  return left === 0 ? parts.join("\n") : "\n".repeat(count);
+}
 
 /**
- * Saltos MÍNIMOS para que Markdown siga leyendo dos bloques y no uno. Es el
- * suelo: por debajo de esto la frontera es incorrecta aunque haya que dejar de
- * mover. Todo lo que no interrumpe (un párrafo, una tabla, un bloque HTML)
- * necesita la línea en blanco: pegado a un párrafo o a un ítem, su primer
- * renglón se lee como continuación.
+ * Los bloques que ve el parser en un documento, con su TEXTO (los rangos y los
+ * tipos salen de `blocksFromTree`, la misma función que usa entry.js, para que
+ * la medida no sea sobre bloques inventados).
  */
-function minNewlines(prev, next) {
-  return INTERRUPTING.has(next.type) ? 1 : 2;
+function parsedBlocks(doc) {
+  const root = markdownLanguage.parser.parse(doc).topNode;
+  return blocksFromTree(root).map((b) => ({ type: b.type, text: doc.slice(b.from, b.to) }));
+}
+
+// Caché de mínimos por pareja (tipos + textos), con tope de entradas y de
+// caracteres: no es un dato del documento, solo una memoización, así que
+// tirarla no cambia ninguna respuesta. Un documento largo repite parejas entre
+// movimientos y el segundo ya no parsea nada.
+const MIN_CACHE = new Map();
+const MIN_CACHE_MAX_ENTRIES = 4096;
+const MIN_CACHE_MAX_CHARS = 1 << 20; // ~1 MB de textos
+const MIN_CACHE_MAX_KEY = 1 << 15; // dos bloques de más de 16 KB no se cachean
+let minCacheChars = 0;
+
+/**
+ * Saltos MÍNIMOS para que Markdown siga leyendo DOS bloques y no uno. Es el
+ * suelo: por debajo de esto la frontera es incorrecta aunque haya que dejar de
+ * mover.
+ *
+ * No hay tabla de tipos: se le PREGUNTA AL PARSER, que es el que decide. Para
+ * la pareja concreta -- `bodyPrev` y `bodyNext` tal como van a quedar escritos
+ * en el documento nuevo (ya reenumerados: un `2.` que se queda solo pasa a `1.`
+ * y entonces sí interrumpe) -- se prueba un salto, luego dos y luego tres, y se
+ * devuelve el primero con el que el parser sigue dando DOS bloques, del mismo
+ * tipo y con el mismo texto cada uno. Con un salto ya salen dos no se prueba el
+ * de dos (cortocircuito).
+ *
+ * Así no queda fuera ningún caso por la forma del bloque: un ítem vacío (`- `,
+ * `1.`) no interrumpe un párrafo pero detrás de él basta un salto; la cita
+ * vacía `>`; un `3.` que no empieza en 1; dos citas seguidas; un bloque HTML que
+ * se come la línea de abajo; un `---` que detrás de un párrafo es una cabecera
+ * setext. La regla no depende del tipo del nodo sino de cómo lo lee CommonMark
+ * en ese contexto exacto, y eso solo lo sabe el parser.
+ *
+ * Si aun con tres saltos no salen los dos bloques, se pide la línea en blanco:
+ * es la frontera de siempre, y puede rechazar un movimiento que cabía (visible:
+ * la tecla no hace nada) pero nunca pega dos bloques en uno. Pasa con el código
+ * indentado, cuyo cuerpo (`codigo 1`, sin la sangría, que se queda en el hueco)
+ * no se lee como el bloque que es: tarjeta t_9d3b6d3b, abierta.
+ */
+export function minNewlines(prev, next, bodyPrev, bodyNext) {
+  const a = String(bodyPrev ?? "");
+  const b = String(bodyNext ?? "");
+  const key = `${prev.type}\u0000${next.type}\u0000${a}\u0000${b}`;
+  const cached = MIN_CACHE.get(key);
+  if (cached !== undefined) return cached;
+
+  let need = 2;
+  for (let gap = 1; gap <= 3; gap++) {
+    const doc = a + "\n".repeat(gap) + b;
+    const blocks = parsedBlocks(doc);
+    if (
+      blocks.length === 2 &&
+      blocks[0].type === prev.type &&
+      blocks[1].type === next.type &&
+      blocks[0].text === a &&
+      blocks[1].text === b
+    ) {
+      need = gap;
+      break;
+    }
+  }
+
+  if (key.length <= MIN_CACHE_MAX_KEY) {
+    if (MIN_CACHE.size >= MIN_CACHE_MAX_ENTRIES || minCacheChars + key.length > MIN_CACHE_MAX_CHARS) {
+      MIN_CACHE.clear();
+      minCacheChars = 0;
+    }
+    MIN_CACHE.set(key, need);
+    minCacheChars += key.length;
+  }
+  return need;
 }
 
 /**
@@ -217,6 +301,13 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
   for (let k = 0; k < n; k++) if (k !== i) order.push(k);
   order.splice(at > i ? at - 1 : at, 0, i);
 
+  // El texto de cada bloque en el documento nuevo, con las listas numeradas que
+  // el movimiento ha reordenado ya reenumeradas: el mínimo de una frontera
+  // depende del número (`2.` que se queda solo pasa a `1.` e interrumpe), así
+  // que se mide sobre lo que de verdad va a quedar escrito.
+  const texts = blocks.map((b) => s.slice(b.from, b.to));
+  renumberMovedRuns(order, texts, orderedRunMap(s, blocks), blocks);
+
   // Cada frontera del documento nuevo: qué hueco puede reutilizar tal cual (el
   // de la misma pareja de bloques, en el mismo orden o al revés -- un
   // intercambio deja la pareja al revés y su hueco sigue siendo el suyo) y
@@ -228,7 +319,7 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     const a = order[p];
     const b = order[p + 1];
     const k = b === a + 1 ? a : a === b + 1 ? b : null;
-    const bd = { a, b, min: minNewlines(blocks[a], blocks[b]), gap: null, count: 0 };
+    const bd = { a, b, min: minNewlines(blocks[a], blocks[b], texts[a], texts[b]), gap: null, count: 0 };
     if (k !== null && !kept.has(k)) {
       kept.add(k);
       bd.gap = gaps[k];
@@ -288,9 +379,6 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     target.count += budget - total;
   }
 
-  const texts = blocks.map((b) => s.slice(b.from, b.to));
-  renumberMovedRuns(order, texts, orderedRunMap(s, blocks), blocks);
-
   let insert = "";
   let movedAt = 0;
   for (let p = 0; p < n; p++) {
@@ -300,10 +388,9 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     if (p + 1 < n) {
       const bd = bounds[p];
       // El hueco conservado se copia tal cual (con sus espacios, si los tenía)
-      // mientras no haya que tocarlo.
-      insert += bd.gap !== null && countNewlines(bd.gap) === bd.count
-        ? bd.gap
-        : "\n".repeat(bd.count);
+      // mientras no haya que tocarlo; si hay que cambiarle los saltos, se
+      // quitan o se añaden líneas en blanco sin tirar los espacios de las demás.
+      insert += bd.gap !== null ? fitGap(bd.gap, bd.count) : "\n".repeat(bd.count);
     }
   }
 

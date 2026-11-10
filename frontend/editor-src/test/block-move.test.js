@@ -243,6 +243,23 @@ test("el hueco escrito a mano se queda en la nota de TRES bloques, subiendo y ba
   assert.deepEqual(sortedLines(out2.text), sortedLines(text2));
 });
 
+test("un hueco que hay que rehacer conserva los espacios de sus líneas en blanco", () => {
+  // `a\n\n   \n\nb` tiene una línea «en blanco» con espacios: es texto del
+  // `.md` como cualquier otro. Cuando el hueco conservado no cabe entero y hay
+  // que quitarle saltos, se quitan líneas en blanco vacías, no la que lleva
+  // espacios (antes se rehacía el hueco entero y los espacios se perdían).
+  const text = "alfa\n\n   \n\n- b\n- c";
+  const specs = [
+    ["alfa", "paragraph"],
+    ["- b", "bullet_list_item"],
+    ["- c", "bullet_list_item"],
+  ];
+  const out = move(text, specs, 2, 0);
+  assert.equal(out.text, "- c\n\nalfa\n\n   \n- b");
+  assert.equal(out.text.split("\n").length, text.split("\n").length);
+  assert.deepEqual(sortedLines(out.text), sortedLines(text));
+});
+
 test("mover arriba/bajo no toca el aire de una lista a la que no se le ha movido nada", () => {
   // El hueco de un salto que deja un ítem al salir de su lista no se tira: el
   // total de saltos es el mismo antes y después.
