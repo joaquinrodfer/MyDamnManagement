@@ -4326,6 +4326,22 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       reportError("No se pudo refrescar la base de datos", e),
     );
 
+  // Guardar el esquema reescribe en el servidor lo que depende de cada
+  // propiedad: `group_by`, `date_property`, `filters` y `sort` de las vistas.
+  // Repintar con el array de `views` capturado al pintar enseñaría la
+  // configuración vieja sobre los datos nuevos (el tablero se quedaba en una
+  // columna «sin valor» y el calendario pintaba las fechas de otra propiedad),
+  // así que este repintado vuelve a pedir la base y las vistas.
+  const recargarVistas = () =>
+    (async () => {
+      const [fresca, vistas] = await Promise.all([
+        api(`/databases/${database.id}`),
+        api(`/databases/${database.id}/views`),
+      ]);
+      const activa = vistas.some((v) => v.id === activeViewId) ? activeViewId : (vistas[0]?.id ?? null);
+      await renderDatabase(fresca, vistas, activa);
+    })().catch((e) => reportError("No se pudo refrescar la base de datos", e));
+
   const header = document.createElement("div");
   header.className = "db-header";
 
@@ -4410,7 +4426,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const schemaBtn = document.createElement("button");
   schemaBtn.className = "btn";
   schemaBtn.textContent = "Propiedades";
-  schemaBtn.addEventListener("click", () => openDatabaseDialog(database, refresh));
+  schemaBtn.addEventListener("click", () => openDatabaseDialog(database, recargarVistas));
 
   const newViewBtn = document.createElement("button");
   newViewBtn.className = "btn";
@@ -6113,7 +6129,9 @@ function addPropertyRow(prop = null) {
 }
 
 /** Abre el diálogo en alta (`database` nulo) o para editar una existente.
- * `refresh` repinta la vista actual cuando el PATCH del schema termina. */
+ * `refresh` repinta la vista actual cuando el PATCH del schema termina; el
+ * diálogo recibe uno que relee las vistas, porque el servidor ha podido
+ * reescribir su configuración al migrar el rename. */
 function openDatabaseDialog(database = null, refresh = null) {
   dbDialogContext = {
     database,
@@ -6211,7 +6229,9 @@ document.getElementById("btn-save-database").addEventListener("click", async () 
   dbDialog.close();
   await loadTree();
   markActive(database.id);
-  refresh?.();
+  // El repintado que llega aquí relee las vistas: el servidor ha podido
+  // reescribir `group_by`/`date_property`/… al migrar el rename.
+  await refresh?.();
 });
 
 // ------------------------------------------------------- diálogo: nueva vista
