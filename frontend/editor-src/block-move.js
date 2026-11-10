@@ -1,25 +1,31 @@
 // Movimiento de bloques: lógica pura, sin CodeMirror.
 //
 // Un bloque no es un objeto del modelo: es un rango de texto calculado con el
-// árbol de Markdown (ver `computeBlocks` en entry.js). Moverlo es, por tanto,
-// decidir QUÉ trozo de texto cambia de sitio -- eso se calcula aquí y se prueba
-// con `node --test`; aplicarlo (una transacción de CodeMirror) es cosa de
-// entry.js. Mismo patrón que block-delete.js y block-keys.js.
+// árbol de Markdown (ver `blocksFromTree` en block-ranges.js). Moverlo es, por
+// tanto, decidir QUÉ trozo de texto cambia de sitio -- eso se calcula aquí y se
+// prueba con `node --test`; aplicarlo (una transacción de CodeMirror) es cosa
+// de entry.js. Mismo patrón que block-delete.js y block-keys.js.
 //
 // Reglas (las mismas fronteras que al borrar, ver block-delete.js):
 //
 // - Se mueve el bloque ENTERO, del `from` al `to` que da el árbol. Eso es lo
 //   que deja intacta una valla de código (```): es un rango, no una línea, y
 //   aunque el cursor esté dentro se mueve la valla con su apertura y su cierre.
-// - Entre dos bloques que ya eran vecinos se conserva SU hueco tal cual (el
-//   `.md` no gana ni pierde aire al reordenar). Donde la vecindad es nueva, se
-//   usa la frontera de siempre: salto simple entre dos ítems de la misma lista
-//   y línea en blanco en cualquier otro caso -- si no, Markdown leería el
-//   primer renglón del bloque de detrás como continuación del de delante.
-// - Los huecos que se PISAN (los de al lado del bloque que se va y el del
-//   destino, que se parte en dos) se reconstruyen, así que si llevan algo que
-//   no sea espacio (un comentario HTML, que no es bloque para `computeBlocks`)
-//   el movimiento se rechaza: preferible no mover a perder ese texto.
+// - INVARIANTE: mover no cambia las líneas del `.md`, solo su orden. Un bloque
+//   que se va de entre B y C no se lleva el aire que había entre B y C: la
+//   frontera que dejan atrás sigue entre ellos, y los saltos de los huecos que
+//   se rehacen se reparten sobre el documento entero (`planSeparators`), no
+//   sobre el par origen/destino. El total de saltos no cambia nunca.
+// - Ninguna frontera baja de lo mínimo que necesita su pareja de bloques (con
+//   menos, Markdown leería los dos como uno: `- alfa\ntexto` es un solo ítem).
+//   Si con el presupuesto que hay no cabe, el movimiento no se hace: antes no
+//   mover que cambiar el `.md`.
+// - Un hueco que NO se puede conservar (su pareja de bloques ya no es vecina)
+//   se rehace con la frontera de siempre: salto simple entre dos ítems de la
+//   misma lista y línea en blanco en cualquier otro caso.
+// - Un hueco que se rehace no puede llevar nada que no sea espacio (un
+//   comentario HTML vive ahí y no es bloque para el árbol): preferible no
+//   mover a perder ese texto.
 // - Una lista numerada reordenada se reenumera desde el número con el que
 //   empezaba su lista original. Una lista que no se ha tocado se queda como
 //   esté (aunque sus números no sean 1..n): nadie la ha reordenado.
@@ -48,6 +54,13 @@ function withNumber(blockText, number) {
   return blockText.replace(/^([ \t]*)\d+/, `$1${number}`);
 }
 
+/** Saltos que tiene un hueco (los huecos son solo saltos y espacios). */
+function countNewlines(gap) {
+  let n = 0;
+  for (const ch of gap) if (ch === "\n") n++;
+  return n;
+}
+
 /**
  * Saltos consecutivos justo ANTES de `at`, sin pasar de `floor` (el final del
  * bloque de arriba), y justo DESPUÉS, sin pasar de `ceil` (el principio del de
@@ -68,12 +81,45 @@ function newlinesAfter(text, at, ceil) {
 }
 
 /**
- * Separador entre dos bloques que NO eran vecinos: la regla de siempre.
- * Dos ítems del mismo tipo de lista van con un salto (siguen siendo UNA
+ * Saltos de la frontera de siempre entre dos bloques que NO eran vecinos:
+ * dos ítems del mismo tipo de lista van con un salto (siguen siendo UNA
  * lista); cualquier otro par, con una línea en blanco.
  */
+function separatorNewlines(prev, next) {
+  return isListItem(prev) && isListItem(next) && prev.type === next.type ? 1 : 2;
+}
+
 function freshSeparator(prev, next) {
-  return isListItem(prev) && isListItem(next) && prev.type === next.type ? "\n" : "\n\n";
+  return "\n".repeat(separatorNewlines(prev, next));
+}
+
+/**
+ * Tipos que empiezan bloque aunque estén pegados al de arriba: un marcador de
+ * lista al principio de una línea es un ítem nuevo, y una cabecera, una valla
+ * o una cita interrumpen lo que tengan encima. Con esos, un salto basta.
+ * (Una línea horizontal NO: `texto\n---` es una cabecera setext, no un `---`.)
+ */
+const INTERRUPTING = new Set([
+  "bullet_list_item",
+  "ordered_list_item",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "code",
+  "quote",
+]);
+
+/**
+ * Saltos MÍNIMOS para que Markdown siga leyendo dos bloques y no uno. Es el
+ * suelo: por debajo de esto la frontera es incorrecta aunque haya que dejar de
+ * mover. Todo lo que no interrumpe (un párrafo, una tabla, un bloque HTML)
+ * necesita la línea en blanco: pegado a un párrafo o a un ítem, su primer
+ * renglón se lee como continuación.
+ */
+function minNewlines(prev, next) {
+  return INTERRUPTING.has(next.type) ? 1 : 2;
 }
 
 /**
@@ -142,6 +188,8 @@ function renumberMovedRuns(order, texts, runs, blocks) {
  * `slot` va en coordenadas del documento ORIGINAL: 0 = antes del primer
  * bloque, `blocks.length` = después del último. Mover un bloque a donde ya
  * está (`slot === index` o `slot === index + 1`) no es un movimiento: null.
+ * También es null cuando no se puede mover sin cambiar las líneas del `.md`
+ * (ver el invariante de arriba): es preferible no mover a reescribir aire.
  *
  * `cursor` (opcional) es la posición que hay que conservar dentro del bloque
  * movido: se mantiene el mismo desplazamiento desde su principio, para que
@@ -159,34 +207,89 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
   if (!Number.isInteger(at) || at < 0 || at > n) return null;
   if (at === i || at === i + 1) return null;
 
-  const gapOf = (a, b) => s.slice(blocks[a].to, blocks[b].from);
-  // Los huecos que se reconstruyen: los dos que rodean al bloque que se va y
-  // el del destino (se parte en dos para meter el bloque en medio). Si alguno
-  // lleva texto -- un comentario HTML vive ahí y no es bloque para el árbol --
-  // no se mueve nada.
-  const touched = [];
-  if (i > 0) touched.push(gapOf(i - 1, i));
-  if (i + 1 < n) touched.push(gapOf(i, i + 1));
-  if (at > 0 && at < n) touched.push(gapOf(at - 1, at));
-  if (touched.some((gap) => gap.trim() !== "")) return null;
+  // Los huecos del documento original, uno por frontera: `gaps[k]` va del
+  // final del bloque k al principio del k+1.
+  const gaps = [];
+  for (let k = 0; k + 1 < n; k++) gaps.push(s.slice(blocks[k].to, blocks[k + 1].from));
 
+  // El orden nuevo, en índices del documento original.
   const order = [];
   for (let k = 0; k < n; k++) if (k !== i) order.push(k);
   order.splice(at > i ? at - 1 : at, 0, i);
 
+  // Cada frontera del documento nuevo: qué hueco puede reutilizar tal cual (el
+  // de la misma pareja de bloques, en el mismo orden o al revés -- un
+  // intercambio deja la pareja al revés y su hueco sigue siendo el suyo) y
+  // cuántos saltos necesita como mínimo. Cada hueco se va con una sola
+  // frontera.
+  const bounds = [];
+  const kept = new Set();
+  for (let p = 0; p + 1 < n; p++) {
+    const a = order[p];
+    const b = order[p + 1];
+    const k = b === a + 1 ? a : a === b + 1 ? b : null;
+    const bd = { a, b, min: minNewlines(blocks[a], blocks[b]), gap: null, count: 0 };
+    if (k !== null && !kept.has(k)) {
+      kept.add(k);
+      bd.gap = gaps[k];
+      // Se conserva el hueco, pero si se queda corto para la pareja al revés
+      // se rellena: `- alfa\ntexto` acabaría siendo un solo bloque.
+      bd.count = Math.max(countNewlines(bd.gap), bd.min);
+    } else {
+      bd.count = separatorNewlines(blocks[a], blocks[b]);
+    }
+    bounds.push(bd);
+  }
+
+  // Presupuesto: TODOS los saltos que hay entre bloques en este documento. Es
+  // el aire que hay que repartir y es todo el que hay: mover no cambia el
+  // total (lo que el bloque deja al irse acaba en otra frontera, no se tira).
+  let budget = 0;
+  for (let k = 0; k + 1 < n; k++) {
+    if (!kept.has(k) && /\S/.test(gaps[k])) {
+      // Un hueco que se rehace no puede llevar texto: un comentario HTML vive
+      // en un hueco (no es bloque para el árbol) y se perdería.
+      return null;
+    }
+    budget += countNewlines(gaps[k]);
+  }
+
+  let total = 0;
+  for (const bd of bounds) total += bd.count;
+
+  if (total > budget) {
+    // No cabe. Se aprieta primero lo nuevo y luego lo conservado, pero nunca
+    // por debajo del mínimo de cada frontera; si aun así no cabe, no se mueve.
+    let over = total - budget;
+    for (const onlyFresh of [true, false]) {
+      for (const bd of bounds) {
+        if (onlyFresh !== (bd.gap === null)) continue;
+        const take = Math.min(bd.count - bd.min, over);
+        if (take > 0) {
+          bd.count -= take;
+          over -= take;
+        }
+        if (over === 0) break;
+      }
+      if (over === 0) break;
+    }
+    if (over > 0) return null;
+    total = budget;
+  }
+
+  if (total < budget) {
+    // Sobra aire: se queda donde el bloque ha dejado su hueco, entre sus dos
+    // ex-vecinos. Si estaba en un extremo (no hay hueco que juntar), al lado
+    // de donde ha ido a parar.
+    const target =
+      bounds.find((bd) => bd.a === i - 1 && bd.b === i + 1) ||
+      bounds.find((bd) => bd.a === i) ||
+      bounds.find((bd) => bd.b === i);
+    target.count += budget - total;
+  }
+
   const texts = blocks.map((b) => s.slice(b.from, b.to));
   renumberMovedRuns(order, texts, orderedRunMap(s, blocks), blocks);
-
-  // Entre dos bloques que ya eran vecinos se conserva SU hueco. Un
-  // intercambio invierte el par (el de abajo pasa a estar encima), y ese par
-  // sigue siendo la misma frontera: si solo se mirara `b === a + 1`, subir un
-  // bloque un puesto reconstruía el hueco con el separador de siempre y
-  // `alfa\n\n\n\nbeta` volvía como `beta\n\nalfa` (dos líneas a la basura).
-  const sepFor = (a, b) => {
-    if (b === a + 1) return gapOf(a, b);
-    if (a === b + 1) return gapOf(b, a);
-    return freshSeparator(blocks[a], blocks[b]);
-  };
 
   let insert = "";
   let movedAt = 0;
@@ -194,7 +297,14 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     const k = order[p];
     if (k === i) movedAt = insert.length;
     insert += texts[k];
-    if (p + 1 < n) insert += sepFor(k, order[p + 1]);
+    if (p + 1 < n) {
+      const bd = bounds[p];
+      // El hueco conservado se copia tal cual (con sus espacios, si los tenía)
+      // mientras no haya que tocarlo.
+      insert += bd.gap !== null && countNewlines(bd.gap) === bd.count
+        ? bd.gap
+        : "\n".repeat(bd.count);
+    }
   }
 
   const from = blocks[0].from;

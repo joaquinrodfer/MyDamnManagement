@@ -28,6 +28,7 @@ import {
   resolveCreatedLinkTitle,
 } from "./link-create.js";
 import { blockKeyEdit } from "./block-keys.js";
+import { blocksFromTree } from "./block-ranges.js";
 import {
   backspaceJoinEdit,
   backspaceWouldBreakFence,
@@ -586,65 +587,11 @@ const SLASH_EXTRA_COMMANDS = [
 ];
 const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
 
+// Los bloques del documento. El cálculo vive en block-ranges.js para que
+// los tests de `node --test` lo usen sobre un árbol de verdad (el mismo
+// `markdownLanguage.parser`) en vez de sobre párrafos inventados.
 function computeBlocks(state) {
-  const blocks = [];
-  const root = syntaxTree(state).topNode;
-  for (let node = root.firstChild; node; node = node.nextSibling) {
-    switch (node.name) {
-      case "BlankLine":
-      case "CommentBlock":
-        break;
-      case "BulletList":
-      case "OrderedList": {
-        const itemType = node.name === "BulletList" ? "bullet_list_item" : "ordered_list_item";
-        for (let item = node.firstChild; item; item = item.nextSibling) {
-          if (item.name === "ListItem") blocks.push({ from: item.from, to: item.to, type: itemType });
-        }
-        break;
-      }
-      case "ATXHeading1":
-        blocks.push({ from: node.from, to: node.to, type: "h1" });
-        break;
-      case "ATXHeading2":
-        blocks.push({ from: node.from, to: node.to, type: "h2" });
-        break;
-      case "ATXHeading3":
-        blocks.push({ from: node.from, to: node.to, type: "h3" });
-        break;
-      case "ATXHeading4":
-        blocks.push({ from: node.from, to: node.to, type: "h4" });
-        break;
-      case "ATXHeading5":
-      case "ATXHeading6":
-        blocks.push({ from: node.from, to: node.to, type: "h5" });
-        break;
-      case "HorizontalRule":
-        blocks.push({ from: node.from, to: node.to, type: "hr" });
-        break;
-      case "FencedCode":
-      case "CodeBlock":
-        blocks.push({ from: node.from, to: node.to, type: "code" });
-        break;
-      case "Paragraph":
-        blocks.push({ from: node.from, to: node.to, type: "paragraph" });
-        break;
-      case "Blockquote":
-        // Un solo bloque para toda la cita, con independencia de cuántos
-        // niveles anidados (">", ">>"...) tenga dentro -- solo se recorren
-        // los hijos DIRECTOS del documento aquí, así que una cita anidada
-        // (Blockquote dentro de otro Blockquote) nunca se cuenta aparte.
-        // La profundidad de cada línea se calcula al pintarla (ver
-        // quoteDecorations), no aquí.
-        blocks.push({ from: node.from, to: node.to, type: "quote" });
-        break;
-      default:
-        // HTMLBlock, Table, LinkReference... siguen siendo
-        // seleccionables/borrables, solo no convertibles.
-        blocks.push({ from: node.from, to: node.to, type: "other" });
-    }
-  }
-  blocks.sort((a, b) => a.from - b.from);
-  return blocks;
+  return blocksFromTree(syntaxTree(state).topNode);
 }
 
 function stripBlockPrefix(text, type) {

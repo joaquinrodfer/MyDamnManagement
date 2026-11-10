@@ -208,6 +208,60 @@ test("mover abajo: el bloque baja uno", () => {
   assert.equal(out.text, "beta\n\nalfa\n\ngamma");
 });
 
+test("el hueco escrito a mano se queda en la nota de TRES bloques, subiendo y bajando", () => {
+  // Lo que pedía la ronda 2 de la revisión: al reordenar en una nota de tres
+  // bloques, la frontera que el bloque deja atrás se reconstruía con el
+  // separador de siempre y se tiraban los saltos escritos a mano. El aire total
+  // no cambia nunca: lo que había entre `beta` y `gamma` sigue ahí.
+  const text = "alfa\n\nbeta\n\n\n\ngamma";
+  const specs = [
+    ["alfa", "paragraph"],
+    ["beta", "paragraph"],
+    ["gamma", "paragraph"],
+  ];
+  const up = move(text, specs, 1, 0);
+  assert.equal(up.text, "beta\n\nalfa\n\n\n\ngamma");
+  assert.deepEqual(sortedLines(up.text), sortedLines(text));
+
+  const down = move(text, specs, 0, 2);
+  assert.equal(down.text, "beta\n\nalfa\n\n\n\ngamma");
+  assert.deepEqual(sortedLines(down.text), sortedLines(text));
+
+  // Y con el hueco grande delante del bloque que se mueve, también.
+  const text2 = "a\n\n\n\nb\n\nc";
+  const out2 = move(
+    text2,
+    [
+      ["a", "paragraph"],
+      ["b", "paragraph"],
+      ["c", "paragraph"],
+    ],
+    2,
+    1
+  );
+  assert.equal(out2.text, "a\n\nc\n\n\n\nb");
+  assert.deepEqual(sortedLines(out2.text), sortedLines(text2));
+});
+
+test("mover arriba/bajo no toca el aire de una lista a la que no se le ha movido nada", () => {
+  // El hueco de un salto que deja un ítem al salir de su lista no se tira: el
+  // total de saltos es el mismo antes y después.
+  const text = "- uno\n- dos\n\nparrafo\n\n- tres";
+  const out = move(
+    text,
+    [
+      ["- uno", "bullet_list_item"],
+      ["- dos", "bullet_list_item"],
+      ["parrafo", "paragraph"],
+      ["- tres", "bullet_list_item"],
+    ],
+    3,
+    0
+  );
+  assert.equal(out.text.split("\n").length, text.split("\n").length);
+  assert.deepEqual(sortedLines(out.text), sortedLines(text));
+});
+
 test("mover no añade ni quita líneas: el .md queda con las mismas, en otro orden", () => {
   const text = "uno\n\ndos\n\ntres\n\ncuatro";
   const out = move(
@@ -344,7 +398,11 @@ test("un ítem numerado que SALE de su lista baja uno a los que quedan y empieza
     1,
     4
   );
-  assert.equal(out.text, "1. alfa\n2. gamma\n\nparrafo\n\n1. beta");
+  // El hueco de un salto que deja `beta` al salir de la lista no se tira: el
+  // total de saltos es el mismo (4), así que la frontera del final se queda en
+  // uno en vez de ganar una línea en blanco que antes no estaba.
+  assert.equal(out.text, "1. alfa\n2. gamma\n\nparrafo\n1. beta");
+  assert.equal(out.text.split("\n").length, text.split("\n").length);
 });
 
 test("una lista numerada que no se toca se queda con sus números", () => {
