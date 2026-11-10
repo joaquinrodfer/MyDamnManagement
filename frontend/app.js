@@ -4485,6 +4485,11 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   });
 
   const content = document.createElement("div");
+  // El cuerpo de la vista (tabla/tablero/lista/calendario) entra con un
+  // fundido de 160 ms solo cuando se cambia de pestaña; al repintar por
+  // guardar una fila, mover una tarjeta o editar el esquema no se anima nada
+  // (repintar no es navegar, y el parpadeo se notaría a cada celda).
+  content.className = "db-view" + (focus === "viewTab" ? " is-entering" : "");
   main.append(header, hint, tabs, content);
 
   // El motivo escrito y no en un `title` escondido: un botón apagado sin
