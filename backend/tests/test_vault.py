@@ -476,7 +476,7 @@ def test_una_base_y_sus_filas_viven_en_ficheros_y_el_reindexado_las_rehace(
     crear(client, title="Nota normal")
 
     assert (vault_path / "Bases" / "Contactos.md").exists()
-    assert (vault_path / "Bases" / "Contactos" / "Acme.md").exists()
+    assert (vault_path / "Bases" / "Contactos" / f"{fila['id'][:8]}.md").exists()
     assert client.post("/reindex").json()["notes"] == 1
 
     assert client.get(f"/databases/{base['id']}").json()["title"] == "Contactos"

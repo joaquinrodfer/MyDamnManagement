@@ -7,7 +7,8 @@ la tarjeta:
 
 1. crear una base desde la plantilla CRM -> aparecen `Bases/Contactos.md` (con
    `type: database`, el `schema` y las `views`) y su carpeta de filas;
-2. tres filas -> tres `.md` con las propiedades en el frontmatter y sin `title`;
+2. tres filas -> tres `.md` que se llaman por los 8 primeros caracteres hex de
+   su `id`, con el `title` y las propiedades en el frontmatter;
 3. editar una propiedad -> cambia el `.md` de la fila (y solo esa);
 4. **borrar el índice**, arrancar de nuevo -> bases, filas y vistas siguen ahí y
    la huella de volcado coincide tabla a tabla;
@@ -136,14 +137,17 @@ def main() -> int:
                 f"/databases/{base['id']}/rows", json={"title": titulo, "properties": props}
             ).json()
             filas.append(fila)
-        rutas = [VAULT / "Bases" / "Contactos" / f"{f['title']}.md" for f in filas]
-        check("tres ficheros de fila", all(r.exists() for r in rutas),
+        rutas = [VAULT / "Bases" / "Contactos" / f"{f['id'][:8]}.md" for f in filas]
+        check("tres ficheros de fila (nombre = id8)", all(r.exists() for r in rutas),
               ", ".join(r.name for r in rutas))
         acme = frontmatter(rutas[0])
         check("las propiedades están en el frontmatter",
               acme.get("empresa") == "Acme S.L." and acme.get("fase") == "lead"
               and acme.get("valor") == "12000", str(acme))
-        check("la fila NO lleva title (el título es el nombre)", "title" not in acme)
+        check("la fila lleva su title en el frontmatter", acme.get("title") == "Acme",
+              str(acme.get("title")))
+        check("el nombre del fichero es el id, no el título",
+              not any("Acme" in r.name for r in rutas))
         check("la API devuelve las tres filas",
               len(client.get(f"/databases/{base['id']}/rows").json()) == 3)
 

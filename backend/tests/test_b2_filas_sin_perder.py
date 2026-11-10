@@ -63,6 +63,11 @@ def crear_base(client) -> dict:
     return respuesta.json()
 
 
+def fichero_de_fila(vault_path: Path, fila: dict, base: str = "Contactos") -> Path:
+    """El `.md` de una fila: `Bases/<base>/<id8>.md` (el nombre es su id)."""
+    return vault_path / "Bases" / base / f"{fila['id'][:8]}.md"
+
+
 def crear_fila(client, database_id, titulo="Acme", **properties) -> dict:
     respuesta = client.post(
         f"/databases/{database_id}/rows", json={"title": titulo, "properties": properties}
@@ -119,7 +124,7 @@ def fila_del_informe(client, vault_path: Path) -> tuple[dict, dict, Path]:
         etiquetas=["rojo", "verde"],
         valor=10,
     )
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(texto(fichero), ("valor: 10", "valor: A-12")), encoding="utf-8"
     )
@@ -266,7 +271,7 @@ def test_dos_valores_ilegibles_a_la_vez_se_conservan(client, vault_path):
         valor=10,
         importe=20,
     )
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(
             texto(fichero),
@@ -314,7 +319,7 @@ def test_editar_empresa_en_una_fila_sana_no_cambia_nada_mas(client, vault_path):
         etiquetas=["rojo", "verde"],
         valor=1200,
     )
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     antes = texto(fichero)
 
     respuesta = client.patch(
@@ -358,7 +363,7 @@ def test_invariante_editar_cualquier_celda_no_borra_ninguna_clave(client, vault_
         valor=10,
         importe=20,
     )
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(
             texto(fichero),
@@ -425,7 +430,7 @@ def fila_con_empresa_opaca(client, vault_path, reemplazo: str) -> tuple[dict, di
     fila = crear_fila(
         client, base["id"], empresa="Acme Corp", fase="lead", valor=10
     )
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(texto(fichero), ('empresa: "Acme Corp"', reemplazo)),
         encoding="utf-8",
@@ -522,7 +527,7 @@ def test_el_motivo_del_400_cita_el_yaml_del_fichero_no_el_interpretado(
     """El dueño lee el motivo para arreglar su `.md`: tiene que ver su línea."""
     base = crear_base(client)
     fila = crear_fila(client, base["id"], empresa="Acme Corp", valor=10)
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(texto(fichero), ("valor: 10", "valor: [1, 2]")),
         encoding="utf-8",
@@ -570,7 +575,7 @@ def test_clave_repetida_con_una_entrada_ilegible_no_se_borra_ni_se_pisa(
 ):
     base = crear_base(client)
     fila = crear_fila(client, base["id"], empresa="Acme Corp", fase="lead", valor=10)
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(texto(fichero), ("valor: 10", "valor: 10\nvalor: A-12")),
         encoding="utf-8",
@@ -628,7 +633,7 @@ def test_invariante_editar_cualquier_celda_no_borra_entradas_opacas(client, vaul
         proximo_contacto="A-12",
         valor=10,
     )
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(
             texto(fichero),
@@ -697,7 +702,7 @@ def fila_con_checkbox_ilegible(client, vault_path: Path) -> tuple[dict, dict, Pa
     """`Bases/Contactos/Acme.md` con `hecho: quizá`, indexado como `false`."""
     base = crear_base(client)
     fila = crear_fila(client, base["id"], empresa="Acme Corp", hecho=False)
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     fichero.write_text(
         escribir_a_mano(texto(fichero), ("hecho: false", "hecho: quizá")),
         encoding="utf-8",
@@ -743,7 +748,7 @@ def test_un_checkbox_normal_se_sigue_marcando_y_desmarcando(client, vault_path):
     """El guard es solo para lo ilegible: `false` → `true` y vuelta, 200."""
     base = crear_base(client)
     fila = crear_fila(client, base["id"], empresa="Acme Corp", hecho=False)
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_de_fila(vault_path, fila)
     assert client.post("/reindex").status_code == 200
     url = f"/databases/{base['id']}/rows/{fila['id']}"
 

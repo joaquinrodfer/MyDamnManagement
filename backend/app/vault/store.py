@@ -6,9 +6,11 @@ Contrato que implementa (ADR-0001 y ROADMAP §2):
   índice con lo que dice el fichero. **El fichero manda**: si el proceso muere
   entre las dos cosas, el índice se corrige en el siguiente arranque o con
   `POST /reindex`.
-- Renombrar = renombrar el fichero (el título ES el nombre) y, si tiene
-  subpáginas, su carpeta. Mover de carpeta = mover el fichero (y su carpeta).
-  El `id` del frontmatter no se toca nunca: es la identidad.
+- Renombrar una **nota** = renombrar el fichero (el título ES el nombre) y, si
+  tiene subpáginas, su carpeta. Una **fila** es la excepción: su fichero se
+  llama por su `id` y su título es una clave del frontmatter, así que
+  renombrarla solo reescribe el `.md`. Mover de carpeta = mover el fichero (y
+  su carpeta). El `id` del frontmatter no se toca nunca: es la identidad.
 - Borrar = mover a `.trash/<fecha UTC>/<ruta original>`, con la carpeta de
   subpáginas incluida (si no, quedarían ficheros huérfanos que el reindexado
   leería como notas sueltas, justo lo que la cascada del índice ya no haría).
@@ -17,8 +19,11 @@ Contrato que implementa (ADR-0001 y ROADMAP §2):
 
 Desde P2 las **bases de datos** también son ficheros: `Bases/<slug>.md` con
 `type: database` y el `schema` y las `views` en el frontmatter, y sus filas en
-`Bases/<slug>/<fila>.md`, con las propiedades en el frontmatter y sin `title`
-(el título de una fila es el nombre del fichero). Una base que cuelga de una
+`Bases/<slug>/<id8>.md` (los 8 primeros caracteres hex del `id`, alargados si
+chocan), con `title` y las propiedades en el frontmatter. El título de una fila
+ya no es su nombre de fichero: se renombra y se borra sin mover la ruta, y un
+vault a medio migrar (fichero con el título por nombre, sin `title`) sigue
+abriendo y resolviendo sus enlaces. Una base que cuelga de una
 nota vive en la carpeta de hijas de esa nota, porque la jerarquía son carpetas
 (D4) y así el reindexado puede volver a deducir su `parent_id`. El `id` de la
 base es el suyo y el de su página a la vez: un fichero, una identidad.
@@ -762,6 +767,11 @@ class VaultStore:
         page = reader.read_file(abs_path, rel)
         if database_id is None:
             database_id = self._database_of_row(rel)
+        if database_id:
+            # El título de una fila es el `title` de su frontmatter, no el
+            # nombre del fichero (que es su id). `reader.load` hace lo mismo al
+            # reindexar; los dos caminos tienen que decir lo mismo.
+            reader.apply_row_title(page)
         workspace_id = self._workspace()
         record = self._record_from_page(
             page, workspace_id, parent_id,
@@ -1370,7 +1380,10 @@ class VaultStore:
         icon: Optional[str] = None,
         body: str = "",
     ) -> str:
-        """Escribe `Bases/<slug>/<fila>.md` e indexa. Devuelve el id de la fila."""
+        """Escribe `Bases/<slug>/<id8>.md` (título en el frontmatter) e indexa.
+
+        Devuelve el id de la fila.
+        """
         db = self._database_row(database_id)
         if not os.path.exists(self._abs(db["path"])):
             raise VaultError(
@@ -1534,7 +1547,11 @@ class VaultStore:
         properties: Any = UNSET,
         header_image: Any = UNSET,
     ) -> None:
-        """Reescribe la fila (renombrándola si toca) y actualiza el índice.
+        """Reescribe el frontmatter de la fila y actualiza el índice.
+
+        Desde que el fichero se llama por el `id` de la fila, un `title` nuevo
+        **no mueve el fichero**: solo cambia la clave `title` del frontmatter
+        (la ruta y el `id` quedan como estaban).
 
         `properties` trae **solo las claves del `PATCH`** (no el mapa del
         índice: B2); un `None` en un valor borra esa clave del frontmatter, como
@@ -1570,22 +1587,16 @@ class VaultStore:
             props = writer.sin_reservadas(properties, [], "al guardar la fila")
             self._refuse_touching_unreadable(row, old_rel, front, props)
 
-        folder = os.path.dirname(old_rel)
-        current_stem = os.path.basename(old_rel)[:-3]
-        if title is not UNSET and title is not None:
-            desired_stem = names.sanitize(title)[0]
-        else:
-            desired_stem = current_stem
-        if names.nfc(desired_stem).casefold() == names.nfc(current_stem).casefold():
-            final_stem = desired_stem
-        else:
-            final_stem, _collided = names.unique_stem(self._abs(folder), desired_stem)
-        new_rel = f"{folder}/{final_stem}.md"
-        if new_rel != old_rel:
-            # La fila y sus sugerencias, juntas (mismo helper que la nota).
-            suggestions.move_with_note(self.root, old_rel, new_rel)
+        # La ruta no se toca: el fichero se llama por el id de la fila y el
+        # título es una clave del frontmatter. Renombrar una fila no puede
+        # mover un `.md` ni romper un enlace.
+        new_rel = old_rel
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
+        if title is not UNSET and title is not None:
+            # Igual que al crear: un título vacío se guarda como «Sin título»
+            # (el frontmatter nunca se queda sin él, ver `reader.apply_row_title`).
+            updates["title"] = names.nfc(str(title)).strip() or "Sin título"
         if "created" not in data and row["created_at"]:
             updates["created"] = row["created_at"]
         if icon is not UNSET and icon is not None:
@@ -1595,7 +1606,8 @@ class VaultStore:
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
         if props is not None:
-            # `title` no se escribe nunca: el título es el nombre del fichero.
+            # `title` no es una propiedad de la fila: si viniera en el mapa,
+            # `sin_reservadas` ya lo ha quitado.
             updates.update(props)
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None

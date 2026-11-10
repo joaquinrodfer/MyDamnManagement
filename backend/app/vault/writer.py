@@ -287,11 +287,15 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
     return reader.read_file(os.path.join(vault_root, rel), rel), notes
 
 
-def row_markdown(*, id_: str, properties: dict, created: str | None = None,
-                 updated: str | None = None, icon: str | None = None) -> str:
-    """Frontmatter de una fila: `id`, fechas y propiedades.
+def row_markdown(*, id_: str, title: str | None = None, properties: dict,
+                 created: str | None = None, updated: str | None = None,
+                 icon: str | None = None) -> str:
+    """Frontmatter de una fila: `id`, título, fechas y propiedades.
 
-    Sin `title` (decisión 9.3: el título es el nombre del fichero) y sin las
+    El título va en el frontmatter (`title`), no en el nombre del fichero: la
+    fila se llama `<id8>.md` (`names.row_stem`), así que renombrarla no mueve
+    ningún fichero y no rompe enlaces. `title=None` omite la clave (lo usan las
+    filas de un vault viejo que se escriben con el nombre por título). Sin las
     propiedades que no tienen valor (`_sin_vacios`). `icon` va aquí y no en las
     propiedades porque el icono de la fila es de la fila, no una propiedad
     declarada en el `schema`.
@@ -300,6 +304,8 @@ def row_markdown(*, id_: str, properties: dict, created: str | None = None,
     updates: dict = {"id": id_}
     if icon is not None:
         updates["icon"] = icon
+    if title is not None and str(title).strip():
+        updates["title"] = names.nfc(str(title)).strip()
     updates["created"] = now
     updates["updated"] = updated or now
     updates.update(property_entries(properties))
@@ -311,17 +317,22 @@ def create_row(vault_root: str, folder: str, title: str,
                properties: dict, *, body: str = "", row_id: str | None = None,
                created: str | None = None, icon: str | None = None
                ) -> tuple[reader.Page, list[str]]:
-    """Escribe una fila en `folder` (la carpeta hermana de su base)."""
-    stem, notes = names.sanitize(title)
+    """Escribe una fila en `folder`: `<id8>.md` con su `title` en el frontmatter.
+
+    `folder` es la carpeta hermana de su base. El nombre sale del `id` de la
+    fila, no de su título: renombrarla después solo reescribe el frontmatter.
+    """
+    notes: list[str] = []
+    row_id = row_id or new_id()
     rel_dir = vaultfs.safe_rel(vault_root, folder)
     directory = os.path.join(vault_root, rel_dir)
     os.makedirs(directory, exist_ok=True)
-    stem, collided = names.unique_stem(directory, stem)
-    if collided:
-        notes.append(f"colisión de fila en {rel_dir}: '{stem}'")
+    stem, extended = names.row_stem(directory, row_id)
+    if extended:
+        notes.append(f"colisión de fila en {rel_dir}: el id se acorta a '{stem}'")
     rel = f"{rel_dir}/{stem}.md"
     props = sin_reservadas(properties, notes, "al crear la fila")
-    text = row_markdown(id_=row_id or new_id(), properties=props, created=created,
+    text = row_markdown(id_=row_id, title=title, properties=props, created=created,
                         icon=icon)
     if body:
         text = text.rstrip("\n") + ("\n" if not body.startswith("\n") else "") + body

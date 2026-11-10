@@ -92,7 +92,7 @@ def test_borrar_una_de_tres_deja_dos_en_el_md_y_las_filas_intactas(client, vault
     assert quedan[1]["type"] == "list"
     # Y la fila sigue donde estaba, con su `.md`: los datos son de la base.
     assert client.get(f"/databases/{base['id']}/rows/{fila['id']}").status_code == 200
-    assert (vault_path / "Bases" / "Contactos" / "Acme.md").exists()
+    assert (vault_path / "Bases" / "Contactos" / f"{fila['id'][:8]}.md").exists()
 
 
 def test_borrar_una_vista_que_no_existe_es_404(client):
