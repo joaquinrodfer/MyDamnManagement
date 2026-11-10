@@ -54,6 +54,7 @@ import {
   normalizeDatabaseEntries,
 } from "./database-choice.js";
 import {
+  capPageChoices,
   normalizePageEntries,
   pageChoices,
   pageFilterClear,
@@ -1855,6 +1856,9 @@ function slashMenuExtension({
         this.renameTarget = null; // página que se está renombrando (modo "naming")
         this.entries = []; // bases del vault, pedidas al abrir el selector
         this.pages = []; // páginas del vault, pedidas al abrir el selector
+        this.pageCache = null; // lista de /page ya recortada (ver pageView)
+        this.pageCacheKey = null; // consulta con la que se calculó
+        this.pageCachePages = null; // `pages` con la que se calculó
       }
 
       get query() {
@@ -1884,15 +1888,34 @@ function slashMenuExtension({
         return databaseChoices(this.entries, this.query);
       }
 
-      /** Selector de páginas: las del vault, la de crear y la de renombrar. */
-      get pageOptions() {
-        return pageChoices(this.pages, this.query, { currentId: currentPageId });
+      /**
+       * Selector de páginas: las del vault (recortadas al tope de filas), la de
+       * crear y la de renombrar. Devuelve `{options, hidden}`; `hidden` es
+       * cuántas páginas no se pintan (ver capPageChoices en page-choice.js).
+       *
+       * Se cachea por consulta porque `filterPages` recorre y ordena el vault
+       * entero y esto se llama más de una vez por tecla -- el clamp de
+       * `update()` y el `notify()` que pinta --: sin caché, el trabajo de cada
+       * pulsación se duplicaría justo en el caso que el tope viene a arreglar.
+       */
+      get pageView() {
+        if (this.mode !== "page") return { options: [], hidden: 0 };
+        const key = this.query;
+        if (this.pageCache && this.pageCacheKey === key && this.pageCachePages === this.pages) {
+          return this.pageCache;
+        }
+        this.pageCache = capPageChoices(
+          pageChoices(this.pages, key, { currentId: currentPageId }),
+        );
+        this.pageCacheKey = key;
+        this.pageCachePages = this.pages;
+        return this.pageCache;
       }
 
       /** Las opciones que se están enseñando (menú "/" o un selector). */
       get activeOptions() {
         if (this.mode === "database") return this.databaseOptions;
-        if (this.mode === "page") return this.pageOptions;
+        if (this.mode === "page") return this.pageView.options;
         return this.filteredOptions;
       }
 
@@ -2031,6 +2054,10 @@ function slashMenuExtension({
             selectedIndex,
             options,
             note,
+            // Cuántas páginas deja fuera el tope de filas del selector de
+            // /page: solo la app sabe pintarlo («… y N más»), y es 0 en el
+            // menú "/" y en el selector de bases.
+            overflow: this.mode === "page" ? this.pageView.hidden : 0,
           });
         });
       }
