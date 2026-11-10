@@ -249,3 +249,21 @@ test("escribir <u> y volver a quitarlo no deja rastro en el documento", () => {
   assert.equal(uno.text, "esto es <u>palabra</u> fin");
   assert.equal(dos.text, original);
 });
+
+test("un rango que se pasa del final del documento no cuelga: se acota y se envuelve lo que hay", () => {
+  // La selección de CodeMirror nunca se sale del documento, pero la función
+  // es pura y exportada: con `to` más allá del final, el bucle de líneas se
+  // quedaba dando vueltas sin avanzar.
+  const text = "hola mundo";
+  const res = formatEdit({ text, ranges: [{ from: 0, to: text.length + 5 }], kind: "bold" });
+  assert.deepEqual(res.changes, [
+    { from: 0, to: 0, insert: "**" },
+    { from: text.length, to: text.length, insert: "**" },
+  ]);
+  assert.deepEqual(res.selection, [{ from: 2, to: text.length + 2 }]);
+});
+
+test("un rango que empieza después del final tampoco hace nada (ni cuelga)", () => {
+  const text = "hola mundo";
+  assert.equal(formatEdit({ text, ranges: [{ from: 40, to: 50 }], kind: "bold" }), null);
+});

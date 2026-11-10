@@ -210,7 +210,11 @@ export function formatEdit({ text, ranges, kind, codeRanges = [] }) {
 
   for (const r of ranges) {
     const from = Math.min(r.from, r.to);
-    const to = Math.max(r.from, r.to);
+    // Un `to` más allá del final del documento colgaría el bucle de líneas de
+    // abajo (`indexOf` devuelve -1 y `pos` ya no avanza). La selección de
+    // CodeMirror nunca se sale del documento, pero la función es pura y
+    // exportada: se acota aquí.
+    const to = Math.min(Math.max(r.from, r.to), text.length);
 
     if (from === to) {
       const edit = cursorEdit(text, from, mark, codeRanges);
