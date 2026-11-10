@@ -15,6 +15,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { insertBlockEdit, moveBlockEdits } from "../block-move.js";
+import { collapseEmptyGaps } from "../body.js";
 
 /** Aplica los cambios de un resultado (como haría ChangeSet). */
 function apply(text, changes) {
@@ -56,7 +57,7 @@ test("insertar arriba pone el bloque nuevo ANTES del actual y el de abajo no se 
     ["alfa", "paragraph"],
     ["beta", "paragraph"],
   ]);
-  const edit = insertBlockEdit({ blocks, index: 1, where: "above" });
+  const edit = insertBlockEdit({ text, blocks, index: 1, where: "above" });
   assert.deepEqual(edit.changes, [{ from: 6, to: 6, insert: "\n\n" }]);
 
   // Lo que hace el editor al teclear en el bloque nuevo: primero entra el par
@@ -65,6 +66,7 @@ test("insertar arriba pone el bloque nuevo ANTES del actual y el de abajo no se 
   const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
   assert.equal(typed, "alfa\n\nnuevo\n\nbeta");
   assert.equal(edit.gapFrom, 6);
+  assert.equal(edit.gapTo, 8);
 });
 
 test("insertar debajo sigue siendo lo de siempre (el par va detrás del bloque)", () => {
@@ -73,12 +75,83 @@ test("insertar debajo sigue siendo lo de siempre (el par va detrás del bloque)"
     ["alfa", "paragraph"],
     ["beta", "paragraph"],
   ]);
-  const edit = insertBlockEdit({ blocks, index: 0, where: "below" });
+  const edit = insertBlockEdit({ text, blocks, index: 0, where: "below" });
   assert.deepEqual(edit.changes, [{ from: 4, to: 4, insert: "\n\n" }]);
   assert.equal(edit.cursor, 6);
   const withGap = apply(text, edit.changes);
   const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
   assert.equal(typed, "alfa\n\nnuevo\n\nbeta");
+});
+
+test("insertar arriba sobre un ítem de lista deja lo tecleado como bloque suelto", () => {
+  // El hueco entre dos ítems de la misma lista es UN salto: ahí no vale el par
+  // pegado al ítem de arriba, porque lo tecleado se le queda como línea de
+  // continuación suya (`- alfa\nnuevo`) y parte la lista de mala manera.
+  const text = "- alfa\n- beta\n- gamma";
+  const blocks = blocksOf(text, [
+    ["- alfa", "bullet_list_item"],
+    ["- beta", "bullet_list_item"],
+    ["- gamma", "bullet_list_item"],
+  ]);
+  const edit = insertBlockEdit({ text, blocks, index: 1, where: "above" });
+  assert.deepEqual(edit.changes, [{ from: 7, to: 7, insert: "\n\n\n" }]);
+  assert.equal(edit.cursor, 8);
+
+  const withGap = apply(text, edit.changes);
+  const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
+  assert.equal(typed, "- alfa\n\nnuevo\n\n- beta\n- gamma");
+
+  // Y si se abandona sin escribir, el tramo entero se colapsa: el `.md` no
+  // gana ni una línea.
+  const back = collapseEmptyGaps(withGap, [{ from: edit.gapFrom, to: edit.gapTo }]);
+  assert.equal(back.text, text);
+});
+
+test("insertar arriba sobre un ítem de lista NUMERADA tampoco lo pega al de arriba", () => {
+  const text = "1. uno\n2. dos\n3. tres";
+  const blocks = blocksOf(text, [
+    ["1. uno", "ordered_list_item"],
+    ["2. dos", "ordered_list_item"],
+    ["3. tres", "ordered_list_item"],
+  ]);
+  const edit = insertBlockEdit({ text, blocks, index: 1, where: "above" });
+  assert.deepEqual(edit.changes, [{ from: 7, to: 7, insert: "\n\n\n" }]);
+  const withGap = apply(text, edit.changes);
+  const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
+  assert.equal(typed, "1. uno\n\nnuevo\n\n2. dos\n3. tres");
+  assert.equal(collapseEmptyGaps(withGap, [{ from: edit.gapFrom, to: edit.gapTo }]).text, text);
+});
+
+test("insertar ABAJO sobre un ítem de lista deja igual de suelto lo tecleado", () => {
+  // El mismo agujero por el otro lado: el hueco de detrás también es un solo
+  // salto y el par pegado al bloque dejaba el ítem siguiente como continuación
+  // de lo tecleado.
+  const text = "- alfa\n- beta";
+  const blocks = blocksOf(text, [
+    ["- alfa", "bullet_list_item"],
+    ["- beta", "bullet_list_item"],
+  ]);
+  const edit = insertBlockEdit({ text, blocks, index: 0, where: "below" });
+  assert.deepEqual(edit.changes, [{ from: 6, to: 6, insert: "\n\n\n" }]);
+  assert.equal(edit.cursor, 8);
+  const withGap = apply(text, edit.changes);
+  const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
+  assert.equal(typed, "- alfa\n\nnuevo\n\n- beta");
+  assert.equal(collapseEmptyGaps(withGap, [{ from: edit.gapFrom, to: edit.gapTo }]).text, text);
+});
+
+test("insertar arriba en el primer bloque no necesita hueco de arriba", () => {
+  const text = "alfa\n\nbeta";
+  const blocks = blocksOf(text, [
+    ["alfa", "paragraph"],
+    ["beta", "paragraph"],
+  ]);
+  const edit = insertBlockEdit({ text, blocks, index: 0, where: "above" });
+  assert.deepEqual(edit.changes, [{ from: 0, to: 0, insert: "\n\n" }]);
+  assert.equal(edit.cursor, 0);
+  const typed = apply(text, edit.changes).slice(0, edit.cursor) + "nuevo" +
+    apply(text, edit.changes).slice(edit.cursor);
+  assert.equal(typed, "nuevo\n\nalfa\n\nbeta");
 });
 
 // -------------------------------------------------------------- mover arriba / abajo
@@ -95,6 +168,30 @@ test("mover arriba: el bloque sube uno y el de encima baja", () => {
     1
   );
   assert.equal(out.text, "alfa\n\ngamma\n\nbeta");
+});
+
+test("subir un bloque un puesto conserva el hueco escrito a mano entre los dos", () => {
+  // Un intercambio invierte el par: la frontera es la misma, así que sus
+  // cuatro saltos escritos a mano se tienen que ir con ella, no reconstruirse.
+  const text = "alfa\n\n\n\nbeta";
+  const blocks = blocksOf(text, [
+    ["alfa", "paragraph"],
+    ["beta", "paragraph"],
+  ]);
+  const edit = moveBlockEdits({ text, blocks, index: 1, slot: 0 });
+  assert.equal(apply(text, edit.changes), "beta\n\n\n\nalfa");
+  assert.deepEqual(sortedLines(apply(text, edit.changes)), sortedLines(text));
+});
+
+test("bajar un bloque un puesto conserva el hueco escrito a mano entre los dos", () => {
+  const text = "alfa\n\n\n\nbeta";
+  const blocks = blocksOf(text, [
+    ["alfa", "paragraph"],
+    ["beta", "paragraph"],
+  ]);
+  const edit = moveBlockEdits({ text, blocks, index: 0, slot: 2 });
+  assert.equal(apply(text, edit.changes), "beta\n\n\n\nalfa");
+  assert.equal(apply(text, edit.changes).split("\n").length, text.split("\n").length);
 });
 
 test("mover abajo: el bloque baja uno", () => {

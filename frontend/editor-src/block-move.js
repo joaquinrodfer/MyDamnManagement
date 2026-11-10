@@ -49,6 +49,25 @@ function withNumber(blockText, number) {
 }
 
 /**
+ * Saltos consecutivos justo ANTES de `at`, sin pasar de `floor` (el final del
+ * bloque de arriba), y justo DESPUÉS, sin pasar de `ceil` (el principio del de
+ * abajo). Son los que ya separan el hueco donde va el bloque nuevo: la
+ * frontera de siempre pone una línea en blanco (dos saltos) entre párrafos,
+ * pero entre dos ítems de la misma lista hay un solo salto.
+ */
+function newlinesBefore(text, at, floor) {
+  let p = at;
+  while (p > floor && text[p - 1] === "\n") p--;
+  return at - p;
+}
+
+function newlinesAfter(text, at, ceil) {
+  let p = at;
+  while (p < ceil && text[p] === "\n") p++;
+  return p - at;
+}
+
+/**
  * Separador entre dos bloques que NO eran vecinos: la regla de siempre.
  * Dos ítems del mismo tipo de lista van con un salto (siguen siendo UNA
  * lista); cualquier otro par, con una línea en blanco.
@@ -158,7 +177,16 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
   const texts = blocks.map((b) => s.slice(b.from, b.to));
   renumberMovedRuns(order, texts, orderedRunMap(s, blocks), blocks);
 
-  const sepFor = (a, b) => (b === a + 1 ? gapOf(a, b) : freshSeparator(blocks[a], blocks[b]));
+  // Entre dos bloques que ya eran vecinos se conserva SU hueco. Un
+  // intercambio invierte el par (el de abajo pasa a estar encima), y ese par
+  // sigue siendo la misma frontera: si solo se mirara `b === a + 1`, subir un
+  // bloque un puesto reconstruía el hueco con el separador de siempre y
+  // `alfa\n\n\n\nbeta` volvía como `beta\n\nalfa` (dos líneas a la basura).
+  const sepFor = (a, b) => {
+    if (b === a + 1) return gapOf(a, b);
+    if (a === b + 1) return gapOf(b, a);
+    return freshSeparator(blocks[a], blocks[b]);
+  };
 
   let insert = "";
   let movedAt = 0;
@@ -190,23 +218,53 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
  * un bloque nuevo vacío encima (`above`) o debajo (`below`) del bloque
  * `index`, con el cursor dentro.
  *
- * - Debajo es lo de siempre: el par `\n\n` justo detrás del bloque.
- * - Encima, el par va DELANTE del bloque, en el borde con el de arriba. El
- *   hueco resultante es el mismo que crea ⏎: el editor lo colapsa si se
- *   abandona sin escribir (`emptyGapRange`, body.js), así que no quedan
- *   líneas en blanco de más en el `.md`.
+ * El hueco que se inserta es un TRAMO DE SALTOS y el cursor va dentro, de modo
+ * que la primera línea que se teclee quede separada de sus dos vecinos. Hacen
+ * falta dos saltos a cada lado: entre párrafos la frontera ya tiene su línea
+ * en blanco (`\n\n`), pero entre dos ítems de la MISMA lista solo hay un
+ * salto, y ahí un par pegado al ítem de arriba convertía lo tecleado en una
+ * línea de continuación suya. Por eso se cuentan los saltos que ya hay y se
+ * añaden los que falten:
  *
- * Devuelve `{changes, cursor, gapFrom}`; `gapFrom` es la posición del par en
- * el documento nuevo, que es la marca que espera `addEmptyGap`.
+ * - encima: los de delante del bloque (`1. uno\n|2. dos` -> `\n\n\n`, con
+ *   el cursor tras los dos primeros) y siempre dos detrás;
+ * - debajo: siempre dos delante y los que falten detrás (`- alfa|\n- beta`
+ *   -> `\n\n\n`, con el cursor tras los dos primeros).
+ *
+ * El tramo entero es el hueco del bloque nuevo: el editor lo colapsa si se
+ * abandona sin escribir (`emptyGapRange`, body.js, admite tramos de más de
+ * dos saltos), así que no quedan líneas en blanco de más en el `.md`.
+ *
+ * Devuelve `{changes, cursor, gapFrom, gapTo}`: `[gapFrom, gapTo)` es el tramo
+ * insertado en el documento nuevo, que es la marca que espera `addEmptyGap`.
  */
-export function insertBlockEdit({ blocks, index, where = "below" }) {
+export function insertBlockEdit({ text, blocks, index, where = "below" }) {
   if (!Array.isArray(blocks)) return null;
   const k = Number(index);
   if (!Number.isInteger(k) || k < 0 || k >= blocks.length) return null;
+  const s = String(text ?? "");
   const block = blocks[k];
   if (where === "above") {
-    return { changes: [{ from: block.from, to: block.from, insert: "\n\n" }], cursor: block.from, gapFrom: block.from };
+    const prev = k > 0 ? blocks[k - 1] : null;
+    const before = prev ? newlinesBefore(s, block.from, prev.to) : 0;
+    const lead = prev ? Math.max(0, 2 - before) : 0;
+    const insert = "\n".repeat(lead + 2);
+    return {
+      changes: [{ from: block.from, to: block.from, insert }],
+      cursor: block.from + lead,
+      gapFrom: block.from,
+      gapTo: block.from + insert.length,
+    };
   }
+  const next = k + 1 < blocks.length ? blocks[k + 1] : null;
+  const after = next ? newlinesAfter(s, block.to, next.from) : 0;
+  const tail = next ? Math.max(0, 2 - after) : 0;
+  const insert = "\n".repeat(2 + tail);
   const at = block.to;
-  return { changes: [{ from: at, to: at, insert: "\n\n" }], cursor: at + 2, gapFrom: at };
+  return {
+    changes: [{ from: at, to: at, insert }],
+    cursor: at + 2,
+    gapFrom: at,
+    gapTo: at + insert.length,
+  };
 }

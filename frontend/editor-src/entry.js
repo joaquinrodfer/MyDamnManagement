@@ -765,12 +765,16 @@ const pendingEmptyGaps = StateField.define({
     }
     for (const effect of tr.effects) {
       if (!effect.is(addEmptyGap)) continue;
-      const from = effect.value;
-      const to = from + 2;
+      const from = Number(effect.value?.from);
+      const to = Number(effect.value?.to);
+      if (!Number.isInteger(from) || !Number.isInteger(to) || to - from < 2) continue;
       // Al final del documento no hay bloque vacío que quitar: ese hueco es
       // de los extremos y de esos se encarga `dropOuterBlankLines`.
       if (to >= tr.newDoc.length) continue;
-      if (tr.newDoc.sliceString(from, to) !== "\n\n") continue;
+      // El hueco es un tramo de saltos: dos cuando la frontera ya tenía su
+      // línea en blanco, más cuando ha habido que crearla (insertar encima o
+      // debajo de un ítem de lista, donde el separador es un solo salto).
+      if (/[^\n]/.test(tr.newDoc.sliceString(from, to))) continue;
       // Y que sea un bloque vacío de verdad, no el hueco que deja partir un
       // párrafo: el cursor tiene que haber quedado DENTRO del tramo de saltos.
       // Con ⏎ al principio de una línea de un párrafo, los dos saltos nuevos
@@ -786,11 +790,12 @@ const pendingEmptyGaps = StateField.define({
 });
 
 /** Efecto que marca el bloque vacío que acaba de insertar un comando, si lo
- * que inserta es el par de saltos de un bloque nuevo. Partir un párrafo por
- * la mitad no deja marca: ahí los dos saltos separan texto que ya existía, y
- * quitarlos al salir pegaría las dos mitades otra vez. */
+ * que inserta es un tramo de saltos (el hueco del bloque nuevo). Puede ser
+ * más largo que dos saltos cuando la frontera no traía su línea en blanco.
+ * Partir un párrafo por la mitad no deja marca: ahí los saltos separan texto
+ * que ya existía, y quitarlos al salir pegaría las dos mitades otra vez. */
 function emptyGapEffect(from, insert = "\n\n") {
-  return insert === "\n\n" ? [addEmptyGap.of(from)] : [];
+  return /^\n{2,}$/.test(insert) ? [addEmptyGap.of({ from, to: from + insert.length })] : [];
 }
 
 // El handle de cada bloque NO es un gutter de CodeMirror: se probó primero
@@ -1169,12 +1174,12 @@ function selectBlocks(view, indices) {
 // decide block-move.js (`insertBlockEdit`), con sus pruebas en node --test.
 function insertBlockBeside(view, index, where) {
   const { blocks } = view.state.field(blockField);
-  const edit = insertBlockEdit({ blocks, index, where });
+  const edit = insertBlockEdit({ text: view.state.doc.toString(), blocks, index, where });
   if (!edit) return false;
   view.dispatch({
     changes: edit.changes,
     selection: { anchor: edit.cursor },
-    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(edit.gapFrom)],
+    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(edit.gapFrom, edit.changes[0].insert)],
   });
   view.focus();
   return true;
@@ -1280,6 +1285,14 @@ function autoScrollWhileDragging(view, y) {
 function onBlockDragMove(event) {
   const drag = blockDrag;
   if (!drag) return;
+  // El botón ya no está pulsado: el `mouseup` se perdió (se soltó fuera de la
+  // ventana, o la pestaña se quedó sin foco). Sin esto, el arrastre seguía
+  // vivo, la línea de inserción se quedaba pintada y el siguiente clic movía
+  // un bloque que nadie había vuelto a arrastrar.
+  if (event.buttons === 0) {
+    endBlockDrag();
+    return;
+  }
   if (!drag.active) {
     if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_SLOP) return;
     drag.active = true;
@@ -1318,6 +1331,7 @@ function onBlockDragEnd(event) {
 }
 
 function beginBlockDrag(view, event, index) {
+  endBlockDrag(); // un arrastre anterior sin `mouseup` no puede sobrevivir a otro
   blockDrag = { view, index, startX: event.clientX, startY: event.clientY, active: false, slot: null, line: null };
   window.addEventListener("mousemove", onBlockDragMove, true);
   window.addEventListener("mouseup", onBlockDragEnd, true);
