@@ -18,6 +18,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.vault.reader import RESERVED_ROW_KEYS
+
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Nombre visible de la columna del título cuando la base no la ha renombrado.
@@ -32,6 +34,13 @@ def slug_key(name: str, taken: set[str]) -> str:
     extremos). Si el nombre no deja nada (`···`), la clave es `propiedad`; si
     empieza por dígito, se prefija `p_` porque el contrato exige empezar por
     letra. Si choca con una clave ya usada, sufijo numérico: `fecha_2`, `fecha_3`.
+
+    Las claves de `RESERVED_ROW_KEYS` (`title`, `id`, `type`, `icon`,
+    `description`, `created`, `updated`) están siempre ocupadas: son la
+    identidad del fichero de la fila, no propiedades, y el lector las descarta
+    del schema. Sin esto, llamar «Title» a una propiedad derivaba `title`, la
+    columna desaparecía en silencio y el siguiente guardado la borraba del
+    `.md`; con esto la clave es `title_2` y la propiedad funciona.
     """
     plano = unicodedata.normalize("NFKD", str(name or ""))
     plano = "".join(c for c in plano if not unicodedata.combining(c)).lower()
@@ -40,9 +49,10 @@ def slug_key(name: str, taken: set[str]) -> str:
         base = "propiedad"
     if not base[0].isalpha():
         base = f"p_{base}"
+    ocupadas = set(taken) | RESERVED_ROW_KEYS
     key = base
     attempt = 2
-    while key in taken:
+    while key in ocupadas:
         key = f"{base}_{attempt}"
         attempt += 1
     return key
@@ -112,6 +122,13 @@ def plan_schema(
             # Clave explícita de una propiedad nueva (plantillas y API directa).
             if not KEY_RE.match(key):
                 raise HTTPException(400, f"Clave no válida: {key!r}")
+            if key in RESERVED_ROW_KEYS:
+                raise HTTPException(
+                    400,
+                    f"«{name}» no puede guardarse con la clave {key!r}: es una "
+                    "clave de la propia fila (identidad, tipo, icono, "
+                    "descripción, fechas o título)",
+                )
             if key in taken:
                 raise HTTPException(400, f"Clave repetida: {key!r}")
         elif not key:
