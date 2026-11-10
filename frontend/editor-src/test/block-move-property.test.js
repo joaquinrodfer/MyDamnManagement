@@ -205,21 +205,36 @@ const PAIR_SAMPLES = {
   "parrafo de dos lineas": "parrafo\ncon dos lineas",
   cabecera: "# titulo",
   "cabecera h2": "## titulo",
+  "cabecera h6": "###### titulo",
   "---": "---",
   "***": "***",
+  "___": "___",
   valla: "```\ncodigo\n```",
+  "valla ~~~": "~~~\ncodigo\n~~~",
   cita: "> cita",
   "cita de dos lineas": "> cita\n> seguida",
   "cita con lista": "> - a\n> - b",
+  "cita anidada": "> > cita",
   item: "- item",
   "item con continuacion": "- item\n  con continuacion",
   "item anidado": "- item\n  - anidado",
   numerado: "1. numero",
+  // El NÚMERO de una lista ordenada cambia la pareja: solo interrumpe lo de
+  // arriba si empieza en 1. Con `3.` o `7)` hace falta la línea en blanco
+  // detrás de un párrafo, una cita, un ítem o una tabla (sin ella el bloque de
+  // arriba se come la línea y los dos bloques son uno).
+  "numerado 3": "3. tercero",
+  "numerado 7)": "7) numero",
+  "numerado 3 con continuacion": "3. tercero\n   con continuacion",
   tabla: "| a | b |\n| --- | --- |\n| 1 | 2 |",
   referencia: "[ref]: http://x",
   html: "<div>x</div>",
   "html cerrado": "<pre>\nx\n</pre>",
+  // Condición 7 de CommonMark (una etiqueta suelta): es un bloque HTML, pero NO
+  // interrumpe un párrafo -- con un salto se lo come.
+  "html condicion 7": "<x-foo>",
   setext: "titulo\n---",
+  "setext =": "titulo\n===",
   // Una cabecera setext puede tener VARIAS líneas de texto encima: su
   // subrayado es la última, no la segunda (con la segunda se tomaba por tabla
   // y se le daba el mínimo de una tabla).
@@ -244,13 +259,16 @@ test("la tabla de mínimos del motor es la del parser, pareja por pareja y por l
       // siempre, la que pone `separatorNewlines` cuando rehace un hueco.
       assert.equal(blocks.length, 2, `con dos saltos no se separan: ${where}`);
       const real = parserMin(a, b);
-      assert.equal(minNewlines(blocks[0], blocks[1], doc), real, `el mínimo no es el del parser: ${where}`);
+      assert.equal(minNewlines(blocks[0], blocks[1], a, b), real, `el mínimo no es el del parser: ${where}`);
       pairs++;
       if (real === 1) ones++;
       else twos++;
     }
   }
-  assert.ok(pairs >= 300, `parejas probadas: ${pairs}`);
+  // Todo el repertorio, pareja por pareja y por los dos lados: 29 x 29 = 841.
+  // Si se añade un tipo nuevo hay que añadirlo aquí, y la tabla del motor tiene
+  // que seguir saliendo del parser para todas sus parejas.
+  assert.ok(pairs >= 841, `parejas probadas: ${pairs}`);
   assert.ok(ones > 100 && twos > 20, `parejas de un salto: ${ones}, de dos: ${twos}`);
   t.diagnostic(`parejas: ${pairs} (un salto: ${ones}, dos: ${twos})`);
 });
@@ -435,6 +453,34 @@ test("un bloque HTML no se come el bloque de debajo al mover (cabecera, ítem, v
   assert.ok(out, "el movimiento cabe (el `---`/HTML de arriba deja aire de sobra)");
   assert.equal(parseBlocks(out).length, 3);
   assert.ok(out.startsWith("<div>x</div>\n\n# titulo"), `el HTML sigue separado de la cabecera: «${out}»`);
+});
+
+test("un ítem numerado que no empieza en 1 no interrumpe: mover no lo pega a un párrafo", () => {
+  // La deuda de `t_bd8c1b31`, segunda vuelta: `3. tercero` no interrumpe un
+  // párrafo (solo lo hace una lista numerada que empieza en 1), así que con un
+  // solo salto el párrafo se lo come. El motor metía todos los ítems en el
+  // mismo cajón, decía que un salto bastaba, y al apretar el presupuesto el
+  // documento pasaba de 3 bloques a 2 (`parrafo 0\n- item 1\n\n3. tercero`
+  // movido dejaba `- item 1\n\nparrafo 0\n3. tercero`).
+  const text = "parrafo 0\n- item 1\n\n3. tercero";
+  const blocks = parseBlocks(text);
+  assert.deepEqual(blocks.map((b) => b.type), ["paragraph", "bullet_list_item", "ordered_list_item"]);
+  // Bajar el párrafo lo dejaría pegado al `3.` sin sitio para la línea en
+  // blanco que pide la pareja: se rechaza, no se fusiona.
+  assert.equal(moveBlockEdits({ text, blocks, index: 0, slot: 2 }), null);
+  // En todas las demás direcciones, o no se mueve o se mueven los tres
+  // bloques con sus mismas líneas.
+  for (let index = 0; index < 3; index++) {
+    for (let slot = 0; slot <= 3; slot++) assertMoveKeepsBlocks(text, index, slot);
+  }
+  // Con el párrafo en su línea en blanco, mover sí cabe y el `3.` sigue siendo
+  // un bloque aparte.
+  const roomy = "parrafo 0\n\n- item 1\n\n3. tercero";
+  assert.equal(parseBlocks(roomy).length, 3);
+  const out = assertMoveKeepsBlocks(roomy, 0, 2);
+  assert.ok(out, "con sitio de sobra el movimiento se hace");
+  assert.equal(parseBlocks(out).length, 3);
+  assert.ok(out.endsWith("\n\n3. tercero"), `el \`3.\` sigue separado del párrafo: «${out}»`);
 });
 
 test("detrás de un ítem/cabecera/valla/cita, un `---` no pide línea en blanco", () => {

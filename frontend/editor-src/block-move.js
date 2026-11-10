@@ -126,13 +126,21 @@ const HEADING_TYPES = new Set(["h1", "h2", "h3", "h4", "h5"]);
  * Nombre corto de lo que hay que saber de un bloque para su frontera. `other`
  * agrupa cosas que el editor pinta igual (un bloque HTML, una tabla, una
  * referencia de enlace, una cabecera setext) pero que se pegan a sus vecinos de
- * forma muy distinta, así que se distinguen por el texto.
+ * forma muy distinta, así que se distinguen por el texto. Los ítems de lista se
+ * separan en TRES especies porque el número manda: una lista ordenada solo
+ * interrumpe lo que tiene encima si empieza en 1 (`3. tercero` pegado a un
+ * párrafo es una línea más del párrafo, no un bloque nuevo).
  */
-function frontierKind(block, text) {
-  if (block.type === "other") return otherKind(text.slice(block.from, block.to));
-  if (block.type === "bullet_list_item" || block.type === "ordered_list_item") return "item";
+function frontierKind(block, body) {
+  if (block.type === "other") return otherKind(body);
+  if (block.type === "bullet_list_item") return "bullet_item";
+  if (block.type === "ordered_list_item") {
+    // El número se lee del texto del bloque (mismo `ORDERED_RE` que reenumera).
+    // Si no se puede leer, el caso conservador es el que pide la línea en blanco.
+    return itemNumber(body) === 1 ? "ordered_item_from_1" : "ordered_item_other";
+  }
   if (HEADING_TYPES.has(block.type)) return "heading";
-  if (block.type === "hr") return hrKind(text.slice(block.from, block.to));
+  if (block.type === "hr") return hrKind(body);
   return block.type; // paragraph, quote, code
 }
 
@@ -196,11 +204,24 @@ function htmlInterrupts(body) {
 // que normalmente se separa con un salto: lo de arriba se continúa con la
 // primera línea de abajo (un párrafo, una cita o un ítem se la comen) o la lee
 // como parte de sí mismo (una tabla, donde `---` es la fila de guiones).
+//
+// `ordered_item_other` (una lista numerada que NO empieza en 1) pide la línea en
+// blanco detrás de un párrafo, una cita, un ítem de viñeta o una tabla, porque
+// no interrumpe: `3. tercero` con un salto es la línea siguiente de ese
+// párrafo/cita/ítem, y detrás de una tabla una fila más. Entre dos ítems de la
+// misma lista numerada, en cambio, basta un salto (la lista sigue). Medido con
+// el parser pareja por pareja: ver `minNewlines` y la tabla de
+// test/block-move-property.test.js.
 const NEEDS_BLANK_AFTER = {
-  paragraph: new Set(["paragraph", "setext", "dashes", "ref"]),
-  quote: new Set(["paragraph", "setext", "ref", "quote"]),
-  item: new Set(["paragraph", "setext", "ref"]),
-  table: new Set(["paragraph", "setext", "dashes", "table", "ref"]),
+  paragraph: new Set(["paragraph", "setext", "dashes", "ref", "ordered_item_other"]),
+  quote: new Set(["paragraph", "setext", "ref", "quote", "ordered_item_other"]),
+  bullet_item: new Set(["paragraph", "setext", "ref", "ordered_item_other"]),
+  // Entre dos ítems de la misma lista numerada basta un salto, empiece en 1 o
+  // no: `1. a\n3. b` son dos ítems de UNA lista (los números no tienen por qué
+  // ser consecutivos para el parser).
+  ordered_item_from_1: new Set(["paragraph", "setext", "ref"]),
+  ordered_item_other: new Set(["paragraph", "setext", "ref"]),
+  table: new Set(["paragraph", "setext", "dashes", "table", "ref", "ordered_item_other"]),
 };
 
 // Tipos que ACABAN en su propia línea: detrás de ellos un salto basta, también
@@ -231,16 +252,23 @@ const CLOSED = new Set(["heading", "setext", "hr", "dashes", "code", "ref", "htm
  *   siendo suya);
  * - detrás de una cabecera, una valla, un `---`, una referencia o una cabecera
  *   setext, uno basta: acaban en su línea (la tabla anterior pedía dos delante
- *   de un `---` y no hacía falta, y eso hacía que `Alt+↑` no hiciera nada).
+ *   de un `---` y no hacía falta, y eso hacía que `Alt+↑` no hiciera nada);
+ * - una lista ordenada solo interrumpe lo de arriba si empieza en 1: `3.` y
+ *   `7)` piden la línea en blanco detrás de un párrafo, una cita, un ítem o una
+ *   tabla (entre dos ítems de la misma lista numerada basta un salto).
+ *
+ * `bodyPrev` y `bodyNext` son los textos de los dos bloques TAL COMO VAN A
+ * QUEDAR en el documento nuevo (ya reenumerados: un `2.` que se queda solo pasa
+ * a `1.` y entonces sí interrumpe), no como estaban.
  */
-export function minNewlines(prev, next, text) {
-  const a = frontierKind(prev, text);
-  const b = frontierKind(next, text);
+export function minNewlines(prev, next, bodyPrev, bodyNext) {
+  const a = frontierKind(prev, bodyPrev);
+  const b = frontierKind(next, bodyNext);
   if (a === "html") return 2; // se come la línea siguiente
   if (CLOSED.has(a)) return 1; // acaba en su línea: no se continúa con nada
   const blank = NEEDS_BLANK_AFTER[a];
   if (!blank) return 2; // tipo que no se conoce: antes dos que uno
-  if (b === "html" && !htmlInterrupts(text.slice(next.from, next.to))) return 2;
+  if (b === "html" && !htmlInterrupts(bodyNext)) return 2;
   return blank.has(b) ? 2 : 1;
 }
 
@@ -339,6 +367,13 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
   for (let k = 0; k < n; k++) if (k !== i) order.push(k);
   order.splice(at > i ? at - 1 : at, 0, i);
 
+  // El texto de cada bloque en el documento nuevo, con las listas numeradas que
+  // el movimiento ha reordenado ya reenumeradas: el mínimo de una frontera
+  // depende del número (`2.` que se queda solo pasa a `1.` e interrumpe), así
+  // que se mide sobre lo que de verdad va a quedar escrito.
+  const texts = blocks.map((b) => s.slice(b.from, b.to));
+  renumberMovedRuns(order, texts, orderedRunMap(s, blocks), blocks);
+
   // Cada frontera del documento nuevo: qué hueco puede reutilizar tal cual (el
   // de la misma pareja de bloques, en el mismo orden o al revés -- un
   // intercambio deja la pareja al revés y su hueco sigue siendo el suyo) y
@@ -350,7 +385,7 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     const a = order[p];
     const b = order[p + 1];
     const k = b === a + 1 ? a : a === b + 1 ? b : null;
-    const bd = { a, b, min: minNewlines(blocks[a], blocks[b], s), gap: null, count: 0 };
+    const bd = { a, b, min: minNewlines(blocks[a], blocks[b], texts[a], texts[b]), gap: null, count: 0 };
     if (k !== null && !kept.has(k)) {
       kept.add(k);
       bd.gap = gaps[k];
@@ -409,9 +444,6 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
       bounds.find((bd) => bd.b === i);
     target.count += budget - total;
   }
-
-  const texts = blocks.map((b) => s.slice(b.from, b.to));
-  renumberMovedRuns(order, texts, orderedRunMap(s, blocks), blocks);
 
   let insert = "";
   let movedAt = 0;
