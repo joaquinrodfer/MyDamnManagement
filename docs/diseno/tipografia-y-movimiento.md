@@ -151,6 +151,14 @@ Medido con `getBoundingClientRect()` (centro del SVG menos centro de su botón):
 La caja del icono de página mide 38×38 y su centro queda a **+0,25 px** del
 centro de la primera línea del título.
 
+En móvil (≤768 px) la caja del botón crece a 44×44 (zona táctil) y la fila
+vuelve a `align-items: flex-start` (en la ronda anterior estaba en `center`, y
+eso dejaba el emoji **2,5 px** por debajo de la primera línea: la fila mide 48
+porque suma los 4 px del margen inferior del título). Con `flex-start`, medido a
+375 px: **+0,5 px** del centro de la primera línea, tanto con un título de una
+línea como de dos. Los demás grupos a 375 px siguen a 0,00 / 0,00
+(cabecera 7 botones, `.tree-row`, `.row-del` a 44×44).
+
 ## 4. Movimiento
 
 Duraciones y curva que ya existían en `:root` y que ahora usan todos los
