@@ -4,6 +4,11 @@ Documento de la tarjeta *«Diseño: tipografía sin serifa, jerarquía título/H
 centrados y fluidez»*. Recoge lo que se aplicó en `frontend/index.html` y
 `frontend/app.js`, con las medidas tomadas del navegador antes y después.
 
+Sustituye, en lo que toca a **tipografía y movimiento**, a lo que dicen los
+tokens de `SPEC-B.md` §2 (`--text-db-title`, el título de base a 22 px, el H1 a
+1.9em...). `SPEC-B.md` se queda como histórico de la fase B; este documento es
+la referencia vigente de la escala, de las familias y de las duraciones.
+
 Punto de partida, medido con `getComputedStyle` sobre una nota real:
 
 | Elemento | Antes | Después |
