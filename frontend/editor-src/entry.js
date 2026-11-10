@@ -2772,6 +2772,10 @@ function blockAt(state, pos) {
  *   tecla se CONSUME igual: si se dejara caer al keymap de CodeMirror, su
  *   Alt+↓ por defecto mueve UNA LÍNEA (`moveLineDown`) y eso puede pegar dos
  *   bloques al revés de lo que se está pidiendo.
+ * - Con el cursor en un HUECO (entre dos bloques, nota vacía) no hay bloque que
+ *   mover y la tecla también se consume sin tocar el `.md`: `moveLineDown`
+ *   allí mueve la línea en blanco y se lleva el bloque de al lado, que es el
+ *   mismo destrozo por otra puerta (ver `blockAt`).
  * - En el borde se consume sin tocar nada: no hay bloque al que cambiar.
  * - Si el movimiento no cabe sin cambiar las líneas del `.md` (ver
  *   block-move.js), también se consume: no se mueve, pero la tecla no acaba en
@@ -2791,10 +2795,20 @@ export function runMoveBlockKey(view, dir) {
     return true;
   } else {
     const block = blockAt(state, range.head);
-    if (!block) return false;
+    // Sin bloque no hay nada que mover, pero la tecla es nuestra igual: en un
+    // hueco (clic en la línea en blanco entre dos bloques, nota vacía) devolver
+    // `false` la dejaba en el keymap de CodeMirror, que la usa para
+    // `moveLineDown`: mueve UNA LÍNEA y escribe el `.md` sin que nadie haya
+    // pedido mover nada -- «parrafo 0\n\n    codigo 1» acababa en
+    // «parrafo 0\n    codigo 1\n», con el bloque de código dentro del párrafo
+    // (2 bloques -> 1). En un hueco no se mueve ningún bloque: cuál de los dos
+    // de al lado sería no lo dice el cursor.
+    if (!block) return true;
     index = blocks.indexOf(block);
   }
-  if (index < 0 || index >= blocks.length) return false;
+  // Índice fuera de la lista (marcas viejas tras un cambio): la tecla sigue
+  // siendo nuestra.
+  if (index < 0 || index >= blocks.length) return true;
   const slot = dir < 0 ? index - 1 : index + 2;
   if (slot < 0 || slot > blocks.length) return true; // ya está en un extremo
   // Se mueva o no (si no cabe, `moveBlockTo` no toca el documento), la tecla es
