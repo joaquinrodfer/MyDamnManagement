@@ -376,9 +376,12 @@ function codeRangesOf(state) {
   return ranges;
 }
 
-/** ¿Cae `pos` dentro de alguna de esas zonas? */
+/** ¿Cae `pos` dentro de alguna de esas zonas? Los rangos del árbol son
+ * semiabiertos (`to` excluido): el `to` de un `InlineCode` es la posición justo
+ * detrás del backtick de cierre, y ahí puede empezar otra construcción
+ * (`` `x`->y ``, `` `x`<u>y</u> ``), que sí hay que pintar. */
 function isInsideCode(codeRanges, pos) {
-  return codeRanges.some((r) => pos >= r.from && pos <= r.to);
+  return codeRanges.some((r) => pos >= r.from && pos < r.to);
 }
 
 export function buildArrowDecorations(state, visibleRanges) {

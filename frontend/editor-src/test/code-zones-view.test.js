@@ -131,3 +131,27 @@ test("mezcla: solo se pinta el `<u>` que está fuera del código en línea", () 
   assert.equal(decs[1].class, "cm-mdm-underline");
   assert.equal(doc.slice(decs[1].from, decs[1].to), "si");
 });
+
+// ------------------------------------- pegado al cierre del código en línea
+// Los rangos del árbol son semiabiertos (`to` excluido): el `to` de un
+// `InlineCode` es la posición justo detrás del backtick de cierre, donde puede
+// empezar otra construcción. Si `isInsideCode` metiera esa posición en el
+// código, lo que va pegado al cierre se quedaría sin pintar.
+
+test("pegada al cierre: la flecha que empieza justo detrás del backtick sí se pinta", () => {
+  const doc = "`x`->y";
+  assert.deepEqual(arrowsOf(doc), [{ from: 3, to: 5, class: undefined, glyph: "→" }]);
+});
+
+test("pegado al cierre: el `<u>` que empieza justo detrás del backtick sí se pinta", () => {
+  const doc = "Pegado: `x`<u>y</u> fin";
+  const decs = underlinesOf(doc);
+  assert.deepEqual(
+    decs.map((d) => [d.from, d.to, d.class || "replace"]),
+    [
+      [11, 14, "replace"],
+      [14, 15, "cm-mdm-underline"],
+      [15, 19, "replace"],
+    ]
+  );
+});
