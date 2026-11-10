@@ -517,3 +517,155 @@ def test_una_base_con_clave_rara_sigue_abriendo_y_se_migra_al_renombrarla(client
     datos = frontmatter(carpeta / "Contactos" / "3a7f0000.md")
     assert datos["siguiente"] == "2026-11-20"
     assert "proximo_contacto" not in claves_de_frontmatter(carpeta / "Contactos" / "3a7f0000.md")
+
+
+# ---------------------------------------------------------------------------
+# 6. rework de la revisión: claves de fila y claves huérfanas
+# ---------------------------------------------------------------------------
+
+
+def test_ninguna_clave_derivada_cae_en_una_clave_de_la_fila():
+    """`Title`, `Type`, `ID`… no pueden quedarse con la clave de la propia fila.
+
+    Esas claves son la identidad del fichero (`id`), su tipo, icono, fechas o
+    el título, y el lector las descarta del schema: una propiedad que cayera en
+    una de ellas desaparecería de la tabla sin aviso y el siguiente guardado la
+    borraría del `.md`. Por eso la clave derivada siempre lleva sufijo.
+    """
+    for nombre, reservada in [
+        ("Title", "title"),
+        ("Type", "type"),
+        ("ID", "id"),
+        ("Icon", "icon"),
+        ("Description", "description"),
+        ("Created", "created"),
+        ("Updated", "updated"),
+    ]:
+        assert slug_key(nombre, set()) == f"{reservada}_2"
+
+
+def test_una_propiedad_llamada_title_no_desaparece_ni_se_borra_del_fichero(client, vault_path):
+    base = crear_database(client, title="Vacía", schema_def=[])
+    fichero = vault_path / "Bases" / "Vacía.md"
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}",
+        json={"schema_def": [{"name": "Title", "type": "text"}]},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    schema = respuesta.json()["schema_def"]
+    assert [p["name"] for p in schema] == ["Title"]
+    assert schema[0]["key"] == "title_2"
+    # La propiedad está en el `.md` con su clave derivada, no con `title`.
+    assert [p["key"] for p in frontmatter(fichero)["schema"]] == ["title_2"]
+
+    # El segundo guardado (el que antes la borraba del fichero) la conserva.
+    otra_vez = client.patch(
+        f"/databases/{base['id']}",
+        json={"schema_def": [{"key": "title_2", "name": "Title", "type": "text"}]},
+    )
+    assert otra_vez.status_code == 200, otra_vez.text
+    assert [p["key"] for p in otra_vez.json()["schema_def"]] == ["title_2"]
+    assert [p["key"] for p in frontmatter(fichero)["schema"]] == ["title_2"]
+
+    # Y la columna funciona: la fila guarda y devuelve su valor.
+    fila = crear_fila(client, base["id"], title="Una", properties={"title_2": "hola"})
+    assert fila["properties"]["title_2"] == "hola"
+    leidas = client.get(f"/databases/{base['id']}/rows").json()
+    assert leidas[0]["properties"]["title_2"] == "hola"
+
+
+def test_renombrar_al_nombre_de_una_borrada_no_pierde_valores_ni_rompe(
+    client, vault_path
+):
+    """La clave de una propiedad borrada sigue en los `.md` como valor huérfano.
+
+    Renombrar otra propiedad a ese mismo nombre derivaba la misma clave y el
+    rename (correctamente) se negaba a pisar datos; pero el aviso salía con
+    claves snake_case y la ruta de una fila, y desde la interfaz no había
+    salida. Ahora el destino coge sufijo (`fecha_pactada_2`): no se pisa nada,
+    el rename termina y la tabla y las vistas usan la clave nueva.
+    """
+    base = crear_database(
+        client,
+        title="Contactos",
+        schema_def=[
+            {"name": "Estado", "type": "text"},
+            {"name": "Fecha pactada", "type": "date"},
+        ],
+    )
+    filas = [
+        crear_fila(
+            client,
+            base["id"],
+            title=f"Pedido {n}",
+            properties={"estado": f"lead {n}", "fecha_pactada": f"2026-11-1{n}"},
+        )
+        for n in (1, 2, 3)
+    ]
+    tablero = crear_vista(
+        client,
+        base["id"],
+        name="Pipeline",
+        type="board",
+        config={
+            "group_by": "estado",
+            "filters": [{"key": "estado", "op": "eq", "value": "lead 1"}],
+        },
+    )
+    crear_vista(
+        client,
+        base["id"],
+        name="Agenda",
+        type="calendar",
+        config={"date_property": "fecha_pactada"},
+    )
+
+    # Borrar «Fecha pactada»: sus valores se quedan en los `.md` (decisión
+    # documentada: el fichero es del usuario), pero ya no son una propiedad.
+    borrada = client.patch(
+        f"/databases/{base['id']}",
+        json={"schema_def": [{"key": "estado", "name": "Estado", "type": "text"}]},
+    )
+    assert borrada.status_code == 200, borrada.text
+    for fila, n in zip(filas, (1, 2, 3)):
+        assert frontmatter(fichero_de_fila(vault_path, fila))["fecha_pactada"] == f"2026-11-1{n}"
+
+    # Renombrar «Estado» a «Fecha pactada»: antes era un 400 con claves y rutas.
+    respuesta = client.patch(
+        f"/databases/{base['id']}",
+        json={"schema_def": [{"key": "estado", "name": "Fecha pactada", "type": "text"}]},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    [renombrada] = respuesta.json()["schema_def"]
+    assert renombrada["name"] == "Fecha pactada"
+    clave = renombrada["key"]
+    assert clave == "fecha_pactada_2"
+
+    # Cada fila: el valor de «Estado» con la clave nueva, el huérfano intacto y
+    # ni rastro de la clave vieja.
+    for fila, n in zip(filas, (1, 2, 3)):
+        fichero = fichero_de_fila(vault_path, fila)
+        datos = frontmatter(fichero)
+        assert datos[clave] == f"lead {n}"
+        assert datos["fecha_pactada"] == f"2026-11-1{n}"
+        claves = claves_de_frontmatter(fichero)
+        assert "estado" not in claves
+
+    # El schema y las vistas de la base hablan de la clave nueva.
+    datos_base = frontmatter(vault_path / "Bases" / "Contactos.md")
+    assert [p["key"] for p in datos_base["schema"]] == [clave]
+    vistas = client.get(f"/databases/{base['id']}/views").json()
+    pipeline = next(v for v in vistas if v["id"] == tablero["id"])
+    assert pipeline["config"]["group_by"] == clave
+    assert pipeline["config"]["filters"] == [
+        {"key": clave, "op": "eq", "value": "lead 1"}
+    ]
+
+    # La API y la vista leen el valor con la clave nueva, y el tablero sigue
+    # encontrando las tres filas.
+    leidas = client.get(f"/databases/{base['id']}/rows").json()
+    assert [r["properties"][clave] for r in leidas] == ["lead 1", "lead 2", "lead 3"]
+    assert all("estado" not in r["properties"] for r in leidas)
+    del_tablero = client.get(f"/databases/{base['id']}/rows?view={tablero['id']}").json()
+    assert len(del_tablero) == 1
