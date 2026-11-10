@@ -107,6 +107,43 @@ test("si el movimiento no cabe, la tecla se consume y el documento no se toca", 
   }
 });
 
+test("Alt+↑/↓ con el cursor en el HUECO entre bloques se consume y no escribe nada", () => {
+  // Clic sobre la línea en blanco: el cursor queda FUERA de los dos bloques (la
+  // segunda `\n` del hueco). El comando devolvía `false` y la tecla caía en el
+  // keymap de CodeMirror, que la usa para `moveLineDown`: «parrafo 0\n\n    codigo 1»
+  // acababa en «parrafo 0\n    codigo 1\n», con el bloque de código dentro del
+  // párrafo (2 bloques -> 1) y el `.md` guardado así. Sin bloque que mover, la
+  // tecla es nuestra igual: se consume y no se toca el documento.
+  const docs = [
+    // El caso de la tarjeta: párrafo + bloque de código indentado.
+    "parrafo 0\n\n    codigo 1",
+    // Hueco en medio de tres bloques: el gesto movía la LÍNEA en blanco.
+    "    codigo 1\n\nparrafo\n\n    codigo 2",
+    // Hueco de una sola línea en blanco entre un párrafo y una cita.
+    "uno\n\n> dos",
+  ];
+  let probados = 0;
+  for (const doc of docs) {
+    const blocks = blocksOf(doc);
+    assert.ok(blocks.length >= 2, `el documento tiene bloques: ${JSON.stringify(doc)}`);
+    for (let i = 1; i < blocks.length; i++) {
+      // Todas las posiciones del hueco: desde justo detrás del bloque de arriba
+      // hasta justo delante del de abajo (excluidos los extremos, que ya son de
+      // un bloque).
+      for (let pos = blocks[i - 1].to + 1; pos < blocks[i].from; pos++) {
+        for (const dir of [-1, 1]) {
+          const view = viewAt(doc, pos, blocks);
+          const tecla = `Alt${dir < 0 ? "↑" : "↓"} en el hueco (${pos}) de ${JSON.stringify(doc)}`;
+          assert.equal(runMoveBlockKey(view, dir), true, `${tecla} se consume`);
+          assert.equal(view.dispatches.length, 0, `${tecla} no escribe nada`);
+          probados++;
+        }
+      }
+    }
+  }
+  assert.ok(probados >= 6, `se han probado los huecos (${probados})`);
+});
+
 test("con un bloque marcado con el asa, Alt+↓ lo mueve", () => {
   const blocks = blocksOf(text);
   const view = viewAt(text, 0, blocks, new Set([0]));
