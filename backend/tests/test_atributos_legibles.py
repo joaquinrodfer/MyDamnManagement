@@ -394,6 +394,37 @@ def test_la_columna_del_titulo_se_renombra_y_se_quita(client, vault_path, index_
     reindexar_y_comparar_huella(client, index_path)
 
 
+def test_el_export_ensena_el_rotulo_del_titulo_de_la_base(client):
+    """La exportación a Markdown dice lo mismo que la pantalla.
+
+    Si la columna del título se renombra o se quita, la tabla exportada usa ese
+    rótulo (o no pinta la columna), no un «Título» fijo que ya no se ve.
+    """
+    from test_p17_export import bloque, crear_fila, exportar
+
+    base = crear_database(
+        client,
+        title="Pedidos",
+        schema_def=[{"name": "Estado", "type": "text"}],
+    )
+    crear_fila(client, base["id"], "Uno", estado="abierto")
+    nota = client.post(
+        "/pages",
+        json={
+            "title": "Informe",
+            "body_markdown": bloque(base["id"]),
+        },
+    ).json()
+    assert "| Título | Estado |" in exportar(client, nota).text
+
+    client.patch(f"/databases/{base['id']}", json={"title_name": "Pedido"})
+    assert "| Pedido | Estado |" in exportar(client, nota).text
+
+    client.patch(f"/databases/{base['id']}", json={"title_hidden": True})
+    texto = exportar(client, nota).text
+    assert "| Estado |" in texto and "| Pedido |" not in texto
+
+
 def test_una_base_nueva_nace_sin_propiedades(client, vault_path):
     base = crear_database(client, title="Nueva", schema_def=[])
     assert base["schema_def"] == []

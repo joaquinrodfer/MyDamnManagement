@@ -198,7 +198,7 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
     shown = rows[:limit]
 
     lines = [_caption(database, view, total), ""]
-    lines += _table(columns, shown)
+    lines += _table(columns, shown, database)
     if total > len(shown):
         lines += ["", f"_Mostrando {len(shown)} de {total} filas._"]
     return lines
@@ -281,14 +281,22 @@ def _row_count(total: int) -> str:
     return "1 fila" if total == 1 else f"{total} filas"
 
 
-def _table(columns: list[dict], rows: list[Page]) -> list[str]:
-    headers = [TITLE_COLUMN] + [_escape(str(p.get("name") or p["key"])) for p in columns]
+def _table(columns: list[dict], rows: list[Page], database: Database) -> list[str]:
+    """La tabla de la base, con la columna del título como una columna más.
+
+    Si la base ha renombrado esa columna (`title_name`) o la ha quitado
+    (`title_hidden`), el `.md` exportado dice lo mismo que la pantalla: el
+    mismo rótulo, y sin la columna si no se enseña.
+    """
+    muestra_titulo = not database.title_hidden
+    headers = ([] if not muestra_titulo else [database.title_name or TITLE_COLUMN])
+    headers += [_escape(str(p.get("name") or p["key"])) for p in columns]
     lines = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join("---" for _ in headers) + " |",
     ]
     for row in rows:
-        cells = [_escape(row.title or "Sin título")]
+        cells = [] if not muestra_titulo else [_escape(row.title or "Sin título")]
         cells += [_cell((row.properties or {}).get(p["key"]), p) for p in columns]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
