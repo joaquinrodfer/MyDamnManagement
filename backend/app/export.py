@@ -286,11 +286,19 @@ def _table(columns: list[dict], rows: list[Page], database: Database) -> list[st
 
     Si la base ha renombrado esa columna (`title_name`) o la ha quitado
     (`title_hidden`), el `.md` exportado dice lo mismo que la pantalla: el
-    mismo rótulo, y sin la columna si no se enseña.
+    mismo rótulo, y sin la columna si no se enseña. El rótulo se escapa igual
+    que el de una propiedad: un `|` o un salto de línea en el nombre partirían
+    la tabla en dos.
+
+    Una base sin ninguna columna que enseñar (sin propiedades y con la columna
+    del título oculta) no pinta tabla: una cabecera sin celdas se lee como
+    basura en cualquier visor.
     """
     muestra_titulo = not database.title_hidden
-    headers = ([] if not muestra_titulo else [database.title_name or TITLE_COLUMN])
+    headers = ([] if not muestra_titulo else [_escape(database.title_name or TITLE_COLUMN)])
     headers += [_escape(str(p.get("name") or p["key"])) for p in columns]
+    if not headers:
+        return ["_La base no tiene columnas que enseñar._"]
     lines = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join("---" for _ in headers) + " |",

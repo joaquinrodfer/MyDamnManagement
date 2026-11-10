@@ -456,6 +456,110 @@ def test_el_export_ensena_el_rotulo_del_titulo_de_la_base(client):
     assert "| Estado |" in texto and "| Pedido |" not in texto
 
 
+def celdas_de_la_tabla(texto: str) -> list[int]:
+    """Cuántas celdas tiene cada línea de la tabla del `.md` exportado.
+
+    Cuenta las barras sin escapar: un `\\|` va dentro de una celda, no la
+    parte. Devuelve una entrada por línea de tabla (cabecera y filas).
+    """
+    cuenta = []
+    for linea in texto.split("\n"):
+        if not linea.startswith("|"):
+            continue
+        cuenta.append(len(re.findall(r"(?<!\\)\|", linea)) - 1)
+    return cuenta
+
+
+def test_el_export_escapa_el_rotulo_del_titulo_con_barra(client):
+    """Un `|` en el título de la base no puede partir la tabla exportada.
+
+    El rótulo del título es un encabezado más: se escapa como el de cualquier
+    propiedad. Sin eso la cabecera saca una columna de más y las filas quedan
+    cortas, así que la tabla se lee mal en cualquier visor.
+    """
+    from test_p17_export import bloque, crear_fila, exportar
+
+    base = crear_database(
+        client,
+        title="Pedidos",
+        schema_def=[{"name": "Estado", "type": "text"}],
+    )
+    crear_fila(client, base["id"], "Uno", estado="abierto")
+    nota = client.post(
+        "/pages",
+        json={"title": "Informe", "body_markdown": bloque(base["id"])},
+    ).json()
+
+    renombrada = client.patch(
+        f"/databases/{base['id']}", json={"title_name": "Contacto | Empresa"}
+    )
+    assert renombrada.status_code == 200, renombrada.text
+    assert renombrada.json()["title_name"] == "Contacto | Empresa"
+
+    texto = exportar(client, nota).text
+    assert "| Contacto \\| Empresa | Estado |" in texto
+    assert "| Contacto | Empresa | Estado |" not in texto
+    assert "| Uno | abierto |" in texto
+    assert celdas_de_la_tabla(texto) == [2, 2, 2]
+
+
+def test_el_export_escapa_el_rotulo_del_titulo_con_salto(client):
+    """Un salto de línea en el título tampoco abre una fila nueva.
+
+    La interfaz no deja teclearlo, pero el valor llega por la API y el `.md`
+    tiene que seguir siendo una tabla: el salto va como `<br>`, igual que en
+    una celda.
+    """
+    from test_p17_export import bloque, crear_fila, exportar
+
+    base = crear_database(
+        client,
+        title="Pedidos",
+        schema_def=[{"name": "Estado", "type": "text"}],
+    )
+    crear_fila(client, base["id"], "Uno", estado="abierto")
+    nota = client.post(
+        "/pages",
+        json={"title": "Informe", "body_markdown": bloque(base["id"])},
+    ).json()
+
+    renombrada = client.patch(
+        f"/databases/{base['id']}", json={"title_name": "Contacto\nEmpresa"}
+    )
+    assert renombrada.status_code == 200, renombrada.text
+
+    texto = exportar(client, nota).text
+    assert "| Contacto<br>Empresa | Estado |" in texto
+    assert "| Uno | abierto |" in texto
+    assert celdas_de_la_tabla(texto) == [2, 2, 2]
+
+
+def test_una_base_sin_columnas_no_exporta_una_tabla_vacia(client):
+    """Sin propiedades y con el título oculto no hay columnas: ni tabla.
+
+    Antes salía una tabla de tres líneas sin una sola celda (`|  |`), que no
+    se lee como nada. Se queda el rótulo de la base y una línea que lo dice.
+    """
+    from test_p17_export import bloque, crear_fila, exportar
+
+    base = crear_database(client, title="Nueva", schema_def=[])
+    crear_fila(client, base["id"], "Suelta")
+    nota = client.post(
+        "/pages",
+        json={"title": "Informe", "body_markdown": bloque(base["id"])},
+    ).json()
+
+    oculta = client.patch(f"/databases/{base['id']}", json={"title_hidden": True})
+    assert oculta.status_code == 200, oculta.text
+    assert oculta.json()["title_hidden"] is True
+
+    texto = exportar(client, nota).text
+    assert "**Nueva**" in texto and "(1 fila)" in texto
+    assert "no tiene columnas" in texto
+    assert not [linea for linea in texto.split("\n") if linea.startswith("|")]
+    assert "|  |" not in texto
+
+
 def test_una_base_nueva_nace_sin_propiedades(client, vault_path):
     base = crear_database(client, title="Nueva", schema_def=[])
     assert base["schema_def"] == []
