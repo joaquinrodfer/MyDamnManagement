@@ -53,6 +53,12 @@ import {
   databaseFilterRange,
   normalizeDatabaseEntries,
 } from "./database-choice.js";
+import {
+  normalizePageEntries,
+  pageChoices,
+  pageFilterClear,
+  pageFilterRange,
+} from "./page-choice.js";
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-mdm-h1" },
@@ -1701,25 +1707,80 @@ function applySlashChoice(view, from, to, type) {
 // "Página" no aplica un prefijo de Markdown como el resto de opciones -- crea
 // una página de verdad (llamada a la API) y dejaría un título "Nueva página"
 // repetido cada vez que se usa, con el problema de que un wikilink resuelve
-// por título (ver ARCHITECTURE.md), así que dos "Nueva página" son
-// ambiguas. En vez de crearla al momento, elegir "Página" pasa el menú a un
-// segundo modo ("naming"): se borra "/page" y se deja el cursor listo para
-// que el usuario escriba el nombre de verdad ahí mismo, como texto normal;
-// Enter la crea con ese nombre y la sustituye por el wikilink, Escape
-// cancela y deja el nombre ya escrito como texto normal (no se pierde).
-async function createPageFromName(view, from, to, onCreatePage) {
-  const title = view.state.doc.sliceString(from, to).trim();
+// por título (ver ARCHITECTURE.md), así que dos "Nueva página" son ambiguas.
+//
+// Elegir "Página" abre el selector de páginas (modo "page"): lo que se escribe
+// detrás de "/page" filtra las del vault y, al elegir una, se inserta
+// `[[Título]]` sin crear nada ni navegar. Lo escrito que no coincide con
+// ninguna es el nombre de la nueva (modo "naming", Enter la crea): la app la
+// crea hija de esta nota, el editor quita el nombre del cuerpo y la app
+// guarda lo pendiente y NAVEGA a ella -- antes se quedaba en la nota original
+// y el dueño lo pidió al revés. Si el nombre es el de la nota actual o el de
+// una hija, el selector ofrece renombrarla en vez de crear un duplicado.
+// Escape cancela y deja el nombre ya escrito como texto normal (no se pierde).
+async function createPageFromName(view, from, to, onCreatePage, onOpenPage) {
+  const escrito = view.state.doc.sliceString(from, to);
+  const title = escrito.trim();
   if (!title) {
     view.focus();
     return;
   }
-  const created = await onCreatePage?.(title);
-  if (!created) {
+  let created = null;
+  try {
+    created = await onCreatePage?.(title);
+  } catch {
+    created = null; // la app ya avisó: no hay página y lo escrito se queda
+  }
+  if (!created || !created.id) {
     view.focus();
     return;
   }
-  const insert = `[[${created.title}]]`;
-  view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length } });
+  // Nos vamos a la página nueva, así que el nombre tecleado aquí no puede
+  // quedarse de párrafo suelto en la nota que se deja. Si mientras se creaba el
+  // usuario siguió escribiendo en ese tramo, no se pisa: se navega igual y su
+  // texto se queda (el guardado de al lado lo escribe tal cual).
+  const doc = view.state.doc;
+  const fin = Math.min(to, doc.length);
+  if (fin >= from && doc.sliceString(from, fin) === escrito) {
+    view.dispatch({ changes: { from, to: fin, insert: "" } });
+  }
+  // Espera al guardado de la nota anterior ANTES de navegar: es la promesa que
+  // hace que «/page no pierde ni una letra» sea verdad y no una carrera con el
+  // autoguardado de 2 s.
+  await onOpenPage?.(created.id);
+}
+
+// «Renombrar» del selector de /page: la app renombra el `.md` (PATCH del
+// título) y aquí se deja el enlace nuevo. En la nota que se está mirando no se
+// enlaza: un `[[ella misma]]` no aporta nada, así que solo se quita el nombre
+// tecleado.
+async function renamePageFromName(view, from, to, entry, onRenamePage, currentPageId) {
+  const escrito = view.state.doc.sliceString(from, to);
+  const title = escrito.trim();
+  if (!entry?.id || !title) {
+    view.focus();
+    return;
+  }
+  let renamed = null;
+  try {
+    renamed = await onRenamePage?.(entry.id, title);
+  } catch {
+    renamed = null;
+  }
+  if (!renamed || !renamed.id) {
+    view.focus();
+    return;
+  }
+  const doc = view.state.doc;
+  const fin = Math.min(to, doc.length);
+  if (fin < from || doc.sliceString(from, fin) !== escrito) {
+    view.focus(); // el usuario siguió escribiendo: no se pisa
+    return;
+  }
+  const esLaNotaAbierta =
+    currentPageId != null && String(currentPageId) === String(renamed.id);
+  const insert = esLaNotaAbierta ? "" : linkMarkup(renamed.title);
+  view.dispatch({ changes: { from, to: fin, insert }, selection: { anchor: from + insert.length } });
   view.focus();
 }
 
@@ -1769,9 +1830,13 @@ async function createDatabaseFromName(view, from, to, onCreateDatabase) {
 function slashMenuExtension({
   onMenuUpdate,
   onCreatePage,
+  onOpenPage,
+  onRenamePage,
+  onListPages,
   onListDatabases,
   onPickDatabase,
   onCreateDatabase,
+  currentPageId,
 }) {
   // La instancia viva, para que la app pueda cerrar el selector desde fuera
   // (`discardTransientText`, más abajo): el plugin es la única pieza que sabe
@@ -1783,15 +1848,17 @@ function slashMenuExtension({
       constructor(view) {
         instancia = this;
         this.view = view;
-        this.mode = null; // null | "menu" | "database" | "naming"
+        this.mode = null; // null | "menu" | "page" | "database" | "naming"
         this.from = -1;
         this.selectedIndex = 0;
-        this.namingKind = "page"; // a qué comando pertenece el modo "naming"
+        this.namingKind = "page"; // "page" | "database" | "rename"
+        this.renameTarget = null; // página que se está renombrando (modo "naming")
         this.entries = []; // bases del vault, pedidas al abrir el selector
+        this.pages = []; // páginas del vault, pedidas al abrir el selector
       }
 
       get query() {
-        if (this.mode !== "menu" && this.mode !== "database") return "";
+        if (this.mode !== "menu" && this.mode !== "page" && this.mode !== "database") return "";
         const pos = this.view.state.selection.main.head;
         if (pos < this.from) return "";
         // En el menú "/" la consulta empieza detrás de la barra y acaba en el
@@ -1799,7 +1866,7 @@ function slashMenuExtension({
         // hay barra y manda la línea entera: el filtro es lo que se ve escrito
         // en el documento, no lo que queda a la izquierda del cursor (ver
         // `filterRange`).
-        if (this.mode === "database") {
+        if (this.mode === "database" || this.mode === "page") {
           return this.view.state.doc.sliceString(this.from, this.filterRange().to);
         }
         return this.view.state.doc.sliceString(this.from + 1, pos);
@@ -1817,9 +1884,16 @@ function slashMenuExtension({
         return databaseChoices(this.entries, this.query);
       }
 
-      /** Las opciones que se están enseñando (menú "/" o selector de bases). */
+      /** Selector de páginas: las del vault, la de crear y la de renombrar. */
+      get pageOptions() {
+        return pageChoices(this.pages, this.query, { currentId: currentPageId });
+      }
+
+      /** Las opciones que se están enseñando (menú "/" o un selector). */
       get activeOptions() {
-        return this.mode === "database" ? this.databaseOptions : this.filteredOptions;
+        if (this.mode === "database") return this.databaseOptions;
+        if (this.mode === "page") return this.pageOptions;
+        return this.filteredOptions;
       }
 
       /**
@@ -1833,13 +1907,16 @@ function slashMenuExtension({
        * filtro se quedaba de párrafo suelto detrás del bloque.
        */
       filterRange() {
-        return databaseFilterRange(this.view.state.doc, this.from);
+        return this.mode === "page"
+          ? pageFilterRange(this.view.state.doc, this.from)
+          : databaseFilterRange(this.view.state.doc, this.from);
       }
 
       /** Tramo que ocupa el filtro del selector, o `null` si no hay selector
        * abierto o el filtro está vacío. Es lo escrito en el documento que NO
        * es texto de la nota (ver `getValue`, más abajo). */
       transientRange() {
+        if (this.mode === "page") return pageFilterClear(this.view.state.doc, this.from);
         if (this.mode !== "database") return null;
         return databaseFilterClear(this.view.state.doc, this.from);
       }
@@ -1864,7 +1941,7 @@ function slashMenuExtension({
         // El menú "/" y el selector de bases se comportan igual: viven en
         // una línea y se cierran en cuanto el cursor se sale de ella. La única
         // diferencia es que el menú exige que la barra siga detrás.
-        if (this.mode === "menu" || this.mode === "database") {
+        if (this.mode === "menu" || this.mode === "page" || this.mode === "database") {
           const sel = update.state.selection;
           const pos = sel.main.head;
           const line = update.state.doc.lineAt(Math.min(this.from, update.state.doc.length));
@@ -1903,11 +1980,18 @@ function slashMenuExtension({
         }
         if (this.mode === "naming") {
           const from = this.from;
-          const target = this.namingKind; // "page" | "database": qué se está nombrando
+          const target = this.namingKind; // "page" | "database" | "rename"
+          const renameTitle = this.renameTarget?.title || "";
           setTimeout(() => {
             if (this.mode !== "naming" || this.from < 0) return; // pudo cerrarse mientras tanto
             const coords = this.view.coordsAtPos(Math.min(from, this.view.state.doc.length));
-            onMenuUpdate({ kind: "naming", target, x: coords?.left ?? 0, y: coords?.bottom ?? 0 });
+            onMenuUpdate({
+              kind: "naming",
+              target,
+              renameTitle,
+              x: coords?.left ?? 0,
+              y: coords?.bottom ?? 0,
+            });
           });
           return;
         }
@@ -1922,10 +2006,12 @@ function slashMenuExtension({
         }));
         // Un vault sin bases enseña igualmente el selector (con la opción de
         // crear): el aviso dice por qué la lista está vacía.
-        const note =
-          this.mode === "database" && this.entries.length === 0
-            ? "Aún no hay ninguna base en el vault."
-            : null;
+        let note = null;
+        if (this.mode === "database" && this.entries.length === 0) {
+          note = "Aún no hay ninguna base en el vault.";
+        } else if (this.mode === "page" && this.pages.length === 0) {
+          note = "Aún no hay ninguna página en el vault. Escribe un nombre para crear la primera.";
+        }
         // coordsAtPos() lee el layout del DOM -- CodeMirror no permite
         // hacerlo dentro del propio ciclo de update() ("Reading the editor
         // layout isn't allowed during an update"), así que se difiere fuera
@@ -1934,7 +2020,9 @@ function slashMenuExtension({
         // curso, no esperar a un frame de composición real (que además no
         // se dispara si la pestaña no está pintando).
         setTimeout(() => {
-          if ((this.mode !== "menu" && this.mode !== "database") || this.from < 0) return; // pudo cerrarse mientras tanto
+          if ((this.mode !== "menu" && this.mode !== "page" && this.mode !== "database") || this.from < 0) {
+            return; // pudo cerrarse mientras tanto
+          }
           const coords = this.view.coordsAtPos(this.from);
           onMenuUpdate({
             kind: "menu",
@@ -1953,6 +2041,7 @@ function slashMenuExtension({
         this.mode = null;
         this.from = -1;
         this.namingKind = "page";
+        this.renameTarget = null;
         onMenuUpdate(null);
       }
 
@@ -1963,7 +2052,8 @@ function slashMenuExtension({
         // texto de la nota (si no, «zzz» se queda de párrafo). En el menú "/"
         // no se borra nada: ahí lo escrito es texto de la nota y el menú se
         // cierra por cualquier motivo.
-        const filtro = this.mode === "database" ? this.filterRange() : null;
+        const filtro =
+          this.mode === "database" || this.mode === "page" ? this.filterRange() : null;
         this.dismiss();
         if (filtro) this.dropFilter(filtro);
       }
@@ -2008,8 +2098,11 @@ function slashMenuExtension({
        * revisión de P17.3-fix).
        */
       discardTransientText() {
-        if (this.mode !== "database") return false;
-        const filtro = databaseFilterClear(this.view.state.doc, this.from);
+        if (this.mode !== "database" && this.mode !== "page") return false;
+        const filtro =
+          this.mode === "page"
+            ? pageFilterClear(this.view.state.doc, this.from)
+            : databaseFilterClear(this.view.state.doc, this.from);
         this.dismiss();
         if (!filtro) return false;
         this.view.dispatch({ changes: { from: filtro.from, to: filtro.to, insert: "" } });
@@ -2017,7 +2110,7 @@ function slashMenuExtension({
       }
 
       moveSelection(delta) {
-        if (this.mode !== "menu" && this.mode !== "database") return false;
+        if (this.mode !== "menu" && this.mode !== "page" && this.mode !== "database") return false;
         const n = this.activeOptions.length;
         if (n === 0) return true;
         this.selectedIndex = (this.selectedIndex + delta + n) % n;
@@ -2026,19 +2119,43 @@ function slashMenuExtension({
       }
 
       confirmSelection() {
-        if (this.mode !== "menu" && this.mode !== "database") return false;
+        if (this.mode !== "menu" && this.mode !== "page" && this.mode !== "database") return false;
         const opts = this.activeOptions;
         const from = this.from;
         // En el selector de bases el tramo es todo lo escrito en la línea (ver
         // `filterRange`); en el menú "/" lo escrito es lo que hay a la
         // izquierda del caret, como en cualquier completado.
         const to =
-          this.mode === "database" ? this.filterRange().to : this.view.state.selection.main.head;
+          this.mode === "database" || this.mode === "page"
+            ? this.filterRange().to
+            : this.view.state.selection.main.head;
         if (opts.length === 0) {
           this.close();
           return true;
         }
         const chosen = opts[Math.min(this.selectedIndex, opts.length - 1)];
+
+        // ---- selector de páginas
+        if (this.mode === "page") {
+          if (chosen.kind === "link") {
+            // Enlazar con una página que ya existe: no se crea nada y no se
+            // navega. El tramo (lo tecleado como filtro) pasa a ser `[[Título]]`.
+            this.dismiss();
+            applyLink(this.view, from, to, chosen.entry.title);
+            return true;
+          }
+          if (chosen.kind === "rename") {
+            this.startNaming(from, to, "rename", chosen.entry);
+            return true;
+          }
+          if (chosen.kind === "create") {
+            // Lo escrito se queda como nombre: Enter otra vez crea y abre.
+            this.startNaming(from, to, "page");
+            return true;
+          }
+          this.close();
+          return true;
+        }
 
         // ---- selector de bases
         if (chosen.kind === "item") {
@@ -2061,14 +2178,14 @@ function slashMenuExtension({
           return true;
         }
         if (chosen.type === "page") {
-          // Borra "/consulta" y pasa a modo "naming" -- no se cierra del
-          // todo (el usuario sigue escribiendo, ahora el nombre en vez del
-          // filtro), así que no se llama a this.close(). El estado se
-          // actualiza ANTES del dispatch a propósito: ese dispatch dispara
-          // el propio update() de este plugin de forma síncrona, y si
-          // this.mode siguiera siendo "menu" en ese momento, detectaría el
-          // "/page" ya borrado como si el menú debiera cerrarse.
-          this.startNaming(from, to, "page");
+          // Borra "/page" y abre el selector de páginas: lo que se escriba
+          // detrás filtra las que hay, con la opción de enlazar o de crear
+          // -- el mismo gesto para las dos cosas. El estado se actualiza
+          // ANTES del dispatch a propósito: ese dispatch dispara el propio
+          // update() de este plugin de forma síncrona, y si this.mode
+          // siguiera siendo "menu" en ese momento, detectaría el "/page" ya
+          // borrado como si el menú debiera cerrarse.
+          this.openPagePicker(from);
           return true;
         }
 
@@ -2090,6 +2207,24 @@ function slashMenuExtension({
         // -- no solo hasta el caret --, el mismo tramo que sustituirá el bloque
         // al elegir. Con el caret a mitad, lo que quedara detrás se colaría
         // como filtro del selector recién abierto.
+        this.view.dispatch({
+          changes: { from, to: this.filterRange().to, insert: "" },
+          selection: { anchor: from },
+        });
+      }
+
+      /** Abre el selector de páginas: borra "/page" y lista las del vault. */
+      openPagePicker(from) {
+        this.mode = "page";
+        this.from = from;
+        this.selectedIndex = 0;
+        this.renameTarget = null;
+        // La lista se pide UNA vez, al abrir (igual que en /base): filtrar
+        // mientras se escribe no puede recorrer el árbol en cada tecla.
+        this.pages = normalizePageEntries(onListPages?.());
+        // Lo escrito detrás de "/page" es el filtro: se borra la línea entera
+        // -- no solo hasta el caret --, el mismo tramo que sustituirá el
+        // enlace al elegir (o el nombre al crear).
         this.view.dispatch({
           changes: { from, to: this.filterRange().to, insert: "" },
           selection: { anchor: from },
@@ -2133,20 +2268,23 @@ function slashMenuExtension({
         });
       }
 
-      /** Pasa del menú al aviso de nombre: una página nueva o una base nueva. */
-      startNaming(from, to, kind) {
+      /** Pasa del menú al aviso de nombre: página nueva, base nueva o nombre
+       * nuevo para una página que se renombra. */
+      startNaming(from, to, kind, entry = null) {
         this.mode = "naming";
         this.namingKind = kind;
+        this.renameTarget = kind === "rename" ? entry : null;
         this.from = from;
-        if (kind === "page") {
-          // "/page" (y el filtro escrito detrás) fuera: el nombre empieza de
-          // cero. El dispatch dispara este update(), ya en "naming", que pinta
-          // el aviso.
+        if (kind === "rename") {
+          // El nombre nuevo hay que escribirlo: lo que había era el de la
+          // página que se renombra. Fuera el tramo y el cursor ahí.
           this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
           return;
         }
-        // Al crear una base, lo escrito es el nombre que va a llevar: se queda
-        // tal cual, con el cursor al final, listo para Enter.
+        // Página nueva y base nueva: lo escrito es el nombre que va a llevar,
+        // así que se queda tal cual, con el cursor al final, listo para Enter.
+        // (Antes "/page" venía directo del menú y lo escrito detrás era el
+        // filtro, no el nombre -- por eso se borraba.)
         this.notify();
       }
 
@@ -2154,16 +2292,21 @@ function slashMenuExtension({
         if (this.mode !== "naming") return false;
         const from = this.from;
         const kind = this.namingKind;
-        // Con una base nueva el nombre es todo lo escrito en la línea (el mismo
-        // tramo que era el filtro, ver `filterRange`); con una página, lo
-        // escrito desde que empezó el nombre.
-        const to = kind === "database" ? this.filterRange().to : this.view.state.selection.main.head;
+        const target = this.renameTarget;
+        // El nombre es todo lo escrito en la línea (el mismo tramo que era el
+        // filtro del selector, ver `filterRange`): con el cursor a mitad, lo
+        // que quedara detrás no puede colarse como parte del nombre ni
+        // quedarse de párrafo suelto en la nota.
+        const to = this.filterRange().to;
         this.mode = null;
         this.from = -1;
         this.namingKind = "page";
+        this.renameTarget = null;
         this.notify();
         if (kind === "database") createDatabaseFromName(this.view, from, to, onCreateDatabase);
-        else createPageFromName(this.view, from, to, onCreatePage);
+        else if (kind === "rename") {
+          renamePageFromName(this.view, from, to, target, onRenamePage, currentPageId);
+        } else createPageFromName(this.view, from, to, onCreatePage, onOpenPage);
         return true;
       }
 
@@ -2857,6 +3000,21 @@ function linkCompletion(onCreateLink) {
  * @param {() => void} [opts.onWikilinkHoverEnd]
  * @param {(state: object|null) => void} [opts.onSlashMenu]
  * @param {(title: string) => Promise<{id: string, title: string}|null>} [opts.onCreatePage]
+ *   Crea la página hija de la nota abierta con ese nombre. `null` = no se creó
+ *   (la app ya avisó): el editor no toca el documento ni navega.
+ * @param {(pageId: string) => Promise<void>|void} [opts.onOpenPage]
+ *   Guarda de verdad lo pendiente de la nota actual y navega a la página
+ *   recién creada (`/page` la abre: pedido del dueño). El editor espera a que
+ *   termine antes de darse por hecho.
+ * @param {(pageId: string, title: string) => Promise<{id: string, title: string}|null>} [opts.onRenamePage]
+ *   Renombra una página existente (el `.md` y su título) y devuelve cómo ha
+ *   quedado. `null` = no se renombró.
+ * @param {() => {id: string, title: string, type?: string, parent_id?: string, folder?: string}[]} [opts.onListPages]
+ *   Páginas del vault para el selector de "/page".
+ * @param {string} [opts.currentPageId]
+ *   La nota que se está editando: sirve para no insertar un enlace a sí misma
+ *   y para ofrecer renombrar (en vez de crear un duplicado) cuando el nombre
+ *   escrito es el suyo o el de una hija suya.
  * @param {() => {id: string, title: string, folder?: string}[]} [opts.onListDatabases]
  *   Bases del vault para el comando "/base": el `id` es el de la fila
  *   `databases` (el que va en el bloque) y `folder` la carpeta, para distinguir
@@ -2991,6 +3149,10 @@ export function createNoteEditor({
   onWikilinkHoverEnd,
   onSlashMenu,
   onCreatePage,
+  onOpenPage,
+  onRenamePage,
+  onListPages,
+  currentPageId,
   onCreateLink,
   onListDatabases,
   onPickDatabase,
@@ -3004,9 +3166,13 @@ export function createNoteEditor({
   const slashMenu = slashMenuExtension({
     onMenuUpdate: onSlashMenu ?? (() => {}),
     onCreatePage,
+    onOpenPage,
+    onRenamePage,
+    onListPages,
     onListDatabases,
     onPickDatabase,
     onCreateDatabase,
+    currentPageId,
   });
 
   const view = new EditorView({

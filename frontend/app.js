@@ -21,6 +21,7 @@ const state = {
   repaintAuthor: null, // repinta «Creado por …» de la nota abierta cuando llega /auth/me (P11b)
   refitNoteText: null, // remide el alto de título/descripción de la nota abierta (P14, cambio de ancho)
   noteWidthObserver: null, // ResizeObserver del ancho de la nota abierta (P14); se corta al navegar
+  ownRemoteEvents: new Map(), // page_id -> ms: cambio en disco que ha hecho esta app (no es «de fuera»)
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
 };
@@ -2195,14 +2196,34 @@ function renderNote(page, backlinks) {
     )}Backlinks (${fresh.length})`;
     backList.innerHTML = "";
     if (fresh.length === 0) {
-      backList.innerHTML = '<div class="search-empty">Ninguna página enlaza aquí todavía.</div>';
+      // Una lista vacía no explica nada: el dueño no entendía los backlinks
+      // («no termino de entender demasiado lo de backlinks»), así que cuando
+      // no hay ninguno se dice qué son y cómo se crean, con el título de ESTA
+      // nota dentro del ejemplo -- es el que hay que escribir en la otra.
+      const vacio = document.createElement("div");
+      vacio.className = "backlinks-empty";
+      vacio.textContent = "Ninguna nota enlaza a esta todavía.";
+      const ayuda = document.createElement("div");
+      ayuda.className = "backlinks-help";
+      const ejemplo = document.createElement("code");
+      ejemplo.textContent = `[[${page.title}]]`;
+      ayuda.append("Se crean escribiendo ", ejemplo, " en el cuerpo de otra nota.");
+      backList.append(vacio, ayuda);
       return;
     }
+    // Con backlinks, se lee de dónde viene cada uno: la cabecera dice qué es
+    // esta lista y cada fila es el título de la nota que enlaza, clicable.
+    const cabecera = document.createElement("div");
+    cabecera.className = "backlinks-title";
+    cabecera.textContent = "Notas que enlazan aquí";
+    backList.appendChild(cabecera);
     fresh.forEach((b) => {
       const item = document.createElement("div");
       item.className = "backlink-item";
       item.textContent = b.title;
-      item.addEventListener("click", () => goTo("note", b.id));
+      // navigateToPage y no goTo("note"): un backlink puede venir de una base
+      // de datos (misma tabla `pages`), y su id no es el que abre la base.
+      item.addEventListener("click", () => navigateToPage(b.id));
       makeKeyboardActivatable(item, "button", 0);
       backList.appendChild(item);
     });
@@ -2766,23 +2787,109 @@ function renderNote(page, backlinks) {
   state.noteWidthObserver = noteWidthObserver;
 
   // Comando "/page" del editor: crea una página hija de ÉSTA (page.id, la
-  // que está abierta ahora mismo) con el título que el usuario ya escribió
-  // en el propio editor (entry.js pide primero el nombre -- ver "naming" en
-  // slashMenuExtension -- así se evita crear siempre "Nueva página", que
-  // con varias iguales sería ambiguo para resolver el wikilink por título)
-  // y devuelve {id, title} para que entry.js inserte el enlace.
+  // que está abierta ahora mismo) con el nombre que el usuario escribió en el
+  // selector (ver "page"/"naming" en slashMenuExtension). Devuelve {id, title}
+  // y el editor la abre con `onOpenPage` -- ya no se queda el enlace en esta
+  // nota, porque se navega a la nueva. El nombre es obligatorio: una página
+  // sin título repetiría "Nueva página" y haría ambiguo el wikilink.
   async function createChildPage(title) {
+    const nombre = String(title || "").trim();
+    if (!nombre) return null;
+    let created;
     try {
-      const created = await api("/pages", {
+      created = await api("/pages", {
         method: "POST",
-        body: JSON.stringify({ title, parent_id: page.id, body_markdown: "" }),
+        body: JSON.stringify({ title: nombre, parent_id: page.id, body_markdown: "" }),
       });
-      await loadTree();
-      return { id: created.id, title: created.title };
     } catch (e) {
-      alert("Error al crear la página: " + e.message);
+      if (e?.status === 401) return null; // ya se está yendo al login
+      reportError(`No se pudo crear la página «${nombre}»`, e);
       return null;
     }
+    await loadTree();
+    // El servidor puede haber cambiado el nombre al sanearlo (corchetes, un
+    // fichero que ya existía en el disco...). Se dice cuál ha quedado porque
+    // es la página a la que se va a navegar, no la que se tecleó.
+    if (!sameTitle(created.title, nombre)) {
+      showError(
+        `La página se creó como «${created.title}»: «${nombre}» no estaba libre ` +
+          "o no vale como nombre de fichero.",
+      );
+    }
+    return { id: created.id, title: created.title };
+  }
+
+  // /page navega a la página recién creada (pedido del dueño: «se debería de
+  // acceder automáticamente a esa nueva página»). Lo que había sin guardar en
+  // ESTA nota se guarda de verdad -- se espera al PATCH, no se lanza y se
+  // sigue -- antes de dejar la nota: si no, el autoguardado de 2 s se quedaba
+  // pendiente y lo último tecleado no llegaba al `.md`.
+  async function openPageFromSlash(pageId) {
+    if (!pageId) return;
+    const session = state.noteSession;
+    if (state.flushPendingSave) {
+      const flush = state.flushPendingSave;
+      state.flushPendingSave = null;
+      flush();
+    }
+    await session?.whenQuiet?.(5000);
+    await goTo("note", pageId);
+    // Cursor al principio del cuerpo: el título ya está escrito y así se
+    // empieza a escribir dentro sin tener que dar un clic.
+    state.editor?.jumpTo?.(0);
+  }
+
+  // «Renombrar» del selector de /page. El nombre nuevo tiene que estar libre
+  // entre las hermanas (el servidor desambigua en silencio con un «(2)», y ese
+  // duplicado es justo lo que no se quiere). Devuelve cómo ha quedado para que
+  // el editor escriba el enlace con el título real.
+  async function renamePageFromSlash(pageId, title) {
+    const nombre = String(title || "").trim();
+    const node = state.pagesById.get(pageId);
+    if (!nombre || !node) return null;
+    // El nombre nuevo tiene que estar libre entre sus hermanas. Se compara la
+    // carpeta tal cual -- `""` y `null` son la raíz --, no con childTitleTaken:
+    // esa compara `String(null)` y con la raíz nunca encontraba nada.
+    const carpeta = (n) => String(n.parent_id ?? "");
+    for (const otra of state.pagesById.values()) {
+      if (String(otra.id) === String(pageId)) continue;
+      if (carpeta(otra) !== carpeta(node)) continue;
+      if (!sameTitle(otra.title, nombre)) continue;
+      showError(`Ya hay una página llamada «${otra.title}» en esa carpeta. Elige otro nombre.`);
+      return null;
+    }
+    let updated;
+    try {
+      updated = await api(`/pages/${pageId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: nombre }),
+      });
+    } catch (e) {
+      if (e?.status === 401) return null;
+      reportError(`No se pudo renombrar «${node.title}»`, e);
+      return null;
+    }
+    await loadTree();
+    // El vigilante verá el `.md` renombrado y lo contará por /events como una
+    // edición de FUERA; es nuestra, así que se apunta para no enseñar el aviso
+    // «esta nota cambió en disco» (que además bloquearía el guardado pendiente
+    // del nombre que el editor acaba de quitar del cuerpo).
+    state.ownRemoteEvents.set(String(pageId), Date.now());
+    // Si se renombra la nota que está abierta, su cabecera tiene que enseñar
+    // el nombre nuevo: el PATCH va por el editor, no por el campo del título.
+    if (String(page.id) === String(pageId)) {
+      page.title = updated.title;
+      titleInput.value = updated.title;
+      autoResizeTitle();
+      markActive(pageId);
+    }
+    if (!sameTitle(updated.title, nombre)) {
+      showError(
+        `La página se llama ahora «${updated.title}»: «${nombre}» no estaba libre ` +
+          "o no vale como nombre de fichero.",
+      );
+    }
+    return { id: pageId, title: updated.title };
   }
 
   // Comando "Crear «…»" del autocompletado de "[[" (entry.js): la nota nueva
@@ -2868,6 +2975,10 @@ function renderNote(page, backlinks) {
       renderOutline();
     },
     onCreatePage: createChildPage,
+    onOpenPage: openPageFromSlash,
+    onRenamePage: renamePageFromSlash,
+    onListPages: listPageEntries,
+    currentPageId: page.id,
     onCreateLink: createLinkedPage,
     onBlockContextMenu: (payload) => {
       const n = payload.count;
@@ -3505,6 +3616,23 @@ function handleVaultEvent(data) {
   // editor.
   scheduleTreeRefresh();
 
+  // Cambio hecho por la propia app y ya contado (renombrar la nota abierta
+  // desde /page): el árbol ya se ha refrescado arriba, pero no es una edición
+  // externa -- sin esto salía el aviso de «cambió en disco» con el guardado
+  // pendiente bloqueado justo después de renombrar. Se consume una sola vez y
+  // caduca, por si el evento no llega (el vigilante puede estar apagado).
+  const propio = state.ownRemoteEvents.get(String(data.page_id));
+  if (propio !== undefined) {
+    state.ownRemoteEvents.delete(String(data.page_id));
+    if (Date.now() - propio < 10000) {
+      // Los backlinks de la nota abierta sí se refrescan: el título acaba de
+      // cambiar, y un enlace entrante escrito con el nombre viejo ya no la
+      // encuentra. Lo que no se hace es recargar el documento ni avisar.
+      state.noteSession?.refreshBacklinks?.();
+      return;
+    }
+  }
+
   const session = state.noteSession;
   if (!session || session.id !== data.page_id) {
     // Otra nota: sus wikilinks pueden ser backlinks de la que está abierta.
@@ -3825,10 +3953,16 @@ function renderSlashMenu(menuState) {
   if (menuState.kind === "naming") {
     const hint = document.createElement("div");
     hint.className = "mdm-slash-naming";
-    hint.textContent =
-      menuState.target === "database"
-        ? "Nombre de la base · Enter para crear · Esc para cancelar"
-        : "Nombre de la página · Enter para crear · Esc para cancelar";
+    if (menuState.target === "rename") {
+      // Se dice lo que va a pasar ANTES de hacerlo: se renombra esa página (su
+      // título y su fichero), no se crea una nueva.
+      hint.textContent = `Renombrar «${menuState.renameTitle}» → nombre nuevo · Enter renombra la página · Esc cancela`;
+    } else {
+      hint.textContent =
+        menuState.target === "database"
+          ? "Nombre de la base · Enter para crear · Esc para cancelar"
+          : "Nombre de la página · Enter para crear y abrirla · Esc cancela";
+    }
     positionFloating(hint, menuState.x, menuState.y);
     slashMenuEl = hint;
     return;
@@ -3847,7 +3981,10 @@ function renderSlashMenu(menuState) {
   }
 
   if (menuState.options.length === 0) {
-    menu.innerHTML = '<div class="search-empty">Sin coincidencias.</div>';
+    // Un vault sin páginas ya trae su explicación en `note` («Aún no hay
+    // ninguna página…»): añadir «Sin coincidencias» debajo sería decir dos
+    // veces lo mismo, y lo segundo es mentira (no hay nada que buscar).
+    menu.innerHTML = menuState.note ? "" : '<div class="search-empty">Sin coincidencias.</div>';
   } else {
     menuState.options.forEach((opt, i) => {
       const item = document.createElement("div");
@@ -3935,6 +4072,36 @@ function listDatabaseEntries() {
   return bases.sort(
     (a, b) => a.title.localeCompare(b.title, "es") || a.folder.localeCompare(b.folder, "es"),
   );
+}
+
+/** Carpeta de una página, deducida del árbol (en la raíz: vacío). Es lo que
+ * distingue dos páginas con el mismo título en el selector de /page. */
+function pageFolderLabel(node) {
+  const partes = [];
+  let actual = node;
+  for (let i = 0; i < 32 && actual?.parent_id; i++) {
+    actual = state.pagesById.get(actual.parent_id);
+    if (!actual) break;
+    partes.unshift(actual.title || "Sin título");
+  }
+  return partes.join(" / ");
+}
+
+/** Las páginas del vault (notas y bases) para el selector del comando /page.
+ * El `id` es el de la página -- el del árbol y /pages/{id} --, no el de la fila
+ * `databases`. */
+function listPageEntries() {
+  const paginas = [];
+  for (const node of state.pagesById.values()) {
+    paginas.push({
+      id: node.id,
+      title: node.title || "Sin título",
+      type: node.type || "note",
+      parent_id: node.parent_id ?? null,
+      folder: pageFolderLabel(node),
+    });
+  }
+  return paginas;
 }
 
 /** ¿Ya hay una página (nota o base) con ese nombre en la carpeta de `parentId`?
