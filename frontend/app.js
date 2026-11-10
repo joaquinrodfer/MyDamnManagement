@@ -4910,6 +4910,21 @@ function claveDeMesDeVista(database, view) {
   return `${database.id}:${view.id}`;
 }
 
+// El ancho que decide si el calendario se pinta como rejilla o como agenda. La
+// consulta y su listener son de módulo, como `drawerQuery`: un MediaQueryList
+// por render dejaría un listener vivo por cada pestaña abierta o cada guardado
+// (cada `renderDatabase` pinta el calendario otra vez) y cada uno repintaría su
+// rejilla aunque ya estuviera fuera del documento, así que el coste de mover la
+// ventana crecía con las veces que se hubiera abierto el calendario.
+const CALENDAR_NARROW_QUERY = "(max-width: 640px)";
+const calendarQuery = window.matchMedia(CALENDAR_NARROW_QUERY);
+let calendarioVivo = null; // { wrap, repaint } del último renderCalendar
+
+calendarQuery.addEventListener("change", () => {
+  if (!calendarioVivo || !calendarioVivo.wrap.isConnected) return;
+  calendarioVivo.repaint();
+});
+
 /** El aviso de una vista que no puede pintarse: un título y qué hacer. Nunca
  * una vista en blanco: si el calendario no tiene fecha, lo dice. */
 function avisoDeVista(titulo, detalle) {
@@ -5046,9 +5061,8 @@ function renderCalendar(database, rows, view, refresh) {
   // En pantalla estrecha una rejilla de siete columnas deja 45 px por día: ni
   // el número se lee bien. Ahí la misma lista de días se pinta como agenda
   // (un bloque por día con sus filas), que es lo que cabe a 375 px. El cambio
-  // de ancho se sigue (rotar el móvil, estirar la ventana) repintando.
-  const estrecho = window.matchMedia("(max-width: 640px)");
-  estrecho.addEventListener("change", () => repaint());
+  // de ancho lo sigue el listener de módulo de `calendarQuery`, que repinta el
+  // calendario que esté en el documento (ver arriba).
 
   const chipDeFila = (row) => {
     // Un botón de verdad: se abre con Tab/Enter como el resto del panel, y
@@ -5130,11 +5144,11 @@ function renderCalendar(database, rows, view, refresh) {
       ? "«Sin fecha»: no tienen valor en esta propiedad. «Fecha no válida»: el valor no es un día real (por ejemplo, 31 de noviembre) y hay que corregirlo."
       : "Filas que no se pueden colocar: no tienen valor en esta propiedad de fecha.";
     sinFecha.classList.toggle("is-warn", invalidas > 0);
-    sinFecha.hidden = sueltas + invalidas === 0 || estrecho.matches;
+    sinFecha.hidden = sueltas + invalidas === 0 || calendarQuery.matches;
 
     grid.innerHTML = "";
     const dias = new Date(anio, mes + 1, 0).getDate(); // día 0 del mes siguiente
-    if (estrecho.matches) {
+    if (calendarQuery.matches) {
       grid.className = "calendar-agenda";
       repaintAgenda(porDia, dias, sueltas, invalidas);
       return;
@@ -5209,6 +5223,10 @@ function renderCalendar(database, rows, view, refresh) {
 
   wrap.append(toolbar, grid);
   repaint();
+  // Este es el calendario que hay que repintar al cambiar el ancho. El anterior
+  // (otra pestaña, la misma vista repintada tras guardar) queda sin
+  // referencias y se puede recoger.
+  calendarioVivo = { wrap, repaint };
   return wrap;
 }
 
