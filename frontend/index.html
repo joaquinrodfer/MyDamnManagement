@@ -2180,7 +2180,12 @@
     main { padding: 14px 16px 40px; }
     .note-topbar { flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
     .note-topbar-right { flex-wrap: wrap; gap: 6px; }
-    .note-title-row { gap: 6px; align-items: center; }
+    /* El icono se alinea con la PRIMERA línea del título, no con el centro de
+       la fila: con `align-items: center` la fila mide 48 (44 del título + 4
+       de su margen inferior) y el icono quedaba 2 px por debajo de esa línea;
+       con flex-start el desfase es 0,5 px y, si el título ocupa dos líneas,
+       el emoji sigue pegado a la primera. */
+    .note-title-row { gap: 6px; align-items: flex-start; }
     /* El título toma el tamaño de la escala móvil (--text-note-title: 28 px),
        no un literal: así sigue por encima del H1 (24) sin gastar media
        pantalla, y el siguiente ajuste se hace en el :root de arriba. */
