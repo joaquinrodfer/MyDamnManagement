@@ -973,6 +973,11 @@
   }
   .cm-mdm-strong { font-weight: 700; }
   .cm-mdm-em { font-style: italic; }
+  /* Subrayado (⌘U): Markdown no lo tiene, así que el documento lleva
+     `<u>texto</u>` -- lo que renderizan Obsidian y GitHub. Las etiquetas se
+     ocultan como el resto de marcas (cm-mdm-mark) y el texto de dentro se
+     subraya aquí. Mismo trazo que los enlaces, sin color de enlace. */
+  .cm-mdm-underline { text-decoration: underline; text-underline-offset: 2px; }
   .cm-mdm-code { font-family: var(--font-mono); background: var(--code-bg); border-radius: 3px; padding: 0 3px; }
   .cm-mdm-wikilink { color: var(--accent-ink); text-decoration: underline; }
   .cm-mdm-wikilink-missing { color: var(--ink-muted); text-decoration: underline dotted; }
