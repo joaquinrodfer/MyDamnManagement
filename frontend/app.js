@@ -4410,6 +4410,10 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 
   if (activeView && activeView.type === "board" && activeView.config?.group_by) {
     content.appendChild(renderBoard(database, rows, activeView, refresh));
+  } else if (activeView && activeView.type === "calendar") {
+    content.appendChild(renderCalendar(database, rows, activeView, refresh));
+  } else if (activeView && activeView.type === "list") {
+    content.appendChild(renderList(database, rows, refresh));
   } else {
     content.appendChild(renderTable(database, rows));
   }
@@ -5018,6 +5022,413 @@ async function moveCard(row, value, database, groupKey, refresh) {
   }
 }
 
+// ------------------------------------------------------------- calendario
+/** La clave `YYYY-MM-DD` de un valor de una propiedad fecha, leída del texto y
+ * no de `new Date(valor)`.
+ *
+ * `new Date("2026-11-10")` se interpreta como medianoche UTC: en cualquier huso
+ * al oeste de Greenwich cae en el 9 de noviembre y la fila aparece un día
+ * antes. Una fecha del vault es una fecha civil —el día que se escribió, sin
+ * hora ni huso— y por eso se compara como texto. Un valor con hora
+ * (`2026-11-10T23:00`) se queda con el día que lleva escrito.
+ */
+function claveDeFecha(value) {
+  if (value === null || value === undefined) return null;
+  const m = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  // Un `YYYY-MM-DD` con mes o día imposibles (`2026-11-31`, `2026-13-01`) no
+  // es una fecha: aceptarlo lo mandaba a una celda que no existe y la fila
+  // desaparecía del calendario sin contarse en ningún aviso. Se valida contra
+  // el mes real y sin `Date`, que además desplaza los años de cuatro cifras
+  // pequeñas (año 99 -> 1999).
+  const anio = Number(m[1]);
+  const mes = Number(m[2]);
+  const dia = Number(m[3]);
+  if (mes < 1 || mes > 12) return null;
+  const bisiesto = (anio % 4 === 0 && anio % 100 !== 0) || anio % 400 === 0;
+  const diasDelMes = [31, bisiesto ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (dia < 1 || dia > diasDelMes[mes - 1]) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
+
+/** El día de hoy en el huso del navegador, con la misma forma que
+ * `claveDeFecha` (`toISOString()` daría el día en UTC, que no es el del
+ * calendario que está mirando el usuario). */
+function claveDeHoy() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+const MESES = [
+  "enero", "febrero", "marzo", "abril", "mayo", "junio",
+  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+];
+// Semana que empieza en lunes, como los calendarios de aquí.
+const DIAS_SEMANA = ["L", "M", "X", "J", "V", "S", "D"];
+
+// El mes que está mirando el usuario, por vista. `refresh` (guardar una fila,
+// mover una tarjeta) reconstruye la vista entera; sin esto, editar un evento
+// de otro mes devolvía el calendario al mes de hoy y se perdía el sitio desde
+// el que se estaba editando.
+const mesDeCalendario = new Map();
+
+function claveDeMesDeVista(database, view) {
+  return `${database.id}:${view.id}`;
+}
+
+// El ancho que decide si el calendario se pinta como rejilla o como agenda. La
+// consulta y su listener son de módulo, como `drawerQuery`: un MediaQueryList
+// por render dejaría un listener vivo por cada pestaña abierta o cada guardado
+// (cada `renderDatabase` pinta el calendario otra vez) y cada uno repintaría su
+// rejilla aunque ya estuviera fuera del documento, así que el coste de mover la
+// ventana crecía con las veces que se hubiera abierto el calendario.
+const CALENDAR_NARROW_QUERY = "(max-width: 640px)";
+const calendarQuery = window.matchMedia(CALENDAR_NARROW_QUERY);
+let calendarioVivo = null; // { wrap, repaint } del último renderCalendar
+
+calendarQuery.addEventListener("change", () => {
+  if (!calendarioVivo || !calendarioVivo.wrap.isConnected) return;
+  calendarioVivo.repaint();
+});
+
+/** El aviso de una vista que no puede pintarse: un título y qué hacer. Nunca
+ * una vista en blanco: si el calendario no tiene fecha, lo dice. */
+function avisoDeVista(titulo, detalle) {
+  const box = document.createElement("div");
+  box.className = "db-view-empty";
+  const h = document.createElement("p");
+  h.className = "db-view-empty-title";
+  h.textContent = titulo;
+  box.appendChild(h);
+  if (detalle) {
+    const p = document.createElement("p");
+    p.className = "db-view-empty-note";
+    p.textContent = detalle;
+    box.appendChild(p);
+  }
+  return box;
+}
+
+/** El recuento de las filas que el calendario no puede colocar: las que no
+ * tienen valor en la propiedad de fecha y las que tienen un valor que no es un
+ * día real (`2026-11-31`). Las dos se cuentan y se dicen; antes la segunda
+ * desaparecía en silencio. */
+function textoDeFilasFuera(sueltas, invalidas) {
+  const partes = [];
+  if (sueltas) partes.push(sueltas === 1 ? "1 fila sin fecha" : `${sueltas} filas sin fecha`);
+  if (invalidas) {
+    partes.push(invalidas === 1 ? "1 fila con fecha no válida" : `${invalidas} filas con fecha no válida`);
+  }
+  return partes.join(" · ");
+}
+
+/** Vista de calendario: cada fila en el día que tiene en una propiedad de
+ * fecha, en una rejilla mensual con navegación.
+ *
+ * Qué fecha se usa lo dice `config.date_property` (lo elige el diálogo de la
+ * vista); una vista antigua sin esa clave, o con una propiedad que ya no
+ * existe, cae en la primera propiedad de fecha del esquema. Si la base no
+ * tiene ninguna, no se pinta una tabla por debajo ni una caja vacía: se dice
+ * lo que pasa y cómo arreglarlo.
+ */
+function renderCalendar(database, rows, view, refresh) {
+  const dateProps = database.schema_def.filter((p) => p.type === "date");
+  if (dateProps.length === 0) {
+    return avisoDeVista(
+      "Esta base no tiene ninguna propiedad de fecha.",
+      "El calendario coloca cada fila en su día, así que necesita una propiedad de tipo fecha. Añádela en «Propiedades» y vuelve a abrir el calendario.",
+    );
+  }
+
+  // La elegida por la vista, si sigue existiendo; si no, la primera.
+  let dateProp = dateProps.find((p) => p.key === view.config?.date_property) || dateProps[0];
+
+  const hoy = claveDeHoy();
+  const [anioHoy, mesHoy] = [Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1];
+  // Si esta vista ya estaba abierta en otro mes, se vuelve a ese mes: un
+  // repintado (guardar una fila desde un chip) no puede devolver al de hoy.
+  const mesGuardado = mesDeCalendario.get(claveDeMesDeVista(database, view));
+  let anio = mesGuardado?.anio ?? anioHoy;
+  let mes = mesGuardado?.mes ?? mesHoy;
+  const recordarMes = () => mesDeCalendario.set(claveDeMesDeVista(database, view), { anio, mes });
+
+  const wrap = document.createElement("div");
+  wrap.className = "calendar-wrap";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "calendar-toolbar";
+
+  const nav = document.createElement("div");
+  nav.className = "cal-nav";
+  const botonNav = (texto, etiqueta) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn";
+    b.textContent = texto;
+    b.setAttribute("aria-label", etiqueta);
+    return b;
+  };
+  const prevBtn = botonNav("‹", "Mes anterior");
+  const todayBtn = botonNav("Hoy", "Ir al mes actual");
+  const nextBtn = botonNav("›", "Mes siguiente");
+  nav.append(prevBtn, todayBtn, nextBtn);
+
+  const titulo = document.createElement("h3");
+  titulo.className = "cal-title";
+
+  const lado = document.createElement("div");
+  lado.className = "cal-side";
+  // Con una sola propiedad de fecha no hay nada que elegir; con dos o más, se
+  // elige aquí y la elección se guarda en la vista.
+  if (dateProps.length > 1) {
+    const pick = document.createElement("label");
+    pick.className = "cal-date-pick";
+    const pickText = document.createElement("span");
+    pickText.textContent = "Fecha";
+    const sel = document.createElement("select");
+    sel.className = "cal-date-select";
+    sel.setAttribute("aria-label", "Propiedad de fecha del calendario");
+    dateProps.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    });
+    sel.value = dateProp.key;
+    pick.append(pickText, sel);
+    sel.addEventListener("change", async () => {
+      dateProp = dateProps.find((p) => p.key === sel.value) || dateProps[0];
+      repaint();
+      const config = { ...(view.config || {}), date_property: dateProp.key };
+      try {
+        await api(`/databases/${database.id}/views/${view.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ config }),
+        });
+        view.config = config;
+      } catch (e) {
+        // El calendario ya está pintado con la fecha nueva; lo que no se pudo
+        // guardar es que la vista se acuerde la próxima vez.
+        reportError("No se pudo guardar la fecha de la vista", e);
+      }
+    });
+    lado.appendChild(pick);
+  }
+  const sinFecha = document.createElement("span");
+  sinFecha.className = "cal-undated";
+  lado.appendChild(sinFecha);
+
+  toolbar.append(nav, titulo, lado);
+
+  const grid = document.createElement("div");
+  grid.className = "calendar-grid";
+  grid.setAttribute("aria-label", `Calendario de ${database.title}`);
+
+  // En pantalla estrecha una rejilla de siete columnas deja 45 px por día: ni
+  // el número se lee bien. Ahí la misma lista de días se pinta como agenda
+  // (un bloque por día con sus filas), que es lo que cabe a 375 px. El cambio
+  // de ancho lo sigue el listener de módulo de `calendarQuery`, que repinta el
+  // calendario que esté en el documento (ver arriba).
+
+  const chipDeFila = (row) => {
+    // Un botón de verdad: se abre con Tab/Enter como el resto del panel, y
+    // abre la misma fila que la tarjeta del tablero (ahí se edita).
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "cal-event";
+    chip.textContent = row.title || "Sin título";
+    chip.title = row.title || "Sin título";
+    chip.addEventListener("click", () => openRowDialog(database, row, refresh));
+    return chip;
+  };
+
+  const repaintAgenda = (porDia, dias, sueltas, invalidas) => {
+    let pintados = 0;
+    for (let dia = 1; dia <= dias; dia++) {
+      const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+      const delDia = porDia.get(clave) || [];
+      if (!delDia.length) continue; // en la agenda, los días vacíos no ocupan
+      pintados += 1;
+      const bloque = document.createElement("div");
+      bloque.className = "cal-agenda-day" + (clave === hoy ? " is-today" : "");
+      const fecha = document.createElement("span");
+      fecha.className = "cal-agenda-date";
+      fecha.textContent = `${dia} de ${MESES[mes]}`;
+      const eventos = document.createElement("div");
+      eventos.className = "cal-events";
+      delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
+      bloque.append(fecha, eventos);
+      grid.appendChild(bloque);
+    }
+    if (pintados === 0) {
+      const vacio = document.createElement("p");
+      vacio.className = "cal-agenda-empty";
+      vacio.textContent = `Ninguna fila en ${MESES[mes]} de ${anio}.`;
+      grid.appendChild(vacio);
+    }
+    if (sueltas) {
+      const nota = document.createElement("p");
+      nota.className = "cal-agenda-empty";
+      nota.textContent =
+        sueltas === 1
+          ? "1 fila sin fecha no se puede colocar: rellena «" + dateProp.name + "»."
+          : `${sueltas} filas sin fecha no se pueden colocar: rellena «${dateProp.name}».`;
+      grid.appendChild(nota);
+    }
+    if (invalidas) {
+      const nota = document.createElement("p");
+      nota.className = "cal-agenda-empty is-warn";
+      nota.textContent =
+        invalidas === 1
+          ? `1 fila tiene una fecha no válida en «${dateProp.name}» y no se puede colocar: corrige el día y el mes.`
+          : `${invalidas} filas tienen una fecha no válida en «${dateProp.name}» y no se pueden colocar: corrige el día y el mes.`;
+      grid.appendChild(nota);
+    }
+  };
+
+  const repaint = () => {
+    // Una pasada por fila: las que no tienen fecha o tienen una imposible no se
+    // colocan, se cuentan y se avisa de cada grupo por separado.
+    const porDia = new Map();
+    let sueltas = 0;
+    let invalidas = 0;
+    rows.forEach((row) => {
+      const valor = row.properties?.[dateProp.key];
+      const key = claveDeFecha(valor);
+      if (!key) {
+        if (valor === null || valor === undefined || String(valor).trim() === "") sueltas += 1;
+        else invalidas += 1;
+        return;
+      }
+      if (!porDia.has(key)) porDia.set(key, []);
+      porDia.get(key).push(row);
+    });
+
+    titulo.textContent = `${MESES[mes]} de ${anio}`;
+    sinFecha.textContent = textoDeFilasFuera(sueltas, invalidas);
+    sinFecha.title = invalidas
+      ? "«Sin fecha»: no tienen valor en esta propiedad. «Fecha no válida»: el valor no es un día real (por ejemplo, 31 de noviembre) y hay que corregirlo."
+      : "Filas que no se pueden colocar: no tienen valor en esta propiedad de fecha.";
+    sinFecha.classList.toggle("is-warn", invalidas > 0);
+    sinFecha.hidden = sueltas + invalidas === 0 || calendarQuery.matches;
+
+    grid.innerHTML = "";
+    const dias = new Date(anio, mes + 1, 0).getDate(); // día 0 del mes siguiente
+    if (calendarQuery.matches) {
+      grid.className = "calendar-agenda";
+      repaintAgenda(porDia, dias, sueltas, invalidas);
+      return;
+    }
+    grid.className = "calendar-grid";
+
+    DIAS_SEMANA.forEach((d) => {
+      const head = document.createElement("div");
+      head.className = "cal-dow";
+      head.textContent = d;
+      grid.appendChild(head);
+    });
+
+    // Hueco de los días de la semana anterior al día 1 (lunes = 0).
+    const primerDia = new Date(anio, mes, 1);
+    const hueco = (primerDia.getDay() + 6) % 7;
+    for (let i = 0; i < hueco; i++) {
+      const vacia = document.createElement("div");
+      vacia.className = "cal-day is-out";
+      grid.appendChild(vacia);
+    }
+
+    for (let dia = 1; dia <= dias; dia++) {
+      const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+      const delDia = porDia.get(clave) || [];
+      const celda = document.createElement("div");
+      celda.className = "cal-day" + (clave === hoy ? " is-today" : "");
+      celda.dataset.dia = clave;
+      celda.setAttribute(
+        "aria-label",
+        `${dia} de ${MESES[mes]}` +
+          (delDia.length ? `, ${delDia.length === 1 ? "1 fila" : `${delDia.length} filas`}` : ""),
+      );
+      const num = document.createElement("span");
+      num.className = "cal-daynum";
+      num.textContent = String(dia);
+      celda.appendChild(num);
+      const eventos = document.createElement("div");
+      eventos.className = "cal-events";
+      delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
+      celda.appendChild(eventos);
+      grid.appendChild(celda);
+    }
+    // Completa la última semana: la rejilla no deja huecos a la derecha.
+    while (grid.children.length % 7 !== 0) {
+      const vacia = document.createElement("div");
+      vacia.className = "cal-day is-out";
+      grid.appendChild(vacia);
+    }
+  };
+
+  const mover = (delta) => {
+    mes += delta;
+    if (mes < 0) {
+      mes = 11;
+      anio -= 1;
+    } else if (mes > 11) {
+      mes = 0;
+      anio += 1;
+    }
+    recordarMes();
+    repaint();
+  };
+  prevBtn.addEventListener("click", () => mover(-1));
+  nextBtn.addEventListener("click", () => mover(1));
+  todayBtn.addEventListener("click", () => {
+    anio = anioHoy;
+    mes = mesHoy;
+    recordarMes();
+    repaint();
+  });
+
+  wrap.append(toolbar, grid);
+  repaint();
+  // Este es el calendario que hay que repintar al cambiar el ancho. El anterior
+  // (otra pestaña, la misma vista repintada tras guardar) queda sin
+  // referencias y se puede recoger.
+  calendarioVivo = { wrap, repaint };
+  return wrap;
+}
+
+/** Vista de lista: una línea por fila, con el título y los valores que tiene
+ * (los vacíos no se pintan). Es la vista de repasar muchas filas de un vistazo;
+ * cada línea abre la fila, que es donde se edita, igual que una tarjeta del
+ * tablero. */
+function renderList(database, rows, refresh) {
+  const wrap = document.createElement("div");
+  wrap.className = "db-list";
+  if (rows.length === 0) {
+    wrap.appendChild(avisoDeVista("Sin filas todavía.", null));
+    return wrap;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "list-row";
+    const title = document.createElement("span");
+    title.className = "list-row-title";
+    title.textContent = row.title || "Sin título";
+    item.appendChild(title);
+    database.schema_def.forEach((p) => {
+      const v = row.properties?.[p.key];
+      if (v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) return;
+      const span = document.createElement("span");
+      span.className = "list-row-prop";
+      span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p)}`;
+      item.appendChild(span);
+    });
+    item.addEventListener("click", () => openRowDialog(database, row, refresh));
+    wrap.appendChild(item);
+  });
+  return wrap;
+}
+
 // -------------------------------------------------------- diálogo: editar fila
 
 const rowDialog = document.getElementById("dialog-row");
@@ -5337,12 +5748,29 @@ function openViewDialog(database) {
     opt.textContent = p.name;
     groupSelect.appendChild(opt);
   });
+  // Las fechas del calendario: solo las propiedades de tipo fecha, que son las
+  // únicas que colocan una fila en un día.
+  const dateSelect = document.getElementById("view-date");
+  dateSelect.innerHTML = "";
+  database.schema_def
+    .filter((p) => p.type === "date")
+    .forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.name;
+      dateSelect.appendChild(opt);
+    });
   document.getElementById("view-groupby-field").hidden = true;
+  document.getElementById("view-date-field").hidden = true;
   viewDialog.showModal();
 }
 
 document.getElementById("view-type").addEventListener("change", (e) => {
   document.getElementById("view-groupby-field").hidden = e.target.value !== "board";
+  // Sin propiedades de fecha no hay nada que elegir: el calendario se crea
+  // igual y dentro dice que a la base le falta una fecha.
+  document.getElementById("view-date-field").hidden =
+    e.target.value !== "calendar" || document.getElementById("view-date").options.length === 0;
 });
 document.getElementById("btn-cancel-view").addEventListener("click", () => viewDialog.close());
 
@@ -5354,10 +5782,21 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
     const groupBy = document.getElementById("view-groupby").value;
     if (groupBy) config.group_by = groupBy;
   }
+  if (type === "calendar") {
+    const dateKey = document.getElementById("view-date").value;
+    if (dateKey) config.date_property = dateKey;
+  }
   try {
-    await api(`/databases/${viewDialogDatabase.id}/views`, { method: "POST", body: JSON.stringify({ name, type, config }) });
+    const created = await api(`/databases/${viewDialogDatabase.id}/views`, {
+      method: "POST",
+      body: JSON.stringify({ name, type, config }),
+    });
     viewDialog.close();
-    await selectDatabase(viewDialogDatabase.id);
+    // Abrir la vista recién creada, no la primera de la base: crear un
+    // calendario y aterrizar en la tabla de siempre hacía dudar de si la vista
+    // existía siquiera.
+    const views = await api(`/databases/${viewDialogDatabase.id}/views`);
+    await renderDatabase(viewDialogDatabase, views, created?.id ?? views[0]?.id ?? null);
   } catch (e) {
     alert("Error al crear la vista: " + e.message);
   }
