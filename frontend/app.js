@@ -4638,6 +4638,24 @@ async function renderDatabaseEmbed(block, container) {
   };
   pintar(rows);
 
+  // El bloque se apunta para que otro bloque de la MISMA base pueda pedirle
+  // que se repinte con lo que diga el servidor, sin rehacer el widget: así se
+  // queda intacto todo lo que vive aquí dentro (el aviso `role=status` y el
+  // foco del «+ Nueva fila»). Lo usa `refrescarOtrosEmbeds`.
+  container.dataset.databaseId = String(database.id);
+  embedsDeBase.set(container, {
+    databaseId: String(database.id),
+    async refresh() {
+      const filas = await api(
+        `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
+      );
+      // El bloque pudo irse mientras llegaba la respuesta (el editor rehace
+      // los widgets con cada aviso de base): pintar en el hueco que ya no está
+      // no rompe nada, pero es trabajo tirado.
+      if (container.isConnected) pintar(filas);
+    },
+  });
+
   head.append(open, meta);
   container.append(
     head,
@@ -4650,6 +4668,12 @@ async function renderDatabaseEmbed(block, container) {
       onDone: (res) => {
         pintar(res.filas);
         if (res.visible) enfocarFila(body, res.fila.id);
+        // Y los DEMÁS bloques de esta misma base, con los datos del servidor:
+        // el eco de este POST se descarta entero (ver `handleDatabaseEvent`),
+        // así que si no se piden aquí se quedan con el contador y las filas de
+        // antes. Este bloque no entra: ya está repintado con `res.filas` y el
+        // aviso y el foco están puestos.
+        refrescarOtrosEmbeds(database.id, container);
       },
     }),
   );
@@ -4688,6 +4712,40 @@ async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
     `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
   );
   return { fila, filas, visible: filas.some((r) => r.id === fila.id) };
+}
+
+/** Los bloques de base pintados en la nota y cómo volver a pintarlos con lo
+ * que diga el servidor: `container` -> `{databaseId, refresh()}`. En un
+ * `WeakMap` (y no en el elemento) para no dejar basura: cuando el editor
+ * rehace un widget o se cambia de nota, la entrada se va con el DOM.
+ *
+ * Solo cubre los bloques de una nota, que son los que no pueden repintarse por
+ * su cuenta: la lista, la agenda y la base entera se repintan con su propia
+ * recarga. */
+const embedsDeBase = new WeakMap();
+
+/** Repinta los bloques de la nota abierta que enseñan `databaseId`, menos
+ * `excepto`, pidiendo a cada uno SUS filas (cada bloque tiene su `view:`, con
+ * su filtro y su orden, y la verdad de qué enseña cada vista es del servidor).
+ *
+ * Hace falta porque en la pestaña que escribe el alta el evento `rows` de
+ * `/events` llega ANTES que la respuesta del POST y se descarta como eco (ver
+ * `handleDatabaseEvent`): sin esto, una nota con dos vistas de la misma base
+ * --`view: Tabla` y `view: Ordenada`, el patrón normal-- dejaba el segundo
+ * bloque con el contador y las filas de antes hasta el siguiente aviso.
+ *
+ * Repinta contador y tabla, nada más: el «+ Nueva fila» de cada bloque (con su
+ * aviso y su foco) no se toca. */
+function refrescarOtrosEmbeds(databaseId, excepto) {
+  const id = String(databaseId);
+  for (const container of document.querySelectorAll(".cm-mdm-dblock-body")) {
+    if (container === excepto) continue;
+    const embed = embedsDeBase.get(container);
+    if (!embed || embed.databaseId !== id) continue;
+    embed.refresh().catch((e) => {
+      console.error("No se pudo refrescar el bloque de la base:", e);
+    });
+  }
 }
 
 /** El aviso de una fila que la vista activa no enseña: su filtro la deja
