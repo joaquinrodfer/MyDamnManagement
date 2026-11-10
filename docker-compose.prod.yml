@@ -1,9 +1,14 @@
 # Despliegue de producción: el código va DENTRO de la imagen, sin recarga en
 # caliente, con un healthcheck que mira el índice y el vault de verdad, y con
 # el puerto publicado SOLO en loopback para que delante vaya `tailscale serve`
-# (paso a paso en la sección "Despliegue" del README.md).
+# (paso a paso en `docs/DESPLIEGUE-PROXMOX.md`).
 #
-#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml pull        # trae la imagen
+#   docker compose -f docker-compose.prod.yml up -d       # la levanta
+#
+# La imagen se publica en GHCR al crear una etiqueta (`.github/workflows/release.yml`).
+# El servidor NO compila: descarga. Para compilar en el servidor hay que
+# descomentar el bloque `build:` de abajo y usar `up -d --build`.
 #
 # `docker-compose.yml` se queda como está: es el de desarrollo (bind-mounts de
 # `backend/app` y `frontend`, `--reload`). Este fichero es autónomo, no un
@@ -11,15 +16,18 @@
 #
 # El nombre del proyecto se fija aquí para que los volúmenes no dependan del
 # directorio desde el que se clone el repo: se llaman `mdm-prod_mdm_vault` y
-# `mdm-prod_mdm_data`, y el README los nombra así en el backup y el restore.
+# `mdm-prod_mdm_data`, y el despliegue y el backup los nombran así.
 name: mdm-prod
 
 services:
   api:
-    build:
-      context: . # raíz del repo: el Dockerfile copia backend/ y frontend/ dentro de la imagen
-      dockerfile: backend/Dockerfile
-    image: mydamnmanagement:prod
+    # Se despliega una ETIQUETA, nunca `latest`: con `latest`, un `pull` cambia
+    # de versión sin que nadie lo haya decidido. El `.env` del servidor fija
+    # `MDM_TAG=v2.2.0` y subir de versión es cambiar esa línea.
+    image: ${MDM_IMAGE:-ghcr.io/joaquinrodfer/mydamnmanagement}:${MDM_TAG:?fija MDM_TAG en el archivo .env}
+    # build:
+    #   context: .
+    #   dockerfile: backend/Dockerfile
     container_name: mdm_api_prod
     restart: unless-stopped
     environment:
