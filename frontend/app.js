@@ -6012,6 +6012,7 @@ function addTitlePropertyRow(database) {
   nameInput.className = "prop-name";
   nameInput.id = "title-prop-name";
   nameInput.placeholder = "Título";
+  nameInput.setAttribute("aria-label", "Nombre de la columna del título");
   nameInput.value = database?.title_name || "Título";
 
   // El tipo no se elige: el título es texto. Se enseña igual que el de las
