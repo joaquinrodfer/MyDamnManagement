@@ -4338,7 +4338,12 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
         api(`/databases/${database.id}`),
         api(`/databases/${database.id}/views`),
       ]);
-      const activa = vistas.some((v) => v.id === activeViewId) ? activeViewId : (vistas[0]?.id ?? null);
+      // `null` es la pestaña «Todas (sin vista)», un estado legítimo: sólo se
+      // cae a la primera vista si la activa era una vista y ya no viene.
+      const activa =
+        activeViewId === null || vistas.some((v) => v.id === activeViewId)
+          ? activeViewId
+          : (vistas[0]?.id ?? null);
       await renderDatabase(fresca, vistas, activa);
     })().catch((e) => reportError("No se pudo refrescar la base de datos", e));
 
