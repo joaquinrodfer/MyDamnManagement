@@ -1,6 +1,18 @@
 /* Visor de nodos (P9). Fichero aparte para no engordar el <style> de
    index.html, que es el del panel y el editor: aquí solo vive el grafo. */
 
+:root {
+  /* Color del trazo de las aristas. Antes era --panel-border (#2a2f3d) al
+     55 % sobre el lienzo --panel (#161922): compuesto #212531, 1,15:1 de
+     contraste. Se veía si lo buscabas, que es justo la queja del dueño.
+     #6c7794 da 3,93:1 sobre --panel oscuro y 4,46:1 sobre el blanco del tema
+     claro (WCAG 1.4.11 pide 3:1 para un trazo que lleva información), así que
+     vale el mismo para los dos temas. El resaltado usa --accent-ink (7,65:1 en
+     oscuro, 8,63:1 en claro) y un trazo de 2,6 px frente a 1,6. */
+  --graph-edge: #6c7794;
+  --graph-edge-active: var(--accent-ink);
+}
+
 .graph-view {
   position: fixed;
   inset: 0;
@@ -63,6 +75,11 @@
 }
 
 .graph-depth { padding: 4px 8px; min-width: 26px; }
+
+/* `hidden` en un elemento con `display: flex` no lo oculta: la regla del autor
+   gana a la del navegador. El grupo «Saltos» se esconde en modo global (solo
+   tiene sentido en el local) y sin esto se quedaba a la vista. */
+.graph-depths[hidden] { display: none; }
 
 .graph-tab:hover:not(:disabled),
 .graph-depth:hover:not(:disabled) { background: var(--code-bg); color: var(--ink); }

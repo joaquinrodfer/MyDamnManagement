@@ -6,9 +6,11 @@ Sirve la tabla `links` ya resuelta, en los dos modos que la interfaz necesita:
   aristas que quedan dentro de esa vecindad. Es el modo por defecto cuando hay
   una nota abierta: el grafo entero de un vault grande no cabe en la pantalla
   ni en la cabeza.
-- **global**: los `limit` nodos de mayor grado del índice y las aristas cuyos
-  **dos** extremos están dentro del corte. Cortar solo los nodos dejaría
-  aristas colgando hacia la nada, que es peor que no pintarlas.
+- **global**: los nodos de mayor grado del índice y las aristas cuyos dos
+  extremos están dentro del corte. Cortar solo los nodos dejaría aristas
+  colgando hacia la nada, que es peor que no pintarlas. **Sin `limit` se
+  devuelve el vault entero**, incluidas las páginas sin enlaces (una nota
+  aislada es un nodo, no un error): el recorte es la excepción, no el defecto.
 
 Decisiones que la respuesta hace explícitas:
 
@@ -54,8 +56,11 @@ from app.wikilinks import extract_titles
 
 router = APIRouter(tags=["graph"])
 
-DEFAULT_GLOBAL_LIMIT = 400
+# Sin `limit` el grafo global es el vault entero: el recorte es la excepción
+# (el visor decide cuándo hace falta, mirando el tamaño de la respuesta). Un
+# `limit` explícito sigue aceptándose para scripts y sigue acotado a 800.
 MAX_GLOBAL_LIMIT = 800
+
 MAX_LOCAL_DEPTH = 2
 
 # Tope de parámetros por consulta. SQLite admite 999 variables desde la 3.27
@@ -240,11 +245,14 @@ def get_graph(
         None, description="Página centro del modo local (obligatoria ahí)"
     ),
     depth: int = Query(1, ge=1, le=MAX_LOCAL_DEPTH, description="Saltos en modo local"),
-    limit: int = Query(
-        DEFAULT_GLOBAL_LIMIT,
+    limit: int | None = Query(
+        None,
         ge=1,
         le=MAX_GLOBAL_LIMIT,
-        description=f"Tope de nodos en modo global (máx. {MAX_GLOBAL_LIMIT})",
+        description=(
+            "Tope de nodos en modo global. Sin él se devuelve el vault entero "
+            f"(máx. {MAX_GLOBAL_LIMIT} si se pide)"
+        ),
     ),
     repo: Repository = Depends(get_repo),
 ):
@@ -272,7 +280,13 @@ def get_graph(
     degrees = _all_degrees(conn)
     total = conn.execute("SELECT count(*) FROM pages").fetchone()[0]
     linked = sorted(degrees, key=lambda page: (-degrees[page], page))
-    if len(linked) >= limit:
+    if limit is None:
+        # Sin tope: el vault entero, y también las páginas sin enlaces. El
+        # orden es el mismo (grado y luego id) para que el visor pueda cortar
+        # por su cuenta sin recalcular nada.
+        sin_enlaces = [p for p in _all_page_ids(conn) if p not in degrees]
+        chosen = linked + sin_enlaces
+    elif len(linked) >= limit:
         # Hay más páginas enlazadas que hueco: el corte no necesita mirar las
         # páginas sin enlaces (grado 0), que nunca entrarían antes que estas.
         chosen = linked[:limit]
@@ -285,6 +299,6 @@ def get_graph(
     return {
         "nodes": nodes,
         "edges": _edges_among(conn, [n["id"] for n in nodes]),
-        "truncated": total > len(nodes),
+        "truncated": len(nodes) < total,
         "broken": _count_broken(conn, bodies),
     }
