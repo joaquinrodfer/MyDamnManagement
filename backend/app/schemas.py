@@ -7,6 +7,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.enums import PageType, ViewType
+from app.properties import DEFAULT_TITLE_NAME
 
 
 class PageBase(BaseModel):
@@ -108,7 +109,16 @@ class PropertyType(str, Enum):
 
 
 class PropertyDef(BaseModel):
-    key: str
+    """Una propiedad del schema.
+
+    `key` es la clave interna del `.md` y **no se le pide al usuario**: el
+    diálogo solo recoge el nombre visible y el servidor la deriva
+    (`app.properties.slug_key`). Por eso al crear o editar puede llegar vacía
+    (`""`); al leer, siempre viene con su valor, porque es la identidad de la
+    propiedad en el fichero y en las filas.
+    """
+
+    key: str = ""
     name: str
     type: PropertyType
     options: Optional[list[str]] = None  # para select / multiselect
@@ -116,7 +126,8 @@ class PropertyDef(BaseModel):
     @field_validator("key")
     @classmethod
     def key_must_be_identifier(cls, v: str) -> str:
-        if not KEY_RE.match(v):
+        # Vacía = «derívala del nombre». Con valor, el contrato de siempre.
+        if v and not KEY_RE.match(v):
             raise ValueError("key debe ser snake_case (minúsculas, dígitos, _), empezando por letra")
         return v
 
@@ -137,6 +148,12 @@ class DatabaseUpdate(BaseModel):
     title: Optional[str] = None
     icon: Optional[str] = None
     schema_def: Optional[list[PropertyDef]] = None
+    # Nombre visible de la columna del título (`null` = no se toca). Es una
+    # columna más: se renombra y se quita, aunque su clave siga siendo `title`.
+    title_name: Optional[str] = None
+    # `True` = la tabla deja de enseñar la columna del título. La fila se sigue
+    # llamando por su `id` (el fichero), y su `title` sigue en el `.md`.
+    title_hidden: Optional[bool] = None
 
 
 class DatabaseRead(BaseModel):
@@ -145,6 +162,11 @@ class DatabaseRead(BaseModel):
     title: str
     icon: Optional[str] = None
     schema_def: list[PropertyDef]
+    # La columna del título: cómo se llama y si se enseña. Cualquier base de
+    # antes de esta tarjeta no trae las claves en su `.md` y sale con los
+    # valores por defecto («Título», visible).
+    title_name: str = DEFAULT_TITLE_NAME
+    title_hidden: bool = False
     created_at: datetime
     updated_at: datetime
 

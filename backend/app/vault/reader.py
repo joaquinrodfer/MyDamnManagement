@@ -361,6 +361,32 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
     return effective
 
 
+def database_title_name(page: Page) -> str | None:
+    """El nombre visible de la columna del título de una base, si lo tiene.
+
+    `None` = la base no ha renombrado esa columna y se enseña «Título». El
+    nombre vive fuera del `schema` porque el título no es una propiedad de la
+    fila: su clave (`title`) es una de las reservadas.
+    """
+    raw = page.frontmatter.get("title_name")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def database_title_hidden(page: Page) -> bool:
+    """¿La tabla de esta base enseña la columna del título?
+
+    Ausente o `false` = sí (lo de siempre). `true` = el usuario quitó esa
+    columna: las filas siguen llamándose por su `id` y su `title` sigue en el
+    `.md`, simplemente la tabla no lo pinta.
+    """
+    raw = page.frontmatter.get("title_hidden")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes", "si", "sí")
+
+
 def read_file(abs_path: str, rel_path: str, st=None) -> Page:
     st = st if st is not None else os.stat(abs_path)
     warnings: list[str] = []

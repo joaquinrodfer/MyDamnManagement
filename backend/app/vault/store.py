@@ -46,6 +46,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -640,10 +641,22 @@ class VaultStore:
         views = reader.views_from_frontmatter(
             page.frontmatter.get("views"), record.id, page.path, warnings
         )
+        title_name = reader.database_title_name(page)
+        title_hidden = reader.database_title_hidden(page)
         self.conn.execute(
             "INSERT INTO databases (id, page_id, schema_json) VALUES (?, ?, ?)"
             " ON CONFLICT(id) DO UPDATE SET schema_json = excluded.schema_json",
             (record.id, record.id, _dump(schema)),
+        )
+        # La columna del título va en su tabla (su clave es la reservada
+        # `title` y no puede estar en el `schema`). Se escribe una fila siempre
+        # —aunque sean los valores por defecto— para que reindexar produzca
+        # exactamente el mismo índice que la escritura desde la app.
+        self.conn.execute(
+            "INSERT INTO database_titles (database_id, name, hidden) VALUES (?, ?, ?)"
+            " ON CONFLICT(database_id) DO UPDATE SET name = excluded.name,"
+            " hidden = excluded.hidden",
+            (record.id, title_name, int(title_hidden)),
         )
         self.conn.execute("DELETE FROM views WHERE database_id = ?", (record.id,))
         taken = {
@@ -1189,6 +1202,8 @@ class VaultStore:
         icon: Optional[str] = None,
         description: Optional[str] = None,
         created_by: Optional[str] = None,
+        title_name: Optional[str] = None,
+        title_hidden: bool = False,
     ) -> str:
         """Escribe `Bases/<slug>.md` (y su carpeta de filas) e indexa. Devuelve su id."""
         self.ensure_structure()
@@ -1201,6 +1216,7 @@ class VaultStore:
         page, notes = writer.create_database(
             self.root, folder, title, schema, entries,
             icon=icon, db_id=page_id, description=description, created_by=created_by,
+            title_name=title_name, title_hidden=title_hidden,
         )
         with self._tx():
             self._index_file(page.path, self._parent_str(parent_id))
@@ -1220,6 +1236,8 @@ class VaultStore:
         body: Any = UNSET,
         header_image: Any = UNSET,
         parent_id: Any = UNSET,
+        title_name: Any = UNSET,
+        title_hidden: Any = UNSET,
     ) -> None:
         """Reescribe la base (y la renombra con sus filas si toca) y la indexa.
 
@@ -1293,6 +1311,18 @@ class VaultStore:
                 writer.view_entry({**view, "id": view.get("id") or str(uuid.uuid4())})
                 for view in views
             ]
+        # La columna del título: `title_name` es su nombre visible y
+        # `title_hidden` dice si la tabla la enseña. Los valores por defecto no
+        # se escriben (el `.md` no lleva ruido); `None` en `fm.rewrite` borra la
+        # clave, que es justo lo que hay que hacer al volver al valor por
+        # defecto o al restaurar la columna.
+        if title_name is not UNSET:
+            name = str(title_name or "").strip()
+            updates["title_name"] = (
+                None if not name or name == writer.DEFAULT_TITLE_NAME else name
+            )
+        if title_hidden is not UNSET:
+            updates["title_hidden"] = True if title_hidden else None
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)
@@ -1302,6 +1332,97 @@ class VaultStore:
             self._index_file(new_rel, new_parent)
             if folder_moved:
                 self._repath_rows(old_children, new_children)
+
+    def reindex_rows(self, database_id: Any) -> int:
+        """Relee del disco las filas de la base y actualiza su entrada del índice.
+
+        Hace falta cuando cambia el `schema`: `_index_row` filtra las
+        propiedades de la fila contra el schema de la base, así que tras
+        renombrar (o añadir, o borrar) una propiedad el índice tiene que volver
+        a leer los `.md` con el schema nuevo. Devuelve cuántas filas se han
+        releído.
+        """
+        rows = self.conn.execute(
+            "SELECT path FROM rows WHERE database_id = ?", (str(database_id),)
+        ).fetchall()
+        leidas = 0
+        for row in rows:
+            rel = row["path"]
+            if not rel or not os.path.exists(self._abs(rel)):
+                continue
+            self._index_file(rel, None, database_id=str(database_id))
+            leidas += 1
+        return leidas
+
+    def rename_row_properties(self, database_id: Any, renames: dict[str, str]) -> int:
+        """Renombra claves de propiedad en **todas** las filas de la base.
+
+        Se hace sobre el texto del `.md` y no con lo que diga el índice: el
+        índice puede no haber sabido leer un valor (`valor: A-12` en un
+        `number` queda como `null`), y reescribir con ese `null` borraría del
+        fichero lo que el usuario escribió. Aquí solo cambia el nombre de la
+        clave; el valor va tal cual lo leyó el parser.
+
+        Primero se valida y se prepara **todo**, y solo después se escribe: un
+        rename a medias —unas filas con la clave vieja y otras con la nueva— es
+        peor que no poder renombrar. Si una fila trae el valor de esa clave en
+        una construcción que el parser no interpreta (un block scalar `|`), se
+        rechaza el rename entero con el motivo. Devuelve cuántas filas cambian.
+        """
+        rows = self.conn.execute(
+            "SELECT p.id AS id, r.path AS path FROM rows r JOIN pages p ON p.id = r.id"
+            " WHERE r.database_id = ? ORDER BY p.created_at, p.rowid",
+            (str(database_id),),
+        ).fetchall()
+        prepared: list[tuple[str, str, str]] = []
+        for row in rows:
+            rel = row["path"]
+            abs_path = self._abs(rel)
+            if not os.path.exists(abs_path):
+                raise VaultError(
+                    f"el fichero de la fila {row['id']} no está en el vault ({rel}): "
+                    "lanza POST /reindex para reconciliar el índice con el disco"
+                )
+            text, _warnings = _read_text(abs_path)
+            try:
+                raw, _body = fm.split_document(text)
+                data = fm.parse(raw).data if raw is not None else {}
+            except fm.FrontmatterError as exc:
+                raise VaultError(
+                    f"no se puede renombrar en la fila {rel}: su frontmatter no se "
+                    f"puede leer ({exc})"
+                ) from exc
+            updates: dict[str, Any] = {}
+            for old, new in renames.items():
+                if old not in data:
+                    # Puede que la fila no tenga esa propiedad (normal) o que la
+                    # tenga en una forma que el parser no sabe leer (opaque): lo
+                    # segundo no se puede renombrar sin adivinar el valor.
+                    if re.search(rf"(?m)^[ \t]*{re.escape(old)}[ \t]*:", raw or ""):
+                        raise VaultError(
+                            f"no se puede renombrar «{old}» en la fila {rel}: el valor "
+                            "no es legible (block scalar, flow map, ancla o tag) y se "
+                            "perdería; edítala a mano y vuelve a intentarlo"
+                        )
+                    continue
+                if new in data and new != old:
+                    raise VaultError(
+                        f"la fila {rel} ya tiene una propiedad «{new}»: no se puede "
+                        f"renombrar «{old}» encima"
+                    )
+                updates[old] = None      # borra la clave vieja (fm: None = bórrame)
+                updates[new] = data[old]  # y escribe el mismo valor con la nueva
+            if not updates:
+                continue
+            new_text, _notes = fm.rewrite(text, updates)
+            prepared.append((row["id"], rel, new_text))
+
+        for _row_id, rel, new_text in prepared:
+            vaultfs.atomic_write(self._abs(rel), new_text)
+            # Una fila no cuelga del árbol (`parent_id` nulo) y su base es la
+            # que se está renombrando: el índice de la fila se rehace solo.
+            self._index_file(rel, None, database_id=str(database_id))
+        return len(prepared)
 
     def delete_database(self, page_id: Any) -> bool:
         """Mueve la base y todas sus filas a la papelera y limpia el índice."""

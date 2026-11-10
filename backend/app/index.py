@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -144,6 +144,19 @@ MIGRATIONS: dict[int, list[str]] = {
 )""",
         "CREATE INDEX IF NOT EXISTS capture_tokens_user ON capture_tokens(user_id)",
     ],
+    # v6: la columna del título de una base es una columna más (se renombra y
+    # se quita), pero su clave es la reservada `title`, así que no puede vivir
+    # en el `schema`. Va en su propia tabla y no en dos columnas nuevas de
+    # `databases` porque `CREATE TABLE IF NOT EXISTS` sí es idempotente: la
+    # migración es inocua en un fichero recién creado (donde `SCHEMA_SQL` ya
+    # trae la tabla) y en uno viejo.
+    6: [
+        """CREATE TABLE IF NOT EXISTS database_titles (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    name        TEXT,
+    hidden      INTEGER NOT NULL DEFAULT 0
+)""",
+    ],
 }
 
 SCHEMA_SQL = """
@@ -186,6 +199,16 @@ CREATE TABLE databases (
     id          TEXT PRIMARY KEY,
     page_id     TEXT NOT NULL UNIQUE REFERENCES pages(id) ON DELETE CASCADE,
     schema_json TEXT NOT NULL
+);
+
+-- Nombre visible y visibilidad de la columna del título (v6). El título no
+-- es una propiedad de la fila: su clave es `title`, reservada, y su valor vive
+-- en el frontmatter de cada fila. Aquí solo se guarda cómo se llama la columna
+-- y si la tabla la enseña; sin fila, «Título» y visible.
+CREATE TABLE database_titles (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    name        TEXT,
+    hidden      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE views (
@@ -281,7 +304,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -557,7 +580,8 @@ def _inspect(path: str) -> IndexInfo:
             version = SCHEMA_VERSION
 
         missing = {"pages", "databases", "views", "rows", "links",
-                   "workspaces", "meta", "users", "sessions"} - _table_names(conn)
+                   "workspaces", "meta", "users", "sessions",
+                   "database_titles"} - _table_names(conn)
         if missing:
             raise IndexSchemaError(
                 "al índice le faltan tablas: " + ", ".join(sorted(missing))
