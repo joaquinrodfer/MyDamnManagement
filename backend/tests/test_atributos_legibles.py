@@ -104,6 +104,34 @@ def test_el_plan_no_normaliza_una_clave_que_nadie_ha_renombrado():
     assert renombres == {} and borradas == []
 
 
+def test_renombrar_sin_cambiar_el_slug_no_migra_nada():
+    """Cambiar los espacios del nombre no reescribe filas: la clave es la misma."""
+    actual = [{"key": "proximo_contacto", "name": "Próximo contacto", "type": "text"}]
+    final, renombres, borradas = plan_schema(
+        actual, [{"key": "proximo_contacto", "name": "Proximo  contacto", "type": "text"}]
+    )
+    assert renombres == {} and borradas == []
+    assert [p["key"] for p in final] == ["proximo_contacto"]
+    assert final[0]["name"] == "Proximo  contacto"
+
+
+def test_dos_renombrados_no_se_pisan_la_clave():
+    """Una clave nueva no puede caer sobre la vieja de otro renombrado."""
+    actual = [
+        {"key": "a", "name": "A", "type": "text"},
+        {"key": "b", "name": "B", "type": "text"},
+    ]
+    final, renombres, _ = plan_schema(
+        actual,
+        [
+            {"key": "a", "name": "B", "type": "text"},
+            {"key": "b", "name": "C", "type": "text"},
+        ],
+    )
+    assert renombres == {"a": "b_2", "b": "c"}
+    assert [p["key"] for p in final] == ["b_2", "c"]
+
+
 def test_renombrar_no_cuenta_como_borrar():
     """La clave vieja de un rename no es una propiedad borrada."""
     actual = [{"key": "fase", "name": "Fase", "type": "text"}]

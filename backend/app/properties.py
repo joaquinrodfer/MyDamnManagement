@@ -85,6 +85,11 @@ def plan_schema(
         key = str(item.get("key") or "").strip()
         if key in actuales and nombre(item).casefold() == nombre(actuales[key]).casefold():
             conservadas.add(key)
+    # Las claves que se van a renombrar siguen ocupadas hasta que la migración
+    # las libere en las filas: una clave nueva no puede caer sobre una de ellas
+    # (el rename de la fila pisaría el valor de otra propiedad en la misma
+    # escritura).
+    fuentes = {k for k in actuales if k not in conservadas}
     taken: set[str] = set(conservadas)
 
     finales: list[dict[str, Any]] = []
@@ -95,9 +100,13 @@ def plan_schema(
             raise HTTPException(400, "Cada propiedad necesita un nombre")
         if key in actuales and key not in conservadas:
             # Renombrado: el nombre visible ha cambiado. La clave nueva se
-            # deriva del nombre y se migra en filas y vistas.
-            nueva = slug_key(name, taken)
-            renombres[key] = nueva
+            # deriva del nombre y se migra en filas y vistas. La propia clave
+            # se permite (un cambio de espacios que deja el mismo slug no
+            # reescribe ninguna fila).
+            nueva = slug_key(name, (taken | fuentes) - {key})
+            if nueva != key:
+                renombres[key] = nueva
+                taken.add(nueva)
             key = nueva
         elif key and key not in actuales:
             # Clave explícita de una propiedad nueva (plantillas y API directa).

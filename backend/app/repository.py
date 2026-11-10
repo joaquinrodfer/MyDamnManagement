@@ -864,11 +864,17 @@ class Repository:
             title_hidden=UNSET if title_hidden is None else title_hidden,
         )
         if schema_def is not None:
-            # El índice de una fila se filtra contra el schema de su base: con
-            # las claves nuevas (o sin la borrada) hay que releer los `.md`.
-            # Así una propiedad que se vuelve a añadir con la misma clave
-            # recupera los valores que ya estaban en el fichero.
-            self.vault.reindex_rows(database_id)
+            # El índice de una fila se filtra contra el schema de su base: si
+            # el juego de claves cambia (rename, alta o borrado) hay que releer
+            # los `.md`, o las filas se quedarían sin los valores de la clave
+            # nueva. Cambiar solo el tipo no reindexa: el `.md` no se toca y el
+            # índice sigue como estaba hasta que se guarde una fila (lo de
+            # siempre). Una propiedad que se vuelve a añadir con la misma clave
+            # recupera así los valores que ya estaban en el fichero.
+            antes = {p.get("key") for p in current.schema_def if isinstance(p, dict)}
+            despues = {p["key"] for p in final_schema or []}
+            if antes != despues:
+                self.vault.reindex_rows(database_id)
         return self.get_database(database_id)
 
     def _views_with_keys(
