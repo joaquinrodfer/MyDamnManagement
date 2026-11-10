@@ -4014,6 +4014,17 @@ function renderSlashMenu(menuState) {
       });
       menu.appendChild(item);
     });
+
+    // Fila final con lo que el tope deja fuera (selector de /page en un vault
+    // grande, ver capPageChoices en editor-src/page-choice.js). No es una
+    // opción -- no se puede elegir ni resaltar, y el teclado no la visita --:
+    // solo avisa de que la lista sigue y de que hay que escribir para acotar.
+    if (menuState.overflow > 0) {
+      const more = document.createElement("div");
+      more.className = "mdm-slash-menu-more";
+      more.textContent = `… y ${menuState.overflow} más, sigue escribiendo`;
+      menu.appendChild(more);
+    }
   }
 
   positionFloating(menu, menuState.x, menuState.y);

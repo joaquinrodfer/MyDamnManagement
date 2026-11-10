@@ -14,6 +14,8 @@ import assert from "node:assert/strict";
 import { Text } from "@codemirror/state";
 
 import {
+  PAGE_CHOICES_LIMIT,
+  capPageChoices,
   filterPages,
   findExactPage,
   normalizePageEntries,
@@ -179,6 +181,97 @@ test("findExactPage compara sin acentos ni mayúsculas", () => {
   assert.equal(findExactPage(PAGINAS, "año FISCAL")?.id, BASE);
   assert.equal(findExactPage(PAGINAS, ""), null);
   assert.equal(findExactPage(PAGINAS, "no existe"), null);
+});
+
+// ------------------------------------------------------- tope de filas pintadas
+// Un vault grande no puede pintar una fila por página en cada tecla (medido:
+// 107 ms al abrir y 70-90 ms por tecla con 1.208 páginas). El tope recorta lo
+// que se pinta y dice cuántas quedan fuera; lo que NO puede tocar es el orden
+// ni las acciones (crear y renombrar), que no se pueden sustituir escribiendo.
+
+/** Vault sintético: `n` páginas tituladas «Nota 0000» … «Nota 00nn». */
+function vaultDe(n, prefijo = "Nota") {
+  return normalizePageEntries(
+    Array.from({ length: n }, (_, i) => ({
+      id: `page-${String(i).padStart(4, "0")}`,
+      title: `${prefijo} ${String(i).padStart(4, "0")}`,
+    })),
+  );
+}
+
+test("el tope recorta los enlaces y dice cuántos quedan fuera", () => {
+  const { options, hidden } = capPageChoices(
+    pageChoices(vaultDe(PAGE_CHOICES_LIMIT + 10), "", CONTEXTO),
+  );
+  assert.equal(options.length, PAGE_CHOICES_LIMIT);
+  assert.equal(hidden, 10);
+  // El orden es el de siempre: las primeras de la lista, tal cual.
+  assert.equal(options[0].label, "Nota 0000");
+  assert.equal(
+    options.at(-1).label,
+    `Nota ${String(PAGE_CHOICES_LIMIT - 1).padStart(4, "0")}`,
+  );
+  assert.equal(options.every((o) => o.kind === "link"), true);
+});
+
+test("con menos páginas que el tope no se recorta nada", () => {
+  const paginas = vaultDe(3);
+  const completas = pageChoices(paginas, "", CONTEXTO);
+  const { options, hidden } = capPageChoices(completas);
+  assert.equal(hidden, 0);
+  assert.deepEqual(
+    options.map((o) => o.label),
+    ["Nota 0000", "Nota 0001", "Nota 0002"],
+  );
+});
+
+test("el tope se puede bajar (y a 0 no deja ninguna página)", () => {
+  const paginas = vaultDe(6);
+  const { options, hidden } = capPageChoices(pageChoices(paginas, "", CONTEXTO), 2);
+  assert.deepEqual(
+    options.map((o) => o.label),
+    ["Nota 0000", "Nota 0001"],
+  );
+  assert.equal(hidden, 4);
+  const cero = capPageChoices(pageChoices(paginas, "", CONTEXTO), 0);
+  assert.deepEqual(cero.options, []);
+  assert.equal(cero.hidden, 6);
+});
+
+test("crear sobrevive al tope: sin ella no habría forma de crear en un vault grande", () => {
+  // «Nota» no es el título exacto de ninguna, y las 60 coinciden: el tope
+  // recorta los enlaces y «Crear «Nota»» sigue detrás, en su sitio.
+  const paginas = vaultDe(60);
+  const { options, hidden } = capPageChoices(pageChoices(paginas, "Nota", CONTEXTO));
+  assert.equal(options.length, PAGE_CHOICES_LIMIT + 1);
+  assert.equal(hidden, 60 - PAGE_CHOICES_LIMIT);
+  assert.equal(options.at(-1).kind, "create");
+  assert.equal(options.at(-1).label, "Crear «Nota»");
+});
+
+test("renombrar sobrevive al tope y la coincidencia exacta sigue la primera", () => {
+  // La nota actual («Alfa») más 60 hijas que empiezan por «Alfa»: el tope deja
+  // 50 enlaces, pero el primero tiene que seguir siendo la exacta y la acción
+  // de renombrar no puede desaparecer.
+  const hijas = Array.from({ length: 60 }, (_, i) => ({
+    id: `hija-${i}`,
+    title: `Alfa ${i}`,
+    parent_id: ACTUAL,
+  }));
+  const paginas = normalizePageEntries([{ id: ACTUAL, title: "Alfa" }, ...hijas]);
+  const { options, hidden } = capPageChoices(
+    pageChoices(paginas, "Alfa", { currentId: ACTUAL }),
+  );
+  assert.equal(options[0].kind, "link");
+  assert.equal(options[0].id, ACTUAL);
+  assert.equal(options.at(-1).kind, "rename");
+  assert.equal(hidden, 61 - PAGE_CHOICES_LIMIT);
+  assert.equal(options.length, PAGE_CHOICES_LIMIT + 1);
+});
+
+test("el tope no inventa opciones si no hay ninguna", () => {
+  assert.deepEqual(capPageChoices([]), { options: [], hidden: 0 });
+  assert.deepEqual(capPageChoices(undefined), { options: [], hidden: 0 });
 });
 
 test("el tramo del filtro llega al final de la línea, no al caret", () => {

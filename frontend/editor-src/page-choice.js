@@ -162,6 +162,53 @@ export function pageChoices(entries, query, context = {}) {
   return opciones;
 }
 
+/**
+ * Cuántas páginas se pintan como mucho en el selector de `/page`.
+ *
+ * El menú enseña 260 px con scroll (`.mdm-slash-menu` en index.html), así que
+ * pintar el vault entero no se ve: solo cuesta. Medido con 1.208 páginas,
+ * abrir el selector tardaba 107 ms y cada tecla 70-90 ms en repintar ~1.200
+ * filas que nadie llega a mirar (extrapolado a las 12.000 notas del objetivo:
+ * ~1 s al abrir y ~0,8 s por tecla). Con el tope, lo que se pinta deja de
+ * depender del tamaño del vault.
+ *
+ * 50 filas es más de lo que se recorre con las flechas antes de escribir una
+ * letra más; lo que queda fuera se avisa en una fila final («… y N más, sigue
+ * escribiendo») y sigue siendo alcanzable acotando la consulta.
+ */
+export const PAGE_CHOICES_LIMIT = 50;
+
+/**
+ * Recorta la lista de opciones a `limit` páginas enlazables.
+ *
+ * Solo se recortan las de `kind: "link"` (las del vault): las acciones
+ * -- «Renombrar «…»» y «Crear «…»» -- van siempre, aunque el tope esté
+ * alcanzado. Son lo único que no se puede sustituir escribiendo más, y
+ * dejarlas fuera convertiría un vault grande en uno donde `/page` no puede
+ * crear ni renombrar.
+ *
+ * El orden no se toca: se conservan las primeras `limit` tal como las dejó
+ * `pageChoices` (coincidencia exacta primero) y las acciones siguen detrás,
+ * en su orden. Devuelve `{options, hidden}`: lo que hay que pintar y cuántas
+ * páginas se han quedado fuera.
+ */
+export function capPageChoices(options, limit = PAGE_CHOICES_LIMIT) {
+  const lista = Array.isArray(options) ? options : [];
+  const tope =
+    Number.isFinite(limit) && limit >= 0 ? Math.floor(limit) : PAGE_CHOICES_LIMIT;
+  const enlaces = [];
+  const acciones = [];
+  for (const opcion of lista) {
+    if (opcion?.kind === "link") enlaces.push(opcion);
+    else acciones.push(opcion);
+  }
+  if (enlaces.length <= tope) return { options: lista.slice(), hidden: 0 };
+  return {
+    options: enlaces.slice(0, tope).concat(acciones),
+    hidden: enlaces.length - tope,
+  };
+}
+
 /** Lo que se lee a la derecha de cada página en el selector. */
 function pageHint(entry) {
   const tipo = entry.type === "database" ? "base" : "";
