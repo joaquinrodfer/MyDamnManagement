@@ -1,4 +1,6 @@
-// Movimiento de bloques: lógica pura, sin CodeMirror.
+// Movimiento de bloques: lógica pura, sin CodeMirror. Lo único de fuera es el
+// parser de Markdown (`markdownLanguage.parser`): a él se le pregunta cuántos
+// saltos necesita cada frontera, en vez de mantener una tabla de tipos.
 //
 // Un bloque no es un objeto del modelo: es un rango de texto calculado con el
 // árbol de Markdown (ver `blocksFromTree` en block-ranges.js). Moverlo es, por
@@ -31,6 +33,10 @@
 //   esté (aunque sus números no sean 1..n): nadie la ha reordenado.
 // - El resultado es UN cambio de texto (y quien lo aplica lo despacha en UNA
 //   transacción): un solo ⌘Z deshace el movimiento entero.
+
+import { markdownLanguage } from "@codemirror/lang-markdown";
+
+import { blocksFromTree } from "./block-ranges.js";
 
 const ORDERED_RE = /^([ \t]*)(\d+)([.)])/;
 const LIST_ITEM_TYPES = new Set(["bullet_list_item", "ordered_list_item"]);
@@ -120,156 +126,84 @@ function fitGap(gap, count) {
   return left === 0 ? parts.join("\n") : "\n".repeat(count);
 }
 
-const HEADING_TYPES = new Set(["h1", "h2", "h3", "h4", "h5"]);
-
 /**
- * Nombre corto de lo que hay que saber de un bloque para su frontera. `other`
- * agrupa cosas que el editor pinta igual (un bloque HTML, una tabla, una
- * referencia de enlace, una cabecera setext) pero que se pegan a sus vecinos de
- * forma muy distinta, así que se distinguen por el texto. Los ítems de lista se
- * separan en TRES especies porque el número manda: una lista ordenada solo
- * interrumpe lo que tiene encima si empieza en 1 (`3. tercero` pegado a un
- * párrafo es una línea más del párrafo, no un bloque nuevo).
+ * Los bloques que ve el parser en un documento, con su TEXTO (los rangos y los
+ * tipos salen de `blocksFromTree`, la misma función que usa entry.js, para que
+ * la medida no sea sobre bloques inventados).
  */
-function frontierKind(block, body) {
-  if (block.type === "other") return otherKind(body);
-  if (block.type === "bullet_list_item") return "bullet_item";
-  if (block.type === "ordered_list_item") {
-    // El número se lee del texto del bloque (mismo `ORDERED_RE` que reenumera).
-    // Si no se puede leer, el caso conservador es el que pide la línea en blanco.
-    return itemNumber(body) === 1 ? "ordered_item_from_1" : "ordered_item_other";
-  }
-  if (HEADING_TYPES.has(block.type)) return "heading";
-  if (block.type === "hr") return hrKind(body);
-  return block.type; // paragraph, quote, code
+function parsedBlocks(doc) {
+  const root = markdownLanguage.parser.parse(doc).topNode;
+  return blocksFromTree(root).map((b) => ({ type: b.type, text: doc.slice(b.from, b.to) }));
 }
 
-/**
- * `---` no es lo mismo que `***`, `___` o `- - -`: pegado debajo de un párrafo
- * es el subrayado de una cabecera setext, así que necesita la línea en blanco;
- * los demás temas son líneas horizontales que cortan lo que tengan encima.
- */
-function hrKind(body) {
-  const line = (body.split("\n", 1)[0] || "").replace(/[ \t]+$/, "");
-  return /^-+$/.test(line) ? "dashes" : "hr";
-}
-
-/** Qué es un bloque `other`, por su texto. */
-function otherKind(body) {
-  const head = body.replace(/^[ \t]*/, "");
-  if (head.startsWith("<")) {
-    // Un `<pre>`, un `<script>` o un `<?...?>` acaban en su cierre (condiciones
-    // 1-5 de CommonMark): detrás de ellos un salto basta. El resto de bloques
-    // HTML (6-7) se come las líneas de debajo hasta la línea en blanco.
-    if (/^<(script|pre|style|textarea)([ \t>]|$)/i.test(head)) return "html-closed";
-    if (/^<[?]|^<![A-Za-z]|^<!\[CDATA\[/.test(head)) return "html-closed";
-    return "html";
-  }
-  if (/^\[[^\]]*\]:/.test(head)) return "ref"; // LinkReference (`[ref]: url`)
-  // Cabecera setext: ACABA en su subrayado (`---` o `===`), y el texto de encima
-  // puede ser de varias líneas ("titulo uno\ntitulo dos\n---" es una sola
-  // cabecera). Como una cabecera, acaba en su línea; una tabla nunca termina en
-  // un subrayado (sus filas llevan barras).
-  const last = body.split("\n").pop() ?? "";
-  if (/^[ \t]{0,3}(=+|-+)[ \t]*$/.test(last)) return "setext";
-  return "table"; // Table (y cualquier otro `other`: se trata como tabla)
-}
-
-// Nombres de etiqueta que empiezan un bloque HTML «de verdad» (condición 6 de
-// CommonMark). Es la lista del estándar: un nombre que no esté aquí es una
-// etiqueta suelta (condición 7) y esa NO corta un párrafo.
-const HTML_BLOCK_TAGS = new Set(
-  (
-    "address article aside base basefont blockquote body caption center col colgroup dd details " +
-    "dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 " +
-    "head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p " +
-    "param search section summary table tbody td tfoot th thead title tr track ul"
-  ).split(" ")
-);
-
-/**
- * ¿Este bloque HTML corta un párrafo pegado encima? Las condiciones 1-6 de
- * CommonMark sí; la 7 (una etiqueta suelta de nombre desconocido, `<x-foo>`) no,
- * y entonces hace falta la línea en blanco igual que delante de un párrafo.
- */
-function htmlInterrupts(body) {
-  const line = (body.split("\n", 1)[0] || "").replace(/^[ \t]{0,3}/, "");
-  if (/^<(script|pre|style|textarea)([ \t>]|$)/i.test(line)) return true;
-  if (/^<[?]|^<![A-Za-z]|^<!\[CDATA\[/.test(line)) return true;
-  const tag = /^<\/?([A-Za-z][A-Za-z0-9-]*)([ \t]|\/?>|$)/.exec(line);
-  return !!tag && HTML_BLOCK_TAGS.has(tag[1].toLowerCase());
-}
-
-// Parejas que necesitan la LÍNEA EN BLANCO aunque lo de abajo empiece un bloque
-// que normalmente se separa con un salto: lo de arriba se continúa con la
-// primera línea de abajo (un párrafo, una cita o un ítem se la comen) o la lee
-// como parte de sí mismo (una tabla, donde `---` es la fila de guiones).
-//
-// `ordered_item_other` (una lista numerada que NO empieza en 1) pide la línea en
-// blanco detrás de un párrafo, una cita, un ítem de viñeta o una tabla, porque
-// no interrumpe: `3. tercero` con un salto es la línea siguiente de ese
-// párrafo/cita/ítem, y detrás de una tabla una fila más. Entre dos ítems de la
-// misma lista numerada, en cambio, basta un salto (la lista sigue). Medido con
-// el parser pareja por pareja: ver `minNewlines` y la tabla de
-// test/block-move-property.test.js.
-const NEEDS_BLANK_AFTER = {
-  paragraph: new Set(["paragraph", "setext", "dashes", "ref", "ordered_item_other"]),
-  quote: new Set(["paragraph", "setext", "ref", "quote", "ordered_item_other"]),
-  bullet_item: new Set(["paragraph", "setext", "ref", "ordered_item_other"]),
-  // Entre dos ítems de la misma lista numerada basta un salto, empiece en 1 o
-  // no: `1. a\n3. b` son dos ítems de UNA lista (los números no tienen por qué
-  // ser consecutivos para el parser).
-  ordered_item_from_1: new Set(["paragraph", "setext", "ref"]),
-  ordered_item_other: new Set(["paragraph", "setext", "ref"]),
-  table: new Set(["paragraph", "setext", "dashes", "table", "ref", "ordered_item_other"]),
-};
-
-// Tipos que ACABAN en su propia línea: detrás de ellos un salto basta, también
-// delante de un `---` (que detrás de un párrafo sería una cabecera setext, pero
-// aquí ya no tiene párrafo que subrayar).
-const CLOSED = new Set(["heading", "setext", "hr", "dashes", "code", "ref", "html-closed"]);
+// Caché de mínimos por pareja (tipos + textos), con tope de entradas y de
+// caracteres: no es un dato del documento, solo una memoización, así que
+// tirarla no cambia ninguna respuesta. Un documento largo repite parejas entre
+// movimientos y el segundo ya no parsea nada.
+const MIN_CACHE = new Map();
+const MIN_CACHE_MAX_ENTRIES = 4096;
+const MIN_CACHE_MAX_CHARS = 1 << 20; // ~1 MB de textos
+const MIN_CACHE_MAX_KEY = 1 << 15; // dos bloques de más de 16 KB no se cachean
+let minCacheChars = 0;
 
 /**
  * Saltos MÍNIMOS para que Markdown siga leyendo DOS bloques y no uno. Es el
  * suelo: por debajo de esto la frontera es incorrecta aunque haya que dejar de
- * mover. Se mide por PAREJA (no solo mirando el de abajo) y con el parser de
- * verdad, bloque por bloque y por los dos lados: la tabla de
- * test/block-move-property.test.js comprueba que lo que dice esto es lo que
- * hace `markdownLanguage.parser`, probando un salto y dos en cada pareja.
+ * mover.
  *
- * Lo que salió de medirlo:
+ * No hay tabla de tipos: se le PREGUNTA AL PARSER, que es el que decide. Para
+ * la pareja concreta -- `bodyPrev` y `bodyNext` tal como van a quedar escritos
+ * en el documento nuevo (ya reenumerados: un `2.` que se queda solo pasa a `1.`
+ * y entonces sí interrumpe) -- se prueba un salto, luego dos y luego tres, y se
+ * devuelve el primero con el que el parser sigue dando DOS bloques, del mismo
+ * tipo y con el mismo texto cada uno. Con un salto ya salen dos no se prueba el
+ * de dos (cortocircuito).
  *
- * - detrás de un bloque HTML de los que van hasta la línea en blanco, SIEMPRE
- *   dos: se come las líneas de debajo (`<div>x</div>` + `# titulo` con un salto
- *   es UN bloque). Un `<pre>`/`<script>`/`<?...?>` acaba en su cierre y no;
- * - dos citas con un salto son UNA cita (`quote -> quote`: dos);
- * - detrás de una tabla, dos delante de un párrafo, un `---`, otra tabla o una
- *   referencia de enlace: cualquier línea que no sea fila la corta, pero `---`
- *   y las filas se leen como parte de la tabla;
- * - detrás de un párrafo, una cita o un ítem, dos delante de un párrafo, otra
- *   cita, una referencia de enlace o un `---` (detrás de un párrafo, `---` es
- *   una cabecera setext; detrás de una cita o un ítem, una línea suelta sigue
- *   siendo suya);
- * - detrás de una cabecera, una valla, un `---`, una referencia o una cabecera
- *   setext, uno basta: acaban en su línea (la tabla anterior pedía dos delante
- *   de un `---` y no hacía falta, y eso hacía que `Alt+↑` no hiciera nada);
- * - una lista ordenada solo interrumpe lo de arriba si empieza en 1: `3.` y
- *   `7)` piden la línea en blanco detrás de un párrafo, una cita, un ítem o una
- *   tabla (entre dos ítems de la misma lista numerada basta un salto).
+ * Así no queda fuera ningún caso por la forma del bloque: un ítem vacío (`- `,
+ * `1.`) no interrumpe un párrafo pero detrás de él basta un salto; la cita
+ * vacía `>`; un `3.` que no empieza en 1; dos citas seguidas; un bloque HTML que
+ * se come la línea de abajo; un `---` que detrás de un párrafo es una cabecera
+ * setext. La regla no depende del tipo del nodo sino de cómo lo lee CommonMark
+ * en ese contexto exacto, y eso solo lo sabe el parser.
  *
- * `bodyPrev` y `bodyNext` son los textos de los dos bloques TAL COMO VAN A
- * QUEDAR en el documento nuevo (ya reenumerados: un `2.` que se queda solo pasa
- * a `1.` y entonces sí interrumpe), no como estaban.
+ * Si aun con tres saltos no salen los dos bloques, se pide la línea en blanco:
+ * es la frontera de siempre, y puede rechazar un movimiento que cabía (visible:
+ * la tecla no hace nada) pero nunca pega dos bloques en uno. Pasa con el código
+ * indentado, cuyo cuerpo (`codigo 1`, sin la sangría, que se queda en el hueco)
+ * no se lee como el bloque que es: tarjeta t_9d3b6d3b, abierta.
  */
 export function minNewlines(prev, next, bodyPrev, bodyNext) {
-  const a = frontierKind(prev, bodyPrev);
-  const b = frontierKind(next, bodyNext);
-  if (a === "html") return 2; // se come la línea siguiente
-  if (CLOSED.has(a)) return 1; // acaba en su línea: no se continúa con nada
-  const blank = NEEDS_BLANK_AFTER[a];
-  if (!blank) return 2; // tipo que no se conoce: antes dos que uno
-  if (b === "html" && !htmlInterrupts(bodyNext)) return 2;
-  return blank.has(b) ? 2 : 1;
+  const a = String(bodyPrev ?? "");
+  const b = String(bodyNext ?? "");
+  const key = `${prev.type}\u0000${next.type}\u0000${a}\u0000${b}`;
+  const cached = MIN_CACHE.get(key);
+  if (cached !== undefined) return cached;
+
+  let need = 2;
+  for (let gap = 1; gap <= 3; gap++) {
+    const doc = a + "\n".repeat(gap) + b;
+    const blocks = parsedBlocks(doc);
+    if (
+      blocks.length === 2 &&
+      blocks[0].type === prev.type &&
+      blocks[1].type === next.type &&
+      blocks[0].text === a &&
+      blocks[1].text === b
+    ) {
+      need = gap;
+      break;
+    }
+  }
+
+  if (key.length <= MIN_CACHE_MAX_KEY) {
+    if (MIN_CACHE.size >= MIN_CACHE_MAX_ENTRIES || minCacheChars + key.length > MIN_CACHE_MAX_CHARS) {
+      MIN_CACHE.clear();
+      minCacheChars = 0;
+    }
+    MIN_CACHE.set(key, need);
+    minCacheChars += key.length;
+  }
+  return need;
 }
 
 /**

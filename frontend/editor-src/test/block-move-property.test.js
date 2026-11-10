@@ -226,6 +226,17 @@ const PAIR_SAMPLES = {
   "numerado 3": "3. tercero",
   "numerado 7)": "7) numero",
   "numerado 3 con continuacion": "3. tercero\n   con continuacion",
+  // Bloques VACÍOS: el cuerpo es solo el marcador. Se leen distinto que sus
+  // hermanos con texto en los dos sentidos: un ítem vacío NO interrumpe un
+  // párrafo (`parrafo\n- ` es UN bloque), pero detrás de él un salto basta
+  // (`- \nparrafo` son DOS: no hay nada que continuar). La cita vacía `>`, lo
+  // mismo. Con la tabla de tipos esto se colaba en los dos sentidos; medido del
+  // parser sale solo.
+  "item vacio": "- ",
+  "item vacio sin espacio": "-",
+  "numerado vacio": "1.",
+  "numerado vacio parentesis": "1)",
+  "cita vacia": ">",
   tabla: "| a | b |\n| --- | --- |\n| 1 | 2 |",
   referencia: "[ref]: http://x",
   html: "<div>x</div>",
@@ -241,11 +252,12 @@ const PAIR_SAMPLES = {
   "setext de dos lineas": "titulo uno\ntitulo dos\n---",
 };
 
-test("la tabla de mínimos del motor es la del parser, pareja por pareja y por los dos lados", (t) => {
-  // El mínimo no es «lo de abajo interrumpe o no»: depende de la PAREJA. Aquí se
-  // compara, para cada pareja del repertorio, lo que dice `minNewlines` con lo
-  // que hace el parser de verdad, y en los dos sentidos: un «2» de más (un
-  // movimiento que se queda sin hacer sin motivo) y un «1» de menos (dos
+test("el mínimo del motor es el que mide el parser, pareja por pareja y por los dos lados", (t) => {
+  // El motor ya no tiene tabla: `minNewlines` pregunta al parser. Esta prueba
+  // es la red que lo fija -- se compara, para cada pareja del repertorio, lo que
+  // dice `minNewlines` con una medida HECHA APARTE aquí (probar uno, dos y tres
+  // saltos y mirar cuántos bloques salen), y en los dos sentidos: un «2» de más
+  // (un movimiento que se queda sin hacer sin motivo) y un «1» de menos (dos
   // bloques que se pegan) salen los dos como fallo.
   let pairs = 0;
   let ones = 0;
@@ -265,10 +277,10 @@ test("la tabla de mínimos del motor es la del parser, pareja por pareja y por l
       else twos++;
     }
   }
-  // Todo el repertorio, pareja por pareja y por los dos lados: 29 x 29 = 841.
-  // Si se añade un tipo nuevo hay que añadirlo aquí, y la tabla del motor tiene
+  // Todo el repertorio, pareja por pareja y por los dos lados: 34 x 34 = 1.156.
+  // Si se añade un tipo nuevo hay que añadirlo aquí, y el mínimo del motor tiene
   // que seguir saliendo del parser para todas sus parejas.
-  assert.ok(pairs >= 841, `parejas probadas: ${pairs}`);
+  assert.ok(pairs >= 1156, `parejas probadas: ${pairs}`);
   assert.ok(ones > 100 && twos > 20, `parejas de un salto: ${ones}, de dos: ${twos}`);
   t.diagnostic(`parejas: ${pairs} (un salto: ${ones}, dos: ${twos})`);
 });
@@ -495,4 +507,61 @@ test("detrás de un ítem/cabecera/valla/cita, un `---` no pide línea en blanco
   const out = apply(text, edit.changes);
   assert.equal(out, "parrafo B\n\n- vineta\n---\nparrafo A");
   assert.equal(parseBlocks(out).length, 4);
+});
+
+test("un ítem de lista vacío o una cita vacía: mover no los pega a un párrafo", () => {
+  // Cuarta vuelta de la misma deuda: un bloque cuyo cuerpo es SOLO el marcador
+  // (`- `, `-`, `1.`, `1)`, `>`) se lee al revés que su hermano con texto, y en
+  // los dos sentidos. Como `next` NO interrumpe (`parrafo\n- ` es UN párrafo: la
+  // línea `- ` se lee como continuación suya), así que pide la línea en blanco;
+  // como `prev`, en cambio, un salto basta (`- \nparrafo` son DOS bloques: un
+  // ítem vacío no tiene nada que continuar). La tabla de tipos decía «uno» en
+  // los dos sentidos: al apretar el presupuesto los pegaba.
+  const empties = ["- ", "-", "1.", "1)", ">"];
+  let docsWithTwo = 0;
+  for (const empty of empties) {
+    for (const text of [`${empty}\nparrafo`, `parrafo\n${empty}\nparrafo`, `${empty}\n\nparrafo`]) {
+      const blocks = parseBlocks(text);
+      // El documento de partida puede tener los bloques que tenga (si el vacío
+      // se ha comido el párrafo, ya son uno y no hay nada que mover); lo que no
+      // puede es PERDER bloques al mover.
+      if (blocks.length >= 2) docsWithTwo++;
+      const label = `«${text}» (${blocks.length} bloques)`;
+      for (let index = 0; index < blocks.length; index++) {
+        for (let slot = 0; slot <= blocks.length; slot++) {
+          const edit = moveBlockEdits({ text, blocks, index, slot });
+          if (!edit) continue;
+          const out = apply(text, edit.changes);
+          assert.equal(
+            parseBlocks(out).length,
+            blocks.length,
+            `el número de bloques cambia en ${label} moviendo ${index} a ${slot}: «${out}»`
+          );
+          assert.deepEqual(sortedLines(out), sortedLines(text), `las líneas cambian en ${label}: «${out}»`);
+        }
+      }
+    }
+  }
+  // Que el repertorio no se haya quedado en documentos de un solo bloque.
+  assert.ok(docsWithTwo >= 10, `documentos con dos bloques o más: ${docsWithTwo}`);
+
+  // El caso exacto que fusionaba: `- \nparrafo` son dos bloques y subir el
+  // párrafo los dejaba en uno (`parrafo\n- `), porque el motor creía que un
+  // salto bastaba delante del ítem vacío.
+  const text = "- \nparrafo";
+  const blocks = parseBlocks(text);
+  assert.deepEqual(blocks.map((b) => b.type), ["bullet_list_item", "paragraph"]);
+  assert.equal(moveBlockEdits({ text, blocks, index: 1, slot: 0 }), null);
+  // Lo mismo con el numerado vacío.
+  const numbered = "1.\nparrafo";
+  const numberedBlocks = parseBlocks(numbered);
+  assert.deepEqual(numberedBlocks.map((b) => b.type), ["ordered_list_item", "paragraph"]);
+  assert.equal(moveBlockEdits({ text: numbered, blocks: numberedBlocks, index: 1, slot: 0 }), null);
+
+  // Con la línea en blanco sí cabe, y el ítem vacío sigue siendo un bloque.
+  const roomy = "- \n\nparrafo";
+  assert.equal(parseBlocks(roomy).length, 2);
+  const out = assertMoveKeepsBlocks(roomy, 1, 0);
+  assert.ok(out, "con la línea en blanco el movimiento se hace");
+  assert.equal(parseBlocks(out).length, 2);
 });
