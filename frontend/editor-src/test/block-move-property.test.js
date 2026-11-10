@@ -220,6 +220,10 @@ const PAIR_SAMPLES = {
   html: "<div>x</div>",
   "html cerrado": "<pre>\nx\n</pre>",
   setext: "titulo\n---",
+  // Una cabecera setext puede tener VARIAS líneas de texto encima: su
+  // subrayado es la última, no la segunda (con la segunda se tomaba por tabla
+  // y se le daba el mínimo de una tabla).
+  "setext de dos lineas": "titulo uno\ntitulo dos\n---",
 };
 
 test("la tabla de mínimos del motor es la del parser, pareja por pareja y por los dos lados", (t) => {

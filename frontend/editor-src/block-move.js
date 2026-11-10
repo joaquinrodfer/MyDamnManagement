@@ -158,9 +158,12 @@ function otherKind(body) {
     return "html";
   }
   if (/^\[[^\]]*\]:/.test(head)) return "ref"; // LinkReference (`[ref]: url`)
-  const second = body.split("\n")[1] ?? "";
-  // Cabecera setext (`titulo` + `---`): acaba en su línea, como una cabecera.
-  if (/^[ \t]{0,3}(=+|-+)[ \t]*$/.test(second)) return "setext";
+  // Cabecera setext: ACABA en su subrayado (`---` o `===`), y el texto de encima
+  // puede ser de varias líneas ("titulo uno\ntitulo dos\n---" es una sola
+  // cabecera). Como una cabecera, acaba en su línea; una tabla nunca termina en
+  // un subrayado (sus filas llevan barras).
+  const last = body.split("\n").pop() ?? "";
+  if (/^[ \t]{0,3}(=+|-+)[ \t]*$/.test(last)) return "setext";
   return "table"; // Table (y cualquier otro `other`: se trata como tabla)
 }
 
