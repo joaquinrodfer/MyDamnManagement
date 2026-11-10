@@ -91,8 +91,9 @@ Alternativa sin token: *Package settings → Change visibility → Public*. Ento
 mkdir -p /opt/mdm && cd /opt/mdm
 
 # El compose y nada más: el código va DENTRO de la imagen.
-curl -fsSLO https://raw.githubusercontent.com/joaquinrodfer/MyDamnManagement/release/2.2/docker-compose.prod.yml
-# (o cópialo del repo: docker-compose.prod.yml)
+curl -fsSLO https://raw.githubusercontent.com/joaquinrodfer/MyDamnManagement/main/docker-compose.prod.yml
+# Si el PR de esta versión todavía no está fusionado en `main`, cambia `main`
+# por `release/2.2` en la URL (o copia el fichero del repo a mano).
 
 cat > .env <<'EOF'
 # Qué versión se levanta. Subir de versión = cambiar esta línea.
