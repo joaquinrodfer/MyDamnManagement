@@ -1220,6 +1220,13 @@
     position: fixed;
     z-index: 1000;
     min-width: 190px;
+    /* Con el menú de bloque ya no cabe entero en pantallas bajas (móvil
+       apaisado, ventana pequeña): sin esto las últimas opciones -- «Mover
+       arriba/abajo», que es la vía táctil del reordenado -- quedaban fuera de
+       la ventana y no se podían pulsar. Se desplaza dentro del menú. */
+    max-height: calc(100vh - 8px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 8px;
