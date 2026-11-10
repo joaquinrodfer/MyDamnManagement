@@ -3691,6 +3691,17 @@ function handleDatabaseEvent(data) {
   if (!session) return;
   // El id va dentro de la valla; si no está en esta nota, el aviso no es suyo.
   if (!state.editor?.getValue?.().includes(data.database_id)) return;
+  // Eco de una fila que se acaba de añadir desde el propio bloque: su tabla ya
+  // se repintó con lo que devolvió la API (y el aviso y el foco están
+  // puestos), así que volver a pintarla desde cero solo los perdería. El
+  // cambio hecho en otra ventana no pasa por aquí y sí repinta.
+  if (
+    data.action === "rows" &&
+    String(data.database_id) === ultimaFilaPropia.databaseId &&
+    Date.now() - ultimaFilaPropia.ts < 3000
+  ) {
+    return;
+  }
   session.refreshDatabaseEmbeds?.();
 }
 
@@ -4372,6 +4383,10 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const headerActions = document.createElement("div");
   headerActions.className = "btn-row";
 
+  // La vista activa hace falta ya para el botón de borrarla: «Todas» no es una
+  // vista, es la base sin filtro, y no hay nada que quitar.
+  const activeView = views.find((v) => v.id === activeViewId) || null;
+
   const schemaBtn = document.createElement("button");
   schemaBtn.className = "btn";
   schemaBtn.textContent = "Propiedades";
@@ -4381,6 +4396,47 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   newViewBtn.className = "btn";
   newViewBtn.innerHTML = `${svgIcon("i-plus")}Vista`;
   newViewBtn.addEventListener("click", () => openViewDialog(database));
+
+  // Borrar la vista activa: se lleva su filtro, su orden y su tipo, y ninguna
+  // fila (los datos son de la base, no de la vista). Solo con una vista de
+  // verdad activa, y nunca la última: sin ninguna, la base se quedaría sin la
+  // pestaña con la que se abre. Con una sola, el botón se queda ahí apagado y
+  // el motivo escrito debajo de las pestañas, en vez de desaparecer sin decir
+  // nada -- el estado no es mudo.
+  const esLaUltimaVista = Boolean(activeView) && views.length <= 1;
+  const deleteViewBtn = document.createElement("button");
+  deleteViewBtn.type = "button";
+  deleteViewBtn.className = "btn btn-danger";
+  deleteViewBtn.textContent = "Borrar vista";
+  if (activeView) {
+    deleteViewBtn.disabled = esLaUltimaVista;
+    deleteViewBtn.title = esLaUltimaVista
+      ? "Es la última vista: una base necesita al menos una. Las filas no se tocan."
+      : "";
+    deleteViewBtn.addEventListener("click", async () => {
+      const pregunta =
+        `¿Borrar la vista «${activeView.name}»?\n\n` +
+        "Las filas no se tocan: los datos son de la base, no de la vista. " +
+        "Se quita esta forma de mirarlos (filtro, orden y tipo).";
+      if (!confirm(pregunta)) return;
+      try {
+        await api(`/databases/${database.id}/views/${activeView.id}`, { method: "DELETE" });
+      } catch (e) {
+        reportError("No se pudo borrar la vista", e);
+        return;
+      }
+      // La vista activa pasa a una que exista -- la vecina de la izquierda, o
+      // la primera si era la primera -- y el foco vuelve a la pestaña: el botón
+      // que se acaba de pulsar ya no está, y el foco no puede quedarse en
+      // <body> (el siguiente Tab empezaría por arriba del documento).
+      const indice = views.findIndex((v) => v.id === activeView.id);
+      const quedan = views.filter((v) => v.id !== activeView.id);
+      const siguiente = quedan[Math.min(indice, quedan.length - 1)] || null;
+      await renderDatabase(database, quedan, siguiente ? siguiente.id : null, {
+        focus: "viewTab",
+      });
+    });
+  }
 
   const deleteDbBtn = document.createElement("button");
   deleteDbBtn.className = "btn btn-danger";
@@ -4397,7 +4453,9 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     }
   });
 
-  headerActions.append(schemaBtn, newViewBtn, deleteDbBtn);
+  headerActions.append(schemaBtn, newViewBtn);
+  if (activeView) headerActions.append(deleteViewBtn);
+  headerActions.append(deleteDbBtn);
   header.append(title, headerActions);
 
   const hint = document.createElement("div");
@@ -4429,7 +4487,17 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const content = document.createElement("div");
   main.append(header, hint, tabs, content);
 
-  const activeView = views.find((v) => v.id === activeViewId) || null;
+  // El motivo escrito y no en un `title` escondido: un botón apagado sin
+  // explicación a la vista es un estado mudo (y en táctil no hay hover).
+  if (esLaUltimaVista) {
+    const nota = document.createElement("p");
+    nota.className = "db-view-note";
+    nota.textContent =
+      `«${activeView.name}» es la última vista de esta base: no se puede borrar. ` +
+      "Las filas no dependen de ella y no se tocan.";
+    main.insertBefore(nota, content);
+  }
+
   const rows = await api(`/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""));
 
   if (activeView && activeView.type === "board" && activeView.config?.group_by) {
@@ -4437,7 +4505,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   } else if (activeView && activeView.type === "calendar") {
     content.appendChild(renderCalendar(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "list") {
-    content.appendChild(renderList(database, rows, refresh));
+    content.appendChild(renderList(database, rows, activeView, refresh));
   } else {
     content.appendChild(renderTable(database, rows));
   }
@@ -4461,10 +4529,14 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 // ------------------------------------- bases dentro de una nota (P17.2)
 /** Pinta, dentro de la nota, la base de un bloque ```mdm-database.
  *
- * Solo lectura: la tabla es la MISMA de la base (`renderTable` con
- * `readOnly`), sin celdas editables y sin borrado; el encabezado (un botón)
- * lleva a la base entera, que es donde se edita. Pintar no toca el documento
- * ni guarda nada -- lo único que hace es leer de la API.
+ * Solo lectura para las CELDAS: la tabla es la MISMA de la base (`renderTable`
+ * con `readOnly`), sin celdas editables ni borrado; el encabezado (un botón)
+ * lleva a la base entera, que es donde se editan los valores. Lo único que se
+ * escribe desde aquí es una fila nueva con su nombre: el «+ Nueva fila» del
+ * final, que es lo que faltaba en el sitio donde trabaja el dueño.
+ *
+ * Pintar no toca el documento: la valla, el cursor y el autoguardado siguen
+ * donde estaban. Al añadir una fila se repintan solo el contador y la tabla.
  *
  * Si la base ya no está, se avisa con `notFound` para que el editor pinte
  * «Base no encontrada: <title|id>»; cualquier otro fallo se propaga con su
@@ -4514,12 +4586,232 @@ async function renderDatabaseEmbed(block, container) {
 
   const meta = document.createElement("span");
   meta.className = "db-embed-meta";
-  meta.textContent = `${activeView ? activeView.name : "Todas"} · ${rows.length} ${
-    rows.length === 1 ? "fila" : "filas"
-  }`;
+
+  // Contador y tabla se repintan juntos, con lo que devuelve el servidor: es
+  // el contador DE LA VISTA (filas que enseña, no filas de la base) y la tabla
+  // ya viene filtrada y ordenada por `?view=`.
+  const body = document.createElement("div");
+  body.className = "db-embed-body";
+  const pintar = (filas) => {
+    meta.textContent = `${activeView ? activeView.name : "Todas"} · ${filas.length} ${
+      filas.length === 1 ? "fila" : "filas"
+    }`;
+    body.textContent = "";
+    body.append(renderTable(database, filas, { readOnly: true }));
+  };
+  pintar(rows);
 
   head.append(open, meta);
-  container.append(head, renderTable(database, rows, { readOnly: true }));
+  container.append(
+    head,
+    body,
+    // Sin recargar la nota ni la página: POST de siempre y repintado de la
+    // tabla. El aviso de «el filtro la deja fuera» vive dentro del control.
+    renderAddRowControl({
+      vista: activeView,
+      onCreate: (titulo) => crearFilaEnVista(database, activeView, titulo),
+      onDone: (res) => {
+        pintar(res.filas);
+        if (res.visible) enfocarFila(body, res.fila.id);
+      },
+    }),
+  );
+}
+
+// ---------------------------------------- añadir filas desde una vista
+// Una vista (tabla incrustada, lista, agenda) se puede tocar sin abrir la base
+// entera: «+ Nueva fila» al final crea la fila por el mismo POST que el alta de
+// la base y repinta lo justo para que aparezca donde le toque, sin recargar.
+
+/** Última fila escrita desde esta pestaña: `{databaseId, ts}`. Sirve para no
+ * repintar el bloque incrustado con el eco de nuestro propio POST (ver
+ * `handleDatabaseEvent`). */
+let ultimaFilaPropia = { databaseId: null, ts: 0 };
+
+/** Crea una fila por el camino de siempre y vuelve a pedir la lista DE LA
+ * VISTA ACTIVA.
+ *
+ * El filtro y el orden los aplica el servidor (`apply_view`), así que la única
+ * verdad de «¿la enseña esta vista?» es esa segunda lectura: duplicar el filtro
+ * en el navegador acabaría diciendo algo distinto de lo que enseña la tabla.
+ * Devuelve `{fila, filas, visible}`; `filas` ya viene filtrada y ordenada.
+ */
+async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
+  // ANTES del POST: el servidor publica `rows` en /events (M2) antes de
+  // responder, así que el aviso le llega a esta pestaña antes que la fila. Se
+  // apunta que el cambio es de aquí para ignorar el eco (si no, el editor
+  // repinta el bloque desde cero y se lleva por delante el aviso y el foco que
+  // se ponen al volver). El cambio de OTRA ventana no pasa por aquí.
+  ultimaFilaPropia = { databaseId: String(database.id), ts: Date.now() };
+  const fila = await api(`/databases/${database.id}/rows`, {
+    method: "POST",
+    body: JSON.stringify({ title: titulo, properties: extra }),
+  });
+  const filas = await api(
+    `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
+  );
+  return { fila, filas, visible: filas.some((r) => r.id === fila.id) };
+}
+
+/** El aviso de una fila que la vista activa no enseña: su filtro la deja
+ * fuera. Se dice en vez de dejar el hueco (una fila fantasma): la fila está en
+ * la base, en su `.md` y en «Todas». */
+function avisoDeFilaOculta(titulo, nombreVista) {
+  return (
+    `«${titulo}» se ha añadido, pero la vista «${nombreVista}» no la enseña: ` +
+    "su filtro la deja fuera. La fila está en la base (pestaña «Todas») y en su fichero."
+  );
+}
+
+/** El foco, en el nombre de la fila que se acaba de crear: el `<tr>` de la
+ * tabla, la línea de la lista o el chip del calendario (los tres llevan
+ * `data-row-id`). Devuelve si la encontró. */
+function enfocarFila(container, rowId) {
+  const el = container.querySelector(`[data-row-id="${rowId}"]`);
+  if (!el) return false;
+  if (el.tagName === "TR") {
+    // La tabla no tiene filas enfocables: el nombre es la primera celda. En la
+    // incrustada esa celda no es editable (la tabla de una nota es de solo
+    // lectura), así que se enfoca para que el lector anuncie el título y el
+    // siguiente Tab siga desde la fila nueva.
+    const celda = el.querySelector("td");
+    if (!celda) return false;
+    celda.tabIndex = -1;
+    celda.focus();
+    return true;
+  }
+  el.focus();
+  return true;
+}
+
+/** El «+ Nueva fila» de una vista (tabla incrustada en una nota, lista y
+ * agenda del calendario).
+ *
+ * Al pulsarlo no se crea nada todavía: aparece el campo con el nombre de la
+ * fila y el foco dentro, y la fila nace al pulsar Enter. Así el nombre se
+ * escribe de seguido y no queda un «Sin título.md» si el usuario se va a
+ * medias -- el título ES el nombre del fichero de la fila (M4).
+ *
+ * `onCreate(nombre)` hace el POST (devuelve la promesa de `crearFilaEnVista`)
+ * y `onDone(resultado)` repinta la superficie y lleva el foco a la fila nueva.
+ * El aviso (`role=status`) vive aquí dentro, así que sobrevive al repintado de
+ * las filas y se lee sin mover el foco.
+ */
+function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row" }) {
+  const wrap = document.createElement("div");
+  wrap.className = className;
+  // Dentro de una nota, el bloque de la base es un widget del editor con un
+  // `mousedown` que se lleva el clic (previene el default y pone el cursor en
+  // la valla) salvo en lo que lleve `data-db-action` (ver entry.js). Sin esto,
+  // pulsar «Nueva fila» en la tabla incrustada metería el cursor en el bloque
+  // en vez de abrir el campo.
+  wrap.dataset.dbAction = "add-row";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn db-add-row-btn";
+  btn.innerHTML = `${svgIcon("i-plus")}Nueva fila`;
+
+  const form = document.createElement("form");
+  form.className = "db-add-row-form";
+  form.hidden = true;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "db-add-row-input";
+  input.placeholder = "Nombre de la fila";
+  input.setAttribute("aria-label", "Nombre de la fila nueva");
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "btn btn-primary";
+  submit.textContent = "Añadir";
+  form.append(input, submit);
+
+  const status = document.createElement("p");
+  status.className = "db-add-row-status";
+  status.setAttribute("role", "status");
+
+  wrap.append(btn, form, status);
+
+  const abrir = () => {
+    status.textContent = "";
+    btn.hidden = true;
+    form.hidden = false;
+    input.focus();
+  };
+  const cerrar = () => {
+    input.value = "";
+    form.hidden = true;
+    btn.hidden = false;
+    btn.focus();
+  };
+
+  const enviar = () => {
+    if (typeof form.requestSubmit === "function") form.requestSubmit();
+    else submit.click();
+  };
+
+  btn.addEventListener("click", abrir);
+  // El keymap del editor consume Enter/Espacio dentro del widget (con
+  // preventDefault), así que un <button> de aquí no se activa con el teclado
+  // si no lo hace él mismo.
+  btn.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    abrir();
+  });
+  submit.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    enviar();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      // Enter crea la fila sin esperar al submit implícito del navegador.
+      e.preventDefault();
+      e.stopPropagation();
+      enviar();
+      return;
+    }
+    if (e.key !== "Escape") return;
+    // Escape cancela el alta sin crear nada y devuelve el foco al botón.
+    e.preventDefault();
+    e.stopPropagation();
+    cerrar();
+  });
+
+  let creando = false;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const titulo = input.value.trim();
+    if (!titulo) {
+      input.focus(); // el título es el nombre del fichero: sin él no hay fila
+      return;
+    }
+    if (creando) return; // Enter dos veces seguidas = una sola fila
+    creando = true;
+    input.disabled = true;
+    submit.disabled = true;
+    try {
+      const res = await onCreate(titulo);
+      cerrar();
+      status.textContent = res.visible
+        ? `Fila «${titulo}» añadida.`
+        : avisoDeFilaOculta(titulo, vista?.name || "");
+      onDone?.(res);
+    } catch (err) {
+      // No se pierde lo escrito: el campo se queda abierto con el nombre.
+      reportError("No se pudo añadir la fila", err);
+      input.focus();
+    } finally {
+      creando = false;
+      input.disabled = false;
+      submit.disabled = false;
+    }
+  });
+
+  return wrap;
 }
 
 function formatPropValue(value, prop) {
@@ -4681,6 +4973,9 @@ function renderTable(database, rows, { readOnly = false } = {}) {
 
   rows.forEach((row) => {
     const tr = document.createElement("tr");
+    // `data-row-id`: el «+ Nueva fila» de la vista deja el foco en el nombre de
+    // la fila que acaba de crear (ver `enfocarFila`).
+    tr.dataset.rowId = row.id;
 
     // Título y celdas editables en el sitio: lo que se ve es el valor del
     // `.md`, y un clic abre el control del tipo de esa propiedad. En la tabla
@@ -5262,6 +5557,7 @@ function renderCalendar(database, rows, view, refresh) {
     chip.className = "cal-event";
     chip.textContent = row.title || "Sin título";
     chip.title = row.title || "Sin título";
+    chip.dataset.rowId = row.id;
     chip.addEventListener("click", () => openRowDialog(database, row, refresh));
     return chip;
   };
@@ -5411,7 +5707,28 @@ function renderCalendar(database, rows, view, refresh) {
     repaint();
   });
 
-  wrap.append(toolbar, grid);
+  // «+ Nueva fila» debajo del calendario (rejilla o agenda). La fila nace con
+  // la fecha de HOY en la propiedad de esta vista: un evento sin fecha no cae
+  // en ningún día y no se vería, así que se le pone el único día que es «el
+  // día en que se añade». Si el calendario está mirando otro mes, se va al de
+  // hoy para enseñarla; el filtro de la vista, si la deja fuera, se dice.
+  const addRow = renderAddRowControl({
+    vista: view,
+    onCreate: (titulo) =>
+      crearFilaEnVista(database, view, titulo, { [dateProp.key]: claveDeHoy() }),
+    onDone: (res) => {
+      if (!res.visible) return; // el aviso del control ya dice por qué no se ve
+      rows.length = 0;
+      rows.push(...res.filas);
+      anio = anioHoy;
+      mes = mesHoy;
+      recordarMes();
+      repaint();
+      enfocarFila(grid, res.fila.id);
+    },
+  });
+
+  wrap.append(toolbar, grid, addRow);
   repaint();
   // Este es el calendario que hay que repintar al cambiar el ancho. El anterior
   // (otra pestaña, la misma vista repintada tras guardar) queda sin
@@ -5424,17 +5741,15 @@ function renderCalendar(database, rows, view, refresh) {
  * (los vacíos no se pintan). Es la vista de repasar muchas filas de un vistazo;
  * cada línea abre la fila, que es donde se edita, igual que una tarjeta del
  * tablero. */
-function renderList(database, rows, refresh) {
+function renderList(database, rows, view, refresh) {
   const wrap = document.createElement("div");
   wrap.className = "db-list";
-  if (rows.length === 0) {
-    wrap.appendChild(avisoDeVista("Sin filas todavía.", null));
-    return wrap;
-  }
-  rows.forEach((row) => {
+
+  const lineaDeFila = (row) => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "list-row";
+    item.dataset.rowId = row.id;
     const title = document.createElement("span");
     title.className = "list-row-title";
     title.textContent = row.title || "Sin título";
@@ -5448,8 +5763,30 @@ function renderList(database, rows, refresh) {
       item.appendChild(span);
     });
     item.addEventListener("click", () => openRowDialog(database, row, refresh));
-    wrap.appendChild(item);
+    return item;
+  };
+
+  const avisoVacio = () => avisoDeVista("Sin filas todavía.", null);
+  rows.forEach((row) => wrap.appendChild(lineaDeFila(row)));
+  if (rows.length === 0) wrap.appendChild(avisoVacio());
+
+  // «+ Nueva fila» al final de la lista, como una línea más. Al crear, la
+  // lista se rehace con lo que devolvió el servidor: la fila nueva aparece
+  // donde la deje el orden (y el filtro) de la vista, no al final por haber
+  // sido la última en llegar.
+  const addRow = renderAddRowControl({
+    vista: view,
+    className: "db-add-row db-add-row--list",
+    onCreate: (titulo) => crearFilaEnVista(database, view, titulo),
+    onDone: (res) => {
+      for (const hijo of [...wrap.children]) if (hijo !== addRow) hijo.remove();
+      if (res.filas.length === 0) wrap.insertBefore(avisoVacio(), addRow);
+      res.filas.forEach((fila) => wrap.insertBefore(lineaDeFila(fila), addRow));
+      if (res.visible) enfocarFila(wrap, res.fila.id);
+    },
   });
+  wrap.appendChild(addRow);
+
   return wrap;
 }
 
