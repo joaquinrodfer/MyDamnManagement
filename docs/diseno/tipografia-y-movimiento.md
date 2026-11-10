@@ -60,30 +60,50 @@ Dos ajustes de tamaño que van con el cambio de familia, y solo esos:
 ## 2. Escala y jerarquía
 
 ```css
-/* :root */
---text-note-title: 30px;   /* título de página y de base */
+/* :root — escritorio */
+--text-note-title: 30px;   /* título de página */
+--text-db-title: var(--text-note-title);   /* título de base: misma escala */
 --text-h1: 24px;
 --text-h2: 20px;
 --text-h3: 17px;
 --text-h4: 15px;
 --text-h5: 13px;
 
-/* móvil (≤768 px), donde el cuerpo es 16 px */
+/* :root dentro de @media (max-width: 768px), donde el cuerpo es 16 px */
+--text-note-title: 28px;
+--text-db-title: 24px;
+--text-h3: 18px;
 --text-h4: 17px;
---text-h5: 15px;
+--text-h5: 16px;
 ```
 
-Orden intocable: **título (30) > H1 (24) > H2 (20) > H3 (17)**. En móvil el
-cuerpo sube a 16 px, así que H4/H5 se suben a 17/15: si no, un H4 de 15 px se
-leería más pequeño que el texto que encabeza.
+Orden intocable: **título > H1 > H2 > H3 > H4 > H5**, en escritorio y en móvil.
+
+| | título | H1 | H2 | H3 | H4 | H5 | cuerpo |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| escritorio (1280) | 30 | 24 | 20 | 17 | 15 | 13 | 15 |
+| móvil (375) | **28** | 24 | 20 | **18** | **17** | **16** | 16 |
+
+En móvil el cuerpo sube a 16 px, así que la escala se recoloca entera por encima
+de él: H3 18, H4 17 y H5 16 (= cuerpo, distinguido por el peso 600, las
+versalitas y el color atenuado). El título baja a 28 pero **sigue por encima
+del H1** (24): es la condición que el dueño pidió, y en ≤768 px se cumple con
+4 px de diferencia, no igualando los dos como estaba antes.
+
+`--text-db-title` existe solo por el móvil: `.db-title` es un `<input>` que no
+parte la línea, y a 28 px el texto de un título largo no cabe en los 343 px de
+caja que quedan a 375 de ancho (salía recortado). A 24 px cabe, y es el mismo
+tamaño que tenía antes de esta tarjeta.
 
 Pesos: 600 en todos los niveles (antes 700). Con una sola familia y estos
 tamaños, el 700 de antes engordaba los H1/H2 y los hacía competir con el título.
 
 - H4 deja de ir en versalitas: a 15 px, en mayúsculas competía con el texto
   normal en vez de leerse como encabezado.
-- H5 sí las conserva (13 px, por debajo del cuerpo): es el nivel que hace de
-  etiqueta, y ahí las versalitas con `letter-spacing: 0.04em` sí ayudan.
+- H5 sí las conserva: en escritorio son 13 px (por debajo del cuerpo, 15) y en
+  móvil 16 (= cuerpo), y en ambos casos es el nivel que hace de etiqueta: las
+  versalitas con `letter-spacing: 0.04em` y el color atenuado lo separan del
+  párrafo sin necesidad de ser más grande que él.
 
 Espaciado entre bloques (`cm-mdm-space-*`, en `#note-body`):
 

@@ -59,8 +59,9 @@
        Antes el H1 (1.9em = 28,5 px) era MAYOR que el título de la página
        (24 px): la jerarquía estaba invertida y el documento parecía no tener
        título. Cada nivel en su variable para que el siguiente ajuste sea en
-       un solo sitio. Los H4/H5 se suben en móvil (17/15) porque allí el
-       cuerpo es 16 px: un H4 de 15 se leería más pequeño que el texto. */
+       un solo sitio. En móvil (≤768 px) la escala no se hereda tal cual: allí
+       el cuerpo es 16 px y el ancho, 375, así que el :root de esa media query
+       redefine los cinco niveles. Los valores de aquí son los de escritorio. */
     --text-xs: 10.5px;
     --text-sm: 11.5px;
     --text-base: 13px;
@@ -68,6 +69,7 @@
     --text-prose: 14.5px;
     --text-lg: 16px;
     --text-note-title: 30px;
+    --text-db-title: var(--text-note-title);  /* misma escala en escritorio; en móvil se separa (ver 768 px) */
     --text-h1: 24px;
     --text-h2: 20px;
     --text-h3: 17px;
@@ -957,8 +959,10 @@
   .cm-mdm-h2 { font-size: var(--text-h2); font-weight: 600; line-height: 1.35; letter-spacing: -0.006em; }
   .cm-mdm-h3 { font-size: var(--text-h3); font-weight: 600; line-height: 1.4; }
   /* H4 ya no va en versalitas: a 15 px, en mayúsculas competía con el texto
-     normal en vez de leerse como encabezado. El H5 (13 px, por debajo del
-     cuerpo) sí las conserva: es el nivel que hace de etiqueta. */
+     normal en vez de leerse como encabezado. El H5 sí las conserva: en
+     escritorio son 13 px, por debajo del cuerpo (15), y hace de etiqueta; en
+     móvil sube a 16 = cuerpo (el :root de 768 px) y se distingue por peso,
+     versalitas y color. */
   .cm-mdm-h4 { font-size: var(--text-h4); font-weight: 600; line-height: 1.45; }
   .cm-mdm-h5 { font-size: var(--text-h5); font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; line-height: 1.45; }
   .cm-mdm-h1.cm-mdm-mark, .cm-mdm-h2.cm-mdm-mark, .cm-mdm-h3.cm-mdm-mark, .cm-mdm-h4.cm-mdm-mark, .cm-mdm-h5.cm-mdm-mark {
@@ -1492,10 +1496,12 @@
   /* ---------- vista de database ---------- */
   .db-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
   /* El título de una base es el título de SU página: misma escala y peso que
-     `.note-title` (30 px / 600), no un 22 px mono aparte. */
+     `.note-title` (30 px / 600 en escritorio, 24 en móvil), no un 22 px mono
+     aparte. En móvil se separa de la nota porque este es un <input> y no
+     parte la línea (ver el :root de 768 px). */
   .db-title {
     font-family: var(--font-body);
-    font-size: var(--text-note-title);
+    font-size: var(--text-db-title);
     font-weight: 600;
     letter-spacing: -0.011em;
     line-height: 1.25;
@@ -2093,12 +2099,24 @@
        abierto. 56 px = 44 del botón + 6 de aire arriba y abajo. */
     :root {
       --header-height: 56px;
-      /* En móvil el cuerpo es 16 px (ver `#note-body .cm-content` abajo): un
-         H4 de 15 y un H5 de 13 se leerían más pequeños que el texto que
-         encabezan. Se suben justo por encima del cuerpo; el orden de la
-         escala (H3 17 > H4 > H5) se mantiene. */
+      /* Escala móvil, completa: aquí el cuerpo es 16 px y la pantalla 375, así
+         que los valores de escritorio no valen tal cual. El orden que manda se
+         mantiene y se cumple en esta misma hoja:
+
+           título 28 > H1 24 > H2 20 > H3 18 > H4 17 > H5 16 (= cuerpo)
+
+         H5 se queda al tamaño del cuerpo: lo que lo separa del párrafo es el
+         peso (600), las versalitas y el color atenuado, no un punto más de
+         cuerpo de letra, que a 16 px de cuerpo ya no cabría sin empatar con el
+         H4. --text-db-title baja a 24 porque `.db-title` es un <input> que no
+         parte la línea: a 28 px su texto no cabe en los 343 px de caja que hay
+         a 375 de ancho, y el título de la base salía recortado con puntos
+         suspensivos. */
+      --text-note-title: 28px;
+      --text-db-title: 24px;
+      --text-h3: 18px;
       --text-h4: 17px;
-      --text-h5: 15px;
+      --text-h5: 16px;
     }
     header {
       height: var(--header-height);
@@ -2163,9 +2181,10 @@
     .note-topbar { flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
     .note-topbar-right { flex-wrap: wrap; gap: 6px; }
     .note-title-row { gap: 6px; align-items: center; }
-    /* 24 px en móvil (30 en escritorio): el título de la página sigue por
-       encima del H1 (24) y del cuerpo (16), pero sin gastar media pantalla. */
-    .note-title { font-size: 24px; min-width: 0; min-height: 44px; }
+    /* El título toma el tamaño de la escala móvil (--text-note-title: 28 px),
+       no un literal: así sigue por encima del H1 (24) sin gastar media
+       pantalla, y el siguiente ajuste se hace en el :root de arriba. */
+    .note-title { min-width: 0; min-height: 44px; }
     .note-icon-btn { font-size: 24px; width: 44px; height: 44px; margin-top: 0; }
     .note-description { font-size: 16px; }
     .note-meta { margin-bottom: 12px; }
