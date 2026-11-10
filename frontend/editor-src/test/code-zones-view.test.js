@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
+import { syntaxTree } from "@codemirror/language";
 
 import { buildArrowDecorations, underlineDecorations } from "../entry.js";
 
@@ -154,4 +155,60 @@ test("pegado al cierre: el `<u>` que empieza justo detrás del backtick sí se p
       [15, 19, "replace"],
     ]
   );
+});
+
+// ------------------------------------------ notas grandes: árbol parcial
+// En una nota larga el árbol de sintaxis es PARCIAL: el parser de CodeMirror
+// trabaja con presupuesto de tiempo y deja sin parsear lo que no ha llegado a
+// tocar (al abrir, solo los primeros ~3 KB). Una zona de código que el árbol
+// todavía no conoce no existe, así que el final de la nota se pintaba con la
+// flecha y el `<u>` DENTRO del `código` en línea -- el fallo original, solo en
+// documentos grandes. Ahora `codeRangesOf` fuerza el parseo hasta el final del
+// tramo visible antes de leer el árbol.
+
+const FILLER = "Parrafo de relleno con texto normal y alguna cosa mas para alargar la nota.";
+const FINAL_LINE = "Final: fuera `a -> b` y `<u>x</u>` en codigo, fuera <u>si</u> y a -> b.";
+
+function bigDoc() {
+  const paragraphs = Array.from({ length: 3000 }, (_, i) => `${FILLER} (${i})`);
+  return paragraphs.join("\n\n") + "\n\n" + FINAL_LINE;
+}
+
+/** El tramo visible de la app al llegar al final de la nota (Ctrl+Fin): la
+ * última línea, no el documento entero. Un árbol completo también pasaría el
+ * test, por eso se comprueba aparte que arranca parcial. */
+function finalLineRanges(state) {
+  return [{ from: state.doc.length - FINAL_LINE.length, to: state.doc.length }];
+}
+
+test("nota grande: el árbol arranca parcial (si no, el test no probaría nada)", () => {
+  const state = stateOf(bigDoc());
+  assert.ok(state.doc.length > 100000, `la nota tiene que ser grande (${state.doc.length})`);
+  assert.ok(
+    syntaxTree(state).length < state.doc.length,
+    `el árbol tiene que empezar parcial (${syntaxTree(state).length}/${state.doc.length})`
+  );
+});
+
+test("nota grande: la flecha del `código` al final no se pinta, la de fuera sí", () => {
+  const doc = bigDoc();
+  const state = stateOf(doc);
+  const arrows = decorationsOf(buildArrowDecorations(state, finalLineRanges(state)), doc.length);
+  assert.deepEqual(
+    arrows.map((a) => doc.slice(a.from, a.to)),
+    ["->"] // solo la de «a -> b», la última de la línea, que está fuera del código
+  );
+  assert.equal(arrows[0].glyph, "→");
+});
+
+test("nota grande: el `<u>` del `código` al final no se pinta, el de fuera sí", () => {
+  const doc = bigDoc();
+  const state = stateOf(doc);
+  const decs = decorationsOf(underlineDecorations(state, finalLineRanges(state)), doc.length);
+  const underlines = decs.filter((d) => d.class === "cm-mdm-underline");
+  assert.equal(underlines.length, 1, "solo el <u>si</u> de fuera del código");
+  assert.equal(doc.slice(underlines[0].from, underlines[0].to), "si");
+  // Las etiquetas del de fuera se esconden (2 reemplazos); las del de dentro,
+  // ni tocadas: si se hubiera colado, habría 2 subrayados y 4 reemplazos.
+  assert.equal(decs.filter((d) => !d.class).length, 2);
 });
