@@ -10,7 +10,7 @@
 import { ChangeSet, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { HighlightStyle, ensureSyntaxTree, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
 import {
@@ -361,19 +361,63 @@ class GlyphWidget extends WidgetType {
 // etiquetas ocultas y el texto subrayado.
 const CODE_NODE_TYPES = new Set(["FencedCode", "CodeBlock", "InlineCode"]);
 
-/** Zonas de código del documento: vallas, código sangrado y `código` en
- * línea. Se calculan una vez por repintado y se consultan con `isInsideCode`
- * (recorrer el árbol por cada coincidencia sería cuadrático). */
-function codeRangesOf(state) {
+// Presupuesto de parseo síncrono al pintar, en milisegundos. CodeMirror parsea
+// a trozos de ~100 ms en su worker; gastar lo mismo aquí, una vez por documento
+// y posición (después el árbol ya está y `ensureSyntaxTree` no trabaja), no se
+// nota. Poner más -- o forzarlo en cada repintado -- sí: bloquearía el hilo al
+// escribir en una nota enorme.
+const CODE_PARSE_BUDGET_MS = 100;
+
+// El árbol de sintaxis es inmutable, así que sus zonas de código también lo
+// son: se cachean por árbol. Los cuatro plugins que pintan piden las mismas
+// zonas en el mismo repintado; así el árbol se recorre una vez, no cuatro.
+const codeRangesCache = new WeakMap();
+
+/**
+ * Zonas de código del documento: vallas, código sangrado y `código` en línea.
+ * Se calculan una vez por árbol y se consultan con `isInsideCode` (recorrer el
+ * árbol por cada coincidencia sería cuadrático).
+ *
+ * `upto` (opcional): posición hasta la que el árbol TIENE que llegar. En notas
+ * grandes `syntaxTree(state)` puede ser PARCIAL -- el parser trabaja con
+ * presupuesto de tiempo y deja sin parsear lo que no está a la vista --, y una
+ * zona de código sin parsear no existe: al final de una nota larga el `código`
+ * en línea dejaba de respetarse y volvían la flecha `->` y el `<u>`. Con
+ * `upto` se fuerza el parseo hasta ahí (`ensureSyntaxTree`) antes de leer el
+ * árbol, que es lo que se está pintando en ese instante. Si no llega en el
+ * presupuesto (documento gigante), se devuelve lo que haya; el repintado por
+ * avance del parse (ver `parseAdvanced`) lo corrige en cuanto el worker llega.
+ */
+function codeRangesOf(state, upto) {
+  const forced = upto == null ? null : ensureSyntaxTree(state, upto, CODE_PARSE_BUDGET_MS);
+  const tree = forced || syntaxTree(state);
+  const cached = codeRangesCache.get(tree);
+  if (cached) return cached;
   const ranges = [];
-  syntaxTree(state).iterate({
+  tree.iterate({
     enter: (node) => {
       if (!CODE_NODE_TYPES.has(node.name)) return;
       ranges.push({ from: node.from, to: node.to });
       return false;
     },
   });
+  codeRangesCache.set(tree, ranges);
   return ranges;
+}
+
+/** Fin del tramo visible: hasta dónde tiene que llegar el árbol para pintarlo. */
+function visibleEnd(visibleRanges) {
+  let end = 0;
+  for (const { to } of visibleRanges) if (to > end) end = to;
+  return end;
+}
+
+/** ¿El parse ha avanzado desde el último repintado? El worker de CodeMirror
+ * sigue parseando en segundo plano y avisa con una transacción sin cambios de
+ * documento; sin esto, las decoraciones se quedaban con las del árbol parcial
+ * para siempre (esperar no arreglaba nada). */
+function parseAdvanced(update) {
+  return syntaxTree(update.state) !== syntaxTree(update.startState);
 }
 
 /** ¿Cae `pos` dentro de alguna de esas zonas? Los rangos del árbol son
@@ -385,7 +429,7 @@ function isInsideCode(codeRanges, pos) {
 }
 
 export function buildArrowDecorations(state, visibleRanges) {
-  const code = codeRangesOf(state);
+  const code = codeRangesOf(state, visibleEnd(visibleRanges));
   const ranges = [];
   for (const { from, to } of visibleRanges) {
     const text = state.doc.sliceString(from, to);
@@ -410,7 +454,7 @@ function arrowPlugin() {
         this.decorations = buildArrowDecorations(view.state, view.visibleRanges);
       }
       update(update) {
-        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet || parseAdvanced(update)) {
           this.decorations = buildArrowDecorations(update.view.state, update.view.visibleRanges);
         }
       }
@@ -1723,7 +1767,7 @@ function syntaxMarkPlugin() {
 // (format.js), que escanea el texto visible. Del resto de HTML no se toca
 // nada: hoy no se pinta, y sigue sin pintarse.
 export function underlineDecorations(state, visibleRanges) {
-  const code = codeRangesOf(state);
+  const code = codeRangesOf(state, visibleEnd(visibleRanges));
   const ranges = [];
   for (const { from, to } of visibleRanges) {
     const spans = underlineSpans(state.doc.sliceString(from, to), from);
@@ -1754,7 +1798,7 @@ function underlinePlugin() {
         this.decorations = underlineDecorations(view.state, view.visibleRanges);
       }
       update(update) {
-        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet || parseAdvanced(update)) {
           this.decorations = underlineDecorations(update.view.state, update.view.visibleRanges);
         }
       }
@@ -1778,7 +1822,7 @@ function blankLineDecorations(view) {
   const ranges = [];
   const { state } = view;
   const doc = state.doc;
-  const code = codeRangesOf(state);
+  const code = codeRangesOf(state, view.viewport.to);
   for (const { from, to } of view.visibleRanges) {
     const firstLine = doc.lineAt(from).number;
     const lastLine = doc.lineAt(to).number;
@@ -1800,7 +1844,7 @@ function blankLinePlugin() {
         this.decorations = blankLineDecorations(view);
       }
       update(update) {
-        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet || parseAdvanced(update)) {
           this.decorations = blankLineDecorations(update.view);
         }
       }
@@ -2680,7 +2724,7 @@ export function runFormat(view, kind) {
     text: state.doc.toString(),
     ranges,
     kind,
-    codeRanges: codeRangesOf(state),
+    codeRanges: codeRangesOf(state, ranges.reduce((end, r) => Math.max(end, r.to), 0)),
   });
   if (!edit) return true; // dentro de código: se consume la tecla y nada más
   const changes = ChangeSet.of(edit.changes, state.doc.length);
@@ -2777,7 +2821,7 @@ function runBlockKey(view, kind) {
   // por el separador que toque (⇧⏎/⌘⏎ un salto; ⏎ el de bloque, salvo dentro
   // de código, donde una valla no se parte nunca).
   if (!range.empty) {
-    const insideCode = isInsideCode(codeRangesOf(state), range.from);
+    const insideCode = isInsideCode(codeRangesOf(state, range.to), range.from);
     const sep = kind === "enter" && !insideCode ? "\n\n" : "\n";
     view.dispatch({
       changes: { from: range.from, to: range.to, insert: sep },
@@ -3160,7 +3204,7 @@ function linkTrigger(state, pos) {
   // Dentro de código no salta: "[[i]]" en un array de verdad no es un
   // enlace (mismo criterio que las flechas tipográficas, más arriba), y lo
   // mismo en un `código` en línea.
-  if (isInsideCode(codeRangesOf(state), from)) return null;
+  if (isInsideCode(codeRangesOf(state, from + LINK_OPEN.length), from)) return null;
   return { from, typed };
 }
 
