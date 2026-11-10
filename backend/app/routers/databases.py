@@ -294,6 +294,23 @@ def update_view(
 def delete_view(
     database_id: uuid.UUID, view_id: uuid.UUID, repo: Repository = Depends(get_repo)
 ):
+    """Borra una vista; el frontmatter de `Bases/<slug>.md` se reescribe con el
+    resto en la misma operación (el `.md` es la verdad: no hay otra copia).
+
+    La última vista no se borra: es la pestaña con la que la base se abre y la
+    que el bloque incrustado de una nota puede nombrar. Una base sin vistas es
+    un estado válido (se queda en «Todas»), pero es el de una base creada sin
+    ninguna, no algo a lo que se llegue borrando la única que había. Las filas
+    no dependen de la vista: no se toca ninguna.
+    """
+    if repo.get_view(database_id, view_id) is None:
+        raise HTTPException(404, "Vista no encontrada")
+    if len(repo.list_views(database_id)) <= 1:
+        raise HTTPException(
+            409,
+            "No se puede borrar la última vista: una base necesita al menos una. "
+            "Las filas no se tocan: los datos son de la base, no de la vista.",
+        )
     with _vault_errors():
         borrada = repo.delete_view(database_id, view_id)
     if not borrada:

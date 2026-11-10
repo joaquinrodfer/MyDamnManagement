@@ -1463,6 +1463,36 @@
     color: var(--ink-muted);
   }
   .view-tab.active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  /* Por qué no se puede borrar la última vista: se escribe, no se esconde en
+     un `title` (en táctil no hay hover y un botón apagado sin motivo es un
+     estado mudo). */
+  .db-view-note { margin: -8px 0 16px; font-size: var(--text-sm); color: var(--ink-muted); }
+
+  /* «+ Nueva fila» de una vista: tabla incrustada en una nota, lista y agenda
+     del calendario. El botón se cambia por el campo del nombre (form) y la
+     fila se crea con Enter; el aviso de «el filtro no la enseña» va debajo. */
+  .db-add-row { margin-top: 10px; }
+  .db-add-row-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .db-add-row-input {
+    flex: 1 1 160px;
+    min-width: 0;
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 9px;
+    border-radius: 7px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .db-add-row-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .db-add-row-status { margin: 6px 0 0; font-size: var(--text-sm); color: var(--ink-muted); line-height: 1.5; }
+  /* Vacío no ocupa: el hueco del aviso no deja un espacio muerto debajo. */
+  .db-add-row-status:empty { display: none; }
+  /* Dentro de la lista (caja con borde) el control es una línea más. */
+  .db-add-row--list { margin-top: 0; padding: 8px 12px; border-top: 1px solid var(--panel-border); }
+  /* El botón y el formulario se turnan: `hidden` solo, no basta, porque
+     `display: inline-flex`/`flex` de las clases gana a la regla del navegador. */
+  .db-add-row-btn[hidden], .db-add-row-form[hidden] { display: none; }
 
   /* min-width: max-content: la tabla nunca se comprime por debajo del ancho
      natural de sus columnas. Sin esto, a 1024 px `width: 100%` la estrechaba
@@ -2141,6 +2171,10 @@
     .dialog-actions .btn { width: 100%; min-height: 44px; }
     .btn { min-height: 44px; }
     .field input, .field select, .field textarea { font-size: 16px; min-height: 44px; }
+    /* El nombre de la fila nueva se toca y se escribe con el dedo: 44 px de
+       alto y 16 px de letra (por debajo, iOS hace zoom al enfocar). El botón
+       ya mide 44 por la regla general de `.btn`. */
+    .db-add-row-input { min-height: 44px; font-size: 16px; }
     .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 92px 44px; }
     .prop-row input, .prop-row select, .prop-options-input { font-size: 16px; min-height: 44px; }
     #prop-rows, #row-props { max-height: 50dvh; }

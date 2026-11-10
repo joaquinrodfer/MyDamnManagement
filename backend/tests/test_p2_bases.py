@@ -147,8 +147,14 @@ def test_el_schema_y_las_vistas_se_editan_en_el_fichero(client, vault_path):
     client.patch(f"/databases/{base['id']}/views/{vista['id']}", json={"name": "Cerradas"})
     assert frontmatter(fichero)["views"][-1]["name"] == "Cerradas"
 
-    client.delete(f"/databases/{base['id']}/views/{vista['id']}")
-    assert [v["name"] for v in frontmatter(fichero)["views"]] == []
+    # La última vista no se borra (409): el `.md` se queda como está. Borrar
+    # una vista nunca toca las filas; ver `test_borrar_vistas.py`.
+    assert client.delete(f"/databases/{base['id']}/views/{vista['id']}").status_code == 409
+    assert [v["name"] for v in frontmatter(fichero)["views"]] == ["Cerradas"]
+
+    client.post(f"/databases/{base['id']}/views", json={"name": "Todas", "type": "table"})
+    assert client.delete(f"/databases/{base['id']}/views/{vista['id']}").status_code == 204
+    assert [v["name"] for v in frontmatter(fichero)["views"]] == ["Todas"]
 
 
 # --------------------------------------------------------------------------
