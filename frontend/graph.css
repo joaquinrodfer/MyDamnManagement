@@ -76,6 +76,11 @@
 
 .graph-depth { padding: 4px 8px; min-width: 26px; }
 
+/* `hidden` en un elemento con `display: flex` no lo oculta: la regla del autor
+   gana a la del navegador. El grupo «Saltos» se esconde en modo global (solo
+   tiene sentido en el local) y sin esto se quedaba a la vista. */
+.graph-depths[hidden] { display: none; }
+
 .graph-tab:hover:not(:disabled),
 .graph-depth:hover:not(:disabled) { background: var(--code-bg); color: var(--ink); }
 

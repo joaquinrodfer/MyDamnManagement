@@ -349,14 +349,43 @@ function createView({ pageId, onOpenPage }) {
     // lienzo (antes 1,15:1); las que salen o entran del nodo bajo el ratón van
     // en acento (7,65:1) y más gruesas (2,6 px frente a 1,6), y las demás se
     // apagan para que el foco se lea de un vistazo.
-    for (const e of state.edges) {
-      const active = hover && (e.a === hover || e.b === hover);
-      ctx.strokeStyle = active ? colors.edgeActive : colors.edge;
-      ctx.lineWidth = (active ? 2.6 : 1.6) / t.k;
-      ctx.globalAlpha = active ? 1 : hover ? 0.18 : 1;
+    //
+    // Se pintan en **dos pasadas y un solo `stroke()` por pasada**: con 7.000
+    // nodos y 10.000 aristas, un `stroke()` por arista con su `beginPath` es lo
+    // que hacía que la simulación se arrastrara. El color y el grosor son los
+    // mismos para todas las de una pasada, así que el resultado es idéntico.
+    const ancho = 1.6 / t.k;
+    const anchoActivo = 2.6 / t.k;
+    if (!hover) {
+      ctx.strokeStyle = colors.edge;
+      ctx.lineWidth = ancho;
+      ctx.globalAlpha = 1;
       ctx.beginPath();
-      ctx.moveTo(e.a.x, e.a.y);
-      ctx.lineTo(e.b.x, e.b.y);
+      for (const e of state.edges) {
+        ctx.moveTo(e.a.x, e.a.y);
+        ctx.lineTo(e.b.x, e.b.y);
+      }
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = colors.edge;
+      ctx.lineWidth = ancho;
+      ctx.globalAlpha = 0.18;
+      ctx.beginPath();
+      for (const e of state.edges) {
+        if (e.a === hover || e.b === hover) continue;
+        ctx.moveTo(e.a.x, e.a.y);
+        ctx.lineTo(e.b.x, e.b.y);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = colors.edgeActive;
+      ctx.lineWidth = anchoActivo;
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      for (const e of state.edges) {
+        if (e.a !== hover && e.b !== hover) continue;
+        ctx.moveTo(e.a.x, e.a.y);
+        ctx.lineTo(e.b.x, e.b.y);
+      }
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
