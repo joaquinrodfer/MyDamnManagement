@@ -94,32 +94,151 @@ function freshSeparator(prev, next) {
 }
 
 /**
- * Tipos que empiezan bloque aunque estén pegados al de arriba: un marcador de
- * lista al principio de una línea es un ítem nuevo, y una cabecera, una valla
- * o una cita interrumpen lo que tengan encima. Con esos, un salto basta.
- * (Una línea horizontal NO: `texto\n---` es una cabecera setext, no un `---`.)
+ * El hueco que va entre dos bloques con el número de saltos pedido, sin tirar
+ * lo que se pueda conservar: un hueco puede llevar espacios en sus líneas «en
+ * blanco» (`a\n\n   \n\nb`) y esos espacios son texto del `.md` como
+ * cualquier otro. Si faltan saltos se añaden al final (la línea en blanco queda
+ * pegada al bloque de abajo); si sobran, se quitan líneas en blanco enteras,
+ * empezando por las que no llevan nada, para que las que llevan espacios duren
+ * lo que puedan.
  */
-const INTERRUPTING = new Set([
-  "bullet_list_item",
-  "ordered_list_item",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "code",
-  "quote",
-]);
+function fitGap(gap, count) {
+  const parts = gap.split("\n");
+  const have = parts.length - 1;
+  if (count === have) return gap;
+  if (count > have) return gap + "\n".repeat(count - have);
+  let left = have - count;
+  for (const blankOnly of [true, false]) {
+    for (let i = parts.length - 2; i >= 1 && left > 0; i--) {
+      if (parts.length <= 2) break;
+      if (blankOnly ? parts[i] !== "" : !/^[ \t]*$/.test(parts[i])) continue;
+      parts.splice(i, 1);
+      left--;
+    }
+  }
+  // Un hueco de puros saltos no tiene nada que quitar de en medio: se rehace.
+  return left === 0 ? parts.join("\n") : "\n".repeat(count);
+}
+
+const HEADING_TYPES = new Set(["h1", "h2", "h3", "h4", "h5"]);
 
 /**
- * Saltos MÍNIMOS para que Markdown siga leyendo dos bloques y no uno. Es el
- * suelo: por debajo de esto la frontera es incorrecta aunque haya que dejar de
- * mover. Todo lo que no interrumpe (un párrafo, una tabla, un bloque HTML)
- * necesita la línea en blanco: pegado a un párrafo o a un ítem, su primer
- * renglón se lee como continuación.
+ * Nombre corto de lo que hay que saber de un bloque para su frontera. `other`
+ * agrupa cosas que el editor pinta igual (un bloque HTML, una tabla, una
+ * referencia de enlace, una cabecera setext) pero que se pegan a sus vecinos de
+ * forma muy distinta, así que se distinguen por el texto.
  */
-function minNewlines(prev, next) {
-  return INTERRUPTING.has(next.type) ? 1 : 2;
+function frontierKind(block, text) {
+  if (block.type === "other") return otherKind(text.slice(block.from, block.to));
+  if (block.type === "bullet_list_item" || block.type === "ordered_list_item") return "item";
+  if (HEADING_TYPES.has(block.type)) return "heading";
+  if (block.type === "hr") return hrKind(text.slice(block.from, block.to));
+  return block.type; // paragraph, quote, code
+}
+
+/**
+ * `---` no es lo mismo que `***`, `___` o `- - -`: pegado debajo de un párrafo
+ * es el subrayado de una cabecera setext, así que necesita la línea en blanco;
+ * los demás temas son líneas horizontales que cortan lo que tengan encima.
+ */
+function hrKind(body) {
+  const line = (body.split("\n", 1)[0] || "").replace(/[ \t]+$/, "");
+  return /^-+$/.test(line) ? "dashes" : "hr";
+}
+
+/** Qué es un bloque `other`, por su texto. */
+function otherKind(body) {
+  const head = body.replace(/^[ \t]*/, "");
+  if (head.startsWith("<")) {
+    // Un `<pre>`, un `<script>` o un `<?...?>` acaban en su cierre (condiciones
+    // 1-5 de CommonMark): detrás de ellos un salto basta. El resto de bloques
+    // HTML (6-7) se come las líneas de debajo hasta la línea en blanco.
+    if (/^<(script|pre|style|textarea)([ \t>]|$)/i.test(head)) return "html-closed";
+    if (/^<[?]|^<![A-Za-z]|^<!\[CDATA\[/.test(head)) return "html-closed";
+    return "html";
+  }
+  if (/^\[[^\]]*\]:/.test(head)) return "ref"; // LinkReference (`[ref]: url`)
+  const second = body.split("\n")[1] ?? "";
+  // Cabecera setext (`titulo` + `---`): acaba en su línea, como una cabecera.
+  if (/^[ \t]{0,3}(=+|-+)[ \t]*$/.test(second)) return "setext";
+  return "table"; // Table (y cualquier otro `other`: se trata como tabla)
+}
+
+// Nombres de etiqueta que empiezan un bloque HTML «de verdad» (condición 6 de
+// CommonMark). Es la lista del estándar: un nombre que no esté aquí es una
+// etiqueta suelta (condición 7) y esa NO corta un párrafo.
+const HTML_BLOCK_TAGS = new Set(
+  (
+    "address article aside base basefont blockquote body caption center col colgroup dd details " +
+    "dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 " +
+    "head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p " +
+    "param search section summary table tbody td tfoot th thead title tr track ul"
+  ).split(" ")
+);
+
+/**
+ * ¿Este bloque HTML corta un párrafo pegado encima? Las condiciones 1-6 de
+ * CommonMark sí; la 7 (una etiqueta suelta de nombre desconocido, `<x-foo>`) no,
+ * y entonces hace falta la línea en blanco igual que delante de un párrafo.
+ */
+function htmlInterrupts(body) {
+  const line = (body.split("\n", 1)[0] || "").replace(/^[ \t]{0,3}/, "");
+  if (/^<(script|pre|style|textarea)([ \t>]|$)/i.test(line)) return true;
+  if (/^<[?]|^<![A-Za-z]|^<!\[CDATA\[/.test(line)) return true;
+  const tag = /^<\/?([A-Za-z][A-Za-z0-9-]*)([ \t]|\/?>|$)/.exec(line);
+  return !!tag && HTML_BLOCK_TAGS.has(tag[1].toLowerCase());
+}
+
+// Parejas que necesitan la LÍNEA EN BLANCO aunque lo de abajo empiece un bloque
+// que normalmente se separa con un salto: lo de arriba se continúa con la
+// primera línea de abajo (un párrafo, una cita o un ítem se la comen) o la lee
+// como parte de sí mismo (una tabla, donde `---` es la fila de guiones).
+const NEEDS_BLANK_AFTER = {
+  paragraph: new Set(["paragraph", "setext", "dashes", "ref"]),
+  quote: new Set(["paragraph", "setext", "ref", "quote"]),
+  item: new Set(["paragraph", "setext", "ref"]),
+  table: new Set(["paragraph", "setext", "dashes", "table", "ref"]),
+};
+
+// Tipos que ACABAN en su propia línea: detrás de ellos un salto basta, también
+// delante de un `---` (que detrás de un párrafo sería una cabecera setext, pero
+// aquí ya no tiene párrafo que subrayar).
+const CLOSED = new Set(["heading", "setext", "hr", "dashes", "code", "ref", "html-closed"]);
+
+/**
+ * Saltos MÍNIMOS para que Markdown siga leyendo DOS bloques y no uno. Es el
+ * suelo: por debajo de esto la frontera es incorrecta aunque haya que dejar de
+ * mover. Se mide por PAREJA (no solo mirando el de abajo) y con el parser de
+ * verdad, bloque por bloque y por los dos lados: la tabla de
+ * test/block-move-property.test.js comprueba que lo que dice esto es lo que
+ * hace `markdownLanguage.parser`, probando un salto y dos en cada pareja.
+ *
+ * Lo que salió de medirlo:
+ *
+ * - detrás de un bloque HTML de los que van hasta la línea en blanco, SIEMPRE
+ *   dos: se come las líneas de debajo (`<div>x</div>` + `# titulo` con un salto
+ *   es UN bloque). Un `<pre>`/`<script>`/`<?...?>` acaba en su cierre y no;
+ * - dos citas con un salto son UNA cita (`quote -> quote`: dos);
+ * - detrás de una tabla, dos delante de un párrafo, un `---`, otra tabla o una
+ *   referencia de enlace: cualquier línea que no sea fila la corta, pero `---`
+ *   y las filas se leen como parte de la tabla;
+ * - detrás de un párrafo, una cita o un ítem, dos delante de un párrafo, otra
+ *   cita, una referencia de enlace o un `---` (detrás de un párrafo, `---` es
+ *   una cabecera setext; detrás de una cita o un ítem, una línea suelta sigue
+ *   siendo suya);
+ * - detrás de una cabecera, una valla, un `---`, una referencia o una cabecera
+ *   setext, uno basta: acaban en su línea (la tabla anterior pedía dos delante
+ *   de un `---` y no hacía falta, y eso hacía que `Alt+↑` no hiciera nada).
+ */
+export function minNewlines(prev, next, text) {
+  const a = frontierKind(prev, text);
+  const b = frontierKind(next, text);
+  if (a === "html") return 2; // se come la línea siguiente
+  if (CLOSED.has(a)) return 1; // acaba en su línea: no se continúa con nada
+  const blank = NEEDS_BLANK_AFTER[a];
+  if (!blank) return 2; // tipo que no se conoce: antes dos que uno
+  if (b === "html" && !htmlInterrupts(text.slice(next.from, next.to))) return 2;
+  return blank.has(b) ? 2 : 1;
 }
 
 /**
@@ -228,7 +347,7 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     const a = order[p];
     const b = order[p + 1];
     const k = b === a + 1 ? a : a === b + 1 ? b : null;
-    const bd = { a, b, min: minNewlines(blocks[a], blocks[b]), gap: null, count: 0 };
+    const bd = { a, b, min: minNewlines(blocks[a], blocks[b], s), gap: null, count: 0 };
     if (k !== null && !kept.has(k)) {
       kept.add(k);
       bd.gap = gaps[k];
@@ -300,10 +419,9 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     if (p + 1 < n) {
       const bd = bounds[p];
       // El hueco conservado se copia tal cual (con sus espacios, si los tenía)
-      // mientras no haya que tocarlo.
-      insert += bd.gap !== null && countNewlines(bd.gap) === bd.count
-        ? bd.gap
-        : "\n".repeat(bd.count);
+      // mientras no haya que tocarlo; si hay que cambiarle los saltos, se
+      // quitan o se añaden líneas en blanco sin tirar los espacios de las demás.
+      insert += bd.gap !== null ? fitGap(bd.gap, bd.count) : "\n".repeat(bd.count);
     }
   }
 
