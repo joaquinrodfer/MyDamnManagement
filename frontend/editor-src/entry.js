@@ -28,6 +28,7 @@ import {
   resolveCreatedLinkTitle,
 } from "./link-create.js";
 import { blockKeyEdit } from "./block-keys.js";
+import { formatEdit, underlineSpans } from "./format.js";
 import { blocksFromTree } from "./block-ranges.js";
 import {
   backspaceJoinEdit,
@@ -1679,6 +1680,58 @@ function syntaxMarkPlugin() {
   );
 }
 
+// ------------------------------------------------- subrayado (`<u>x</u>`)
+//
+// Markdown no tiene subrayado -- `__x__` es negrita --, así que ⌘U escribe
+// `<u>x</u>`, que es lo que renderizan Obsidian y GitHub. Aquí se PINTA: las
+// etiquetas se esconden como el resto de marcas (o se ven tenues, con
+// `cm-mdm-mark`, mientras se edita ese bloque) y el texto de dentro se
+// subraya (clase `cm-mdm-underline`, en frontend/index.html).
+//
+// El parser entrega `<u>` y `</u>` como dos nodos HTMLTag SUELTOS -- no
+// envuelven el texto --, así que emparejarlos es cosa de `underlineSpans`
+// (format.js), que escanea el texto visible. Del resto de HTML no se toca
+// nada: hoy no se pinta, y sigue sin pintarse.
+function underlineDecorations(view) {
+  const { state } = view;
+  const ranges = [];
+  for (const { from, to } of view.visibleRanges) {
+    const spans = underlineSpans(state.doc.sliceString(from, to), from);
+    for (const s of spans) {
+      // Dentro de código no hay subrayado que pintar: son caracteres más.
+      if (isInsideCodeBlock(state, s.openFrom)) continue;
+      const active = selectionIntersects(state, s.openFrom, s.closeTo);
+      if (active) {
+        ranges.push(Decoration.mark({ class: "cm-mdm-mark" }).range(s.openFrom, s.openTo));
+        ranges.push(Decoration.mark({ class: "cm-mdm-mark" }).range(s.closeFrom, s.closeTo));
+      } else {
+        ranges.push(Decoration.replace({}).range(s.openFrom, s.openTo));
+        ranges.push(Decoration.replace({}).range(s.closeFrom, s.closeTo));
+      }
+      if (s.innerTo > s.innerFrom) {
+        ranges.push(Decoration.mark({ class: "cm-mdm-underline" }).range(s.innerFrom, s.innerTo));
+      }
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function underlinePlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = underlineDecorations(view);
+      }
+      update(update) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+          this.decorations = underlineDecorations(update.view);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
 // Un párrafo necesita una línea en blanco detrás para separarse del
 // siguiente en Markdown -- pero verla como un hueco real (una fila entera
 // vacía) hace que los bloques parezcan tener aire de más entre ellos, cosa
@@ -2566,6 +2619,73 @@ const moveBlockKeymap = keymap.of([
   { key: "Alt-ArrowDown", run: (view) => runMoveBlockKey(view, 1) },
 ]);
 
+// ------------------------------------------------- ⌘B / ⌘I / ⌘U (formato)
+//
+// Qué cambia en el documento lo decide format.js (puro, con sus tests). Aquí
+// solo el pegamento: zonas de código, UNA transacción y dónde queda la
+// selección.
+//
+// Va DESPUÉS de todos los keymaps que ya había ("[[", menú "/", flechas de la
+// lista, ⏎ de bloques, Supr/⌫, Alt+↑/↓): ninguno usa Mod, así que no puede
+// robarle nada a lo ya probado. Y devuelve siempre true -- también dentro de
+// código, donde no hace nada -- para que la tecla NO llegue al navegador: en
+// un contenteditable, Ctrl+B es su propio "negrita", que no sabe de Markdown.
+const formatKeymap = keymap.of([
+  { key: "Mod-b", run: (view) => runFormat(view, "bold") },
+  { key: "Mod-i", run: (view) => runFormat(view, "italic") },
+  { key: "Mod-u", run: (view) => runFormat(view, "underline") },
+]);
+
+const CODE_NODE_TYPES = new Set(["FencedCode", "CodeBlock", "InlineCode"]);
+
+/** Zonas de código del documento: vallas, código sangrado y `código` en
+ * línea. Ahí no se escriben marcas -- no se renderizan y el `.md` diría una
+ * cosa y la pantalla otra. */
+function codeRangesOf(state) {
+  const ranges = [];
+  syntaxTree(state).iterate({
+    enter: (node) => {
+      if (!CODE_NODE_TYPES.has(node.name)) return;
+      ranges.push({ from: node.from, to: node.to });
+      return false;
+    },
+  });
+  return ranges;
+}
+
+/**
+ * ⌘/Ctrl + B / I / U: pone o quita negrita, cursiva o subrayado. Todo el
+ * cambio va en UNA transacción, así que un solo ⌘Z lo deshace (también
+ * cuando la selección son varias líneas y se envuelven una por una).
+ */
+export function runFormat(view, kind) {
+  const { state } = view;
+  const ranges = state.selection.ranges.map((r) => ({ from: r.from, to: r.to }));
+  const edit = formatEdit({
+    text: state.doc.toString(),
+    ranges,
+    kind,
+    codeRanges: codeRangesOf(state),
+  });
+  if (!edit) return true; // dentro de código: se consume la tecla y nada más
+  const changes = ChangeSet.of(edit.changes, state.doc.length);
+  // Si algún rango de la selección se quedó sin tocar (estaba dentro de
+  // código), hay menos rangos nuevos que viejos: el principal se acota para
+  // que `EditorSelection.create` no se queje.
+  const mainIndex = Math.min(state.selection.mainIndex, edit.selection.length - 1);
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(
+      edit.selection.map((s) => EditorSelection.range(s.from, s.to)),
+      mainIndex
+    ),
+    userEvent: "input.format",
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
 /** Bloque (del árbol de Markdown) en el que cae `pos`, o null si el cursor no
  * está dentro de ninguno (nota vacía, fila en blanco entre dos bloques). */
 function blockAt(state, pos) {
@@ -3397,6 +3517,7 @@ export function createNoteEditor({
         blockDeleteKeymap,
         backspaceJoinKeymap,
         moveBlockKeymap,
+        formatKeymap,
         // El Backspace «que borra el marcador» de Markdown (deleteMarkupBackward)
         // se registra aquí a mano: `markdown()` ya no trae su keymap (ver abajo),
         // porque su Enter (insertNewlineContinueMarkup) competía con el de los
@@ -3426,6 +3547,7 @@ export function createNoteEditor({
         quotePlugin(),
         blankLinePlugin(),
         syntaxMarkPlugin(),
+        underlinePlugin(),
         hrField,
         databaseBlockField(renderDatabaseBlock),
         suggestionField,
