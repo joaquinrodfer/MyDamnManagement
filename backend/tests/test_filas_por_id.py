@@ -214,3 +214,65 @@ def test_migrar_un_vault_de_200_filas_y_el_indice_dice_lo_mismo(
     assert re.search(r"ya_estaban\s*:\s*200", salida), salida
     assert re.search(r"titulo_escrito\s*:\s*0", salida), salida
     assert re.search(r"errores\s*:\s*0", salida), salida
+
+# --------------------------------------------------------------------------
+# 5. el título es texto libre: ` #`, comillas, dos puntos y vacío
+# --------------------------------------------------------------------------
+
+def test_renombrar_un_titulo_con_almohadilla_no_corrompe_el_title(client, vault_path):
+    """`Pedido #3` → `Pedido #4` → `Pedido #5`: el `.md` dice exactamente eso.
+
+    Regresión de la revisión: el ` #` del título entrecomillado se tomaba por un
+    comentario de cola, así que cada `PATCH` se comía el cierre de las comillas
+    y arrastraba la basura del anterior (`Pedido #5" #4" #3`).
+    """
+    base = client.post(
+        "/databases", json={"title": "Pedidos", "schema_def": SCHEMA}
+    ).json()
+    creada = fila(client, base["id"], title="Pedido #3", properties={"fase": "lead"})
+    carpeta = vault_path / "Bases" / "Pedidos"
+    ruta = carpeta / f"{creada['id'][:8]}.md"
+    assert frontmatter(ruta)["title"] == "Pedido #3"
+
+    for titulo in ("Pedido #4", "Pedido #5"):
+        respuesta = client.patch(
+            f"/databases/{base['id']}/rows/{creada['id']}", json={"title": titulo}
+        )
+        assert respuesta.status_code == 200, respuesta.text
+        assert respuesta.json()["title"] == titulo
+        # El fichero no se mueve y el frontmatter dice el título nuevo, entero.
+        assert sorted(p.name for p in carpeta.iterdir()) == [ruta.name]
+        assert frontmatter(ruta)["title"] == titulo
+        assert frontmatter(ruta)["fase"] == "lead"
+
+    texto = ruta.read_text(encoding="utf-8")
+    assert 'title: "Pedido #5"' in texto, texto
+    assert texto.count("#") == 1, texto
+    assert [f["title"] for f in client.get(f"/databases/{base['id']}/rows").json()] == [
+        "Pedido #5"
+    ]
+
+    # Y el `.md` es la verdad: reindexar no cambia el título.
+    assert client.post("/reindex").status_code == 200
+    leida = client.get(f"/databases/{base['id']}/rows/{creada['id']}").json()
+    assert leida["title"] == "Pedido #5"
+    assert [
+        f["title"] for f in client.get(f"/databases/{base['id']}/rows").json()
+    ] == ["Pedido #5"]
+
+
+def test_crear_una_fila_con_titulo_vacio_la_titula_sin_titulo(client, vault_path):
+    """`POST` con `title: ""` no deja la fila sin `title` (ni enseña el id8)."""
+    base = client.post(
+        "/databases", json={"title": "Contactos", "schema_def": SCHEMA}
+    ).json()
+    creada = fila(client, base["id"], title="", properties={"fase": "lead"})
+
+    assert creada["title"] == "Sin título"
+    ruta = vault_path / "Bases" / "Contactos" / f"{creada['id'][:8]}.md"
+    assert frontmatter(ruta)["title"] == "Sin título"
+    leida = client.get(f"/databases/{base['id']}/rows/{creada['id']}").json()
+    assert leida["title"] == "Sin título"
+    assert [
+        f["title"] for f in client.get(f"/databases/{base['id']}/rows").json()
+    ] == ["Sin título"]

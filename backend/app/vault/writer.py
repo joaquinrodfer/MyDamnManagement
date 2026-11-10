@@ -324,6 +324,10 @@ def create_row(vault_root: str, folder: str, title: str,
     """
     notes: list[str] = []
     row_id = row_id or new_id()
+    # Un título vacío se escribe como «Sin título», igual que al guardar
+    # (`store.save_row`): si no, la fila se quedaría sin `title` y la API
+    # enseñaría el `<id8>` del nombre del fichero como si fuera su título.
+    title = names.nfc(str(title)).strip() or "Sin título"
     rel_dir = vaultfs.safe_rel(vault_root, folder)
     directory = os.path.join(vault_root, rel_dir)
     os.makedirs(directory, exist_ok=True)
@@ -339,4 +343,8 @@ def create_row(vault_root: str, folder: str, title: str,
         if not text.endswith("\n"):
             text += "\n"
     vaultfs.atomic_write(os.path.join(vault_root, rel), text)
-    return reader.read_file(os.path.join(vault_root, rel), rel), notes
+    page = reader.read_file(os.path.join(vault_root, rel), rel)
+    # `read_file` titula por el nombre del fichero; en una fila el título es el
+    # del frontmatter. Sin esto, el `Page` que sale de aquí se llama `<id8>`.
+    reader.apply_row_title(page)
+    return page, notes
