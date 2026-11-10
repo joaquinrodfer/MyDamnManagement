@@ -354,6 +354,79 @@ test("propiedad: mover no cambia las líneas, solo el orden de los bloques (2 a 
   );
 });
 
+// Una valla de código SIN CERRAR no se puede separar de su vecina con ninguna
+// línea en blanco: se come todo lo que venga detrás, ponga los saltos que ponga.
+// Antes el motor caía en «la frontera de siempre» (dos saltos) y los dos bloques
+// se leían como UNO: `parrafo\n\n```\ncodigo` movido dejaba
+// "```\ncodigo\n\nparrafo", con el párrafo dentro del código (2 bloques -> 1).
+// El mínimo no arregla esto -- no hay número de saltos que separe la pareja --,
+// así que lo que se exige es que «no se puede separar» signifique NO MOVER
+// (t_111b15a7).
+test("una valla de código sin cerrar no se pone al lado de un bloque: se fusionarían", (t) => {
+  const stats = { docs: 0, moves: 0, refused: 0, refusedWrong: 0, maxBlocks: 0, withCode: 0, withHeading: 0 };
+  for (const valla of ["```", "~~~"]) {
+    // El caso de la tarjeta: dos bloques, el párrafo y la valla abierta.
+    for (const cola of ["", "\n\ncola"]) {
+      const doc = `parrafo\n\n${valla}\ncodigo${cola}`;
+      const blocks = parseBlocks(doc);
+      assert.equal(blocks.length, 2, `la valla abierta es UN bloque: «${doc}»`);
+      const texts = blockTexts(doc, blocks);
+      // Las dos direcciones del par: el párrafo baja y la valla sube.
+      for (const [index, slot] of [
+        [0, 2],
+        [1, 0],
+      ]) {
+        assert.equal(
+          moveBlockEdits({ text: doc, blocks, index, slot }),
+          null,
+          `se pone un bloque al lado de una valla sin cerrar: «${doc}» ${index}->${slot}`
+        );
+      }
+      // Y el motor sabe POR QUÉ: con la valla delante no hay saltos que separen
+      // la pareja (lo mismo que mide el parser, aquí hecho aparte).
+      assert.equal(
+        minNewlines(blocks[1], blocks[0], texts[1], texts[0]),
+        IMPOSSIBLE,
+        `el motor no ve imposible la pareja (valla sin cerrar + su vecina): «${doc}»`
+      );
+    }
+    // El control: con la valla CERRADA el mismo movimiento sí se hace, y sigue
+    // habiendo dos bloques. Si no, lo que se estaría probando es que no se mueve
+    // nada con vallas, no el caso de la valla abierta.
+    const cerrada = `parrafo\n\n${valla}\ncodigo\n${valla}`;
+    const cb = parseBlocks(cerrada);
+    assert.equal(cb.length, 2, `la valla cerrada es UN bloque: «${cerrada}»`);
+    const edit = moveBlockEdits({ text: cerrada, blocks: cb, index: 0, slot: 2 });
+    assert.ok(edit, `con la valla cerrada el movimiento sí cabe: «${cerrada}»`);
+    const out = apply(cerrada, edit.changes);
+    assert.equal(parseBlocks(out).length, 2, `con la valla cerrada se pierde un bloque: «${out}»`);
+    assert.deepEqual(sortedLines(out), sortedLines(cerrada), `las líneas cambian: «${out}»`);
+  }
+
+  // Y por la propiedad, no solo por el caso exacto: documentos con una valla sin
+  // cerrar al final y otra cosa delante (párrafo, ítem, cita, cabecera, dos
+  // párrafos), con huecos de 1, 2 y 4 y con y sin cola detrás de la valla.
+  // Ningún movimiento cambia las líneas ni el número de bloques, y los rechazos
+  // son los que de verdad no caben.
+  const abiertas = [];
+  for (const valla of ["```", "~~~"]) {
+    for (const gap of ["\n", "\n\n", "\n\n\n\n"]) {
+      for (const previo of ["parrafo", "- item", "> cita", "# titulo", "uno\n\nparrafo dos"]) {
+        abiertas.push(`${previo}${gap}${valla}\ncodigo`);
+        abiertas.push(`${previo}${gap}${valla}\ncodigo\n\ncola`);
+      }
+    }
+  }
+  for (const doc of abiertas) checkDocument(doc, stats);
+  assert.ok(stats.refused > 0, `movimientos rechazados: ${stats.refused}`);
+  assert.ok(stats.moves > 0, `movimientos que sí caben: ${stats.moves}`);
+  assert.equal(stats.refusedWrong, 0, `rechazos con sitio de sobra: ${stats.refusedWrong}`);
+  t.diagnostic(
+    `vallas sin cerrar: ${stats.docs} documentos, ${stats.moves} movimientos, ` +
+      `${stats.refused} rechazados (ninguno con sitio)`
+  );
+});
+
 // Una lista NUMERADA sí cambia de texto a propósito: se reenumera desde el
 // número con el que empezaba su lista. Aquí se comprueba lo que tiene que
 // seguir siendo verdad: mismas líneas salvo el número, y ninguna tirada de
