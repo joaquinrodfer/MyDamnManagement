@@ -40,13 +40,16 @@ def frontmatter(path: Path) -> dict:
     return fm.parse(raw).data
 
 
-def test_un_patch_con_titulo_y_propiedades_renombra_y_guarda(client, vault_path):
+def test_un_patch_con_titulo_y_propiedades_cambia_el_title_y_no_mueve_el_fichero(
+    client, vault_path
+):
     base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
     fila = crear_fila(
         client, base["id"], title="Acme", properties={"empresa": "Acme S.L.", "fase": "lead"}
     )
     carpeta = vault_path / "Bases" / "Contactos"
-    assert (carpeta / "Acme.md").exists()
+    ruta = carpeta / f"{fila['id'][:8]}.md"
+    assert ruta.exists()
 
     respuesta = client.patch(
         f"/databases/{base['id']}/rows/{fila['id']}",
@@ -59,23 +62,25 @@ def test_un_patch_con_titulo_y_propiedades_renombra_y_guarda(client, vault_path)
     assert editada["properties"]["fase"] == "ganado"
     assert editada["properties"]["valor"] == 1500.0
 
-    assert not (carpeta / "Acme.md").exists()
-    nuevo = carpeta / "Acme SA.md"
-    assert nuevo.exists(), "el título es el nombre del fichero: se renombra"
+    # El fichero no se ha movido: mismo nombre (el id), ni uno nuevo ni uno
+    # borrado en la carpeta.
+    assert ruta.exists()
+    assert sorted(p.name for p in carpeta.iterdir()) == [ruta.name]
 
-    datos = frontmatter(nuevo)
+    datos = frontmatter(ruta)
     assert datos["id"] == fila["id"]
+    assert datos["title"] == "Acme SA", "el título vive en el frontmatter"
     assert datos["fase"] == "ganado"
     assert datos["valor"] == "1500"
     assert datos["empresa"] == "Acme S.L.", "lo que no llega en el PATCH se conserva"
-    assert "title" not in datos
 
     # Y lo que sirve la API es lo que dice el fichero.
     leida = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
     assert (leida["title"], leida["properties"]["fase"]) == ("Acme SA", "ganado")
 
 
-def test_renombrar_a_un_titulo_ocupado_no_pisa_la_otra_fila(client, vault_path):
+def test_dos_filas_pueden_llamarse_igual_y_conservan_cada_fichero(client, vault_path):
+    """El título ya no es el nombre: no hay ` (2)`, y cada fila mantiene su `.md`."""
     base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
     acme = crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
     globex = crear_fila(client, base["id"], title="Globex", properties={"fase": "ganado"})
@@ -85,15 +90,17 @@ def test_renombrar_a_un_titulo_ocupado_no_pisa_la_otra_fila(client, vault_path):
         f"/databases/{base['id']}/rows/{acme['id']}", json={"title": "Globex"}
     ).json()
 
-    assert frontmatter(carpeta / "Globex.md")["id"] == globex["id"], "la otra fila sigue intacta"
-    assert frontmatter(carpeta / "Globex.md")["fase"] == "ganado"
-    assert (carpeta / "Globex (2).md").exists(), f"colisión sin sufijo: {sorted(p.name for p in carpeta.iterdir())}"
-    assert frontmatter(carpeta / "Globex (2).md")["id"] == acme["id"]
-    assert not (carpeta / "Acme.md").exists()
+    # Cada fila sigue en su fichero (el que dicta su id) y sin sufijos.
+    rutas = {p.name: frontmatter(p) for p in carpeta.glob("*.md")}
+    assert rutas[f"{acme['id'][:8]}.md"]["id"] == acme["id"]
+    assert rutas[f"{globex['id'][:8]}.md"]["id"] == globex["id"]
+    assert rutas[f"{acme['id'][:8]}.md"]["fase"] == "lead"
+    assert rutas[f"{globex['id'][:8]}.md"]["fase"] == "ganado", "la otra fila sigue intacta"
+    assert not any("(" in name for name in rutas), sorted(rutas)
 
-    # El título de la fila es el nombre que quedó en el disco, y no se pierde.
+    # Las dos se llaman igual y ninguna ha perdido su identidad.
     assert renombrada["id"] == acme["id"]
-    assert renombrada["title"] == "Globex (2)"
+    assert renombrada["title"] == "Globex"
     filas = {f["id"]: f for f in client.get(f"/databases/{base['id']}/rows").json()}
-    assert filas[acme["id"]]["title"] == "Globex (2)"
+    assert filas[acme["id"]]["title"] == "Globex"
     assert filas[globex["id"]]["title"] == "Globex"

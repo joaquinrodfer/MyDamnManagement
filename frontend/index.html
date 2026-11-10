@@ -42,19 +42,39 @@
     --down: #f26464;             /* L = 0.2891 | Peligro / error / vencido (5.67:1 sobre --panel, 6.09:1 sobre --bg) */
     --down-bg: rgba(242, 100, 100, 0.15);    /* Compuesto: #37242c sobre --panel (L=0.0226; --down da 4.67:1) */
 
-    /* --- Tipografía (pilas del sistema, cero fuentes remotas) --- */
+    /* --- Tipografía (pilas del sistema, cero fuentes remotas) ---
+       Una sola familia para todo el contenido, los títulos y la interfaz:
+       Notion también usa la pila del sistema. --font-mono queda SOLO para
+       código (bloques, código en línea y el valor de un token). Una
+       monoespaciada en un título, una cabecera, una etiqueta o un metadato
+       es un defecto, no una decisión: al trabajar horas dentro de la app,
+       el texto mono cansa y hace que el título de la página se lea como una
+       consola. */
     --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
     --font-mono: "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-    /* --- Escala tipográfica --- */
+    /* --- Escala tipográfica ---
+       Manda el título de la página: 30 px > H1 24 > H2 20 > H3 17 > H4 15 >
+       H5 13, con el cuerpo en 15 px (16 en móvil, ver la media query de 768).
+       Antes el H1 (1.9em = 28,5 px) era MAYOR que el título de la página
+       (24 px): la jerarquía estaba invertida y el documento parecía no tener
+       título. Cada nivel en su variable para que el siguiente ajuste sea en
+       un solo sitio. En móvil (≤768 px) la escala no se hereda tal cual: allí
+       el cuerpo es 16 px y el ancho, 375, así que el :root de esa media query
+       redefine los cinco niveles. Los valores de aquí son los de escritorio. */
     --text-xs: 10.5px;
     --text-sm: 11.5px;
     --text-base: 13px;
     --text-md: 13.5px;
     --text-prose: 14.5px;
     --text-lg: 16px;
-    --text-db-title: 21px;
-    --text-note-title: 24px;
+    --text-note-title: 30px;
+    --text-db-title: var(--text-note-title);  /* misma escala en escritorio; en móvil se separa (ver 768 px) */
+    --text-h1: 24px;
+    --text-h2: 20px;
+    --text-h3: 17px;
+    --text-h4: 15px;
+    --text-h5: 13px;
 
     /* --- Radios --- */
     --radius-xs: 3px;
@@ -154,6 +174,25 @@
   }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+  /* ---------- movimiento (corto y sin rebotes) ----------
+     Lo que reacciona al ratón o al foco se anima con la misma duración corta
+     (120-160 ms) y la misma curva: el cambio se nota al pasar, no se espera.
+     Nada de `scale` en texto, nada de parallax, nada de más de 200 ms; el
+     contenido de la nota no se anima al cargar (se lee desde el primer
+     fotograma). Todo esto lo apaga `prefers-reduced-motion` al final del
+     archivo. */
+  .btn, .view-tab, .template-btn, .tree-row, .search-hit, .dashboard-item,
+  .inbox-item, .inbox-open, .list-row, .user-menu-item, .error-toast-close,
+  .cal-event, .cal-nav .btn, .mdm-slash-menu-item, .mdm-context-menu-item {
+    transition: background-color var(--dur-fast) var(--ease-std),
+                border-color var(--dur-fast) var(--ease-std),
+                color var(--dur-fast) var(--ease-std);
+  }
+  .btn { transition-property: background-color, border-color, color, filter; }
+  /* Las filas de la tabla: el hover tiñe la fila entera, y sin transición el
+     barrido de celda a celda se ve a saltos al recorrer la tabla con el ratón. */
+  .rows-table td, .rows-table th { transition: background-color var(--dur-fast) var(--ease-std); }
+
   /* ---------- iconos del sprite ---------- */
   .svg-icon {
     display: inline-block;
@@ -184,7 +223,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 14px;
     font-weight: 600;
   }
@@ -229,7 +268,7 @@
        pestaña. Sin esto quedaban 10 px de scroll a 375. */
     header .brand { display: none; }
   }
-  .status-strip { display: flex; gap: 14px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+  .status-strip { display: flex; gap: 14px; font-family: var(--font-body); font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
   .status-item { display: flex; align-items: center; gap: 5px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
   .dot.ok { background: var(--ok); }
@@ -251,7 +290,7 @@
     border-radius: 999px;
     background: none;
     color: var(--ink-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11.5px;
     line-height: 1.6;
   }
@@ -376,7 +415,7 @@
     border-radius: 999px;
     background: none;
     color: var(--ink-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 10.5px;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -389,7 +428,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 4px 8px;
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -514,7 +553,7 @@
   /* ---------- landing / dashboard (nada abierto -- ver renderDashboard) ---------- */
   .dashboard { max-width: 640px; display: flex; flex-direction: column; gap: 28px; }
   .dashboard-section-head {
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -542,7 +581,7 @@
   }
   .dashboard-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dashboard-item-sub { color: var(--ink-muted); font-size: 12.5px; }
-  .dashboard-item-meta { flex-shrink: 0; font-size: 12px; color: var(--ink-muted); font-family: var(--font-mono); }
+  .dashboard-item-meta { flex-shrink: 0; font-size: 12px; color: var(--ink-muted); font-family: var(--font-body); font-variant-numeric: tabular-nums; }
   .dashboard-item-meta.overdue { color: var(--down); }
 
   /* ---------- vista de nota ---------- */
@@ -585,6 +624,9 @@
   .note-savestatus.is-error { color: var(--down); }
   .note-topbar-right { display: flex; align-items: center; gap: 10px; }
   .note-savestatus-icon { display: inline-flex; width: 12px; height: 12px; align-items: center; justify-content: center; font-size: 11px; }
+  /* El ✓ medía 16 px dentro de una caja de 12: se salía 2 px por cada lado y
+     dejaba de coincidir con la altura de la palabra «Guardado» (12 px). */
+  .note-savestatus-icon .svg-icon { width: 12px; height: 12px; }
   .spinner {
     width: 11px;
     height: 11px;
@@ -602,7 +644,7 @@
   .note-backlinks-dropdown summary {
     cursor: pointer;
     list-style: none;
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     user-select: none;
     display: inline-flex;
     align-items: center;
@@ -628,7 +670,7 @@
   .note-outline-dropdown summary {
     cursor: pointer;
     list-style: none;
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11.5px;
     color: var(--ink-muted);
     user-select: none;
@@ -674,7 +716,7 @@
      editor no puede pintar en su sitio: las sugerencias que ya no encajan en
      el texto y las ya decididas, con su hilo de respuestas. */
   .note-suggestions-counter {
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11.5px;
     color: var(--ink-muted);
     background: transparent;
@@ -734,7 +776,7 @@
   }
   .sug-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
   .sug-agent { font-weight: 600; color: var(--ink); }
-  .sug-when { color: var(--ink-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+  .sug-when { color: var(--ink-muted); font-family: var(--font-body); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
   .sug-status {
     margin-left: auto;
     padding: 1px 6px;
@@ -803,25 +845,40 @@
   }
   .note-header-remove:hover { color: var(--down); border-color: var(--down); background: var(--down-bg); }
 
-  .note-title-row { display: flex; align-items: baseline; gap: 8px; }
+  /* Icono + título: el icono se centra contra la PRIMERA línea del título, no
+     contra su baseline (con `align-items: baseline` el emoji quedaba colgando
+     de una línea de base que no es la suya y se veía bajo). La caja del botón
+     mide lo que la línea del título (30 px × 1.25 = 37,5 → 38) y el contenido
+     se centra dentro con flex: así el centro del emoji y el de la primera
+     línea del título coinciden (±1 px). */
+  .note-title-row { display: flex; align-items: flex-start; gap: 8px; }
   .note-icon-btn {
-    font-size: 24px;
-    width: 1.6em;
-    height: 1.6em;
+    font-size: 26px;
+    width: 38px;
+    height: 38px;
     flex-shrink: 0;
     border: none;
     background: none;
     padding: 0;
-    text-align: center;
+    margin-top: 4px; /* el título respira 4 px arriba; el icono, lo mismo */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
     border-radius: 6px;
     cursor: pointer;
-    line-height: 1;
+    transition: background-color var(--dur-fast) var(--ease-std);
   }
+  /* El icono por defecto es un SVG de 20 px dentro de una caja de 38: se
+     iguala al tamaño óptico del emoji (26 px) para que cambiar de icono no
+     cambie el peso visual de la fila. */
+  .note-icon-btn .svg-icon { width: 24px; height: 24px; }
   .note-icon-btn:hover, .note-icon-btn:focus-visible { background: var(--code-bg); }
   .note-title {
-    font-family: var(--font-mono);
-    font-size: 24px;
+    font-family: var(--font-body);
+    font-size: var(--text-note-title);
     font-weight: 600;
+    letter-spacing: -0.011em;
     line-height: 1.25;
     border: none;
     background: none;
@@ -859,7 +916,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -898,11 +955,16 @@
      un H1 llega con las dos clases a la vez (cm-mdm-h1 Y cm-mdm-mark) --
      el selector combinado de abajo es más específico y gana el tamaño. */
   .cm-mdm-mark, .cm-mdm-wikimark { color: var(--ink-muted); opacity: 0.55; }
-  .cm-mdm-h1 { font-size: 1.9em; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; }
-  .cm-mdm-h2 { font-size: 1.5em; font-weight: 700; line-height: 1.3; letter-spacing: -0.005em; }
-  .cm-mdm-h3 { font-size: 1.25em; font-weight: 700; line-height: 1.3; }
-  .cm-mdm-h4 { font-size: 1.05em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
-  .cm-mdm-h5 { font-size: 0.95em; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.3; }
+  .cm-mdm-h1 { font-size: var(--text-h1); font-weight: 600; line-height: 1.3; letter-spacing: -0.011em; }
+  .cm-mdm-h2 { font-size: var(--text-h2); font-weight: 600; line-height: 1.35; letter-spacing: -0.006em; }
+  .cm-mdm-h3 { font-size: var(--text-h3); font-weight: 600; line-height: 1.4; }
+  /* H4 ya no va en versalitas: a 15 px, en mayúsculas competía con el texto
+     normal en vez de leerse como encabezado. El H5 sí las conserva: en
+     escritorio son 13 px, por debajo del cuerpo (15), y hace de etiqueta; en
+     móvil sube a 16 = cuerpo (el :root de 768 px) y se distingue por peso,
+     versalitas y color. */
+  .cm-mdm-h4 { font-size: var(--text-h4); font-weight: 600; line-height: 1.45; }
+  .cm-mdm-h5 { font-size: var(--text-h5); font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; line-height: 1.45; }
   .cm-mdm-h1.cm-mdm-mark, .cm-mdm-h2.cm-mdm-mark, .cm-mdm-h3.cm-mdm-mark, .cm-mdm-h4.cm-mdm-mark, .cm-mdm-h5.cm-mdm-mark {
     font-size: 0.7em;
     font-weight: 400;
@@ -911,6 +973,11 @@
   }
   .cm-mdm-strong { font-weight: 700; }
   .cm-mdm-em { font-style: italic; }
+  /* Subrayado (⌘U): Markdown no lo tiene, así que el documento lleva
+     `<u>texto</u>` -- lo que renderizan Obsidian y GitHub. Las etiquetas se
+     ocultan como el resto de marcas (cm-mdm-mark) y el texto de dentro se
+     subraya aquí. Mismo trazo que los enlaces, sin color de enlace. */
+  .cm-mdm-underline { text-decoration: underline; text-underline-offset: 2px; }
   .cm-mdm-code { font-family: var(--font-mono); background: var(--code-bg); border-radius: 3px; padding: 0 3px; }
   .cm-mdm-wikilink { color: var(--accent-ink); text-decoration: underline; }
   .cm-mdm-wikilink-missing { color: var(--ink-muted); text-decoration: underline dotted; }
@@ -1120,10 +1187,16 @@
      reposiciona con el mismo valor (selector combinado más abajo) para
      seguir alineada con el texto, que ahora empieza más abajo que la
      propia línea. */
+  /* Espaciado medido con la escala nueva (H1 24, H2 20, H3 17): el aire de
+     arriba es ~1,15× el tamaño del encabezado -- ni 34 px para un H1 de 24
+     (el hueco se comía el bloque anterior) ni 6 px (que lo pegaba al de
+     arriba). Los H1/H2 llevan además 4/3 px por debajo para que no se
+     apoyen en el párrafo siguiente. El asa de bloque de más abajo repite el
+     padding-top de cada nivel: si cambia uno, cambia el otro. */
   #note-body .cm-mdm-space-normal { padding-top: 6px; }
-  #note-body .cm-mdm-space-h1 { padding-top: 34px; }
-  #note-body .cm-mdm-space-h2 { padding-top: 26px; }
-  #note-body .cm-mdm-space-h3 { padding-top: 20px; }
+  #note-body .cm-mdm-space-h1 { padding-top: 28px; padding-bottom: 4px; }
+  #note-body .cm-mdm-space-h2 { padding-top: 22px; padding-bottom: 3px; }
+  #note-body .cm-mdm-space-h3 { padding-top: 18px; }
   #note-body .cm-mdm-space-h4 { padding-top: 14px; }
   #note-body .cm-mdm-space-h5 { padding-top: 12px; }
 
@@ -1158,9 +1231,9 @@
   .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) {
     opacity: 1;
   }
-  #note-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: 34px; }
-  #note-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: 26px; }
-  #note-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: 20px; }
+  #note-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: 28px; }
+  #note-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: 22px; }
+  #note-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: 18px; }
   #note-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: 14px; }
   #note-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: 12px; }
   #note-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: 6px; }
@@ -1192,6 +1265,22 @@
   .cm-mdm-block-add:hover,
   .cm-mdm-block-handle:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
   .cm-mdm-block-handle-selected { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent); opacity: 1; }
+  /* Línea de inserción del arrastre de bloques: marca, entre dos bloques, el
+     hueco donde va a caer el que se arrastra desde el asa (⋮⋮). La posición la
+     calcula el editor (entry.js, placeDropLine); aquí solo el aspecto. */
+  .cm-mdm-drop-line {
+    position: fixed;
+    z-index: 950;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-soft);
+    pointer-events: none;
+  }
+  /* Mientras se arrastra: el cursor de agarre en toda la ventana, aunque el
+     puntero se salga del asa. */
+  body.cm-mdm-dragging,
+  body.cm-mdm-dragging * { cursor: grabbing !important; }
   /* En una pantalla táctil no hay hover: el asa existía pero no se veía (había
      que tocarla a ciegas para que apareciera). Se queda a la vista siempre; su
      zona de 44×44 y el hover del ratón no cambian. */
@@ -1204,6 +1293,13 @@
     position: fixed;
     z-index: 1000;
     min-width: 190px;
+    /* Con el menú de bloque ya no cabe entero en pantallas bajas (móvil
+       apaisado, ventana pequeña): sin esto las últimas opciones -- «Mover
+       arriba/abajo», que es la vía táctil del reordenado -- quedaban fuera de
+       la ventana y no se podían pulsar. Se desplaza dentro del menú. */
+    max-height: calc(100vh - 8px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 8px;
@@ -1212,7 +1308,7 @@
     font-size: 13px;
   }
   .mdm-context-menu-label {
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 10.5px;
     letter-spacing: 0.05em;
     text-transform: uppercase;
@@ -1317,7 +1413,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .mdm-slash-menu-abbrev { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
+  .mdm-slash-menu-abbrev { font-family: var(--font-body); font-size: 11px; color: var(--ink-muted); }
   .mdm-slash-menu-item.active .mdm-slash-menu-abbrev { color: var(--accent-ink); opacity: 0.75; }
   /* Carpeta de una base en el selector del comando "/base" (ver renderSlashMenu
      en app.js): ocupa el sitio de la abreviatura y distingue dos bases con el
@@ -1375,7 +1471,7 @@
     pointer-events: none; /* que no compita con el hover del propio enlace */
   }
   .mdm-link-preview-title {
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 13px;
     font-weight: 600;
     margin-bottom: 6px;
@@ -1397,7 +1493,7 @@
   /* Cabecera del desplegable de backlinks: dice qué es la lista, que es lo que
      el dueño no entendía («no termino de entender demasiado lo de backlinks»). */
   .backlinks-title {
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -1427,10 +1523,16 @@
 
   /* ---------- vista de database ---------- */
   .db-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
+  /* El título de una base es el título de SU página: misma escala y peso que
+     `.note-title` (30 px / 600 en escritorio, 24 en móvil), no un 22 px mono
+     aparte. En móvil se separa de la nota porque este es un <input> y no
+     parte la línea (ver el :root de 768 px). */
   .db-title {
-    font-family: var(--font-mono);
-    font-size: 22px;
+    font-family: var(--font-body);
+    font-size: var(--text-db-title);
     font-weight: 600;
+    letter-spacing: -0.011em;
+    line-height: 1.25;
     border: none;
     background: none;
     color: var(--ink);
@@ -1462,7 +1564,44 @@
     background: var(--panel);
     color: var(--ink-muted);
   }
+  .view-tab:hover { border-color: var(--border-input); color: var(--ink); background: var(--code-bg); }
   .view-tab.active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  /* Por qué no se puede borrar la última vista: se escribe, no se esconde en
+     un `title` (en táctil no hay hover y un botón apagado sin motivo es un
+     estado mudo). */
+  .db-view-note { margin: -8px 0 16px; font-size: var(--text-sm); color: var(--ink-muted); }
+
+  /* «+ Nueva fila» de una vista: tabla incrustada en una nota, lista y agenda
+     del calendario. El botón se cambia por el campo del nombre (form) y la
+     fila se crea con Enter; el aviso de «el filtro no la enseña» va debajo. */
+  .db-add-row { margin-top: 10px; }
+  .db-add-row-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .db-add-row-input {
+    flex: 1 1 160px;
+    min-width: 0;
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 9px;
+    border-radius: 7px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .db-add-row-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .db-add-row-status { margin: 6px 0 0; font-size: var(--text-sm); color: var(--ink-muted); line-height: 1.5; }
+  /* Vacío no ocupa: el hueco del aviso no deja un espacio muerto debajo. */
+  .db-add-row-status:empty { display: none; }
+  /* Dentro de la lista (caja con borde) el control es una línea más. */
+  .db-add-row--list { margin-top: 0; padding: 8px 12px; border-top: 1px solid var(--panel-border); }
+  /* El botón y el formulario se turnan: `hidden` solo, no basta, porque
+     `display: inline-flex`/`flex` de las clases gana a la regla del navegador. */
+  .db-add-row-btn[hidden], .db-add-row-form[hidden] { display: none; }
+  .view-tab.active:hover { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  /* El cambio de vista (tabla → tablero → calendario) entra con un fundido de
+     160 ms y nada más: sin transform, para que el layout no se mueva ni un
+     píxel mientras se cambia de pestaña. Ver `is-entering` en renderDatabase. */
+  .db-view.is-entering { animation: mdm-view-in var(--dur-normal) var(--ease-out); }
+  @keyframes mdm-view-in { from { opacity: 0; } }
 
   /* min-width: max-content: la tabla nunca se comprime por debajo del ancho
      natural de sus columnas. Sin esto, a 1024 px `width: 100%` la estrechaba
@@ -1480,12 +1619,15 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Cabecera: mono, versalitas y --surface-elevated, para que la fila de
-     títulos se lea como cabecera y no como una fila más. */
+  /* Cabecera: versalitas y --surface-elevated, para que la fila de títulos se
+     lea como cabecera y no como una fila más. En la pila del sistema (ya no
+     mono) las versalitas pesan menos: 11,5 px en vez de 10,5 para conservar
+     la misma lectura. Los números siguen tabulares para que las columnas
+     queden a plomo. */
   .rows-table th {
     background: var(--surface-elevated);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--ink-muted);
@@ -1538,7 +1680,7 @@
     outline-offset: -3px;
   }
   .board-col-head {
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 11px;
     font-weight: 600;
     color: var(--ink-muted);
@@ -1557,13 +1699,13 @@
     font-size: 12.5px;
     cursor: pointer;
     box-shadow: var(--shadow-card);
-    transition: border-color var(--dur-fast) var(--ease-std), transform var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std);
   }
   .board-card:hover { border-color: var(--accent); }
   /* La tarjeta que se está arrastrando se queda "fantasma" en su sitio. */
   .board-card.is-dragging { opacity: 0.45; border-style: dashed; }
   .board-card-title { font-weight: 600; margin-bottom: 6px; color: var(--ink); line-height: 1.35; }
-  .board-card-prop { color: var(--ink-muted); font-size: var(--text-sm); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .board-card-prop { color: var(--ink-muted); font-size: var(--text-sm); font-family: var(--font-body); font-variant-numeric: tabular-nums; }
 
   /* --- calendario (vista de base) ---
      La rejilla es de siete columnas que se reparten el ancho (1fr): no hay
@@ -1610,7 +1752,7 @@
   .cal-dow {
     background: var(--surface-elevated);
     color: var(--ink-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: var(--text-xs);
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1664,7 +1806,7 @@
   .cal-agenda-day.is-today { background: var(--surface-elevated); }
   .cal-agenda-date {
     min-width: 92px;
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: var(--text-xs);
     color: var(--ink-muted);
     text-transform: uppercase;
@@ -1705,7 +1847,7 @@
   .list-row-title { font-weight: 600; color: var(--ink); }
   .list-row-prop {
     color: var(--ink-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
   }
@@ -1745,7 +1887,7 @@
      se pintan igual (el de fecha incluso vacío). */
   .field[hidden] { display: none; }
   .field label {
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: var(--text-xs);
     color: var(--ink-muted);
     text-transform: uppercase;
@@ -1777,7 +1919,7 @@
   .inline-form > .panel-head {
     grid-column: 1 / -1;
     margin: 0 0 2px !important;
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -1787,8 +1929,8 @@
   .inline-form > .btn-primary { height: var(--control-size); align-self: end; justify-self: start; }
 
   /* ---------- dialogs ---------- */
-  /* 520 px (antes 440): con menos ancho las dos columnas de .prop-row
-     truncaban los inputs de clave y nombre visible. */
+  /* 520 px (antes 440): con menos ancho la columna del nombre de la
+     propiedad se truncaba. */
   dialog {
     border: 1px solid var(--border-input);
     border-radius: var(--radius-lg);
@@ -1797,17 +1939,46 @@
     color: var(--ink);
     width: min(520px, 92vw);
     box-shadow: var(--shadow-float);
+    /* Apertura y cierre: 160 ms de opacidad y 4 px de desplazamiento hacia
+       arriba. `allow-discrete` + `@starting-style` son lo que permiten animar
+       también el cierre y el `display` del <dialog> sin tocar el JS de
+       showModal()/close(); sin soporte, el diálogo simplemente aparece y
+       desaparece como antes. */
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity var(--dur-normal) var(--ease-out),
+                transform var(--dur-normal) var(--ease-out),
+                overlay var(--dur-normal) allow-discrete,
+                display var(--dur-normal) allow-discrete;
   }
-  dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+  dialog[open] { opacity: 1; transform: none; }
+  @starting-style {
+    dialog[open] { opacity: 0; transform: translateY(-4px); }
+  }
+  dialog::backdrop {
+    background-color: rgba(0, 0, 0, 0);
+    transition: background-color var(--dur-normal) var(--ease-std),
+                overlay var(--dur-normal) allow-discrete,
+                display var(--dur-normal) allow-discrete;
+  }
+  dialog[open]::backdrop { background-color: rgba(0, 0, 0, 0.65); }
+  @starting-style {
+    dialog[open]::backdrop { background-color: rgba(0, 0, 0, 0); }
+  }
   dialog h3 { font-family: var(--font-body); font-weight: 700; margin: 0 0 14px; font-size: var(--text-lg); }
   .prop-row-wrap { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--panel-border); }
   .prop-row-wrap:last-child { border-bottom: none; }
-  /* minmax(0, 1fr) y no 1fr: las dos columnas de texto tienen un mínimo de
-     min-content (el ancho del <select> de tipo) y con el diálogo a 520 px la
-     rejilla medía 504 px dentro de 478 y sacaba una barra horizontal que no
-     hacía falta. */
-  .prop-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 110px 28px; gap: 6px; align-items: center; }
+  /* Solo hay un campo de texto (el nombre visible): la clave snake_case se
+     deriva detrás y no se pide. minmax(0, 1fr) y no 1fr: el <select> de tipo
+     tiene un mínimo de min-content y con el diálogo a 520 px la rejilla sacaba
+     una barra horizontal que no hacía falta. */
+  .prop-row { display: grid; grid-template-columns: minmax(0, 1fr) 110px 28px; gap: 6px; align-items: center; }
   .prop-row input, .prop-row select, .prop-options-input { min-width: 0; padding: 5px 8px; min-height: var(--control-size); border-radius: var(--radius-sm); border: 1px solid var(--border-input); background: var(--panel); color: var(--ink); font-size: 12.5px; }
+  /* El tipo de la columna del título: no se elige (es texto), pero se enseña
+     en el mismo sitio que el de las demás propiedades. */
+  .prop-type-fixed { display: flex; align-items: center; min-height: var(--control-size); padding: 5px 8px; border-radius: var(--radius-sm); border: 1px dashed var(--panel-border); color: var(--ink-muted); font-size: 12.5px; }
+  /* Quitada en el diálogo: el nombre queda apagado y se puede volver a poner. */
+  .prop-title-row.is-off .prop-name { opacity: 0.55; }
   .prop-options-input { width: 100%; margin-top: 6px; }
   /* Las listas de propiedades de los diálogos hacen su propio scroll: con
      muchas filas el diálogo crecía más que la ventana y los botones de
@@ -1834,14 +2005,14 @@
     font-size: 13px;
   }
   .user-row .user-name { color: var(--ink); }
-  .user-row .user-handle { color: var(--ink-muted); font-family: var(--font-mono); font-size: 11.5px; }
+  .user-row .user-handle { color: var(--ink-muted); font-family: var(--font-body); font-size: 11.5px; }
   .user-row .user-admin-badge {
     margin-left: auto;
     padding: 1px 7px;
     border: 1px solid var(--panel-border);
     border-radius: 999px;
     color: var(--accent-ink);
-    font-family: var(--font-mono);
+    font-family: var(--font-body);
     font-size: 10.5px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -1866,7 +2037,7 @@
     font-size: 13px;
   }
   .token-row .token-name { color: var(--ink); }
-  .token-row .token-meta { color: var(--ink-muted); font-family: var(--font-mono); font-size: 11.5px; }
+  .token-row .token-meta { color: var(--ink-muted); font-family: var(--font-body); font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .token-row .token-revoke { margin-left: auto; }
   .token-reveal {
     margin: 0 0 12px;
@@ -1989,7 +2160,27 @@
     /* La cabecera se queda en un alto fijo y legible: el cajón empieza justo
        debajo, así el botón de menú sigue a la vista (y a la mano) con el cajón
        abierto. 56 px = 44 del botón + 6 de aire arriba y abajo. */
-    :root { --header-height: 56px; }
+    :root {
+      --header-height: 56px;
+      /* Escala móvil, completa: aquí el cuerpo es 16 px y la pantalla 375, así
+         que los valores de escritorio no valen tal cual. El orden que manda se
+         mantiene y se cumple en esta misma hoja:
+
+           título 28 > H1 24 > H2 20 > H3 18 > H4 17 > H5 16 (= cuerpo)
+
+         H5 se queda al tamaño del cuerpo: lo que lo separa del párrafo es el
+         peso (600), las versalitas y el color atenuado, no un punto más de
+         cuerpo de letra, que a 16 px de cuerpo ya no cabría sin empatar con el
+         H4. --text-db-title baja a 24 porque `.db-title` es un <input> que no
+         parte la línea: a 28 px su texto no cabe en los 343 px de caja que hay
+         a 375 de ancho, y el título de la base salía recortado con puntos
+         suspensivos. */
+      --text-note-title: 28px;
+      --text-db-title: 24px;
+      --text-h3: 18px;
+      --text-h4: 17px;
+      --text-h5: 16px;
+    }
     header {
       height: var(--header-height);
       padding: 0 8px;
@@ -2052,9 +2243,17 @@
     main { padding: 14px 16px 40px; }
     .note-topbar { flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
     .note-topbar-right { flex-wrap: wrap; gap: 6px; }
-    .note-title-row { gap: 4px; align-items: center; }
-    .note-title { font-size: 21px; min-width: 0; min-height: 44px; }
-    .note-icon-btn { font-size: 20px; width: 44px; height: 44px; }
+    /* El icono se alinea con la PRIMERA línea del título, no con el centro de
+       la fila: con `align-items: center` la fila mide 48 (44 del título + 4
+       de su margen inferior) y el icono quedaba 2 px por debajo de esa línea;
+       con flex-start el desfase es 0,5 px y, si el título ocupa dos líneas,
+       el emoji sigue pegado a la primera. */
+    .note-title-row { gap: 6px; align-items: flex-start; }
+    /* El título toma el tamaño de la escala móvil (--text-note-title: 28 px),
+       no un literal: así sigue por encima del H1 (24) sin gastar media
+       pantalla, y el siguiente ajuste se hace en el :root de arriba. */
+    .note-title { min-width: 0; min-height: 44px; }
+    .note-icon-btn { font-size: 24px; width: 44px; height: 44px; margin-top: 0; }
     .note-description { font-size: 16px; }
     .note-meta { margin-bottom: 12px; }
     .note-backlinks-dropdown summary,
@@ -2141,8 +2340,12 @@
     .dialog-actions .btn { width: 100%; min-height: 44px; }
     .btn { min-height: 44px; }
     .field input, .field select, .field textarea { font-size: 16px; min-height: 44px; }
-    .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 92px 44px; }
-    .prop-row input, .prop-row select, .prop-options-input { font-size: 16px; min-height: 44px; }
+    /* El nombre de la fila nueva se toca y se escribe con el dedo: 44 px de
+       alto y 16 px de letra (por debajo, iOS hace zoom al enfocar). El botón
+       ya mide 44 por la regla general de `.btn`. */
+    .db-add-row-input { min-height: 44px; font-size: 16px; }
+    .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
+    .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed { font-size: 16px; min-height: 44px; }
     #prop-rows, #row-props { max-height: 50dvh; }
 
     /* --- panel de sugerencias: hoja inferior a todo el ancho --- */
@@ -2202,18 +2405,22 @@
     header .brand { display: none; }
   }
 
-  /* Móvil pequeño: las cuatro columnas de una propiedad (clave, nombre, tipo,
-     quitar) no caben legibles en 375 px. Clave y nombre arriba, el tipo debajo
-     a lo ancho y la X a su lado. */
+  /* Móvil pequeño: el nombre, el tipo y el botón de quitar, en una línea. */
   @media (max-width: 480px) {
-    .prop-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
-    .prop-row .prop-type { grid-column: 1 / 3; }
+    .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
   }
 
+  /* Movimiento apagado del todo, y comprobado: `transition`/`animation` a
+     `none` (no a 0.001 ms) para que `getComputedStyle` devuelva 0s y no quede
+     ninguna animación a medias. El `!important` es necesario porque hay
+     reglas con `transition` en línea y otras más específicas por debajo. */
   @media (prefers-reduced-motion: reduce) {
-    .error-toast { animation: none; }
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
   }
-  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>

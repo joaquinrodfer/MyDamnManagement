@@ -10,7 +10,7 @@
 import { ChangeSet, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { HighlightStyle, ensureSyntaxTree, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
 import {
@@ -28,6 +28,8 @@ import {
   resolveCreatedLinkTitle,
 } from "./link-create.js";
 import { blockKeyEdit } from "./block-keys.js";
+import { formatEdit, underlineSpans } from "./format.js";
+import { blocksFromTree } from "./block-ranges.js";
 import {
   backspaceJoinEdit,
   backspaceWouldBreakFence,
@@ -38,6 +40,7 @@ import {
   orderedRenumberEdits,
   renumberOrderedRun,
 } from "./block-delete.js";
+import { insertBlockEdit, moveBlockEdits } from "./block-move.js";
 import {
   canonicalBody,
   collapseEmptyGaps,
@@ -326,8 +329,9 @@ function markdownLinkClickHandler() {
 
 // --------------------------------------------------------- flechas tipográficas
 // "->" / "<-" / "<->" se ven como →/←/↔ cuando no se están editando (mismo
-// mecanismo cursor-aware que los wikilinks). No se tocan dentro de bloques
-// de código -- "ptr->campo" en una nota técnica no debería convertirse.
+// mecanismo cursor-aware que los wikilinks). No se tocan dentro de código
+// -- "ptr->campo" en una nota técnica no debería convertirse, ni dentro de
+// un `código` en línea, donde también es literal (ver `codeRangesOf`).
 
 const ARROW_RE = /(<->)|(->)|(<-)/g;
 const ARROW_GLYPHS = ["↔", "→", "←"];
@@ -348,21 +352,94 @@ class GlyphWidget extends WidgetType {
   }
 }
 
-function isInsideCodeBlock(state, pos) {
-  return state.field(blockField).blocks.some((b) => b.type === "code" && pos >= b.from && pos <= b.to);
+// --------------------------------------------------------- zonas de código
+// UNA sola definición de "esto es código" para todo el pintado: lo que el
+// árbol de Markdown marca como código es literal y ahí no se sustituye nada.
+// Antes esto miraba solo los bloques de blockField (`type === "code"`), que
+// cubre vallas y código sangrado pero NO el `código` en línea (nodo
+// InlineCode): por eso "`a -> b`" salía con flecha y "`<u>x</u>`" con las
+// etiquetas ocultas y el texto subrayado.
+const CODE_NODE_TYPES = new Set(["FencedCode", "CodeBlock", "InlineCode"]);
+
+// Presupuesto de parseo síncrono al pintar, en milisegundos. CodeMirror parsea
+// a trozos de ~100 ms en su worker; gastar lo mismo aquí, una vez por documento
+// y posición (después el árbol ya está y `ensureSyntaxTree` no trabaja), no se
+// nota. Poner más -- o forzarlo en cada repintado -- sí: bloquearía el hilo al
+// escribir en una nota enorme.
+const CODE_PARSE_BUDGET_MS = 100;
+
+// El árbol de sintaxis es inmutable, así que sus zonas de código también lo
+// son: se cachean por árbol. Los cuatro plugins que pintan piden las mismas
+// zonas en el mismo repintado; así el árbol se recorre una vez, no cuatro.
+const codeRangesCache = new WeakMap();
+
+/**
+ * Zonas de código del documento: vallas, código sangrado y `código` en línea.
+ * Se calculan una vez por árbol y se consultan con `isInsideCode` (recorrer el
+ * árbol por cada coincidencia sería cuadrático).
+ *
+ * `upto` (opcional): posición hasta la que el árbol TIENE que llegar. En notas
+ * grandes `syntaxTree(state)` puede ser PARCIAL -- el parser trabaja con
+ * presupuesto de tiempo y deja sin parsear lo que no está a la vista --, y una
+ * zona de código sin parsear no existe: al final de una nota larga el `código`
+ * en línea dejaba de respetarse y volvían la flecha `->` y el `<u>`. Con
+ * `upto` se fuerza el parseo hasta ahí (`ensureSyntaxTree`) antes de leer el
+ * árbol, que es lo que se está pintando en ese instante. Si no llega en el
+ * presupuesto (documento gigante), se devuelve lo que haya; el repintado por
+ * avance del parse (ver `parseAdvanced`) lo corrige en cuanto el worker llega.
+ */
+function codeRangesOf(state, upto) {
+  const forced = upto == null ? null : ensureSyntaxTree(state, upto, CODE_PARSE_BUDGET_MS);
+  const tree = forced || syntaxTree(state);
+  const cached = codeRangesCache.get(tree);
+  if (cached) return cached;
+  const ranges = [];
+  tree.iterate({
+    enter: (node) => {
+      if (!CODE_NODE_TYPES.has(node.name)) return;
+      ranges.push({ from: node.from, to: node.to });
+      return false;
+    },
+  });
+  codeRangesCache.set(tree, ranges);
+  return ranges;
 }
 
-function buildArrowDecorations(view) {
+/** Fin del tramo visible: hasta dónde tiene que llegar el árbol para pintarlo. */
+function visibleEnd(visibleRanges) {
+  let end = 0;
+  for (const { to } of visibleRanges) if (to > end) end = to;
+  return end;
+}
+
+/** ¿El parse ha avanzado desde el último repintado? El worker de CodeMirror
+ * sigue parseando en segundo plano y avisa con una transacción sin cambios de
+ * documento; sin esto, las decoraciones se quedaban con las del árbol parcial
+ * para siempre (esperar no arreglaba nada). */
+function parseAdvanced(update) {
+  return syntaxTree(update.state) !== syntaxTree(update.startState);
+}
+
+/** ¿Cae `pos` dentro de alguna de esas zonas? Los rangos del árbol son
+ * semiabiertos (`to` excluido): el `to` de un `InlineCode` es la posición justo
+ * detrás del backtick de cierre, y ahí puede empezar otra construcción
+ * (`` `x`->y ``, `` `x`<u>y</u> ``), que sí hay que pintar. */
+function isInsideCode(codeRanges, pos) {
+  return codeRanges.some((r) => pos >= r.from && pos < r.to);
+}
+
+export function buildArrowDecorations(state, visibleRanges) {
+  const code = codeRangesOf(state, visibleEnd(visibleRanges));
   const ranges = [];
-  for (const { from, to } of view.visibleRanges) {
-    const text = view.state.doc.sliceString(from, to);
+  for (const { from, to } of visibleRanges) {
+    const text = state.doc.sliceString(from, to);
     ARROW_RE.lastIndex = 0;
     let m;
     while ((m = ARROW_RE.exec(text))) {
       const start = from + m.index;
       const end = start + m[0].length;
-      if (selectionIntersects(view.state, start, end)) continue;
-      if (isInsideCodeBlock(view.state, start)) continue;
+      if (selectionIntersects(state, start, end)) continue;
+      if (isInsideCode(code, start)) continue;
       const glyphIdx = m[1] ? 0 : m[2] ? 1 : 2;
       ranges.push(Decoration.replace({ widget: new GlyphWidget(ARROW_GLYPHS[glyphIdx]) }).range(start, end));
     }
@@ -374,11 +451,11 @@ function arrowPlugin() {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        this.decorations = buildArrowDecorations(view);
+        this.decorations = buildArrowDecorations(view.state, view.visibleRanges);
       }
       update(update) {
-        if (update.docChanged || update.viewportChanged || update.selectionSet) {
-          this.decorations = buildArrowDecorations(update.view);
+        if (update.docChanged || update.viewportChanged || update.selectionSet || parseAdvanced(update)) {
+          this.decorations = buildArrowDecorations(update.view.state, update.view.visibleRanges);
         }
       }
     },
@@ -585,65 +662,13 @@ const SLASH_EXTRA_COMMANDS = [
 ];
 const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
 
+// Los bloques del documento. El cálculo vive en block-ranges.js para que
+// los tests de `node --test` lo usen sobre un árbol de verdad (el mismo
+// `markdownLanguage.parser`) en vez de sobre párrafos inventados.
 function computeBlocks(state) {
-  const blocks = [];
-  const root = syntaxTree(state).topNode;
-  for (let node = root.firstChild; node; node = node.nextSibling) {
-    switch (node.name) {
-      case "BlankLine":
-      case "CommentBlock":
-        break;
-      case "BulletList":
-      case "OrderedList": {
-        const itemType = node.name === "BulletList" ? "bullet_list_item" : "ordered_list_item";
-        for (let item = node.firstChild; item; item = item.nextSibling) {
-          if (item.name === "ListItem") blocks.push({ from: item.from, to: item.to, type: itemType });
-        }
-        break;
-      }
-      case "ATXHeading1":
-        blocks.push({ from: node.from, to: node.to, type: "h1" });
-        break;
-      case "ATXHeading2":
-        blocks.push({ from: node.from, to: node.to, type: "h2" });
-        break;
-      case "ATXHeading3":
-        blocks.push({ from: node.from, to: node.to, type: "h3" });
-        break;
-      case "ATXHeading4":
-        blocks.push({ from: node.from, to: node.to, type: "h4" });
-        break;
-      case "ATXHeading5":
-      case "ATXHeading6":
-        blocks.push({ from: node.from, to: node.to, type: "h5" });
-        break;
-      case "HorizontalRule":
-        blocks.push({ from: node.from, to: node.to, type: "hr" });
-        break;
-      case "FencedCode":
-      case "CodeBlock":
-        blocks.push({ from: node.from, to: node.to, type: "code" });
-        break;
-      case "Paragraph":
-        blocks.push({ from: node.from, to: node.to, type: "paragraph" });
-        break;
-      case "Blockquote":
-        // Un solo bloque para toda la cita, con independencia de cuántos
-        // niveles anidados (">", ">>"...) tenga dentro -- solo se recorren
-        // los hijos DIRECTOS del documento aquí, así que una cita anidada
-        // (Blockquote dentro de otro Blockquote) nunca se cuenta aparte.
-        // La profundidad de cada línea se calcula al pintarla (ver
-        // quoteDecorations), no aquí.
-        blocks.push({ from: node.from, to: node.to, type: "quote" });
-        break;
-      default:
-        // HTMLBlock, Table, LinkReference... siguen siendo
-        // seleccionables/borrables, solo no convertibles.
-        blocks.push({ from: node.from, to: node.to, type: "other" });
-    }
-  }
-  blocks.sort((a, b) => a.from - b.from);
-  return blocks;
+  // Con el documento: el rango de un bloque empieza en su línea, con la sangría
+  // dentro (ver `lineStartOf` en block-ranges.js).
+  return blocksFromTree(syntaxTree(state).topNode, state.doc);
 }
 
 function stripBlockPrefix(text, type) {
@@ -764,12 +789,16 @@ const pendingEmptyGaps = StateField.define({
     }
     for (const effect of tr.effects) {
       if (!effect.is(addEmptyGap)) continue;
-      const from = effect.value;
-      const to = from + 2;
+      const from = Number(effect.value?.from);
+      const to = Number(effect.value?.to);
+      if (!Number.isInteger(from) || !Number.isInteger(to) || to - from < 2) continue;
       // Al final del documento no hay bloque vacío que quitar: ese hueco es
       // de los extremos y de esos se encarga `dropOuterBlankLines`.
       if (to >= tr.newDoc.length) continue;
-      if (tr.newDoc.sliceString(from, to) !== "\n\n") continue;
+      // El hueco es un tramo de saltos: dos cuando la frontera ya tenía su
+      // línea en blanco, más cuando ha habido que crearla (insertar encima o
+      // debajo de un ítem de lista, donde el separador es un solo salto).
+      if (/[^\n]/.test(tr.newDoc.sliceString(from, to))) continue;
       // Y que sea un bloque vacío de verdad, no el hueco que deja partir un
       // párrafo: el cursor tiene que haber quedado DENTRO del tramo de saltos.
       // Con ⏎ al principio de una línea de un párrafo, los dos saltos nuevos
@@ -785,11 +814,12 @@ const pendingEmptyGaps = StateField.define({
 });
 
 /** Efecto que marca el bloque vacío que acaba de insertar un comando, si lo
- * que inserta es el par de saltos de un bloque nuevo. Partir un párrafo por
- * la mitad no deja marca: ahí los dos saltos separan texto que ya existía, y
- * quitarlos al salir pegaría las dos mitades otra vez. */
+ * que inserta es un tramo de saltos (el hueco del bloque nuevo). Puede ser
+ * más largo que dos saltos cuando la frontera no traía su línea en blanco.
+ * Partir un párrafo por la mitad no deja marca: ahí los saltos separan texto
+ * que ya existía, y quitarlos al salir pegaría las dos mitades otra vez. */
 function emptyGapEffect(from, insert = "\n\n") {
-  return insert === "\n\n" ? [addEmptyGap.of(from)] : [];
+  return /^\n{2,}$/.test(insert) ? [addEmptyGap.of({ from, to: from + insert.length })] : [];
 }
 
 // El handle de cada bloque NO es un gutter de CodeMirror: se probó primero
@@ -818,13 +848,14 @@ class BlockHandleWidget extends WidgetType {
     addBtn.className = "cm-mdm-block-add";
     addBtn.textContent = "+";
     addBtn.dataset.blockIndex = String(this.index);
-    addBtn.title = "Añadir un bloque después de este";
+    addBtn.title = "Añadir un bloque después de este · Alt+clic: antes";
 
     const handle = document.createElement("span");
     handle.className = "cm-mdm-block-handle" + (this.isSelected ? " cm-mdm-block-handle-selected" : "");
     handle.textContent = "⋮⋮";
     handle.dataset.blockIndex = String(this.index);
-    handle.title = "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones";
+    handle.title =
+      "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones · arrastrar: mover";
 
     wrap.append(addBtn, handle);
     return wrap;
@@ -869,6 +900,7 @@ function blockHandleEventHandlers(onBlockContextMenu) {
     // llegando, y con ratón esto ni se activa.
     pointerdown(event, view) {
       const target = event.target;
+      lastPointerType = event.pointerType;
       if (!(target instanceof HTMLElement)) return false;
       const handle = target.closest(".cm-mdm-block-handle");
       if (!handle) return false;
@@ -914,7 +946,12 @@ function blockHandleEventHandlers(onBlockContextMenu) {
         const addBtn = target.closest(".cm-mdm-block-add");
         if (addBtn) {
           event.preventDefault();
-          insertBlockAfter(view, Number(addBtn.dataset.blockIndex));
+          // Alt+clic: el bloque nuevo va ENCIMA del actual. Sin Alt (lo de
+          // siempre): debajo. El atajo es el mismo que «Insertar bloque
+          // arriba» del menú del asa, que es lo que hay en móvil.
+          const idx = Number(addBtn.dataset.blockIndex);
+          if (event.altKey) insertBlockBefore(view, idx);
+          else insertBlockAfter(view, idx);
           return true;
         }
 
@@ -953,6 +990,11 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           // puso selectBlocks (el bloque marcado), que es donde tiene que
           // escribir y borrar el teclado.
           view.focus();
+          // Y con el ratón, el mismo mousedown arranca el posible arrastre:
+          // mientras no se mueva más de unos píxeles no es arrastre (es clic,
+          // que ya ha seleccionado). En táctil no: ahí el gesto es del menú
+          // de pulsación larga (ver `beginBlockDrag`).
+          if (event.button === 0 && lastPointerType !== "touch") beginBlockDrag(view, event, idx);
           return true;
         }
       }
@@ -1103,10 +1145,12 @@ function swallowTapAfterMenu() {
 function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
   if (!onBlockContextMenu) return;
   const { blocks } = view.state.field(blockField);
+  const ordered = [...indices].sort((a, b) => a - b);
+  const first = ordered[0];
+  const last = ordered[ordered.length - 1];
   // Si es un único bloque, se puede decir de qué tipo es ya mismo; con varios
   // seleccionados (posiblemente de tipos distintos) no.
-  const currentTypeLabel =
-    indices.size === 1 ? BLOCK_TYPE_LABEL[blocks[[...indices][0]].type] ?? null : null;
+  const currentTypeLabel = indices.size === 1 ? BLOCK_TYPE_LABEL[blocks[first].type] ?? null : null;
 
   onBlockContextMenu({
     x,
@@ -1117,6 +1161,16 @@ function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
     convertTo: (type) => convertBlocks(view, indices, type),
     duplicateBlocks: () => duplicateBlocks(view, indices),
     deleteBlocks: () => deleteBlocks(view, indices),
+    // Insertar arriba es la versión sin ratón del Alt+clic en el «+» (lo que
+    // hace falta en móvil): el bloque nuevo va antes del primero marcado.
+    insertAbove: () => insertBlockBefore(view, first),
+    // Mover con el menú: la vía táctil del reordenado (en táctil no hay
+    // arrastre). Solo tiene sentido con un bloque; con varios marcados la app
+    // no ofrece estas dos opciones.
+    canMoveUp: first > 0,
+    canMoveDown: last < blocks.length - 1,
+    moveUp: () => moveBlockTo(view, first, first - 1),
+    moveDown: () => moveBlockTo(view, last, last + 2),
   });
 }
 
@@ -1134,22 +1188,178 @@ function selectBlocks(view, indices) {
   });
 }
 
-// Botón "+" del asa: añade un bloque de párrafo vacío justo después del
-// bloque indicado (no necesariamente donde esté el cursor ahora mismo --
-// el usuario puede clicar el "+" de cualquier bloque). Mismo mecanismo que
-// Mayús+Enter (insertar "\n\n"): el hueco en blanco resultante se ve
-// colapsado por blankLinePlugin hasta que el cursor entra en él.
-function insertBlockAfter(view, index) {
+// Botón "+" del asa: añade un bloque de párrafo vacío justo DEBAJO del bloque
+// indicado (clic normal) o ENCIMA con Alt+clic (pedido del dueño: «no puedo
+// insertar un bloque antes de otro»). No necesariamente donde esté el cursor
+// ahora mismo -- el usuario puede clicar el "+" de cualquier bloque. Mismo
+// mecanismo que ⏎: el hueco en blanco resultante se ve colapsado por
+// blankLinePlugin hasta que el cursor entra en él, y si se abandona sin
+// escribir no queda aire en el `.md`. Qué par de saltos se inserta y dónde lo
+// decide block-move.js (`insertBlockEdit`), con sus pruebas en node --test.
+function insertBlockBeside(view, index, where) {
   const { blocks } = view.state.field(blockField);
-  const b = blocks[index];
-  if (!b) return;
-  const pos = b.to;
+  const edit = insertBlockEdit({ text: view.state.doc.toString(), blocks, index, where });
+  if (!edit) return false;
   view.dispatch({
-    changes: { from: pos, to: pos, insert: "\n\n" },
-    selection: { anchor: pos + 2 },
-    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(pos)],
+    changes: edit.changes,
+    selection: { anchor: edit.cursor },
+    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(edit.gapFrom, edit.changes[0].insert)],
   });
   view.focus();
+  return true;
+}
+
+function insertBlockAfter(view, index) {
+  return insertBlockBeside(view, index, "below");
+}
+
+function insertBlockBefore(view, index) {
+  return insertBlockBeside(view, index, "above");
+}
+
+/**
+ * Mover el bloque `index` a la posición `slot` (0 = antes del primero,
+ * `blocks.length` = después del último) en UNA transacción: el `.md` cambia
+ * una sola vez y un solo ⌘Z deshace el movimiento entero.
+ *
+ * Qué trozo de texto cambia de sitio -- y la reenumeración de la lista, si es
+ * numerada -- se decide en block-move.js. `cursor` conserva el punto dentro
+ * del bloque movido, para que Alt+↑ repetido siga moviendo el mismo bloque.
+ */
+export function moveBlockTo(view, index, slot, cursor = null) {
+  const { blocks } = view.state.field(blockField);
+  const text = view.state.doc.toString();
+  const edit = moveBlockEdits({ text, blocks, index, slot, cursor });
+  if (!edit) return false;
+  view.dispatch({
+    changes: edit.changes,
+    selection: { anchor: edit.cursor },
+    effects: setSelectedBlocks.of(new Set()),
+    userEvent: "move.block",
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
+// ------------------------------------------------------------- arrastrar el asa
+//
+// Arrastrar el asa (⋮⋮) reordena: mientras se arrastra, una línea horizontal
+// marca el hueco entre bloques donde va a caer, y al soltar el bloque se mueve
+// (una sola transacción, igual que con el teclado).
+//
+// En táctil NO se arrastra: la pulsación larga ya abre el menú de bloque, y un
+// gesto de arrastre competiría con el desplazamiento de la nota. Ahí el
+// movimiento va por «Mover arriba» / «Mover abajo» del menú, que es
+// determinista y no necesita apuntar a un hueco.
+const DRAG_SLOP = 4;
+const DRAG_EDGE = 44;
+let blockDrag = null;
+let lastPointerType = "mouse";
+
+/** Hueco (slot) más cercano a la altura `y`: entre los bloques cuyo punto
+ * medio queda por debajo del puntero. */
+function dropSlotAt(view, y) {
+  const { blocks } = view.state.field(blockField);
+  for (let i = 0; i < blocks.length; i++) {
+    const top = view.coordsAtPos(blocks[i].from, -1);
+    const bottom = view.coordsAtPos(blocks[i].to, 1) || top;
+    if (!top) continue;
+    const mid = (top.top + (bottom ? bottom.bottom : top.bottom)) / 2;
+    if (y < mid) return i;
+  }
+  return blocks.length;
+}
+
+function placeDropLine(view, slot) {
+  if (!blockDrag) return;
+  if (!blockDrag.line) {
+    blockDrag.line = document.createElement("div");
+    blockDrag.line.className = "cm-mdm-drop-line";
+    document.body.appendChild(blockDrag.line);
+  }
+  const { blocks } = view.state.field(blockField);
+  const content = view.contentDOM.getBoundingClientRect();
+  let top = content.top;
+  if (slot <= 0 && blocks.length) {
+    const c = view.coordsAtPos(blocks[0].from, -1);
+    if (c) top = c.top;
+  } else if (slot >= blocks.length && blocks.length) {
+    const last = blocks[blocks.length - 1];
+    const c = view.coordsAtPos(last.to, 1) || view.coordsAtPos(last.from, -1);
+    if (c) top = c.bottom;
+  } else if (blocks.length) {
+    const c = view.coordsAtPos(blocks[slot].from, -1);
+    if (c) top = c.top;
+  }
+  const line = blockDrag.line;
+  line.style.top = `${Math.round(top) - 1}px`;
+  line.style.left = `${Math.round(content.left)}px`;
+  line.style.width = `${Math.round(content.width)}px`;
+}
+
+/** El documento se desplaza solo cuando el puntero se acerca al borde de la
+ * zona visible: sin esto no se puede arrastrar más allá de una pantalla. */
+function autoScrollWhileDragging(view, y) {
+  const rect = view.scrollDOM.getBoundingClientRect();
+  if (y < rect.top + DRAG_EDGE) view.scrollDOM.scrollTop -= 14;
+  else if (y > rect.bottom - DRAG_EDGE) view.scrollDOM.scrollTop += 14;
+}
+
+function onBlockDragMove(event) {
+  const drag = blockDrag;
+  if (!drag) return;
+  // El botón ya no está pulsado: el `mouseup` se perdió (se soltó fuera de la
+  // ventana, o la pestaña se quedó sin foco). Sin esto, el arrastre seguía
+  // vivo, la línea de inserción se quedaba pintada y el siguiente clic movía
+  // un bloque que nadie había vuelto a arrastrar.
+  if (event.buttons === 0) {
+    endBlockDrag();
+    return;
+  }
+  if (!drag.active) {
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_SLOP) return;
+    drag.active = true;
+    // El cursor de "agarrando" durante todo el arrastre (también fuera del asa)
+    // y el texto del bloque no se selecciona sin querer.
+    document.body.classList.add("cm-mdm-dragging");
+  }
+  event.preventDefault();
+  autoScrollWhileDragging(drag.view, event.clientY);
+  drag.slot = dropSlotAt(drag.view, event.clientY);
+  placeDropLine(drag.view, drag.slot);
+}
+
+function endBlockDrag() {
+  window.removeEventListener("mousemove", onBlockDragMove, true);
+  window.removeEventListener("mouseup", onBlockDragEnd, true);
+  window.removeEventListener("blur", endBlockDrag, true);
+  const drag = blockDrag;
+  blockDrag = null;
+  if (drag?.line) drag.line.remove();
+  document.body.classList.remove("cm-mdm-dragging");
+  return drag;
+}
+
+function onBlockDragEnd(event) {
+  const drag = blockDrag;
+  if (!drag) return;
+  const wasActive = drag.active;
+  // El último hueco se recalcula con la altura de la suelta: puede no haber
+  // habido un mousemove justo antes del mouseup.
+  const slot = wasActive ? dropSlotAt(drag.view, event.clientY) : null;
+  const view = drag.view;
+  const index = drag.index;
+  endBlockDrag();
+  if (wasActive) moveBlockTo(view, index, slot, null);
+}
+
+function beginBlockDrag(view, event, index) {
+  endBlockDrag(); // un arrastre anterior sin `mouseup` no puede sobrevivir a otro
+  blockDrag = { view, index, startX: event.clientX, startY: event.clientY, active: false, slot: null, line: null };
+  window.addEventListener("mousemove", onBlockDragMove, true);
+  window.addEventListener("mouseup", onBlockDragEnd, true);
+  window.addEventListener("blur", endBlockDrag, true);
 }
 
 // Borrar bloque = quitar el bloque Y su separador, para que el `.md` no gane
@@ -1546,6 +1756,65 @@ function syntaxMarkPlugin() {
   );
 }
 
+// ------------------------------------------------- subrayado (`<u>x</u>`)
+//
+// Markdown no tiene subrayado -- `__x__` es negrita --, así que ⌘U escribe
+// `<u>x</u>`, que es lo que renderizan Obsidian y GitHub. Aquí se PINTA: las
+// etiquetas se esconden como el resto de marcas (o se ven tenues, con
+// `cm-mdm-mark`, mientras se edita ese bloque) y el texto de dentro se
+// subraya (clase `cm-mdm-underline`, en frontend/index.html).
+//
+// El parser entrega `<u>` y `</u>` como dos nodos HTMLTag SUELTOS -- no
+// envuelven el texto --, así que emparejarlos es cosa de `underlineSpans`
+// (format.js), que escanea el texto visible. Del resto de HTML no se toca
+// nada: hoy no se pinta, y sigue sin pintarse.
+export function underlineDecorations(state, visibleRanges) {
+  const code = codeRangesOf(state, visibleEnd(visibleRanges));
+  const ranges = [];
+  for (const { from, to } of visibleRanges) {
+    const spans = underlineSpans(state.doc.sliceString(from, to), from);
+    for (const s of spans) {
+      // Dentro de código no hay subrayado que pintar: son caracteres más
+      // (aquí entra también el `código` en línea, ver `codeRangesOf`).
+      // Se miran las DOS etiquetas: un par que abre fuera y cierra dentro
+      // cruzaría el borde y escondería un `</u>` que ahí es literal (y el
+      // subrayado entraría en los backticks). En ese caso se descarta el par
+      // entero, en vez de recortarlo al borde: con el `</u>` a la vista, un
+      // subrayado que se corta en el backtick se lee peor que las etiquetas
+      // tal cual.
+      if (isInsideCode(code, s.openFrom) || isInsideCode(code, s.closeFrom)) continue;
+      const active = selectionIntersects(state, s.openFrom, s.closeTo);
+      if (active) {
+        ranges.push(Decoration.mark({ class: "cm-mdm-mark" }).range(s.openFrom, s.openTo));
+        ranges.push(Decoration.mark({ class: "cm-mdm-mark" }).range(s.closeFrom, s.closeTo));
+      } else {
+        ranges.push(Decoration.replace({}).range(s.openFrom, s.openTo));
+        ranges.push(Decoration.replace({}).range(s.closeFrom, s.closeTo));
+      }
+      if (s.innerTo > s.innerFrom) {
+        ranges.push(Decoration.mark({ class: "cm-mdm-underline" }).range(s.innerFrom, s.innerTo));
+      }
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function underlinePlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = underlineDecorations(view.state, view.visibleRanges);
+      }
+      update(update) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet || parseAdvanced(update)) {
+          this.decorations = underlineDecorations(update.view.state, update.view.visibleRanges);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
 // Un párrafo necesita una línea en blanco detrás para separarse del
 // siguiente en Markdown -- pero verla como un hueco real (una fila entera
 // vacía) hace que los bloques parezcan tener aire de más entre ellos, cosa
@@ -1561,6 +1830,7 @@ function blankLineDecorations(view) {
   const ranges = [];
   const { state } = view;
   const doc = state.doc;
+  const code = codeRangesOf(state, view.viewport.to);
   for (const { from, to } of view.visibleRanges) {
     const firstLine = doc.lineAt(from).number;
     const lastLine = doc.lineAt(to).number;
@@ -1568,7 +1838,7 @@ function blankLineDecorations(view) {
       const line = doc.line(n);
       if (line.length !== 0) continue;
       if (selectionIntersects(state, line.from, line.to)) continue;
-      if (isInsideCodeBlock(state, line.from)) continue;
+      if (isInsideCode(code, line.from)) continue;
       ranges.push(Decoration.line({ class: "cm-mdm-blank-collapsed" }).range(line.from));
     }
   }
@@ -1582,7 +1852,7 @@ function blankLinePlugin() {
         this.decorations = blankLineDecorations(view);
       }
       update(update) {
-        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet || parseAdvanced(update)) {
           this.decorations = blankLineDecorations(update.view);
         }
       }
@@ -2425,6 +2695,64 @@ const blockDeleteKeymap = keymap.of([
 // es el que pegaba las dos frases («- uno- dos», D9).
 const backspaceJoinKeymap = keymap.of([{ key: "Backspace", run: (view) => runBackspaceJoin(view) }]);
 
+// Alt+↑ / Alt+↓: mover el bloque del cursor un puesto. Va con el resto de
+// nuestros keymaps (antes del general) para que la flecha no se lleve el caret
+// a la línea de al lado en vez de reordenar.
+const moveBlockKeymap = keymap.of([
+  { key: "Alt-ArrowUp", run: (view) => runMoveBlockKey(view, -1) },
+  { key: "Alt-ArrowDown", run: (view) => runMoveBlockKey(view, 1) },
+]);
+
+// ------------------------------------------------- ⌘B / ⌘I / ⌘U (formato)
+//
+// Qué cambia en el documento lo decide format.js (puro, con sus tests). Aquí
+// solo el pegamento: zonas de código, UNA transacción y dónde queda la
+// selección.
+//
+// Va DESPUÉS de todos los keymaps que ya había ("[[", menú "/", flechas de la
+// lista, ⏎ de bloques, Supr/⌫, Alt+↑/↓): ninguno usa Mod, así que no puede
+// robarle nada a lo ya probado. Y devuelve siempre true -- también dentro de
+// código, donde no hace nada -- para que la tecla NO llegue al navegador: en
+// un contenteditable, Ctrl+B es su propio "negrita", que no sabe de Markdown.
+const formatKeymap = keymap.of([
+  { key: "Mod-b", run: (view) => runFormat(view, "bold") },
+  { key: "Mod-i", run: (view) => runFormat(view, "italic") },
+  { key: "Mod-u", run: (view) => runFormat(view, "underline") },
+]);
+
+/**
+ * ⌘/Ctrl + B / I / U: pone o quita negrita, cursiva o subrayado. Todo el
+ * cambio va en UNA transacción, así que un solo ⌘Z lo deshace (también
+ * cuando la selección son varias líneas y se envuelven una por una).
+ */
+export function runFormat(view, kind) {
+  const { state } = view;
+  const ranges = state.selection.ranges.map((r) => ({ from: r.from, to: r.to }));
+  const edit = formatEdit({
+    text: state.doc.toString(),
+    ranges,
+    kind,
+    codeRanges: codeRangesOf(state, ranges.reduce((end, r) => Math.max(end, r.to), 0)),
+  });
+  if (!edit) return true; // dentro de código: se consume la tecla y nada más
+  const changes = ChangeSet.of(edit.changes, state.doc.length);
+  // Si algún rango de la selección se quedó sin tocar (estaba dentro de
+  // código), hay menos rangos nuevos que viejos: el principal se acota para
+  // que `EditorSelection.create` no se queje.
+  const mainIndex = Math.min(state.selection.mainIndex, edit.selection.length - 1);
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(
+      edit.selection.map((s) => EditorSelection.range(s.from, s.to)),
+      mainIndex
+    ),
+    userEvent: "input.format",
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
 /** Bloque (del árbol de Markdown) en el que cae `pos`, o null si el cursor no
  * está dentro de ninguno (nota vacía, fila en blanco entre dos bloques). */
 function blockAt(state, pos) {
@@ -2433,6 +2761,60 @@ function blockAt(state, pos) {
     if (pos >= b.from && pos <= b.to) found = b;
   }
   return found;
+}
+
+/**
+ * Alt+↑ / Alt+↓: mueve el bloque del cursor (o el marcado con el asa) un
+ * puesto arriba/abajo. El cursor se queda DENTRO del bloque movido, a la misma
+ * altura: pulsar dos veces seguidas sigue moviendo el mismo bloque.
+ *
+ * - Con varios bloques marcados no aplica (`moveBlockTo` mueve uno), pero la
+ *   tecla se CONSUME igual: si se dejara caer al keymap de CodeMirror, su
+ *   Alt+↓ por defecto mueve UNA LÍNEA (`moveLineDown`) y eso puede pegar dos
+ *   bloques al revés de lo que se está pidiendo.
+ * - Con el cursor en un HUECO (entre dos bloques, nota vacía) no hay bloque que
+ *   mover y la tecla también se consume sin tocar el `.md`: `moveLineDown`
+ *   allí mueve la línea en blanco y se lleva el bloque de al lado, que es el
+ *   mismo destrozo por otra puerta (ver `blockAt`).
+ * - En el borde se consume sin tocar nada: no hay bloque al que cambiar.
+ * - Si el movimiento no cabe sin cambiar las líneas del `.md` (ver
+ *   block-move.js), también se consume: no se mueve, pero la tecla no acaba en
+ *   `moveLineDown`, que es lo que fusionaba `> cita uno\n---\n> cita uno`.
+ * - Todo el reordenado es UNA transacción (ver `moveBlockTo`), así que un solo
+ *   ⌘Z lo deshace.
+ */
+export function runMoveBlockKey(view, dir) {
+  const { state } = view;
+  const range = state.selection.main;
+  const { blocks, selected } = state.field(blockField);
+  let index = -1;
+  if (selected.size === 1) {
+    index = [...selected][0];
+  } else if (selected.size > 1) {
+    // Mover es de uno: la tecla no hace nada, pero se queda aquí (ver arriba).
+    return true;
+  } else {
+    const block = blockAt(state, range.head);
+    // Sin bloque no hay nada que mover, pero la tecla es nuestra igual: en un
+    // hueco (clic en la línea en blanco entre dos bloques, nota vacía) devolver
+    // `false` la dejaba en el keymap de CodeMirror, que la usa para
+    // `moveLineDown`: mueve UNA LÍNEA y escribe el `.md` sin que nadie haya
+    // pedido mover nada -- «parrafo 0\n\n    codigo 1» acababa en
+    // «parrafo 0\n    codigo 1\n», con el bloque de código dentro del párrafo
+    // (2 bloques -> 1). En un hueco no se mueve ningún bloque: cuál de los dos
+    // de al lado sería no lo dice el cursor.
+    if (!block) return true;
+    index = blocks.indexOf(block);
+  }
+  // Índice fuera de la lista (marcas viejas tras un cambio): la tecla sigue
+  // siendo nuestra.
+  if (index < 0 || index >= blocks.length) return true;
+  const slot = dir < 0 ? index - 1 : index + 2;
+  if (slot < 0 || slot > blocks.length) return true; // ya está en un extremo
+  // Se mueva o no (si no cabe, `moveBlockTo` no toca el documento), la tecla es
+  // nuestra: que no la recoja el `moveLineDown` de por defecto.
+  moveBlockTo(view, index, slot, range.head);
+  return true;
 }
 
 function runBlockKey(view, kind) {
@@ -2470,7 +2852,8 @@ function runBlockKey(view, kind) {
   // por el separador que toque (⇧⏎/⌘⏎ un salto; ⏎ el de bloque, salvo dentro
   // de código, donde una valla no se parte nunca).
   if (!range.empty) {
-    const sep = kind === "enter" && !isInsideCodeBlock(state, range.from) ? "\n\n" : "\n";
+    const insideCode = isInsideCode(codeRangesOf(state, range.to), range.from);
+    const sep = kind === "enter" && !insideCode ? "\n\n" : "\n";
     view.dispatch({
       changes: { from: range.from, to: range.to, insert: sep },
       selection: { anchor: range.from + sep.length },
@@ -2849,9 +3232,10 @@ function linkTrigger(state, pos) {
   const typed = before.slice(open + LINK_OPEN.length);
   if (LINK_BREAK_RE.test(typed)) return null;
   const from = line.from + open;
-  // Dentro de un bloque de código no salta: "[[i]]" en un array de verdad no
-  // es un enlace (mismo criterio que las flechas tipográficas, más arriba).
-  if (isInsideCodeBlock(state, from)) return null;
+  // Dentro de código no salta: "[[i]]" en un array de verdad no es un
+  // enlace (mismo criterio que las flechas tipográficas, más arriba), y lo
+  // mismo en un `código` en línea.
+  if (isInsideCode(codeRangesOf(state, from + LINK_OPEN.length), from)) return null;
   return { from, typed };
 }
 
@@ -3224,6 +3608,8 @@ export function createNoteEditor({
         blockKeymap,
         blockDeleteKeymap,
         backspaceJoinKeymap,
+        moveBlockKeymap,
+        formatKeymap,
         // El Backspace «que borra el marcador» de Markdown (deleteMarkupBackward)
         // se registra aquí a mano: `markdown()` ya no trae su keymap (ver abajo),
         // porque su Enter (insertNewlineContinueMarkup) competía con el de los
@@ -3253,6 +3639,7 @@ export function createNoteEditor({
         quotePlugin(),
         blankLinePlugin(),
         syntaxMarkPlugin(),
+        underlinePlugin(),
         hrField,
         databaseBlockField(renderDatabaseBlock),
         suggestionField,

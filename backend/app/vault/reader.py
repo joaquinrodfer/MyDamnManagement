@@ -52,7 +52,7 @@ TYPES = {"text", "number", "select", "multiselect", "checkbox", "date", "url", "
 class Page:
     id: str
     path: str                 # relativo al vault, con separadores '/'
-    title: str                # nombre del fichero sin .md
+    title: str                # notas: nombre del fichero; filas: `title` del frontmatter
     type: str = "note"        # note | database | database_row
     icon: str | None = None
     description: str | None = None
@@ -228,6 +228,21 @@ def row_properties(schema: list[dict], frontmatter: dict) -> dict:
     return properties
 
 
+def apply_row_title(page: Page) -> None:
+    """Pone en `page.title` el título de una fila, que vive en `frontmatter`.
+
+    El fichero de una fila se llama `<id8>.md` y su título está en `title` del
+    frontmatter: así se renombra sin mover el fichero. Un vault a medio migrar
+    tiene filas con el título en el nombre del fichero y sin `title` (frontmatter
+    viejo): esas conservan el nombre como título, para que sus enlaces
+    `[[...]]` —que resuelven por título— sigan funcionando. Nunca se queda sin
+    título: si el frontmatter lo trae vacío, manda el nombre del fichero.
+    """
+    raw = page.frontmatter.get("title")
+    if isinstance(raw, str) and raw.strip():
+        page.title = unicodedata.normalize("NFC", raw.strip())
+
+
 # Namespace de los ids de vista derivados: una vista escrita a mano (el ejemplo
 # del ROADMAP usa `id: v1`) no es un UUID y la API la identifica por UUID. En
 # vez de tirarla, se le da uno determinista a partir de su base, su nombre y su
@@ -344,6 +359,32 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
         elif prop.get("type") not in TYPES:
             warnings.append(f"tipo desconocido {prop.get('type')!r} en {path}:{prop.get('key')}")
     return effective
+
+
+def database_title_name(page: Page) -> str | None:
+    """El nombre visible de la columna del título de una base, si lo tiene.
+
+    `None` = la base no ha renombrado esa columna y se enseña «Título». El
+    nombre vive fuera del `schema` porque el título no es una propiedad de la
+    fila: su clave (`title`) es una de las reservadas.
+    """
+    raw = page.frontmatter.get("title_name")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def database_title_hidden(page: Page) -> bool:
+    """¿La tabla de esta base enseña la columna del título?
+
+    Ausente o `false` = sí (lo de siempre). `true` = el usuario quitó esa
+    columna: las filas siguen llamándose por su `id` y su `title` sigue en el
+    `.md`, simplemente la tabla no lo pinta.
+    """
+    raw = page.frontmatter.get("title_hidden")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes", "si", "sí")
 
 
 def read_file(abs_path: str, rel_path: str, st=None) -> Page:
@@ -494,20 +535,16 @@ def load(root: str, progress=None) -> Vault:
             row.type = "database_row"
             row.database_id = db.id
             row.properties = row_properties(db.schema, row.frontmatter)
-            # `title` ya no lo escribe la app (decisión 9.3), pero el usuario puede
-            # añadirlo a mano. No manda: manda el nombre del fichero. Si difiere,
-            # se avisa en vez de obedecerlo en silencio.
-            fm_title = row.frontmatter.get("title")
-            if isinstance(fm_title, str) and fm_title.strip() \
-                    and unicodedata.normalize("NFC", fm_title.strip()) != row.title:
-                vault.warnings.append(
-                    f"{rel}: 'title' del frontmatter ({fm_title!r}) no coincide con el "
-                    f"nombre del fichero ({row.title!r}); manda el nombre")
-            # `title` NO está en `managed`: si el usuario lo escribe a mano es una
-            # clave suya (se preserva al guardar) y además se avisa arriba.
-            # `created`/`updated` son de la app (los escribe `writer.row_markdown`):
+            # El título de una fila está en su frontmatter (`title`) y el
+            # fichero se llama por su id: renombrar la fila no mueve nada. Una
+            # fila de un vault a medio migrar (título en el nombre, sin
+            # `title`) conserva el nombre como título.
+            apply_row_title(row)
+            # `title` es de la fila desde que el fichero se llama por id: no es
+            # una propiedad del `schema` ni una clave suelta del usuario.
+            # `created`/`updated` también son de la app (`writer.row_markdown`):
             # la identidad y las fechas de una fila no son propiedades.
-            managed = {"id", "created", "updated"} | {
+            managed = {"id", "title", "created", "updated"} | {
                 p["key"] for p in db.schema if isinstance(p, dict) and "key" in p
             }
             row.extra_keys = {k: v for k, v in row.frontmatter.items() if k not in managed}

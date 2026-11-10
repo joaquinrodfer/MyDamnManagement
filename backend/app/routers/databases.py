@@ -9,7 +9,7 @@ from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
 from app.events import publish_database
-from app.properties import validate_properties
+from app.properties import plan_schema, validate_properties
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app.templates import TEMPLATES
@@ -54,6 +54,8 @@ def _serialize_database(db_def: Database) -> schemas.DatabaseRead:
         title=db_def.title,
         icon=db_def.icon,
         schema_def=db_def.schema_def,
+        title_name=db_def.title_name,
+        title_hidden=db_def.title_hidden,
         created_at=as_utc(db_def.created_at),
         updated_at=as_utc(db_def.updated_at),
     )
@@ -89,13 +91,18 @@ def create_database(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
+    # La clave de cada propiedad se deriva del nombre visible: la interfaz no
+    # la pide (ni la enseña). Las claves explícitas de la API se respetan.
+    schema_def, _renames, _borradas = plan_schema(
+        [], [p.model_dump() for p in payload.schema_def]
+    )
     with _vault_errors():
         db_def = repo.create_database(
             title=payload.title,
             parent_id=payload.parent_id,
             icon=payload.icon or settings.default_icon,
             created_by=user.display_name,
-            schema_def=[p.model_dump() for p in payload.schema_def],
+            schema_def=schema_def,
         )
     return _serialize_database(db_def)
 
@@ -154,6 +161,8 @@ def update_database(
             title=payload.title,
             icon=payload.icon,
             schema_def=None if payload.schema_def is None else [p.model_dump() for p in payload.schema_def],
+            title_name=payload.title_name,
+            title_hidden=payload.title_hidden,
         )
     if db_def is None:
         raise HTTPException(404, "Base de datos no encontrada")
@@ -294,6 +303,23 @@ def update_view(
 def delete_view(
     database_id: uuid.UUID, view_id: uuid.UUID, repo: Repository = Depends(get_repo)
 ):
+    """Borra una vista; el frontmatter de `Bases/<slug>.md` se reescribe con el
+    resto en la misma operación (el `.md` es la verdad: no hay otra copia).
+
+    La última vista no se borra: es la pestaña con la que la base se abre y la
+    que el bloque incrustado de una nota puede nombrar. Una base sin vistas es
+    un estado válido (se queda en «Todas»), pero es el de una base creada sin
+    ninguna, no algo a lo que se llegue borrando la única que había. Las filas
+    no dependen de la vista: no se toca ninguna.
+    """
+    if repo.get_view(database_id, view_id) is None:
+        raise HTTPException(404, "Vista no encontrada")
+    if len(repo.list_views(database_id)) <= 1:
+        raise HTTPException(
+            409,
+            "No se puede borrar la última vista: una base necesita al menos una. "
+            "Las filas no se tocan: los datos son de la base, no de la vista.",
+        )
     with _vault_errors():
         borrada = repo.delete_view(database_id, view_id)
     if not borrada:

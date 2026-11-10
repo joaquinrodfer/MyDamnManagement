@@ -6,9 +6,11 @@ Contrato que implementa (ADR-0001 y ROADMAP §2):
   índice con lo que dice el fichero. **El fichero manda**: si el proceso muere
   entre las dos cosas, el índice se corrige en el siguiente arranque o con
   `POST /reindex`.
-- Renombrar = renombrar el fichero (el título ES el nombre) y, si tiene
-  subpáginas, su carpeta. Mover de carpeta = mover el fichero (y su carpeta).
-  El `id` del frontmatter no se toca nunca: es la identidad.
+- Renombrar una **nota** = renombrar el fichero (el título ES el nombre) y, si
+  tiene subpáginas, su carpeta. Una **fila** es la excepción: su fichero se
+  llama por su `id` y su título es una clave del frontmatter, así que
+  renombrarla solo reescribe el `.md`. Mover de carpeta = mover el fichero (y
+  su carpeta). El `id` del frontmatter no se toca nunca: es la identidad.
 - Borrar = mover a `.trash/<fecha UTC>/<ruta original>`, con la carpeta de
   subpáginas incluida (si no, quedarían ficheros huérfanos que el reindexado
   leería como notas sueltas, justo lo que la cascada del índice ya no haría).
@@ -17,8 +19,11 @@ Contrato que implementa (ADR-0001 y ROADMAP §2):
 
 Desde P2 las **bases de datos** también son ficheros: `Bases/<slug>.md` con
 `type: database` y el `schema` y las `views` en el frontmatter, y sus filas en
-`Bases/<slug>/<fila>.md`, con las propiedades en el frontmatter y sin `title`
-(el título de una fila es el nombre del fichero). Una base que cuelga de una
+`Bases/<slug>/<id8>.md` (los 8 primeros caracteres hex del `id`, alargados si
+chocan), con `title` y las propiedades en el frontmatter. El título de una fila
+ya no es su nombre de fichero: se renombra y se borra sin mover la ruta, y un
+vault a medio migrar (fichero con el título por nombre, sin `title`) sigue
+abriendo y resolviendo sus enlaces. Una base que cuelga de una
 nota vive en la carpeta de hijas de esa nota, porque la jerarquía son carpetas
 (D4) y así el reindexado puede volver a deducir su `parent_id`. El `id` de la
 base es el suyo y el de su página a la vez: un fichero, una identidad.
@@ -41,6 +46,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -635,10 +641,22 @@ class VaultStore:
         views = reader.views_from_frontmatter(
             page.frontmatter.get("views"), record.id, page.path, warnings
         )
+        title_name = reader.database_title_name(page)
+        title_hidden = reader.database_title_hidden(page)
         self.conn.execute(
             "INSERT INTO databases (id, page_id, schema_json) VALUES (?, ?, ?)"
             " ON CONFLICT(id) DO UPDATE SET schema_json = excluded.schema_json",
             (record.id, record.id, _dump(schema)),
+        )
+        # La columna del título va en su tabla (su clave es la reservada
+        # `title` y no puede estar en el `schema`). Se escribe una fila siempre
+        # —aunque sean los valores por defecto— para que reindexar produzca
+        # exactamente el mismo índice que la escritura desde la app.
+        self.conn.execute(
+            "INSERT INTO database_titles (database_id, name, hidden) VALUES (?, ?, ?)"
+            " ON CONFLICT(database_id) DO UPDATE SET name = excluded.name,"
+            " hidden = excluded.hidden",
+            (record.id, title_name, int(title_hidden)),
         )
         self.conn.execute("DELETE FROM views WHERE database_id = ?", (record.id,))
         taken = {
@@ -762,6 +780,11 @@ class VaultStore:
         page = reader.read_file(abs_path, rel)
         if database_id is None:
             database_id = self._database_of_row(rel)
+        if database_id:
+            # El título de una fila es el `title` de su frontmatter, no el
+            # nombre del fichero (que es su id). `reader.load` hace lo mismo al
+            # reindexar; los dos caminos tienen que decir lo mismo.
+            reader.apply_row_title(page)
         workspace_id = self._workspace()
         record = self._record_from_page(
             page, workspace_id, parent_id,
@@ -1179,6 +1202,8 @@ class VaultStore:
         icon: Optional[str] = None,
         description: Optional[str] = None,
         created_by: Optional[str] = None,
+        title_name: Optional[str] = None,
+        title_hidden: bool = False,
     ) -> str:
         """Escribe `Bases/<slug>.md` (y su carpeta de filas) e indexa. Devuelve su id."""
         self.ensure_structure()
@@ -1191,6 +1216,7 @@ class VaultStore:
         page, notes = writer.create_database(
             self.root, folder, title, schema, entries,
             icon=icon, db_id=page_id, description=description, created_by=created_by,
+            title_name=title_name, title_hidden=title_hidden,
         )
         with self._tx():
             self._index_file(page.path, self._parent_str(parent_id))
@@ -1210,6 +1236,8 @@ class VaultStore:
         body: Any = UNSET,
         header_image: Any = UNSET,
         parent_id: Any = UNSET,
+        title_name: Any = UNSET,
+        title_hidden: Any = UNSET,
     ) -> None:
         """Reescribe la base (y la renombra con sus filas si toca) y la indexa.
 
@@ -1283,6 +1311,18 @@ class VaultStore:
                 writer.view_entry({**view, "id": view.get("id") or str(uuid.uuid4())})
                 for view in views
             ]
+        # La columna del título: `title_name` es su nombre visible y
+        # `title_hidden` dice si la tabla la enseña. Los valores por defecto no
+        # se escriben (el `.md` no lleva ruido); `None` en `fm.rewrite` borra la
+        # clave, que es justo lo que hay que hacer al volver al valor por
+        # defecto o al restaurar la columna.
+        if title_name is not UNSET:
+            name = str(title_name or "").strip()
+            updates["title_name"] = (
+                None if not name or name == writer.DEFAULT_TITLE_NAME else name
+            )
+        if title_hidden is not UNSET:
+            updates["title_hidden"] = True if title_hidden else None
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)
@@ -1292,6 +1332,142 @@ class VaultStore:
             self._index_file(new_rel, new_parent)
             if folder_moved:
                 self._repath_rows(old_children, new_children)
+
+    def reindex_rows(self, database_id: Any) -> int:
+        """Relee del disco las filas de la base y actualiza su entrada del índice.
+
+        Hace falta cuando cambia el `schema`: `_index_row` filtra las
+        propiedades de la fila contra el schema de la base, así que tras
+        renombrar (o añadir, o borrar) una propiedad el índice tiene que volver
+        a leer los `.md` con el schema nuevo. Devuelve cuántas filas se han
+        releído.
+        """
+        rows = self.conn.execute(
+            "SELECT path FROM rows WHERE database_id = ?", (str(database_id),)
+        ).fetchall()
+        leidas = 0
+        for row in rows:
+            rel = row["path"]
+            if not rel or not os.path.exists(self._abs(rel)):
+                continue
+            self._index_file(rel, None, database_id=str(database_id))
+            leidas += 1
+        return leidas
+
+    def rename_row_properties(
+        self,
+        database_id: Any,
+        renames: dict[str, str],
+        *,
+        names: dict[str, str] | None = None,
+        reserved: set[str] | frozenset[str] = frozenset(),
+    ) -> dict[str, str]:
+        """Renombra claves de propiedad en **todas** las filas de la base.
+
+        Se hace sobre el texto del `.md` y no con lo que diga el índice: el
+        índice puede no haber sabido leer un valor (`valor: A-12` en un
+        `number` queda como `null`), y reescribir con ese `null` borraría del
+        fichero lo que el usuario escribió. Aquí solo cambia el nombre de la
+        clave; el valor va tal cual lo leyó el parser.
+
+        Primero se valida y se prepara **todo**, y solo después se escribe: un
+        rename a medias —unas filas con la clave vieja y otras con la nueva— es
+        peor que no poder renombrar. Si una fila trae el valor de esa clave en
+        una construcción que el parser no interpreta (un block scalar `|`), se
+        rechaza el rename entero con un motivo **con el nombre visible** y sin
+        rutas internas: el usuario no ve claves snake_case en ningún sitio.
+
+        `names` traduce clave -> nombre visible para esos avisos; `reserved`
+        son las claves del schema (antes y después) que no pueden ser destino.
+
+        Devuelve el mapa **clave vieja -> clave usada de verdad**, que puede no
+        ser la pedida: borrar una propiedad no borra sus valores del `.md`, y
+        renombrar otra al nombre de la borrada derivaría la misma clave. Esa
+        clave solo existe como valor huérfano, así que pisarla perdería datos
+        del usuario; en vez de eso el destino pasa a `clave_2`, `clave_3`…, que
+        no se enseña en ninguna parte. La clave ajustada es la que hay que
+        escribir en el schema y en las vistas.
+        """
+        rows = self.conn.execute(
+            "SELECT p.id AS id, r.path AS path FROM rows r JOIN pages p ON p.id = r.id"
+            " WHERE r.database_id = ? ORDER BY p.created_at, p.rowid",
+            (str(database_id),),
+        ).fetchall()
+
+        def etiqueta(key: str) -> str:
+            nombre = (names or {}).get(key)
+            return f"«{nombre}»" if nombre else "la propiedad"
+
+        # Claves que no pueden ser destino: las de la propia fila, las del
+        # schema y cualquier clave que ya exista en algún `.md` (aunque sea de
+        # una propiedad borrada: sus valores siguen ahí).
+        ocupadas: set[str] = set(reader.RESERVED_ROW_KEYS) | set(reserved)
+        leidas: list[tuple[str, str, str, str | None, dict[str, Any]]] = []
+        for row in rows:
+            rel = row["path"]
+            abs_path = self._abs(rel)
+            if not os.path.exists(abs_path):
+                raise VaultError(
+                    f"no se puede renombrar {etiqueta(next(iter(renames), ''))}: "
+                    "falta el fichero de una de las filas en el vault; "
+                    "lanza POST /reindex para reconciliar el índice con el disco"
+                )
+            text, _warnings = _read_text(abs_path)
+            try:
+                raw, _body = fm.split_document(text)
+                data = fm.parse(raw).data if raw is not None else {}
+            except fm.FrontmatterError as exc:
+                raise VaultError(
+                    f"no se puede renombrar {etiqueta(next(iter(renames), ''))}: una "
+                    f"fila tiene el frontmatter ilegible ({exc})"
+                ) from exc
+            leidas.append((row["id"], rel, text, raw, data))
+            ocupadas.update(str(k) for k in data)
+
+        finales: dict[str, str] = {}
+        for old, new in renames.items():
+            candidata = new
+            intento = 2
+            while candidata != old and candidata in ocupadas:
+                candidata = f"{new}_{intento}"
+                intento += 1
+            ocupadas.add(candidata)
+            finales[old] = candidata
+
+        prepared: list[tuple[str, str, str]] = []
+        for row_id, rel, text, raw, data in leidas:
+            updates: dict[str, Any] = {}
+            for old, new in finales.items():
+                if old not in data:
+                    # Puede que la fila no tenga esa propiedad (normal) o que la
+                    # tenga en una forma que el parser no sabe leer (opaque): lo
+                    # segundo no se puede renombrar sin adivinar el valor.
+                    if re.search(rf"(?m)^[ \t]*{re.escape(old)}[ \t]*:", raw or ""):
+                        raise VaultError(
+                            f"no se puede renombrar {etiqueta(old)}: una fila guarda "
+                            "ese valor de una forma que no es legible (block scalar, "
+                            "flow map, ancla o tag) y se perdería al reescribirla; "
+                            "edítala a mano y vuelve a intentarlo"
+                        )
+                    continue
+                if new in data and new != old:  # invariante: `finales` ya lo evita
+                    raise VaultError(
+                        f"no se puede renombrar {etiqueta(old)}: una fila ya tiene "
+                        "otra propiedad con ese nombre"
+                    )
+                updates[old] = None      # borra la clave vieja (fm: None = bórrame)
+                updates[new] = data[old]  # y escribe el mismo valor con la nueva
+            if not updates:
+                continue
+            new_text, _notes = fm.rewrite(text, updates)
+            prepared.append((row_id, rel, new_text))
+
+        for _row_id, rel, new_text in prepared:
+            vaultfs.atomic_write(self._abs(rel), new_text)
+            # Una fila no cuelga del árbol (`parent_id` nulo) y su base es la
+            # que se está renombrando: el índice de la fila se rehace solo.
+            self._index_file(rel, None, database_id=str(database_id))
+        return finales
 
     def delete_database(self, page_id: Any) -> bool:
         """Mueve la base y todas sus filas a la papelera y limpia el índice."""
@@ -1370,7 +1546,10 @@ class VaultStore:
         icon: Optional[str] = None,
         body: str = "",
     ) -> str:
-        """Escribe `Bases/<slug>/<fila>.md` e indexa. Devuelve el id de la fila."""
+        """Escribe `Bases/<slug>/<id8>.md` (título en el frontmatter) e indexa.
+
+        Devuelve el id de la fila.
+        """
         db = self._database_row(database_id)
         if not os.path.exists(self._abs(db["path"])):
             raise VaultError(
@@ -1534,7 +1713,11 @@ class VaultStore:
         properties: Any = UNSET,
         header_image: Any = UNSET,
     ) -> None:
-        """Reescribe la fila (renombrándola si toca) y actualiza el índice.
+        """Reescribe el frontmatter de la fila y actualiza el índice.
+
+        Desde que el fichero se llama por el `id` de la fila, un `title` nuevo
+        **no mueve el fichero**: solo cambia la clave `title` del frontmatter
+        (la ruta y el `id` quedan como estaban).
 
         `properties` trae **solo las claves del `PATCH`** (no el mapa del
         índice: B2); un `None` en un valor borra esa clave del frontmatter, como
@@ -1570,22 +1753,16 @@ class VaultStore:
             props = writer.sin_reservadas(properties, [], "al guardar la fila")
             self._refuse_touching_unreadable(row, old_rel, front, props)
 
-        folder = os.path.dirname(old_rel)
-        current_stem = os.path.basename(old_rel)[:-3]
-        if title is not UNSET and title is not None:
-            desired_stem = names.sanitize(title)[0]
-        else:
-            desired_stem = current_stem
-        if names.nfc(desired_stem).casefold() == names.nfc(current_stem).casefold():
-            final_stem = desired_stem
-        else:
-            final_stem, _collided = names.unique_stem(self._abs(folder), desired_stem)
-        new_rel = f"{folder}/{final_stem}.md"
-        if new_rel != old_rel:
-            # La fila y sus sugerencias, juntas (mismo helper que la nota).
-            suggestions.move_with_note(self.root, old_rel, new_rel)
+        # La ruta no se toca: el fichero se llama por el id de la fila y el
+        # título es una clave del frontmatter. Renombrar una fila no puede
+        # mover un `.md` ni romper un enlace.
+        new_rel = old_rel
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
+        if title is not UNSET and title is not None:
+            # Igual que al crear: un título vacío se guarda como «Sin título»
+            # (el frontmatter nunca se queda sin él, ver `reader.apply_row_title`).
+            updates["title"] = names.nfc(str(title)).strip() or "Sin título"
         if "created" not in data and row["created_at"]:
             updates["created"] = row["created_at"]
         if icon is not UNSET and icon is not None:
@@ -1595,7 +1772,8 @@ class VaultStore:
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
         if props is not None:
-            # `title` no se escribe nunca: el título es el nombre del fichero.
+            # `title` no es una propiedad de la fila: si viniera en el mapa,
+            # `sin_reservadas` ya lo ha quitado.
             updates.update(props)
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None

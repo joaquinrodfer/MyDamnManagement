@@ -1,41 +1,92 @@
-# Flujo de git
+# Flujo de git (Git Flow)
 
-Este documento dice cómo se ramifica, cómo se fusiona y qué se puede desplegar.
-Sustituye al apaño anterior, en el que `release/v1.0` acabó siendo la rama de
-trabajo mientras las versiones subían a 2.x: una rama con nombre de versión que
-contenía todo lo demás. Eso se terminó el 2026-11-10: `main` es el tronco.
+Este documento dice cómo se ramifica y qué llega a `main`. Sustituye al apaño
+anterior, en el que `release/v1.0` acabó siendo la rama de trabajo mientras las
+versiones subían a 2.x.
 
-## Las tres reglas
+## Las tres ramas que importan
 
-1. **`main` es el tronco y siempre se puede desplegar.** Lo que está en `main`
-   ha pasado la revisión y el CI. No hay ramas largas paralelas.
-2. **El trabajo vive en ramas cortas que salen de `main` y mueren al fusionarse.**
-   Un nombre por intención, no por versión: `feat/…`, `fix/…`, `chore/…`,
-   `docs/…`. Nada de `release/vX.Y`.
-3. **Se despliega una etiqueta, nunca la punta de una rama.** `v2.1.0` es un
-   punto del tiempo que no se mueve; `main` sí. Un despliegue que apunta a
-   `main` cambia solo cuando alguien fusiona, y eso no es un despliegue, es una
-   sorpresa.
-
-## El día a día
-
-```bash
-git switch main && git pull --ff-only
-git switch -c feat/lo-que-sea          # rama corta
-# … trabajo, commits pequeños …
-pytest -q && (cd frontend/editor-src && npm test)
-# revisión aprobada + CI verde → fusión
-git switch main && git pull --ff-only
-git merge --no-ff feat/lo-que-sea
-git push origin main
-git branch -d feat/lo-que-sea
+```
+main      producción. Solo entra por pull request desde release/*. Lo revisa el dueño.
+develop   integración. Aquí se junta el trabajo del día a día; es de donde salen las ramas.
+release/  estabilización de una versión concreta, camino de main.
 ```
 
-- **`--no-ff` siempre** en las fusiones de ramas de trabajo: la rama queda
-  visible en el historial y se puede revertir de una pieza (`git revert -m 1`).
+`main` **no se toca a mano**: ni merges locales, ni commits directos, ni
+force-push. Lo que está en `main` es lo que el dueño ha leído y aprobado.
+
+## Ramas de trabajo
+
+Salen de `develop` y mueren en `develop`, en cuanto la tarjeta de revisión está
+aprobada y el CI verde:
+
+| Prefijo | Para |
+|---|---|
+| `feature/…` | funcionalidad nueva |
+| `fix/…` | corregir un defecto |
+| `chore/…` | tooling, dependencias, CI |
+| `docs/…` | documentación sola |
+
+Una rama, una intención. Si al terminar toca dos cosas, eran dos tarjetas.
+
+```bash
+git switch develop && git pull --ff-only
+git switch -c feature/lo-que-sea
+# … commits pequeños …
+pytest -q && (cd frontend/editor-src && npm test)
+# revisión de la tarjeta aprobada + CI verde
+git switch develop && git pull --ff-only
+git merge --no-ff feature/lo-que-sea
+git push origin develop
+git branch -d feature/lo-que-sea
+```
+
+- **`--no-ff` siempre** al fusionar una rama de trabajo: queda en el historial y
+  se revierte de una pieza (`git revert -m 1`).
 - **`--ff-only` siempre** en los `pull`: si no avanza limpio, algo se ha
   desviado y hay que mirarlo, no taparlo con un merge automático.
-- **Una rama, una intención.** Si al terminar toca dos cosas, eran dos tarjetas.
+
+## De `develop` a `main`: `release/*`
+
+Cuando el lote está cerrado y probado:
+
+```bash
+git switch develop && git pull --ff-only
+git switch -c release/2.2
+# solo arreglos: nada de funcionalidad nueva dentro de una release
+git push -u origin release/2.2
+```
+
+Y ahí, en este orden:
+
+1. **revisión final** (la tarjeta de revisión, sobre la punta de la release);
+2. **pull request `release/2.2` → `main`**, con el resumen de lo que entra;
+3. **el dueño revisa y fusiona**. Nadie más fusiona en `main`;
+4. etiqueta `v2.2.0` sobre el commit de `main` ya fusionado;
+5. la release se fusiona **también en `develop`** (para no perder los arreglos
+   hechos durante la estabilización) y se borra.
+
+Si durante la estabilización aparece un defecto: se arregla **en la release**
+(commit pequeño, con su prueba), no en `develop`, para que `main` reciba
+exactamente lo revisado.
+
+## Arreglos urgentes sobre producción
+
+```bash
+git switch -c hotfix/2.1.1 v2.1.0
+# arreglo + prueba
+# PR a main (revisión del dueño), etiqueta v2.1.1
+git switch develop && git merge --no-ff hotfix/2.1.1
+```
+
+## Etiquetas
+
+- `vX.Y.Z` **sobre `main`**, anotadas, con el porqué en el mensaje (fichero con
+  `-F`, nunca `-m` con backticks: ya nos mordió una vez).
+- **Se despliega una etiqueta, nunca una rama.** `git switch v2.1.0`.
+- Mayor: cambia el contrato del vault o de la API de forma incompatible.
+  Menor: funcionalidad visible. Parche: correcciones sin funcionalidad nueva.
+- La etiqueta se crea **después** de fusionar y con el CI verde en esa punta.
 
 ## Qué impide fusionar
 
@@ -46,43 +97,23 @@ git branch -d feat/lo-que-sea
 | bundle del editor reproducible | el CI, job `bundle` |
 | la imagen de Docker construye | el CI, job `imagen` |
 
-El CI corre en **cada push y cada pull request** (`.github/workflows/tests.yml`).
-Si el CI está rojo, no se fusiona: se arregla o se revierte, no se espera a que
-se ponga verde solo.
-
-## Etiquetas
-
-- **`vX.Y.Z` sobre `main`**, anotada, con el porqué en el mensaje (`-F` con un
-  fichero, nunca `-m` con backticks: ya nos mordió una vez).
-- **mayor** (`X`): cambia el contrato del vault o de la API de forma incompatible.
-- **menor** (`Y`): funcionalidad visible.
-- **parche** (`Z`): correcciones sin funcionalidad nueva.
-- La etiqueta se crea **después** de fusionar y con el CI verde en esa punta.
-  Si el CI está corriendo, se espera: una etiqueta sobre un commit que luego se
-  pone rojo no vale de nada a la hora de volver atrás.
-
-## Ramas de mantenimiento
-
-`release/x.y` solo tiene sentido si hay que arreglar una versión **ya
-desplegada** sin subir de versión. Hoy no hay ninguna en uso: si aparece, sale
-de la etiqueta, no de `main`, y se fusiona en los dos sitios (mantenimiento y
-`main`). Mientras no exista esa necesidad, no se crea.
+El CI corre en cada push y cada pull request. Si está rojo, no se fusiona: se
+arregla o se revierte.
 
 ## Limpieza
 
-Las ramas fusionadas se borran. Al 2026-11-10 hay 54 ramas ya fusionadas en
-`main` (`git branch --merged main`) que solo son ruido al buscar algo.
+Las ramas fusionadas se borran (`git branch --merged develop`). Las etiquetas
+**no** se borran: son la historia.
 
-```bash
-git branch --merged main | grep -vE '^\*|main$' | xargs -r git branch -d
-git push origin --delete <rama>        # una a una, o con --dry-run primero
-```
+## Despliegue
 
-Las etiquetas **no se borran**: son la historia.
+Hoy: `git switch v2.1.0` y `docker compose -f docker-compose.prod.yml up -d --build`.
+Cuando haya contenedor propio: `docker pull` de una imagen etiquetada y
+`docker compose up -d` con esa etiqueta. La regla no cambia: se despliega una
+etiqueta, nunca una rama.
 
-## Despliegue (lo que viene)
+## Ajustes del repositorio en GitHub
 
-Hoy: `git switch <etiqueta>` y `docker compose -f docker-compose.prod.yml up -d --build`.
-Cuando haya contenedor propio en el Proxmox del dueño, el despliegue pasa a ser
-`docker pull` de una imagen **etiquetada** y `docker compose up -d` con esa
-etiqueta en el `.env`. La regla no cambia: se despliega una etiqueta.
+- **Rama por defecto: `develop`** (Settings → General → Default branch). Con `main` por defecto, un `git clone` deja al que llega en la rama de producción.
+- **`main` protegida**: pull request obligatorio, sin force-push ni borrado. La fusión la hace el dueño.
+- `develop` **no** lleva regla de pull request: ahí se fusiona directo desde la sesión del orquestador cuando la tarjeta está aprobada, y una regla obligaría a abrir un PR por cada arreglo.

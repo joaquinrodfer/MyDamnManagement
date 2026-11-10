@@ -71,7 +71,11 @@ export function newlineRunAt(text, pos) {
  * Devuelve el tramo que hay que quitar para colapsarlo (los dos saltos que lo
  * forman) o null si ya no lo es. Lo es mientras:
  *
- * - el par de saltos siga tal cual en `text` (nadie ha escrito entre ellos), y
+ * - el tramo de saltos siga tal cual en `text` (nadie ha escrito entre
+ *   ellos). Normalmente son dos (el par que mete el editor delante o detrás
+ *   del separador que ya había); al insertar un bloque encima de un ítem de
+ *   lista son más, porque hay que crear también la línea en blanco que no
+ *   existía (ver `insertBlockEdit` en block-move.js), y
  * - a uno de los dos lados siga habiendo el salto que hacía de separador (el
  *   par se inserta delante o detrás de él, según el comando). Si a los dos
  *   lados hay texto, alguien escribió (o pegó) en el bloque nuevo y ese hueco
@@ -86,8 +90,8 @@ export function emptyGapRange(text, gap) {
   const from = Number(gap?.from);
   const to = Number(gap?.to);
   if (!Number.isInteger(from) || !Number.isInteger(to)) return null;
-  if (from < 0 || to > s.length || to - from !== 2) return null;
-  if (s.slice(from, to) !== "\n\n") return null;
+  if (from < 0 || to > s.length || to - from < 2) return null;
+  if (/[^\n]/.test(s.slice(from, to))) return null;
   if (to >= s.length) return null;
   // Basta con que uno de los lados siga siendo el salto separador: el «+» y
   // ⏎ al final de un bloque insertan el par DELANTE del separador que había y
@@ -118,13 +122,14 @@ export function emptyGapRange(text, gap) {
  *   detrás del hueco no lo alarga -- `emptyGapRange` ve el texto nuevo y
  *   decide que ese hueco ya es contenido.
  *
- * Si un cambio cae DENTRO del par, el rango deja de medir 2 y la marca se
+ * Si un cambio cae DENTRO del tramo, cambia lo que mide y la marca se
  * descarta: ya no es un bloque vacío, es texto.
  */
 export function shiftEmptyGap(gap, changes) {
   let from = Number(gap?.from);
   let to = Number(gap?.to);
   if (!Number.isInteger(from) || !Number.isInteger(to)) return null;
+  const width = to - from;
   const list = [];
   for (const c of changes || []) {
     const cf = Number(c?.from);
@@ -143,7 +148,7 @@ export function shiftEmptyGap(gap, changes) {
     if (to > c.to) to += delta;
     else if (to > c.from) to = c.from;
   }
-  return to - from === 2 ? { from, to } : null;
+  return to - from === width ? { from, to } : null;
 }
 
 /**

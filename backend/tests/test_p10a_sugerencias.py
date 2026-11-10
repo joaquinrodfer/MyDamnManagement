@@ -468,7 +468,8 @@ def test_la_papelera_lista_la_nota_una_vez_y_no_restaura_un_sidecar_suelto(clien
     assert en_sitio == sorted([f"{una['id']}.json", f"{dos['id']}.json"])
 
 
-def test_renombrar_una_fila_se_lleva_sus_sugerencias(client, vault_path):
+def test_renombrar_una_fila_no_mueve_el_fichero_ni_su_sidecar(client, vault_path):
+    """El fichero de una fila se llama por su id: el título no mueve nada."""
     database, fila = crear_fila(client, titulo="Fila")
     sugerencia = sugerir(
         client,
@@ -477,8 +478,10 @@ def test_renombrar_una_fila_se_lleva_sus_sugerencias(client, vault_path):
         title="Nota propuesta",
         new_text="cuerpo propuesto",
     ).json()
-    viejo = vault_path / "Bases" / "Base" / "Fila.md.sugerencias"
-    assert (viejo / f"{sugerencia['id']}.json").is_file()
+    carpeta = vault_path / "Bases" / "Base"
+    rel = f"{fila['id'][:8]}.md"
+    sidecar = carpeta / f"{rel}.sugerencias"
+    assert (sidecar / f"{sugerencia['id']}.json").is_file()
 
     renombrada = client.patch(
         f"/databases/{database['id']}/rows/{fila['id']}",
@@ -486,10 +489,10 @@ def test_renombrar_una_fila_se_lleva_sus_sugerencias(client, vault_path):
     )
     assert renombrada.status_code == 200, renombrada.text
 
-    nuevo = vault_path / "Bases" / "Base" / "Fila renombrada.md.sugerencias"
-    assert not viejo.exists()
-    assert (nuevo / f"{sugerencia['id']}.json").is_file()
-    # Y la sigue viendo su nota: si el sidecar se queda atrás, el listado sale [].
+    # Mismo fichero y mismo sidecar: renombrar solo toca el frontmatter.
+    assert sorted(p.name for p in carpeta.iterdir()) == sorted([rel, f"{rel}.sugerencias"])
+    assert (sidecar / f"{sugerencia['id']}.json").is_file()
+    # Y la sigue viendo su nota: si el sidecar se quedara atrás, el listado sale [].
     listada = client.get(f"/pages/{fila['id']}/suggestions").json()
     assert [s["id"] for s in listada] == [sugerencia["id"]]
 
@@ -521,16 +524,17 @@ def test_borrar_una_fila_se_lleva_sus_sugerencias_a_la_papelera(client, vault_pa
         client, fila["id"], kind="new_page", title="Otra", new_text="cuerpo"
     ).json()
 
+    rel = f"{fila['id'][:8]}.md"
     assert client.delete(f"/databases/{database['id']}/rows/{fila['id']}").status_code == 204
 
-    assert not (vault_path / "Bases" / "Base" / "Fila.md.sugerencias").exists()
+    assert not (vault_path / "Bases" / "Base" / f"{rel}.sugerencias").exists()
     en_papelera = list(
-        vault_path.glob(".trash/*/Bases/Base/Fila.md.sugerencias/*.json")
+        vault_path.glob(f".trash/*/Bases/Base/{rel}.sugerencias/*.json")
     )
     assert [p.name for p in en_papelera] == [f"{sugerencia['id']}.json"]
     # La fila es una entrada de papelera; sus sugerencias, no.
     assert [e["original_path"] for e in client.get("/trash").json()] == [
-        "Bases/Base/Fila.md"
+        f"Bases/Base/{rel}"
     ]
 
 
@@ -618,8 +622,10 @@ def _op_renombrar_fila(client, vault_path):
         f"/databases/{database['id']}/rows/{fila['id']}", json={"title": "OpFila dos"}
     )
     assert respuesta.status_code == 200, respuesta.text
-    movido = vault_path / "Bases" / "OpBase" / "OpFila dos.md.sugerencias"
-    assert (movido / f"{sugerencia['id']}.json").is_file()
+    # Renombrar una fila no mueve el fichero (se llama por su id): su sidecar
+    # tampoco se mueve, y no queda huérfano.
+    en_su_sitio = vault_path / "Bases" / "OpBase" / f"{fila['id'][:8]}.md.sugerencias"
+    assert (en_su_sitio / f"{sugerencia['id']}.json").is_file()
 
 
 def _op_renombrar_base(client, vault_path):
@@ -657,7 +663,9 @@ def _op_borrar_fila(client, vault_path):
     database, fila = crear_fila(client, titulo="OpFilaBorra", base="OpBaseBorra")
     sugerir(client, fila["id"], kind="new_page", title="Nueva", new_text="cuerpo")
     assert client.delete(f"/databases/{database['id']}/rows/{fila['id']}").status_code == 204
-    assert list(vault_path.glob(".trash/*/Bases/OpBaseBorra/OpFilaBorra.md.sugerencias/*.json"))
+    assert list(vault_path.glob(
+        f".trash/*/Bases/OpBaseBorra/{fila['id'][:8]}.md.sugerencias/*.json"
+    ))
 
 
 def _op_borrar_base(client, vault_path):
@@ -665,7 +673,9 @@ def _op_borrar_base(client, vault_path):
     sugerir(client, fila["id"], kind="new_page", title="Nueva", new_text="cuerpo")
     assert client.delete(f"/databases/{database['id']}").status_code == 204
     assert list(
-        vault_path.glob(".trash/*/Bases/OpBaseBorraDos/OpFilaBase.md.sugerencias/*.json")
+        vault_path.glob(
+            f".trash/*/Bases/OpBaseBorraDos/{fila['id'][:8]}.md.sugerencias/*.json"
+        )
     )
 
 

@@ -134,6 +134,13 @@ def test_cambiar_las_vistas_publica_updated(client, eventos):
     assert vista.status_code == 200, vista.text
     assert [e["database_id"] for e in avisos(eventos, "updated")] == [base["id"]]
 
+    # Una segunda vista: la última no se puede borrar (409), así que el borrado
+    # que se comprueba aquí tiene que dejar la base con una.
+    segunda = client.post(
+        f"/databases/{base['id']}/views", json={"name": "Lista", "type": "list"}
+    )
+    assert segunda.status_code == 200, segunda.text
+
     eventos.clear()
     assert (
         client.delete(f"/databases/{base['id']}/views/{vista.json()['id']}").status_code

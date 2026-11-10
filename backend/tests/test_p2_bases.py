@@ -6,14 +6,16 @@ de hecho de la tarjeta:
 
 1. crear una base desde la plantilla CRM escribe `Bases/<slug>.md` con su
    `schema` y sus `views`, y su carpeta de filas;
-2. editar una propiedad de una fila cambia el `.md` de la fila (y no escribe
-   `title`: el título es el nombre del fichero);
-3. renombrar una fila cambia el nombre del fichero y conserva su `id`;
+2. editar una propiedad de una fila cambia el `.md` de la fila;
+3. una fila se llama `<id8>.md` y su título es el `title` del frontmatter:
+   renombrarla cambia el `.md` pero **no** mueve el fichero;
 4. borrar el índice y arrancar reconstruye bases, filas y vistas con la misma
    huella de volcado, tabla a tabla;
 5. un `.md` de fila huérfano se avisa y no tumba el reindexado.
 """
 
+import hashlib
+import re
 from pathlib import Path
 
 from app import index as indice
@@ -35,6 +37,11 @@ def crear_fila(client, database_id, **cuerpo) -> dict:
     respuesta = client.post(f"/databases/{database_id}/rows", json=cuerpo)
     assert respuesta.status_code == 200, respuesta.text
     return respuesta.json()
+
+
+def fichero_fila(vault_path: Path, fila: dict, base: str = "Contactos") -> Path:
+    """El `.md` de una fila: su nombre es el id corto, no el título."""
+    return vault_path / "Bases" / base / f"{fila['id'][:8]}.md"
 
 
 def texto(path: Path) -> str:
@@ -147,8 +154,14 @@ def test_el_schema_y_las_vistas_se_editan_en_el_fichero(client, vault_path):
     client.patch(f"/databases/{base['id']}/views/{vista['id']}", json={"name": "Cerradas"})
     assert frontmatter(fichero)["views"][-1]["name"] == "Cerradas"
 
-    client.delete(f"/databases/{base['id']}/views/{vista['id']}")
-    assert [v["name"] for v in frontmatter(fichero)["views"]] == []
+    # La última vista no se borra (409): el `.md` se queda como está. Borrar
+    # una vista nunca toca las filas; ver `test_borrar_vistas.py`.
+    assert client.delete(f"/databases/{base['id']}/views/{vista['id']}").status_code == 409
+    assert [v["name"] for v in frontmatter(fichero)["views"]] == ["Cerradas"]
+
+    client.post(f"/databases/{base['id']}/views", json={"name": "Todas", "type": "table"})
+    assert client.delete(f"/databases/{base['id']}/views/{vista['id']}").status_code == 204
+    assert [v["name"] for v in frontmatter(fichero)["views"]] == ["Todas"]
 
 
 # --------------------------------------------------------------------------
@@ -156,25 +169,35 @@ def test_el_schema_y_las_vistas_se_editan_en_el_fichero(client, vault_path):
 # --------------------------------------------------------------------------
 
 
-def test_crear_una_fila_escribe_su_fichero_sin_title(client, vault_path):
+def test_crear_una_fila_escribe_su_fichero_por_id_y_el_titulo_en_el_frontmatter(
+    client, vault_path
+):
     base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
     fila = crear_fila(
         client, base["id"], title="Acme", properties={"empresa": "Acme S.L.", "fase": "lead"}
     )
 
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
-    assert fichero.exists()
+    carpeta = vault_path / "Bases" / "Contactos"
+    fichero = fichero_fila(vault_path, fila)
+    assert fichero.exists(), sorted(p.name for p in carpeta.iterdir())
+    # El nombre es el id corto: 8 caracteres hex y nada del título.
+    assert re.fullmatch(r"[0-9a-f]{8}\.md", fichero.name), fichero.name
+    assert "Acme" not in fichero.name
 
     datos = frontmatter(fichero)
     assert datos["id"] == fila["id"]
+    assert datos["title"] == "Acme", "el título vive en el frontmatter"
     assert datos["empresa"] == "Acme S.L."
     assert datos["fase"] == "lead"
-    assert "title" not in datos, "el título de una fila es el nombre del fichero"
 
     # Las propiedades sin valor no se escriben (`valor` y `proximo_contacto` no
     # llegaron): `null` volvería del parser como la cadena "null".
     assert "valor" not in datos and "proximo_contacto" not in datos
     assert "null" not in texto(fichero)
+
+    # Y la API enseña ese título, no el nombre del fichero.
+    assert fila["title"] == "Acme"
+    assert client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()["title"] == "Acme"
 
 
 def test_editar_una_propiedad_cambia_el_md(client, vault_path):
@@ -185,7 +208,7 @@ def test_editar_una_propiedad_cambia_el_md(client, vault_path):
         title="Acme",
         properties={"empresa": "Acme S.L.", "fase": "lead", "valor": 1200},
     )
-    fichero = vault_path / "Bases" / "Contactos" / "Acme.md"
+    fichero = fichero_fila(vault_path, fila)
     assert frontmatter(fichero)["valor"] == "1200"
 
     editada = client.patch(
@@ -200,7 +223,7 @@ def test_editar_una_propiedad_cambia_el_md(client, vault_path):
     assert datos["fase"] == "ganado"
     assert datos["valor"] == "1500"
     assert datos["empresa"] == "Acme S.L.", "un PATCH parcial no borra lo que no llega"
-    assert "title" not in datos
+    assert datos["title"] == "Acme", "editar una celda no toca el título"
 
     # Y vaciar una propiedad la quita del fichero, no la deja a `null`.
     client.patch(
@@ -209,23 +232,34 @@ def test_editar_una_propiedad_cambia_el_md(client, vault_path):
     assert "valor" not in frontmatter(fichero)
 
 
-def test_renombrar_una_fila_cambia_el_fichero_y_conserva_el_id(client, vault_path):
+def test_renombrar_una_fila_no_mueve_el_fichero_y_cambia_el_title(client, vault_path):
     base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
     fila = crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
     carpeta = vault_path / "Bases" / "Contactos"
+    ruta = fichero_fila(vault_path, fila)
+    assert ruta.exists()
+    antes = hashlib.sha256(str(ruta.resolve()).encode()).hexdigest()
 
     renombrada = client.patch(
         f"/databases/{base['id']}/rows/{fila['id']}", json={"title": "Acme (cerrada)"}
     ).json()
 
-    assert not (carpeta / "Acme.md").exists()
-    nuevo = carpeta / "Acme (cerrada).md"
-    assert nuevo.exists()
+    assert renombrada["title"] == "Acme (cerrada)"
     assert renombrada["id"] == fila["id"], "renombrar no cambia la identidad"
     assert renombrada["database_id"] == base["id"]
-    datos = frontmatter(nuevo)
+    # La ruta no se ha movido: mismo fichero (hash de ruta igual) y ni un
+    # fichero nuevo ni uno borrado en la carpeta.
+    assert ruta.exists()
+    assert hashlib.sha256(str(ruta.resolve()).encode()).hexdigest() == antes
+    assert sorted(p.name for p in carpeta.iterdir()) == [ruta.name]
+    datos = frontmatter(ruta)
     assert datos["id"] == fila["id"]
+    assert datos["title"] == "Acme (cerrada)"
     assert datos["fase"] == "lead", "las propiedades no se pierden al renombrar"
+
+    # El índice dice lo mismo que el fichero.
+    leida = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert (leida["title"], leida["properties"]["fase"]) == ("Acme (cerrada)", "lead")
 
 
 def test_renombrar_la_base_renombra_su_carpeta_de_filas(client, vault_path):
@@ -235,7 +269,7 @@ def test_renombrar_la_base_renombra_su_carpeta_de_filas(client, vault_path):
     client.patch(f"/databases/{base['id']}", json={"title": "Clientes"})
 
     assert (vault_path / "Bases" / "Clientes.md").exists()
-    assert (vault_path / "Bases" / "Clientes" / "Acme.md").exists()
+    assert fichero_fila(vault_path, fila, "Clientes").exists()
     assert not (vault_path / "Bases" / "Contactos.md").exists()
     assert not (vault_path / "Bases" / "Contactos").exists()
 
@@ -250,13 +284,14 @@ def test_mover_la_nota_que_contiene_una_base_mueve_tambien_sus_filas(client, ind
     base = crear_database(
         client, title="Contactos", parent_id=nota["id"], schema_def=CRM_SCHEMA
     )
-    crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
+    fila = crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
     assert (vault_path / "Notas" / "Proyecto" / "Contactos.md").exists()
 
     client.patch(f"/pages/{nota['id']}", json={"title": "Proyecto 2026"})
 
     assert (vault_path / "Notas" / "Proyecto 2026" / "Contactos.md").exists()
-    assert (vault_path / "Notas" / "Proyecto 2026" / "Contactos" / "Acme.md").exists()
+    assert (vault_path / "Notas" / "Proyecto 2026" / "Contactos"
+            / f"{fila['id'][:8]}.md").exists()
     assert not (vault_path / "Notas" / "Proyecto").exists()
     # Y el índice no se queda con rutas viejas (`pages.path` ni `rows.path`).
     reindexar_y_comparar_huella(client, index_path)
@@ -365,7 +400,7 @@ def test_ningun_endpoint_de_bases_escribe_solo_en_el_indice(client, index_path, 
 
 def test_borrar_una_base_manda_sus_ficheros_a_la_papelera(client, vault_path):
     base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
-    crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
+    fila = crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
 
     assert client.delete(f"/databases/{base['id']}").status_code == 204
 
@@ -376,7 +411,7 @@ def test_borrar_una_base_manda_sus_ficheros_a_la_papelera(client, vault_path):
 
     entradas = client.get("/trash").json()
     rutas = {e["original_path"] for e in entradas}
-    assert rutas == {"Bases/Contactos.md", "Bases/Contactos/Acme.md"}
+    assert rutas == {"Bases/Contactos.md", f"Bases/Contactos/{fila['id'][:8]}.md"}
 
     # Y se puede volver a su sitio: la base sola, sin su fila.
     base_en_papelera = next(e for e in entradas if e["original_path"] == "Bases/Contactos.md")
@@ -390,15 +425,15 @@ def test_borrar_una_base_manda_sus_ficheros_a_la_papelera(client, vault_path):
 def test_borrar_una_fila_solo_mueve_su_fichero(client, vault_path):
     base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
     fila = crear_fila(client, base["id"], title="Acme", properties={"fase": "lead"})
-    crear_fila(client, base["id"], title="Globex", properties={"fase": "lead"})
+    otra = crear_fila(client, base["id"], title="Globex", properties={"fase": "lead"})
 
     assert client.delete(f"/databases/{base['id']}/rows/{fila['id']}").status_code == 204
 
-    assert not (vault_path / "Bases" / "Contactos" / "Acme.md").exists()
-    assert (vault_path / "Bases" / "Contactos" / "Globex.md").exists()
+    assert not fichero_fila(vault_path, fila).exists()
+    assert fichero_fila(vault_path, otra).exists()
     assert [f["title"] for f in client.get(f"/databases/{base['id']}/rows").json()] == ["Globex"]
     assert {e["original_path"] for e in client.get("/trash").json()} == {
-        "Bases/Contactos/Acme.md"
+        f"Bases/Contactos/{fila['id'][:8]}.md"
     }
 
 
