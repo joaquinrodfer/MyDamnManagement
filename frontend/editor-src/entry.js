@@ -329,8 +329,9 @@ function markdownLinkClickHandler() {
 
 // --------------------------------------------------------- flechas tipográficas
 // "->" / "<-" / "<->" se ven como →/←/↔ cuando no se están editando (mismo
-// mecanismo cursor-aware que los wikilinks). No se tocan dentro de bloques
-// de código -- "ptr->campo" en una nota técnica no debería convertirse.
+// mecanismo cursor-aware que los wikilinks). No se tocan dentro de código
+// -- "ptr->campo" en una nota técnica no debería convertirse, ni dentro de
+// un `código` en línea, donde también es literal (ver `codeRangesOf`).
 
 const ARROW_RE = /(<->)|(->)|(<-)/g;
 const ARROW_GLYPHS = ["↔", "→", "←"];
@@ -351,21 +352,47 @@ class GlyphWidget extends WidgetType {
   }
 }
 
-function isInsideCodeBlock(state, pos) {
-  return state.field(blockField).blocks.some((b) => b.type === "code" && pos >= b.from && pos <= b.to);
+// --------------------------------------------------------- zonas de código
+// UNA sola definición de "esto es código" para todo el pintado: lo que el
+// árbol de Markdown marca como código es literal y ahí no se sustituye nada.
+// Antes esto miraba solo los bloques de blockField (`type === "code"`), que
+// cubre vallas y código sangrado pero NO el `código` en línea (nodo
+// InlineCode): por eso "`a -> b`" salía con flecha y "`<u>x</u>`" con las
+// etiquetas ocultas y el texto subrayado.
+const CODE_NODE_TYPES = new Set(["FencedCode", "CodeBlock", "InlineCode"]);
+
+/** Zonas de código del documento: vallas, código sangrado y `código` en
+ * línea. Se calculan una vez por repintado y se consultan con `isInsideCode`
+ * (recorrer el árbol por cada coincidencia sería cuadrático). */
+function codeRangesOf(state) {
+  const ranges = [];
+  syntaxTree(state).iterate({
+    enter: (node) => {
+      if (!CODE_NODE_TYPES.has(node.name)) return;
+      ranges.push({ from: node.from, to: node.to });
+      return false;
+    },
+  });
+  return ranges;
 }
 
-function buildArrowDecorations(view) {
+/** ¿Cae `pos` dentro de alguna de esas zonas? */
+function isInsideCode(codeRanges, pos) {
+  return codeRanges.some((r) => pos >= r.from && pos <= r.to);
+}
+
+export function buildArrowDecorations(state, visibleRanges) {
+  const code = codeRangesOf(state);
   const ranges = [];
-  for (const { from, to } of view.visibleRanges) {
-    const text = view.state.doc.sliceString(from, to);
+  for (const { from, to } of visibleRanges) {
+    const text = state.doc.sliceString(from, to);
     ARROW_RE.lastIndex = 0;
     let m;
     while ((m = ARROW_RE.exec(text))) {
       const start = from + m.index;
       const end = start + m[0].length;
-      if (selectionIntersects(view.state, start, end)) continue;
-      if (isInsideCodeBlock(view.state, start)) continue;
+      if (selectionIntersects(state, start, end)) continue;
+      if (isInsideCode(code, start)) continue;
       const glyphIdx = m[1] ? 0 : m[2] ? 1 : 2;
       ranges.push(Decoration.replace({ widget: new GlyphWidget(ARROW_GLYPHS[glyphIdx]) }).range(start, end));
     }
@@ -377,11 +404,11 @@ function arrowPlugin() {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        this.decorations = buildArrowDecorations(view);
+        this.decorations = buildArrowDecorations(view.state, view.visibleRanges);
       }
       update(update) {
         if (update.docChanged || update.viewportChanged || update.selectionSet) {
-          this.decorations = buildArrowDecorations(update.view);
+          this.decorations = buildArrowDecorations(update.view.state, update.view.visibleRanges);
         }
       }
     },
@@ -1692,14 +1719,15 @@ function syntaxMarkPlugin() {
 // envuelven el texto --, así que emparejarlos es cosa de `underlineSpans`
 // (format.js), que escanea el texto visible. Del resto de HTML no se toca
 // nada: hoy no se pinta, y sigue sin pintarse.
-function underlineDecorations(view) {
-  const { state } = view;
+export function underlineDecorations(state, visibleRanges) {
+  const code = codeRangesOf(state);
   const ranges = [];
-  for (const { from, to } of view.visibleRanges) {
+  for (const { from, to } of visibleRanges) {
     const spans = underlineSpans(state.doc.sliceString(from, to), from);
     for (const s of spans) {
-      // Dentro de código no hay subrayado que pintar: son caracteres más.
-      if (isInsideCodeBlock(state, s.openFrom)) continue;
+      // Dentro de código no hay subrayado que pintar: son caracteres más
+      // (aquí entra también el `código` en línea, ver `codeRangesOf`).
+      if (isInsideCode(code, s.openFrom)) continue;
       const active = selectionIntersects(state, s.openFrom, s.closeTo);
       if (active) {
         ranges.push(Decoration.mark({ class: "cm-mdm-mark" }).range(s.openFrom, s.openTo));
@@ -1720,11 +1748,11 @@ function underlinePlugin() {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        this.decorations = underlineDecorations(view);
+        this.decorations = underlineDecorations(view.state, view.visibleRanges);
       }
       update(update) {
         if (update.docChanged || update.viewportChanged || update.selectionSet) {
-          this.decorations = underlineDecorations(update.view);
+          this.decorations = underlineDecorations(update.view.state, update.view.visibleRanges);
         }
       }
     },
@@ -1747,6 +1775,7 @@ function blankLineDecorations(view) {
   const ranges = [];
   const { state } = view;
   const doc = state.doc;
+  const code = codeRangesOf(state);
   for (const { from, to } of view.visibleRanges) {
     const firstLine = doc.lineAt(from).number;
     const lastLine = doc.lineAt(to).number;
@@ -1754,7 +1783,7 @@ function blankLineDecorations(view) {
       const line = doc.line(n);
       if (line.length !== 0) continue;
       if (selectionIntersects(state, line.from, line.to)) continue;
-      if (isInsideCodeBlock(state, line.from)) continue;
+      if (isInsideCode(code, line.from)) continue;
       ranges.push(Decoration.line({ class: "cm-mdm-blank-collapsed" }).range(line.from));
     }
   }
@@ -2636,23 +2665,6 @@ const formatKeymap = keymap.of([
   { key: "Mod-u", run: (view) => runFormat(view, "underline") },
 ]);
 
-const CODE_NODE_TYPES = new Set(["FencedCode", "CodeBlock", "InlineCode"]);
-
-/** Zonas de código del documento: vallas, código sangrado y `código` en
- * línea. Ahí no se escriben marcas -- no se renderizan y el `.md` diría una
- * cosa y la pantalla otra. */
-function codeRangesOf(state) {
-  const ranges = [];
-  syntaxTree(state).iterate({
-    enter: (node) => {
-      if (!CODE_NODE_TYPES.has(node.name)) return;
-      ranges.push({ from: node.from, to: node.to });
-      return false;
-    },
-  });
-  return ranges;
-}
-
 /**
  * ⌘/Ctrl + B / I / U: pone o quita negrita, cursiva o subrayado. Todo el
  * cambio va en UNA transacción, así que un solo ⌘Z lo deshace (también
@@ -2762,7 +2774,8 @@ function runBlockKey(view, kind) {
   // por el separador que toque (⇧⏎/⌘⏎ un salto; ⏎ el de bloque, salvo dentro
   // de código, donde una valla no se parte nunca).
   if (!range.empty) {
-    const sep = kind === "enter" && !isInsideCodeBlock(state, range.from) ? "\n\n" : "\n";
+    const insideCode = isInsideCode(codeRangesOf(state), range.from);
+    const sep = kind === "enter" && !insideCode ? "\n\n" : "\n";
     view.dispatch({
       changes: { from: range.from, to: range.to, insert: sep },
       selection: { anchor: range.from + sep.length },
@@ -3141,9 +3154,10 @@ function linkTrigger(state, pos) {
   const typed = before.slice(open + LINK_OPEN.length);
   if (LINK_BREAK_RE.test(typed)) return null;
   const from = line.from + open;
-  // Dentro de un bloque de código no salta: "[[i]]" en un array de verdad no
-  // es un enlace (mismo criterio que las flechas tipográficas, más arriba).
-  if (isInsideCodeBlock(state, from)) return null;
+  // Dentro de código no salta: "[[i]]" en un array de verdad no es un
+  // enlace (mismo criterio que las flechas tipográficas, más arriba), y lo
+  // mismo en un `código` en línea.
+  if (isInsideCode(codeRangesOf(state), from)) return null;
   return { from, typed };
 }
 
