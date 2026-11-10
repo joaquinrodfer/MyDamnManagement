@@ -2983,6 +2983,30 @@ function renderNote(page, backlinks) {
     onBlockContextMenu: (payload) => {
       const n = payload.count;
       const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
+      const mover = [];
+      // Mover es de UN bloque: con varios marcados no se ofrece (no está claro
+      // a dónde va el grupo). En móvil es la vía del reordenado -- el arrastre
+      // con el asa es cosa del ratón.
+      if (n === 1) {
+        if (payload.canMoveUp) {
+          mover.push({
+            label: "Mover arriba",
+            onClick: () => {
+              payload.moveUp();
+              scheduleSave();
+            },
+          });
+        }
+        if (payload.canMoveDown) {
+          mover.push({
+            label: "Mover abajo",
+            onClick: () => {
+              payload.moveDown();
+              scheduleSave();
+            },
+          });
+        }
+      }
       showContextMenu(payload.x, payload.y, [
         { label: header, items: [] },
         {
@@ -2998,12 +3022,20 @@ function renderNote(page, backlinks) {
         {
           items: [
             {
+              label: "Insertar bloque arriba",
+              onClick: () => {
+                payload.insertAbove();
+                scheduleSave();
+              },
+            },
+            {
               label: `Duplicar ${n > 1 ? "bloques" : "bloque"}`,
               onClick: () => {
                 payload.duplicateBlocks();
                 scheduleSave();
               },
             },
+            ...mover,
           ],
         },
         {
