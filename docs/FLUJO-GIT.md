@@ -111,3 +111,9 @@ Hoy: `git switch v2.1.0` y `docker compose -f docker-compose.prod.yml up -d --bu
 Cuando haya contenedor propio: `docker pull` de una imagen etiquetada y
 `docker compose up -d` con esa etiqueta. La regla no cambia: se despliega una
 etiqueta, nunca una rama.
+
+## Ajustes del repositorio en GitHub
+
+- **Rama por defecto: `develop`** (Settings → General → Default branch). Con `main` por defecto, un `git clone` deja al que llega en la rama de producción.
+- **`main` protegida**: pull request obligatorio, sin force-push ni borrado. La fusión la hace el dueño.
+- `develop` **no** lleva regla de pull request: ahí se fusiona directo desde la sesión del orquestador cuando la tarjeta está aprobada, y una regla obligaría a abrir un PR por cada arreglo.
