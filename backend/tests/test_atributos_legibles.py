@@ -200,6 +200,7 @@ def test_renombrar_migra_las_tres_filas_y_las_tres_vistas(
         "Agenda",
         "Ordenada",
     }
+    ids_antes = [r["id"] for r in client.get(f"/databases/{base['id']}/rows").json()]
 
     # El diálogo manda la clave que tenía cada fila y el nombre nuevo.
     respuesta = client.patch(
@@ -267,6 +268,8 @@ def test_renombrar_migra_las_tres_filas_y_las_tres_vistas(
     leidas = client.get(f"/databases/{base['id']}/rows").json()
     assert [r["properties"]["estado"] for r in leidas] == ["lead", "lead", "lead"]
     assert all("fase" not in r["properties"] for r in leidas)
+    # Migrar las filas no las reordena: el `id` de cada una sigue en su sitio.
+    assert [r["id"] for r in leidas] == ids_antes
     del_tablero = client.get(f"/databases/{base['id']}/rows?view={tablero['id']}").json()
     assert len(del_tablero) == 3
     del_calendario = client.get(f"/databases/{base['id']}/rows?view={calendario['id']}").json()
