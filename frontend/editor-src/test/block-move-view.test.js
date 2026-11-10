@@ -78,8 +78,33 @@ test("en el último bloque Alt+↓ se consume sin tocar nada", () => {
 test("con varios bloques marcados la tecla no hace nada (mover es de uno)", () => {
   const blocks = blocksOf(text);
   const view = viewAt(text, 0, blocks, new Set([0, 1]));
-  assert.equal(runMoveBlockKey(view, 1), false);
+  // `true`, no `false`: la tecla se consume. Si se dejara pasar, el keymap de
+  // CodeMirror la usaría para `moveLineDown` y movería una línea suelta.
+  assert.equal(runMoveBlockKey(view, 1), true);
   assert.equal(view.dispatches.length, 0);
+});
+
+test("si el movimiento no cabe, la tecla se consume y el documento no se toca", () => {
+  // `> cita uno\n---\n> cita uno` no tiene saltos para reordenar sin pegar las
+  // dos citas, así que `moveBlockTo` no mueve nada. La tecla tiene que quedar
+  // consumida: devolver `false` hacía que CodeMirror móviera UNA LÍNEA
+  // (`moveLineDown`), que dejaba `---\n> cita uno\n> cita uno` (2 bloques).
+  const text = "> cita uno\n---\n> cita uno";
+  const blocks = [
+    { from: 0, to: 10, type: "quote" },
+    { from: 11, to: 14, type: "hr" },
+    { from: 15, to: 25, type: "quote" },
+  ];
+  for (const [pos, dir] of [
+    [0, 1],
+    [10, 1],
+    [15, -1],
+    [25, -1],
+  ]) {
+    const view = viewAt(text, pos, blocks);
+    assert.equal(runMoveBlockKey(view, dir), true, `Alt${dir < 0 ? "↑" : "↓"} en ${pos} se consume`);
+    assert.equal(view.dispatches.length, 0, `no se toca el documento desde ${pos}`);
+  }
 });
 
 test("con un bloque marcado con el asa, Alt+↓ lo mueve", () => {

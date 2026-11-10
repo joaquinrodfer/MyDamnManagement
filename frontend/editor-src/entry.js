@@ -2581,9 +2581,14 @@ function blockAt(state, pos) {
  * puesto arriba/abajo. El cursor se queda DENTRO del bloque movido, a la misma
  * altura: pulsar dos veces seguidas sigue moviendo el mismo bloque.
  *
- * - Con varios bloques marcados no aplica (`moveBlockTo` mueve uno) y la tecla
- *   sigue su curso.
+ * - Con varios bloques marcados no aplica (`moveBlockTo` mueve uno), pero la
+ *   tecla se CONSUME igual: si se dejara caer al keymap de CodeMirror, su
+ *   Alt+↓ por defecto mueve UNA LÍNEA (`moveLineDown`) y eso puede pegar dos
+ *   bloques al revés de lo que se está pidiendo.
  * - En el borde se consume sin tocar nada: no hay bloque al que cambiar.
+ * - Si el movimiento no cabe sin cambiar las líneas del `.md` (ver
+ *   block-move.js), también se consume: no se mueve, pero la tecla no acaba en
+ *   `moveLineDown`, que es lo que fusionaba `> cita uno\n---\n> cita uno`.
  * - Todo el reordenado es UNA transacción (ver `moveBlockTo`), así que un solo
  *   ⌘Z lo deshace.
  */
@@ -2595,7 +2600,8 @@ export function runMoveBlockKey(view, dir) {
   if (selected.size === 1) {
     index = [...selected][0];
   } else if (selected.size > 1) {
-    return false;
+    // Mover es de uno: la tecla no hace nada, pero se queda aquí (ver arriba).
+    return true;
   } else {
     const block = blockAt(state, range.head);
     if (!block) return false;
@@ -2604,7 +2610,10 @@ export function runMoveBlockKey(view, dir) {
   if (index < 0 || index >= blocks.length) return false;
   const slot = dir < 0 ? index - 1 : index + 2;
   if (slot < 0 || slot > blocks.length) return true; // ya está en un extremo
-  return moveBlockTo(view, index, slot, range.head);
+  // Se mueva o no (si no cabe, `moveBlockTo` no toca el documento), la tecla es
+  // nuestra: que no la recoja el `moveLineDown` de por defecto.
+  moveBlockTo(view, index, slot, range.head);
+  return true;
 }
 
 function runBlockKey(view, kind) {
