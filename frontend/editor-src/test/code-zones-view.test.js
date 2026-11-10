@@ -157,6 +157,31 @@ test("pegado al cierre: el `<u>` que empieza justo detrás del backtick sí se p
   );
 });
 
+// ---------------------------------------- un par que cruza el borde del código
+// `isInsideCode` mira las dos etiquetas, no solo la apertura: si `</u>` cae
+// dentro del código en línea, es texto literal y no se puede ocultar (ni
+// subrayar el trozo que queda entre las dos). Antes solo se consultaba la
+// apertura, así que un par como `<u>x` + backtick + `y</u> z` + backtick
+// escondía el `</u>` de dentro y el subrayado se metía en los backticks.
+
+test("si el `</u>` cae dentro del código en línea, el par no se pinta", () => {
+  const doc = "B3 abre fuera/cierra dentro: <u>x `y</u> z` fin.";
+  assert.deepEqual(underlinesOf(doc), []);
+});
+
+test("el cruce al revés (abre dentro, cierra fuera) tampoco se pinta (lo que ya pasaba)", () => {
+  assert.deepEqual(underlinesOf("`<u>x` y</u> fin"), []);
+});
+
+test("el par que cruza el borde no se pinta, pero el `<u>` normal de después sí", () => {
+  const doc = "<u>x `y</u> z` fin y <u>si</u>";
+  const decs = underlinesOf(doc);
+  assert.equal(decs.length, 3);
+  assert.equal(decs[0].from, doc.indexOf("<u>si</u>"));
+  assert.equal(doc.slice(decs[1].from, decs[1].to), "si");
+  assert.equal(decs[1].class, "cm-mdm-underline");
+});
+
 // ------------------------------------------ notas grandes: árbol parcial
 // En una nota larga el árbol de sintaxis es PARCIAL: el parser de CodeMirror
 // trabaja con presupuesto de tiempo y deja sin parsear lo que no ha llegado a

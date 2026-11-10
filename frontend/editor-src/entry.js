@@ -1774,7 +1774,13 @@ export function underlineDecorations(state, visibleRanges) {
     for (const s of spans) {
       // Dentro de código no hay subrayado que pintar: son caracteres más
       // (aquí entra también el `código` en línea, ver `codeRangesOf`).
-      if (isInsideCode(code, s.openFrom)) continue;
+      // Se miran las DOS etiquetas: un par que abre fuera y cierra dentro
+      // cruzaría el borde y escondería un `</u>` que ahí es literal (y el
+      // subrayado entraría en los backticks). En ese caso se descarta el par
+      // entero, en vez de recortarlo al borde: con el `</u>` a la vista, un
+      // subrayado que se corta en el backtick se lee peor que las etiquetas
+      // tal cual.
+      if (isInsideCode(code, s.openFrom) || isInsideCode(code, s.closeFrom)) continue;
       const active = selectionIntersects(state, s.openFrom, s.closeTo);
       if (active) {
         ranges.push(Decoration.mark({ class: "cm-mdm-mark" }).range(s.openFrom, s.openTo));
