@@ -666,7 +666,9 @@ const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
 // los tests de `node --test` lo usen sobre un árbol de verdad (el mismo
 // `markdownLanguage.parser`) en vez de sobre párrafos inventados.
 function computeBlocks(state) {
-  return blocksFromTree(syntaxTree(state).topNode);
+  // Con el documento: el rango de un bloque empieza en su línea, con la sangría
+  // dentro (ver `lineStartOf` en block-ranges.js).
+  return blocksFromTree(syntaxTree(state).topNode, state.doc);
 }
 
 function stripBlockPrefix(text, type) {

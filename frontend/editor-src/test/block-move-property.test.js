@@ -34,7 +34,7 @@ import { minNewlines, moveBlockEdits } from "../block-move.js";
 import { blocksFromTree } from "../block-ranges.js";
 
 function parseBlocks(text) {
-  return blocksFromTree(markdownLanguage.parser.parse(text).topNode);
+  return blocksFromTree(markdownLanguage.parser.parse(text).topNode, text);
 }
 
 function apply(text, changes) {
@@ -77,6 +77,8 @@ function countNewlines(s) {
  * rechaza un movimiento, se puede comprobar si de verdad no cabía, tanto si
  * pidió de más como si pidió de menos.
  */
+const IMPOSSIBLE = 4;
+
 function parserMin(textA, textB) {
   for (const g of [1, 2, 3]) {
     const doc = textA + "\n".repeat(g) + textB;
@@ -89,7 +91,7 @@ function parserMin(textA, textB) {
       return g;
     }
   }
-  return 4; // ni con tres se separan: no debería pasar
+  return IMPOSSIBLE; // ni con tres se separan: no hay frontera que escribir
 }
 
 const KINDS = {
@@ -97,20 +99,27 @@ const KINDS = {
   h: (k) => `# titulo ${k}`,
   item: (k) => `- item ${k}`,
   code: (k) => `\`\`\`\ncodigo ${k}\n\`\`\``,
+  // Código INDENTADO (4 espacios, sin valla): el bloque empieza en su LÍNEA y
+  // la sangría es suya, no del hueco entre bloques (t_9d3b6d3b). Con la sangría
+  // fuera del rango, mover el bloque lo dejaba en `codigo ${k}` -- ya no era
+  // código -- y el de al lado pasaba a serlo.
+  icode: (k) => `    codigo ${k}`,
   quote: (k) => `> cita ${k}`,
   html: (k) => `<div>bloque ${k}</div>`,
   table: (k) => `| a | b |\n| --- | --- |\n| ${k} | x |`,
 };
 
-// Tres repertorios para que salgan documentos distintos: el primero repite
-// párrafos con una valla en medio, el segundo mezcla cabecera, cita e ítem y el
+// Cuatro repertorios para que salgan documentos distintos: el primero repite
+// párrafos con una valla en medio, el segundo mezcla cabecera, cita e ítem, el
 // tercero lleva DOS citas seguidas y un bloque HTML, que son las parejas donde
 // el motor fusionaba bloques (dos citas con un salto son una sola cita, y un
-// bloque HTML se come la línea de debajo).
+// bloque HTML se come la línea de debajo), y el cuarto código indentado, cuya
+// sangría se quedaba en el hueco.
 const VARIANTS = [
   ["p", "p", "item", "p", "code", "p"],
   ["p", "h", "item", "quote", "p", "code"],
   ["p", "quote", "quote", "html", "item", "p"],
+  ["p", "icode", "p", "icode", "h", "p"],
 ];
 
 /** Todos los repartos de {1, 2, 4} saltos en `n - 1` fronteras. */
@@ -168,10 +177,17 @@ function checkDocument(text, stats) {
         // sin hacer aunque hubiera sitio -- eso cuenta como rechazo injusto.
         const ord = expectedOrder(n, index, slot);
         let need = 0;
-        for (let q = 0; q + 1 < n; q++) need += parserMin(texts[ord[q]], texts[ord[q + 1]]);
+        let impossible = false;
+        for (let q = 0; q + 1 < n; q++) {
+          const m = parserMin(texts[ord[q]], texts[ord[q + 1]]);
+          if (m === IMPOSSIBLE) impossible = true;
+          need += m;
+        }
         let have = 0;
         for (let k = 0; k + 1 < n; k++) have += countNewlines(text.slice(blocks[k].to, blocks[k + 1].from));
-        if (need <= have) stats.refusedWrong++;
+        // Una pareja que no se separa con NINGUNA línea en blanco justifica el
+        // rechazo ella sola: no hay hueco, por grande que sea, que la separe.
+        if (!impossible && need <= have) stats.refusedWrong++;
         continue;
       }
       stats.moves++;
@@ -210,6 +226,11 @@ const PAIR_SAMPLES = {
   "***": "***",
   "___": "___",
   valla: "```\ncodigo\n```",
+  // Código INDENTADO: su cuerpo empieza en la línea, con los cuatro espacios.
+  // Sin ellos el parser no lo reconoce (`codigo` es un párrafo) y el mínimo de
+  // la frontera se medía sobre un bloque que no existe.
+  "codigo indentado": "    codigo",
+  "codigo indentado de dos lineas": "    uno\n    dos",
   "valla ~~~": "~~~\ncodigo\n~~~",
   cita: "> cita",
   "cita de dos lineas": "> cita\n> seguida",
@@ -262,15 +283,33 @@ test("el mínimo del motor es el que mide el parser, pareja por pareja y por los
   let pairs = 0;
   let ones = 0;
   let twos = 0;
+  let inseparables = 0;
   for (const [nameA, a] of Object.entries(PAIR_SAMPLES)) {
     for (const [nameB, b] of Object.entries(PAIR_SAMPLES)) {
       const doc = `${a}\n\n${b}`;
       const blocks = parseBlocks(doc);
       const where = `«${a}» + «${b}» (${nameA} + ${nameB})`;
-      // Con dos saltos siempre tienen que salir dos bloques: es la frontera de
-      // siempre, la que pone `separatorNewlines` cuando rehace un hueco.
-      assert.equal(blocks.length, 2, `con dos saltos no se separan: ${where}`);
       const real = parserMin(a, b);
+      if (real === IMPOSSIBLE) {
+        // Hay parejas que no se separan con ninguna línea en blanco: dos bloques
+        // de código indentado seguidos son UNO (las líneas en blanco de en medio
+        // son texto del código) y un bloque indentado detrás de un ítem de lista
+        // es continuación del ítem. Con dos saltos, pues, no salen dos bloques;
+        // lo que se exige es que el motor lo diga (`NO_SEPARATION`), porque de
+        // eso depende de que se NIEGUE a ponerlos juntos en vez de fusionarlos.
+        assert.ok(blocks.length < 2, `con dos saltos sí se separan: ${where}`);
+        const solo = (s) => parseBlocks(s)[0] || { type: "?" };
+        assert.equal(
+          minNewlines(solo(a), solo(b), a, b),
+          IMPOSSIBLE,
+          `el motor no dice que no hay separación posible: ${where}`
+        );
+        inseparables++;
+        continue;
+      }
+      // Con dos saltos tienen que salir dos bloques: es la frontera de siempre,
+      // la que pone `separatorNewlines` cuando rehace un hueco.
+      assert.equal(blocks.length, 2, `con dos saltos no se separan: ${where}`);
       assert.equal(minNewlines(blocks[0], blocks[1], a, b), real, `el mínimo no es el del parser: ${where}`);
       pairs++;
       if (real === 1) ones++;
@@ -282,7 +321,11 @@ test("el mínimo del motor es el que mide el parser, pareja por pareja y por los
   // que seguir saliendo del parser para todas sus parejas.
   assert.ok(pairs >= 1156, `parejas probadas: ${pairs}`);
   assert.ok(ones > 100 && twos > 20, `parejas de un salto: ${ones}, de dos: ${twos}`);
-  t.diagnostic(`parejas: ${pairs} (un salto: ${ones}, dos: ${twos})`);
+  // Y que las inseparables del repertorio sigan ahí (código indentado con código
+  // indentado, e indentado detrás de un ítem): si un día se pudieran separar, el
+  // motor tendría que dejar de rechazarlas.
+  assert.ok(inseparables >= 4, `parejas sin separación posible: ${inseparables}`);
+  t.diagnostic(`parejas: ${pairs} (un salto: ${ones}, dos: ${twos}), sin separación: ${inseparables}`);
 });
 test("propiedad: mover no cambia las líneas, solo el orden de los bloques (2 a 6 bloques, huecos de 1, 2 y 4)", (t) => {
   const stats = { docs: 0, moves: 0, refused: 0, refusedWrong: 0, maxBlocks: 0, withCode: 0, withHeading: 0 };
@@ -564,4 +607,74 @@ test("un ítem de lista vacío o una cita vacía: mover no los pega a un párraf
   const out = assertMoveKeepsBlocks(roomy, 1, 0);
   assert.ok(out, "con la línea en blanco el movimiento se hace");
   assert.equal(parseBlocks(out).length, 2);
+});
+
+test("un bloque de código indentado se mueve con su sangría y no deja de ser código", () => {
+  // El `from` de un bloque indentado estaba en el CONTENIDO (`codigo 1`), no en
+  // su línea: los cuatro espacios se quedaban en el HUECO y, en cuanto el hueco
+  // había que rehacerlo, el bloque viajaba sin ellos -- dejaba de ser código y
+  // el bloque de al lado pasaba a serlo (`"parrafo 0\n\n    codigo 1"` movido
+  // daba `"codigo 1\n\n    parrafo 0"`). Tarjeta t_9d3b6d3b.
+  const text = "parrafo 0\n\n    codigo 1";
+  const blocks = parseBlocks(text);
+  assert.deepEqual(blocks.map((b) => b.type), ["paragraph", "code"]);
+  assert.equal(
+    text.slice(blocks[1].from, blocks[1].to),
+    "    codigo 1",
+    "la sangría es del bloque, no del hueco"
+  );
+  const edit = moveBlockEdits({ text, blocks, index: 0, slot: 2 });
+  assert.ok(edit, "el movimiento cabe");
+  const out = apply(text, edit.changes);
+  assert.equal(out, "    codigo 1\n\nparrafo 0");
+  assert.deepEqual(parseBlocks(out).map((b) => b.type), ["code", "paragraph"]);
+  assert.deepEqual(sortedLines(out), sortedLines(text));
+
+  // Con tres bloques y un hueco de un solo salto además BAJABA el número de
+  // bloques (3 -> 2): el código, ya sin sangría, y el párrafo de debajo se
+  // leían como uno.
+  const three = "parrafo 0\n\n    codigo 1\nparrafo 2";
+  assert.equal(parseBlocks(three).length, 3);
+  for (let index = 0; index < 3; index++) {
+    for (let slot = 0; slot <= 3; slot++) assertMoveKeepsBlocks(three, index, slot);
+  }
+  const first = moveBlockEdits({ text: three, blocks: parseBlocks(three), index: 0, slot: 2 });
+  assert.equal(apply(three, first.changes), "    codigo 1\nparrafo 0\n\nparrafo 2");
+  assert.equal(parseBlocks(apply(three, first.changes)).length, 3);
+
+  // El tabulador tampoco es del hueco: `\t---` es un bloque de CÓDIGO (la
+  // tabulación es la sangría), no una línea horizontal, y mover no se lo lleva.
+  const tabbed = "parrafo\n\n\t---";
+  const tabBlocks = parseBlocks(tabbed);
+  assert.deepEqual(tabBlocks.map((b) => b.type), ["paragraph", "code"]);
+  const tabEdit = moveBlockEdits({ text: tabbed, blocks: tabBlocks, index: 0, slot: 2 });
+  assert.ok(tabEdit, "el movimiento cabe");
+  assert.equal(apply(tabbed, tabEdit.changes), "\t---\n\nparrafo");
+
+  // De varias líneas se mueve entero, con la sangría de todas sus líneas.
+  const multi = "parrafo\n\n    uno\n    dos\n\nparrafo dos";
+  const multiOut = assertMoveKeepsBlocks(multi, 0, 2);
+  assert.ok(multiOut, "el movimiento cabe");
+  assert.ok(multiOut.startsWith("    uno\n    dos\n\n"), `el bloque se mueve entero: «${multiOut}»`);
+  assert.deepEqual(parseBlocks(multiOut).map((b) => b.type), ["code", "paragraph", "paragraph"]);
+});
+
+test("dos bloques de código indentado no se ponen al lado: se fusionarían", () => {
+  // Dos bloques de código indentado seguidos son UNO para el parser (las líneas
+  // en blanco de en medio son contenido del código), igual que un bloque
+  // indentado detrás de un ítem de lista es continuación del ítem: no hay
+  // ninguna línea en blanco que los separe. El motor se NIEGA a ponerlos juntos
+  // -- antes no mover que escribir un `.md` con un bloque menos.
+  const text = "parrafo 0\n\n    codigo 1\n\nparrafo 2\n\n    codigo 3";
+  const blocks = parseBlocks(text);
+  assert.deepEqual(blocks.map((b) => b.type), ["paragraph", "code", "paragraph", "code"]);
+  // Bajar el párrafo al final, o subirlo al principio, dejaría los dos bloques
+  // de código seguidos: se rechaza.
+  assert.equal(moveBlockEdits({ text, blocks, index: 2, slot: 4 }), null);
+  assert.equal(moveBlockEdits({ text, blocks, index: 2, slot: 0 }), null);
+  // Los movimientos que NO los juntan sí se hacen, con todas sus líneas.
+  const out = assertMoveKeepsBlocks(text, 0, 3);
+  assert.ok(out, "el movimiento cabe");
+  assert.equal(out, "    codigo 1\n\nparrafo 2\n\nparrafo 0\n\n    codigo 3");
+  assert.equal(parseBlocks(out).length, 4);
 });
