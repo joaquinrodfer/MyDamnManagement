@@ -38,6 +38,7 @@ import {
   orderedRenumberEdits,
   renumberOrderedRun,
 } from "./block-delete.js";
+import { insertBlockEdit, moveBlockEdits } from "./block-move.js";
 import {
   canonicalBody,
   collapseEmptyGaps,
@@ -818,13 +819,14 @@ class BlockHandleWidget extends WidgetType {
     addBtn.className = "cm-mdm-block-add";
     addBtn.textContent = "+";
     addBtn.dataset.blockIndex = String(this.index);
-    addBtn.title = "Añadir un bloque después de este";
+    addBtn.title = "Añadir un bloque después de este · Alt+clic: antes";
 
     const handle = document.createElement("span");
     handle.className = "cm-mdm-block-handle" + (this.isSelected ? " cm-mdm-block-handle-selected" : "");
     handle.textContent = "⋮⋮";
     handle.dataset.blockIndex = String(this.index);
-    handle.title = "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones";
+    handle.title =
+      "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones · arrastrar: mover";
 
     wrap.append(addBtn, handle);
     return wrap;
@@ -869,6 +871,7 @@ function blockHandleEventHandlers(onBlockContextMenu) {
     // llegando, y con ratón esto ni se activa.
     pointerdown(event, view) {
       const target = event.target;
+      lastPointerType = event.pointerType;
       if (!(target instanceof HTMLElement)) return false;
       const handle = target.closest(".cm-mdm-block-handle");
       if (!handle) return false;
@@ -914,7 +917,12 @@ function blockHandleEventHandlers(onBlockContextMenu) {
         const addBtn = target.closest(".cm-mdm-block-add");
         if (addBtn) {
           event.preventDefault();
-          insertBlockAfter(view, Number(addBtn.dataset.blockIndex));
+          // Alt+clic: el bloque nuevo va ENCIMA del actual. Sin Alt (lo de
+          // siempre): debajo. El atajo es el mismo que «Insertar bloque
+          // arriba» del menú del asa, que es lo que hay en móvil.
+          const idx = Number(addBtn.dataset.blockIndex);
+          if (event.altKey) insertBlockBefore(view, idx);
+          else insertBlockAfter(view, idx);
           return true;
         }
 
@@ -953,6 +961,11 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           // puso selectBlocks (el bloque marcado), que es donde tiene que
           // escribir y borrar el teclado.
           view.focus();
+          // Y con el ratón, el mismo mousedown arranca el posible arrastre:
+          // mientras no se mueva más de unos píxeles no es arrastre (es clic,
+          // que ya ha seleccionado). En táctil no: ahí el gesto es del menú
+          // de pulsación larga (ver `beginBlockDrag`).
+          if (event.button === 0 && lastPointerType !== "touch") beginBlockDrag(view, event, idx);
           return true;
         }
       }
@@ -1103,10 +1116,12 @@ function swallowTapAfterMenu() {
 function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
   if (!onBlockContextMenu) return;
   const { blocks } = view.state.field(blockField);
+  const ordered = [...indices].sort((a, b) => a - b);
+  const first = ordered[0];
+  const last = ordered[ordered.length - 1];
   // Si es un único bloque, se puede decir de qué tipo es ya mismo; con varios
   // seleccionados (posiblemente de tipos distintos) no.
-  const currentTypeLabel =
-    indices.size === 1 ? BLOCK_TYPE_LABEL[blocks[[...indices][0]].type] ?? null : null;
+  const currentTypeLabel = indices.size === 1 ? BLOCK_TYPE_LABEL[blocks[first].type] ?? null : null;
 
   onBlockContextMenu({
     x,
@@ -1117,6 +1132,16 @@ function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
     convertTo: (type) => convertBlocks(view, indices, type),
     duplicateBlocks: () => duplicateBlocks(view, indices),
     deleteBlocks: () => deleteBlocks(view, indices),
+    // Insertar arriba es la versión sin ratón del Alt+clic en el «+» (lo que
+    // hace falta en móvil): el bloque nuevo va antes del primero marcado.
+    insertAbove: () => insertBlockBefore(view, first),
+    // Mover con el menú: la vía táctil del reordenado (en táctil no hay
+    // arrastre). Solo tiene sentido con un bloque; con varios marcados la app
+    // no ofrece estas dos opciones.
+    canMoveUp: first > 0,
+    canMoveDown: last < blocks.length - 1,
+    moveUp: () => moveBlockTo(view, first, first - 1),
+    moveDown: () => moveBlockTo(view, last, last + 2),
   });
 }
 
@@ -1134,22 +1159,169 @@ function selectBlocks(view, indices) {
   });
 }
 
-// Botón "+" del asa: añade un bloque de párrafo vacío justo después del
-// bloque indicado (no necesariamente donde esté el cursor ahora mismo --
-// el usuario puede clicar el "+" de cualquier bloque). Mismo mecanismo que
-// Mayús+Enter (insertar "\n\n"): el hueco en blanco resultante se ve
-// colapsado por blankLinePlugin hasta que el cursor entra en él.
-function insertBlockAfter(view, index) {
+// Botón "+" del asa: añade un bloque de párrafo vacío justo DEBAJO del bloque
+// indicado (clic normal) o ENCIMA con Alt+clic (pedido del dueño: «no puedo
+// insertar un bloque antes de otro»). No necesariamente donde esté el cursor
+// ahora mismo -- el usuario puede clicar el "+" de cualquier bloque. Mismo
+// mecanismo que ⏎: el hueco en blanco resultante se ve colapsado por
+// blankLinePlugin hasta que el cursor entra en él, y si se abandona sin
+// escribir no queda aire en el `.md`. Qué par de saltos se inserta y dónde lo
+// decide block-move.js (`insertBlockEdit`), con sus pruebas en node --test.
+function insertBlockBeside(view, index, where) {
   const { blocks } = view.state.field(blockField);
-  const b = blocks[index];
-  if (!b) return;
-  const pos = b.to;
+  const edit = insertBlockEdit({ blocks, index, where });
+  if (!edit) return false;
   view.dispatch({
-    changes: { from: pos, to: pos, insert: "\n\n" },
-    selection: { anchor: pos + 2 },
-    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(pos)],
+    changes: edit.changes,
+    selection: { anchor: edit.cursor },
+    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(edit.gapFrom)],
   });
   view.focus();
+  return true;
+}
+
+function insertBlockAfter(view, index) {
+  return insertBlockBeside(view, index, "below");
+}
+
+function insertBlockBefore(view, index) {
+  return insertBlockBeside(view, index, "above");
+}
+
+/**
+ * Mover el bloque `index` a la posición `slot` (0 = antes del primero,
+ * `blocks.length` = después del último) en UNA transacción: el `.md` cambia
+ * una sola vez y un solo ⌘Z deshace el movimiento entero.
+ *
+ * Qué trozo de texto cambia de sitio -- y la reenumeración de la lista, si es
+ * numerada -- se decide en block-move.js. `cursor` conserva el punto dentro
+ * del bloque movido, para que Alt+↑ repetido siga moviendo el mismo bloque.
+ */
+export function moveBlockTo(view, index, slot, cursor = null) {
+  const { blocks } = view.state.field(blockField);
+  const text = view.state.doc.toString();
+  const edit = moveBlockEdits({ text, blocks, index, slot, cursor });
+  if (!edit) return false;
+  view.dispatch({
+    changes: edit.changes,
+    selection: { anchor: edit.cursor },
+    effects: setSelectedBlocks.of(new Set()),
+    userEvent: "move.block",
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
+// ------------------------------------------------------------- arrastrar el asa
+//
+// Arrastrar el asa (⋮⋮) reordena: mientras se arrastra, una línea horizontal
+// marca el hueco entre bloques donde va a caer, y al soltar el bloque se mueve
+// (una sola transacción, igual que con el teclado).
+//
+// En táctil NO se arrastra: la pulsación larga ya abre el menú de bloque, y un
+// gesto de arrastre competiría con el desplazamiento de la nota. Ahí el
+// movimiento va por «Mover arriba» / «Mover abajo» del menú, que es
+// determinista y no necesita apuntar a un hueco.
+const DRAG_SLOP = 4;
+const DRAG_EDGE = 44;
+let blockDrag = null;
+let lastPointerType = "mouse";
+
+/** Hueco (slot) más cercano a la altura `y`: entre los bloques cuyo punto
+ * medio queda por debajo del puntero. */
+function dropSlotAt(view, y) {
+  const { blocks } = view.state.field(blockField);
+  for (let i = 0; i < blocks.length; i++) {
+    const top = view.coordsAtPos(blocks[i].from, -1);
+    const bottom = view.coordsAtPos(blocks[i].to, 1) || top;
+    if (!top) continue;
+    const mid = (top.top + (bottom ? bottom.bottom : top.bottom)) / 2;
+    if (y < mid) return i;
+  }
+  return blocks.length;
+}
+
+function placeDropLine(view, slot) {
+  if (!blockDrag) return;
+  if (!blockDrag.line) {
+    blockDrag.line = document.createElement("div");
+    blockDrag.line.className = "cm-mdm-drop-line";
+    document.body.appendChild(blockDrag.line);
+  }
+  const { blocks } = view.state.field(blockField);
+  const content = view.contentDOM.getBoundingClientRect();
+  let top = content.top;
+  if (slot <= 0 && blocks.length) {
+    const c = view.coordsAtPos(blocks[0].from, -1);
+    if (c) top = c.top;
+  } else if (slot >= blocks.length && blocks.length) {
+    const last = blocks[blocks.length - 1];
+    const c = view.coordsAtPos(last.to, 1) || view.coordsAtPos(last.from, -1);
+    if (c) top = c.bottom;
+  } else if (blocks.length) {
+    const c = view.coordsAtPos(blocks[slot].from, -1);
+    if (c) top = c.top;
+  }
+  const line = blockDrag.line;
+  line.style.top = `${Math.round(top) - 1}px`;
+  line.style.left = `${Math.round(content.left)}px`;
+  line.style.width = `${Math.round(content.width)}px`;
+}
+
+/** El documento se desplaza solo cuando el puntero se acerca al borde de la
+ * zona visible: sin esto no se puede arrastrar más allá de una pantalla. */
+function autoScrollWhileDragging(view, y) {
+  const rect = view.scrollDOM.getBoundingClientRect();
+  if (y < rect.top + DRAG_EDGE) view.scrollDOM.scrollTop -= 14;
+  else if (y > rect.bottom - DRAG_EDGE) view.scrollDOM.scrollTop += 14;
+}
+
+function onBlockDragMove(event) {
+  const drag = blockDrag;
+  if (!drag) return;
+  if (!drag.active) {
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_SLOP) return;
+    drag.active = true;
+    // El cursor de "agarrando" durante todo el arrastre (también fuera del asa)
+    // y el texto del bloque no se selecciona sin querer.
+    document.body.classList.add("cm-mdm-dragging");
+  }
+  event.preventDefault();
+  autoScrollWhileDragging(drag.view, event.clientY);
+  drag.slot = dropSlotAt(drag.view, event.clientY);
+  placeDropLine(drag.view, drag.slot);
+}
+
+function endBlockDrag() {
+  window.removeEventListener("mousemove", onBlockDragMove, true);
+  window.removeEventListener("mouseup", onBlockDragEnd, true);
+  window.removeEventListener("blur", endBlockDrag, true);
+  const drag = blockDrag;
+  blockDrag = null;
+  if (drag?.line) drag.line.remove();
+  document.body.classList.remove("cm-mdm-dragging");
+  return drag;
+}
+
+function onBlockDragEnd(event) {
+  const drag = blockDrag;
+  if (!drag) return;
+  const wasActive = drag.active;
+  // El último hueco se recalcula con la altura de la suelta: puede no haber
+  // habido un mousemove justo antes del mouseup.
+  const slot = wasActive ? dropSlotAt(drag.view, event.clientY) : null;
+  const view = drag.view;
+  const index = drag.index;
+  endBlockDrag();
+  if (wasActive) moveBlockTo(view, index, slot, null);
+}
+
+function beginBlockDrag(view, event, index) {
+  blockDrag = { view, index, startX: event.clientX, startY: event.clientY, active: false, slot: null, line: null };
+  window.addEventListener("mousemove", onBlockDragMove, true);
+  window.addEventListener("mouseup", onBlockDragEnd, true);
+  window.addEventListener("blur", endBlockDrag, true);
 }
 
 // Borrar bloque = quitar el bloque Y su separador, para que el `.md` no gane
@@ -2425,6 +2597,14 @@ const blockDeleteKeymap = keymap.of([
 // es el que pegaba las dos frases («- uno- dos», D9).
 const backspaceJoinKeymap = keymap.of([{ key: "Backspace", run: (view) => runBackspaceJoin(view) }]);
 
+// Alt+↑ / Alt+↓: mover el bloque del cursor un puesto. Va con el resto de
+// nuestros keymaps (antes del general) para que la flecha no se lleve el caret
+// a la línea de al lado en vez de reordenar.
+const moveBlockKeymap = keymap.of([
+  { key: "Alt-ArrowUp", run: (view) => runMoveBlockKey(view, -1) },
+  { key: "Alt-ArrowDown", run: (view) => runMoveBlockKey(view, 1) },
+]);
+
 /** Bloque (del árbol de Markdown) en el que cae `pos`, o null si el cursor no
  * está dentro de ninguno (nota vacía, fila en blanco entre dos bloques). */
 function blockAt(state, pos) {
@@ -2433,6 +2613,37 @@ function blockAt(state, pos) {
     if (pos >= b.from && pos <= b.to) found = b;
   }
   return found;
+}
+
+/**
+ * Alt+↑ / Alt+↓: mueve el bloque del cursor (o el marcado con el asa) un
+ * puesto arriba/abajo. El cursor se queda DENTRO del bloque movido, a la misma
+ * altura: pulsar dos veces seguidas sigue moviendo el mismo bloque.
+ *
+ * - Con varios bloques marcados no aplica (`moveBlockTo` mueve uno) y la tecla
+ *   sigue su curso.
+ * - En el borde se consume sin tocar nada: no hay bloque al que cambiar.
+ * - Todo el reordenado es UNA transacción (ver `moveBlockTo`), así que un solo
+ *   ⌘Z lo deshace.
+ */
+export function runMoveBlockKey(view, dir) {
+  const { state } = view;
+  const range = state.selection.main;
+  const { blocks, selected } = state.field(blockField);
+  let index = -1;
+  if (selected.size === 1) {
+    index = [...selected][0];
+  } else if (selected.size > 1) {
+    return false;
+  } else {
+    const block = blockAt(state, range.head);
+    if (!block) return false;
+    index = blocks.indexOf(block);
+  }
+  if (index < 0 || index >= blocks.length) return false;
+  const slot = dir < 0 ? index - 1 : index + 2;
+  if (slot < 0 || slot > blocks.length) return true; // ya está en un extremo
+  return moveBlockTo(view, index, slot, range.head);
 }
 
 function runBlockKey(view, kind) {
@@ -3224,6 +3435,7 @@ export function createNoteEditor({
         blockKeymap,
         blockDeleteKeymap,
         backspaceJoinKeymap,
+        moveBlockKeymap,
         // El Backspace «que borra el marcador» de Markdown (deleteMarkupBackward)
         // se registra aquí a mano: `markdown()` ya no trae su keymap (ver abajo),
         // porque su Enter (insertNewlineContinueMarkup) competía con el de los

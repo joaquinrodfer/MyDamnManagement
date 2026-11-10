@@ -1192,6 +1192,22 @@
   .cm-mdm-block-add:hover,
   .cm-mdm-block-handle:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
   .cm-mdm-block-handle-selected { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent); opacity: 1; }
+  /* Línea de inserción del arrastre de bloques: marca, entre dos bloques, el
+     hueco donde va a caer el que se arrastra desde el asa (⋮⋮). La posición la
+     calcula el editor (entry.js, placeDropLine); aquí solo el aspecto. */
+  .cm-mdm-drop-line {
+    position: fixed;
+    z-index: 950;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-soft);
+    pointer-events: none;
+  }
+  /* Mientras se arrastra: el cursor de agarre en toda la ventana, aunque el
+     puntero se salga del asa. */
+  body.cm-mdm-dragging,
+  body.cm-mdm-dragging * { cursor: grabbing !important; }
   /* En una pantalla táctil no hay hover: el asa existía pero no se veía (había
      que tocarla a ciegas para que apareciera). Se queda a la vista siempre; su
      zona de 44×44 y el hover del ratón no cambian. */
