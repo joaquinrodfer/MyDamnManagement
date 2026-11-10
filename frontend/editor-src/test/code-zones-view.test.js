@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 
 import { buildArrowDecorations, underlineDecorations } from "../entry.js";
 
@@ -190,6 +190,17 @@ test("el par que cruza el borde no se pinta, pero el `<u>` normal de después s�
 // flecha y el `<u>` DENTRO del `código` en línea -- el fallo original, solo en
 // documentos grandes. Ahora `codeRangesOf` fuerza el parseo hasta el final del
 // tramo visible antes de leer el árbol.
+//
+// Estos tests NO dependen de cuánto tarde el parser: antes de medir se fuerza
+// el parseo ENTERO del documento (`parseWholeNote`, que insiste hasta que el
+// parser dice que ha llegado al final, sin reloj de por medio) y solo entonces
+// se piden las decoraciones. Lo que se fija es el comportamiento -- que el
+// `código` en línea del final se respeta cuando el parser ya conoce el
+// documento --, no que quepa en el presupuesto de 100 ms de `codeRangesOf` en
+// una máquina cargada. Lo que impide que el test se vuelva decorativo es que
+// `syntaxTree(state)` sigue devolviendo la instantánea PARCIAL del arranque (lo
+// comprueba el primer test): si `codeRangesOf` volviera a `syntaxTree(state)` a
+// secas, seguiría leyendo ese árbol corto y los tests caerían igual.
 
 const FILLER = "Parrafo de relleno con texto normal y alguna cosa mas para alargar la nota.";
 const FINAL_LINE = "Final: fuera `a -> b` y `<u>x</u>` en codigo, fuera <u>si</u> y a -> b.";
@@ -199,25 +210,65 @@ function bigDoc() {
   return paragraphs.join("\n\n") + "\n\n" + FINAL_LINE;
 }
 
+/** Fuerza el parseo completo de la nota, insistiendo.
+ *
+ * `ensureSyntaxTree` hace como mucho `timeout` ms de trabajo y devuelve `null`
+ * si no llega; pero cada llamada deja el parser más avanzado, así que repetirla
+ * hasta que `syntaxTreeAvailable` diga que está completo llega siempre al final,
+ * vaya la máquina rápida o lenta. El resultado no depende del tiempo, solo de
+ * que se insista. (Una llamada única con un presupuesto enorme también valdría;
+ * así ni siquiera hace falta elegir un número "suficientemente grande".) */
+function parseWholeNote(state) {
+  const end = state.doc.length;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (syntaxTreeAvailable(state, end)) return;
+    ensureSyntaxTree(state, end, 200);
+  }
+  assert.fail(`la nota no se ha parseado entera tras 100 intentos (${syntaxTree(state).length}/${end})`);
+}
+
+/** Estado de la nota grande con el parser ya al final del documento.
+ *
+ * Ojo: el parseo completo NO se refleja en `syntaxTree(state)`, que sigue
+ * devolviendo el árbol parcial del arranque (el campo de estado solo se
+ * actualiza con una transacción). El árbol completo vive en el contexto del
+ * parser y es lo que devuelve `ensureSyntaxTree`. */
+function bigNoteState() {
+  const state = stateOf(bigDoc());
+  parseWholeNote(state);
+  return state;
+}
+
 /** El tramo visible de la app al llegar al final de la nota (Ctrl+Fin): la
- * última línea, no el documento entero. Un árbol completo también pasaría el
- * test, por eso se comprueba aparte que arranca parcial. */
+ * última línea, no el documento entero. */
 function finalLineRanges(state) {
   return [{ from: state.doc.length - FINAL_LINE.length, to: state.doc.length }];
 }
 
-test("nota grande: el árbol arranca parcial (si no, el test no probaría nada)", () => {
+test("nota grande: el árbol del campo arranca parcial y sigue parcial tras parsear entero (si no, el test no probaría nada)", () => {
   const state = stateOf(bigDoc());
   assert.ok(state.doc.length > 100000, `la nota tiene que ser grande (${state.doc.length})`);
+  const atStart = syntaxTree(state).length;
   assert.ok(
-    syntaxTree(state).length < state.doc.length,
-    `el árbol tiene que empezar parcial (${syntaxTree(state).length}/${state.doc.length})`
+    atStart < state.doc.length,
+    `el árbol tiene que empezar parcial (${atStart}/${state.doc.length})`
+  );
+  parseWholeNote(state);
+  // Y tras forzar el parseo completo sigue igual: `ensureSyntaxTree` avanza el
+  // parser pero no publica el resultado en el campo de estado. Por eso preparar
+  // la nota aquí no le regala la respuesta a `syntaxTree(state)` y el arreglo
+  // (`ensureSyntaxTree` en `codeRangesOf`) sigue siendo necesario: sin él, las
+  // decoraciones se calculan sobre estos ~3 KB y los dos tests de abajo fallan.
+  assert.equal(
+    syntaxTree(state).length,
+    atStart,
+    `syntaxTree(state) no debería moverse sin una transacción (${syntaxTree(state).length}/${state.doc.length})`
   );
 });
 
 test("nota grande: la flecha del `código` al final no se pinta, la de fuera sí", () => {
-  const doc = bigDoc();
-  const state = stateOf(doc);
+  const state = bigNoteState();
+  const doc = state.doc.toString();
   const arrows = decorationsOf(buildArrowDecorations(state, finalLineRanges(state)), doc.length);
   assert.deepEqual(
     arrows.map((a) => doc.slice(a.from, a.to)),
@@ -227,8 +278,8 @@ test("nota grande: la flecha del `código` al final no se pinta, la de fuera sí
 });
 
 test("nota grande: el `<u>` del `código` al final no se pinta, el de fuera sí", () => {
-  const doc = bigDoc();
-  const state = stateOf(doc);
+  const state = bigNoteState();
+  const doc = state.doc.toString();
   const decs = decorationsOf(underlineDecorations(state, finalLineRanges(state)), doc.length);
   const underlines = decs.filter((d) => d.class === "cm-mdm-underline");
   assert.equal(underlines.length, 1, "solo el <u>si</u> de fuera del código");
