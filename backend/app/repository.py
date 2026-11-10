@@ -845,8 +845,34 @@ class Repository:
             # Las filas primero: si una no se puede migrar, el `.md` de la base
             # todavía dice el schema viejo y el renombrado se puede reintentar
             # entero (el segundo intento no encuentra nada que cambiar en las
-            # filas ya migradas).
-            self.vault.rename_row_properties(database_id, renames)
+            # filas ya migradas). El vault puede ajustar la clave de destino
+            # (una clave que solo sobrevive como valor huérfano de una
+            # propiedad borrada no se pisa): el mapa que vuelve es el de verdad,
+            # y es el que hay que escribir en el schema y en las vistas.
+            ajustados = self.vault.rename_row_properties(
+                database_id,
+                renames,
+                names={
+                    str(p["key"]): str(p.get("name") or "")
+                    for p in current.schema_def
+                    if isinstance(p, dict) and p.get("key")
+                },
+                reserved={
+                    str(p["key"])
+                    for p in list(current.schema_def or []) + list(final_schema or [])
+                    if isinstance(p, dict) and p.get("key")
+                }
+                # El destino de cada renombrado no está «ocupado por otra»: es
+                # la clave que se está poniendo ahora.
+                - set(renames.values()),
+            )
+            if ajustados != renames:
+                traducir = {nuevo: ajustados[viejo] for viejo, nuevo in renames.items()}
+                final_schema = [
+                    {**p, "key": traducir.get(p.get("key"), p.get("key"))}
+                    for p in (final_schema or [])
+                ]
+            renames = ajustados
 
         views: Optional[list[dict[str, Any]]] = None
         if renames or deleted:
