@@ -13,6 +13,11 @@
 // - Se mueve el bloque ENTERO, del `from` al `to` que da el árbol. Eso es lo
 //   que deja intacta una valla de código (```): es un rango, no una línea, y
 //   aunque el cursor esté dentro se mueve la valla con su apertura y su cierre.
+// - Un bloque empieza en su LÍNEA, no en su primer carácter con contenido (ver
+//   `lineStartOf` en block-ranges.js): la sangría -- los cuatro espacios de un
+//   bloque de código indentado -- es SUYA y viaja con él. Dejándola en el hueco
+//   se perdía en cuanto el hueco había que rehacerlo, y el bloque dejaba de ser
+//   código (t_9d3b6d3b).
 // - INVARIANTE: mover no cambia las líneas del `.md`, solo su orden. Un bloque
 //   que se va de entre B y C no se lleva el aire que había entre B y C: la
 //   frontera que dejan atrás sigue entre ellos, y los saltos de los huecos que
@@ -21,7 +26,9 @@
 // - Ninguna frontera baja de lo mínimo que necesita su pareja de bloques (con
 //   menos, Markdown leería los dos como uno: `- alfa\ntexto` es un solo ítem).
 //   Si con el presupuesto que hay no cabe, el movimiento no se hace: antes no
-//   mover que cambiar el `.md`.
+//   mover que cambiar el `.md`. Tampoco se hace si NINGUNA línea en blanco
+//   separa la pareja (dos bloques de código indentado seguidos son uno; un
+//   bloque indentado detrás de un ítem es continuación del ítem).
 // - Un hueco que NO se puede conservar (su pareja de bloques ya no es vecina)
 //   se rehace con la frontera de siempre: salto simple entre dos ítems de la
 //   misma lista y línea en blanco en cualquier otro caso.
@@ -39,6 +46,12 @@ import { markdownLanguage } from "@codemirror/lang-markdown";
 import { blocksFromTree } from "./block-ranges.js";
 
 const ORDERED_RE = /^([ \t]*)(\d+)([.)])/;
+
+/**
+ * Lo que devuelve `minNewlines` cuando NINGÚN número de líneas en blanco separa
+ * la pareja: no hay frontera que escribir, así que el movimiento no se hace.
+ */
+const NO_SEPARATION = 4;
 const LIST_ITEM_TYPES = new Set(["bullet_list_item", "ordered_list_item"]);
 
 function isListItem(block) {
@@ -133,7 +146,7 @@ function fitGap(gap, count) {
  */
 function parsedBlocks(doc) {
   const root = markdownLanguage.parser.parse(doc).topNode;
-  return blocksFromTree(root).map((b) => ({ type: b.type, text: doc.slice(b.from, b.to) }));
+  return blocksFromTree(root, doc).map((b) => ({ type: b.type, text: doc.slice(b.from, b.to) }));
 }
 
 // Caché de mínimos por pareja (tipos + textos), con tope de entradas y de
@@ -166,11 +179,12 @@ let minCacheChars = 0;
  * setext. La regla no depende del tipo del nodo sino de cómo lo lee CommonMark
  * en ese contexto exacto, y eso solo lo sabe el parser.
  *
- * Si aun con tres saltos no salen los dos bloques, se pide la línea en blanco:
- * es la frontera de siempre, y puede rechazar un movimiento que cabía (visible:
- * la tecla no hace nada) pero nunca pega dos bloques en uno. Pasa con el código
- * indentado, cuyo cuerpo (`codigo 1`, sin la sangría, que se queda en el hueco)
- * no se lee como el bloque que es: tarjeta t_9d3b6d3b, abierta.
+ * Hay parejas que NO se separan con ninguna línea en blanco, y entonces se
+ * devuelve `NO_SEPARATION`: dos bloques de código indentado seguidos son UNO
+ * (las líneas en blanco de en medio son contenido del código) y un bloque
+ * indentado detrás de un ítem de lista es continuación del ítem. Quien llama
+ * tiene que negarse a ponerlos juntos, no escribir un hueco que no separa:
+ * `moveBlockEdits` devuelve null (antes no mover que cambiar el `.md`).
  */
 export function minNewlines(prev, next, bodyPrev, bodyNext) {
   const a = String(bodyPrev ?? "");
@@ -179,7 +193,7 @@ export function minNewlines(prev, next, bodyPrev, bodyNext) {
   const cached = MIN_CACHE.get(key);
   if (cached !== undefined) return cached;
 
-  let need = 2;
+  let need = NO_SEPARATION;
   for (let gap = 1; gap <= 3; gap++) {
     const doc = a + "\n".repeat(gap) + b;
     const blocks = parsedBlocks(doc);
@@ -320,6 +334,10 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
     const b = order[p + 1];
     const k = b === a + 1 ? a : a === b + 1 ? b : null;
     const bd = { a, b, min: minNewlines(blocks[a], blocks[b], texts[a], texts[b]), gap: null, count: 0 };
+    // Una pareja que no se separa con ninguna línea en blanco (dos bloques de
+    // código indentado seguidos, un bloque indentado detrás de un ítem) no se
+    // puede dejar vecina: escribir el hueco las fusionaría y el `.md` cambiaría.
+    if (bd.min >= NO_SEPARATION) return null;
     if (k !== null && !kept.has(k)) {
       kept.add(k);
       bd.gap = gaps[k];
@@ -327,7 +345,9 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
       // se rellena: `- alfa\ntexto` acabaría siendo un solo bloque.
       bd.count = Math.max(countNewlines(bd.gap), bd.min);
     } else {
-      bd.count = separatorNewlines(blocks[a], blocks[b]);
+      // La frontera de siempre, pero nunca por debajo del mínimo de la pareja
+      // (el parser puede pedir tres saltos para alguna).
+      bd.count = Math.max(separatorNewlines(blocks[a], blocks[b]), bd.min);
     }
     bounds.push(bd);
   }
