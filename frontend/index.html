@@ -1280,12 +1280,24 @@
     z-index: 1000;
     min-width: 200px;
     max-height: 260px;
-    overflow-y: auto;
+    /* El scroll lo lleva .mdm-slash-menu-list, no el menú: así la fila de
+       «… y N más» del selector de /page se queda siempre a la vista. */
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
     padding: 6px;
+  }
+  .mdm-slash-menu-list {
+    display: flex;
+    flex-direction: column;
+    /* Sin esto el hijo no encoge dentro del flex y el scroll no llega a
+       activarse (la lista crecería más allá de los 260 px del menú). */
+    min-height: 0;
+    overflow-y: auto;
   }
   .mdm-slash-menu-item {
     display: flex;

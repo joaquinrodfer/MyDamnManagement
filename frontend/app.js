@@ -3980,11 +3980,24 @@ function renderSlashMenu(menuState) {
     menu.appendChild(note);
   }
 
+  // Las opciones van en su propia caja con scroll, y la fila de «… y N más»
+  // queda FUERA de ella: dentro no se vería justo cuando hace falta (habría
+  // que bajar por 50 filas para descubrir que la lista sigue).
+  const lista = document.createElement("div");
+  lista.className = "mdm-slash-menu-list";
+  menu.appendChild(lista);
+
   if (menuState.options.length === 0) {
     // Un vault sin páginas ya trae su explicación en `note` («Aún no hay
-    // ninguna página…»): añadir «Sin coincidencias» debajo sería decir dos
-    // veces lo mismo, y lo segundo es mentira (no hay nada que buscar).
-    menu.innerHTML = menuState.note ? "" : '<div class="search-empty">Sin coincidencias.</div>';
+    // ninguna página…»): añadir «Sin coincidencias» sería decir dos veces lo
+    // mismo, y lo segundo es mentira (no hay nada que buscar). Sin aviso,
+    // «Sin coincidencias» es lo único que se puede decir.
+    if (!menuState.note) {
+      const vacio = document.createElement("div");
+      vacio.className = "search-empty";
+      vacio.textContent = "Sin coincidencias.";
+      lista.appendChild(vacio);
+    }
   } else {
     menuState.options.forEach((opt, i) => {
       const item = document.createElement("div");
@@ -4012,28 +4025,28 @@ function renderSlashMenu(menuState) {
         e.preventDefault();
         opt.onClick();
       });
-      menu.appendChild(item);
+      lista.appendChild(item);
     });
+  }
 
-    // Fila final con lo que el tope deja fuera (selector de /page en un vault
-    // grande, ver capPageChoices en editor-src/page-choice.js). No es una
-    // opción -- no se puede elegir ni resaltar, y el teclado no la visita --:
-    // solo avisa de que la lista sigue y de que hay que escribir para acotar.
-    if (menuState.overflow > 0) {
-      const more = document.createElement("div");
-      more.className = "mdm-slash-menu-more";
-      more.textContent = `… y ${menuState.overflow} más, sigue escribiendo`;
-      menu.appendChild(more);
-    }
+  // Fila final con lo que el tope deja fuera (selector de /page en un vault
+  // grande, ver capPageChoices en editor-src/page-choice.js). No es una
+  // opción -- no se puede elegir ni resaltar, y el teclado no la visita --:
+  // solo avisa de que la lista sigue y de que hay que escribir para acotar.
+  if (menuState.overflow > 0) {
+    const more = document.createElement("div");
+    more.className = "mdm-slash-menu-more";
+    more.textContent = `… y ${menuState.overflow} más, sigue escribiendo`;
+    menu.appendChild(more);
   }
 
   positionFloating(menu, menuState.x, menuState.y);
 
   // Con la lista filtrada la opción resaltada por teclado (flechas) puede
-  // quedar fuera del área visible del menú (max-height + overflow-y: auto)
-  // -- sin esto, ArrowDown/ArrowUp seguían moviendo la selección pero no se
-  // veía moverse.
-  menu.querySelector(".mdm-slash-menu-item.active")?.scrollIntoView({ block: "nearest" });
+  // quedar fuera del área visible de la lista (max-height + overflow-y: auto
+  // en .mdm-slash-menu-list) -- sin esto, ArrowDown/ArrowUp seguían moviendo
+  // la selección pero no se veía moverse.
+  lista.querySelector(".mdm-slash-menu-item.active")?.scrollIntoView({ block: "nearest" });
 
   slashMenuEl = menu;
 }
