@@ -576,7 +576,7 @@ En el servidor (Docker con el plugin `compose` v2 y Tailscale instalado):
 ```bash
 git clone <url-del-repo> MyDamnManagement
 cd MyDamnManagement
-git switch release/v1.0        # la rama/etiqueta que quieras desplegar
+git switch v2.1.0             # se despliega una ETIQUETA, no una rama (ver docs/FLUJO-GIT.md)
 cp .env.example .env           # opcional: ADMIN_USER/ADMIN_PASSWORD; el resto lo fija el compose
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml ps     # api ... (healthy)
