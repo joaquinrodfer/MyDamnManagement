@@ -5168,7 +5168,7 @@ function editCell(td, database, row, prop) {
     }
     if (changes) {
       try {
-        // El título renombra el `.md` en el servidor; saveRow trae el nuevo.
+        // El título vive en el frontmatter: el `.md` no se mueve; saveRow trae el nuevo.
         await saveRow(database, row, changes);
       } catch (e) {
         reportError("No se pudo guardar el cambio", e);

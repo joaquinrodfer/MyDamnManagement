@@ -83,7 +83,50 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
 
+def _scalar_end(text: str) -> int:
+    """Índice donde termina el escalar entrecomillado con el que empieza `text`.
+
+    Devuelve 0 si el escalar no va entrecomillado (o la comilla no se cierra):
+    en ese caso no hay nada que proteger y el `#` es comentario en cuanto
+    aparece.
+    """
+    tok = text.lstrip()
+    offset = len(text) - len(tok)          # espacios de delante: el índice es del texto
+    if not tok or tok[0] not in "\"'":
+        return 0
+    quote = tok[0]
+    i = 1
+    while i < len(tok):
+        ch = tok[i]
+        if quote == '"' and ch == "\\":      # `\"` no cierra la comilla
+            i += 2
+            continue
+        if ch == quote:
+            if quote == "'" and tok[i + 1:i + 2] == "'":   # `''` escapa la simple
+                i += 2
+                continue
+            return offset + i + 1
+        i += 1
+    return 0                                  # comilla sin cerrar: no se parte
+
+
+def _split_comment(text: str) -> tuple[str, str | None]:
+    """Parte `valor # comentario`: (valor, lo que va tras la `#`, o None).
+
+    Un `#` solo abre comentario de cola si va precedido de espacio **y queda
+    fuera del escalar**. El escritor (`dump_scalar`) entrecomilla justo los
+    valores que llevan ` #`, así que mirar la línea entera —como se hacía—
+    convertía `title: "Pedido #3"` en `Pedido` al reescribirlo, y el trozo
+    perdido se acumulaba en cada escritura.
+    """
+    for i in range(max(1, _scalar_end(text)), len(text)):
+        if text[i] == "#" and text[i - 1] in " \t":
+            return text[:i], text[i + 1:]
+    return text, None
+
+
 def _scalar(tok: str) -> str:
+    tok, _comment = _split_comment(tok.strip())
     tok = tok.strip()
     if len(tok) >= 2 and tok[0] == '"' and tok[-1] == '"':
         try:
@@ -92,9 +135,6 @@ def _scalar(tok: str) -> str:
             return tok[1:-1]
     if len(tok) >= 2 and tok[0] == "'" and tok[-1] == "'":
         return tok[1:-1].replace("''", "'")
-    # comentario al final de un escalar sin comillas: "valor  # nota"
-    if " #" in tok:
-        tok = tok.split(" #", 1)[0].rstrip()
     return tok
 
 
@@ -366,11 +406,20 @@ def update(raw: str, updates: dict, delete: set[str] | None = None
             out.extend(lines[entry.start:entry.end])
             continue
         seen.add(entry.key)
-        # conserva el comentario de la línea si era un escalar simple
-        if entry.end - entry.start == 1 and " #" in lines[entry.start] \
+        # Conserva el comentario de cola de un escalar simple, pero solo si la
+        # `#` está **fuera** del valor: `title: "Pedido #3"` no tiene comentario
+        # y `fase: lead # nota` sí. Se mira solo la parte de la línea que hay
+        # tras la clave, para no confundir una `#` de la propia clave.
+        comment = None
+        # El escalar está en la primera línea de la entrada: las siguientes, si
+        # hay alguna, están en blanco (el `raw` puede acabar en salto de línea).
+        if all(not ln.strip() for ln in lines[entry.start + 1:entry.end]) \
                 and not isinstance(updates[entry.key], (list, dict)):
-            comment = " #" + lines[entry.start].split(" #", 1)[1]
-            out.append(dump_value(entry.key, updates[entry.key])[0] + comment)
+            m = KEY_RE.match(lines[entry.start])
+            _valor, comment = _split_comment(
+                m.group(2) if m else lines[entry.start])
+        if comment is not None:
+            out.append(dump_value(entry.key, updates[entry.key])[0] + " #" + comment)
         else:
             out.extend(dump_value(entry.key, updates[entry.key]))
 

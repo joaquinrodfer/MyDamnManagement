@@ -24,6 +24,11 @@ Regla única, aplicada SIEMPRE antes de tocar el disco:
    `casefold()` + NFC, para que el vault siga siendo portable a macOS/Windows
    (donde `Informe` e `informe` son el mismo fichero). Dos notas con el mismo
    título en carpetas distintas NO colisionan: son páginas distintas.
+
+Las **filas de una base** no pasan por aquí: su fichero no lleva el título sino
+los 8 primeros caracteres hex de su `id` (`row_stem`), y el título vive en el
+frontmatter. Así el sufijo ` (2)` ya no aparece al duplicar el título de una
+fila: dos filas pueden llamarse igual y cada una conserva su fichero.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+import uuid
 
 MAX_BYTES = 180  # deja sitio para " (10)" y para el sufijo .md
 
@@ -96,26 +102,95 @@ def sanitize(title: str, fallback: str = "Sin título") -> tuple[str, list[str]]
     return name, notes
 
 
+def _nfc_key(text: str) -> str:
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def _busy(directory: str, candidate: str, taken: set[str],
+          ignore: set[str] | None = None) -> bool:
+    """¿Está ocupado `candidate` en `directory`?
+
+    Cuentan el fichero `<candidate>.md` y una carpeta con ese nombre (la
+    carpeta de filas de una base). `ignore` son stems que hay que tratar como
+    libres: la migración de una fila a `<id8>.md` no puede chocar con el
+    fichero que esa misma fila tiene ahora.
+    """
+    if ignore and _nfc_key(candidate) in ignore:
+        return False
+    keys = {"%s.md" % _nfc_key(candidate), _nfc_key(candidate)}
+    if keys & taken:
+        return True
+    try:
+        entries = os.listdir(directory)
+    except FileNotFoundError:
+        return False
+    return any(_nfc_key(e) in keys for e in entries)
+
+
 def unique_stem(directory: str, stem: str, taken: set[str] | None = None) -> tuple[str, bool]:
     """`stem` si está libre en `directory`, si no `stem (2)`, ` (3)`..."""
     taken = taken or set()
-
-    def busy(candidate: str) -> bool:
-        # el nombre final es '<candidate>.md'; también cuenta una carpeta con
-        # ese nombre (la carpeta de filas de una base) y el sufijo .md pegado
-        keys = {"%s.md" % unicodedata.normalize("NFC", candidate).casefold(),
-                unicodedata.normalize("NFC", candidate).casefold()}
-        if keys & taken:
-            return True
-        try:
-            entries = os.listdir(directory)
-        except FileNotFoundError:
-            return False
-        return any(unicodedata.normalize("NFC", e).casefold() in keys for e in entries)
-
-    if not busy(stem):
+    if not _busy(directory, stem, taken):
         return stem, False
     n = 2
-    while busy(f"{stem} ({n})"):
+    while _busy(directory, f"{stem} ({n})", taken):
         n += 1
     return f"{stem} ({n})", True
+
+
+# Las filas no llevan su título en el nombre del fichero: se llaman por los 8
+# primeros caracteres hex de su `id` (`Bases/Contactos/7f3a91c2.md`) y el
+# título vive en el frontmatter, así que renombrar una fila no mueve el
+# fichero y no puede romper un enlace. Ocho caracteres son 32 bits: con miles
+# de filas por carpeta el choque es improbable, y si ocurre se alarga a 10,
+# 12… hasta el id entero, que es único.
+ROW_STEM_MIN = 8
+ROW_STEM_STEP = 2
+
+# Namespace del stem de una fila cuyo `id` no es un UUID (escrita a mano): el
+# stem sale de un uuid5 del id, determinista entre ejecuciones.
+_ROW_STEM_NAMESPACE = uuid.UUID("6d1c9a0e-4f2b-5c37-8e51-2a7b9f0d3c48")
+
+
+def hexed_id(row_id) -> str:
+    """El `id` de una fila en hex, sin guiones.
+
+    Un id que no es un UUID (una fila escrita a mano) se convierte con un
+    uuid5 del propio id: el nombre del fichero es estable entre ejecuciones.
+    """
+    try:
+        return uuid.UUID(str(row_id).strip()).hex
+    except (ValueError, AttributeError):
+        return uuid.uuid5(_ROW_STEM_NAMESPACE, str(row_id)).hex
+
+
+def is_row_stem(stem: str, row_id) -> bool:
+    """¿`stem` ya es el nombre por id de esta fila (`<id8>`, `<id10>`…)?
+
+    Lo usa la migración para no renombrar lo que ya está migrado (idempotencia)
+    y para no acortar a 8 un fichero que ya se llamaba `id10.md`.
+    """
+    key = _nfc_key(stem)
+    return (
+        len(key) >= ROW_STEM_MIN
+        and all(ch in "0123456789abcdef" for ch in key)
+        and hexed_id(row_id).startswith(key)
+    )
+
+
+def row_stem(directory: str, row_id, *,
+             ignore: set[str] | None = None) -> tuple[str, bool]:
+    """Stem de una fila: `<id8>`, alargando a 10, 12… si choca en la carpeta.
+
+    Devuelve `(stem, alargado)`, como `unique_stem`: `alargado` dice que los 8
+    primeros caracteres no estaban libres y se usaron más. `ignore` son stems
+    que cuentan como libres (ver `_busy`).
+    """
+    hexed = hexed_id(row_id)
+    ignore_keys = {_nfc_key(stem) for stem in (ignore or set())}
+    length = ROW_STEM_MIN
+    while length < len(hexed):
+        if not _busy(directory, hexed[:length], set(), ignore_keys):
+            return hexed[:length], length != ROW_STEM_MIN
+        length += ROW_STEM_STEP
+    return hexed, True
