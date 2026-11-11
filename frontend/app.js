@@ -4686,6 +4686,9 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
           ? (key) => aplicarConfig({ sort: alternarOrden(clavesOrden, key) })
           : null,
         vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+        // Tras borrar o cambiar una propiedad en bloque, la tabla se repinta
+        // con lo que diga el servidor: nada de ir tocando filas a mano.
+        onRepintar: refresh,
       }),
     );
   }
@@ -5577,6 +5580,20 @@ async function renderDatabaseEmbed(block, container) {
         hooks,
         sort: clavesOrden,
         vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+        // Tras una acción en bloque, este bloque se repinta con lo que diga el
+        // servidor y los demás bloques de la misma base se enteran igual que
+        // tras guardar una celda.
+        onRepintar: async () => {
+          const embed = embedsDeBase.get(container);
+          if (embed) {
+            try {
+              await embed.refresh();
+            } catch (e) {
+              reportError("No se pudo refrescar la tabla", e);
+            }
+          }
+          refrescarOtrosEmbeds(database.id, container);
+        },
       }),
     );
     if (enEdicion) reabrirCeldaEnEdicion(body, database, filas, enEdicion, hooks);
@@ -6082,11 +6099,593 @@ async function saveRow(database, row, changes, hooks = null) {
   return saved;
 }
 
+// ------------------------------------------- selección múltiple de filas
+//
+// Lo marcado vive aquí y no en el DOM: la vista se repinta entera al cambiar de
+// pestaña, al guardar una celda y cuando otra ventana toca la base, así que una
+// selección que se pierde a cada repintado no sirve para borrar veinte filas.
+// La clave es el id de la base; el valor, un Map id de fila -> título, que es
+// lo que permite decir CUÁL falló sin volver a preguntarle al servidor.
+
+const seleccionPorBase = new Map();
+
+/** El informe de la última acción en bloque, por base. Tiene que sobrevivir al
+ * repintado que sigue a la acción, que es justo cuando hay que leerlo. */
+const informeDeBloque = new Map();
+
+function seleccionDeBase(databaseId) {
+  const clave = String(databaseId);
+  let seleccion = seleccionPorBase.get(clave);
+  if (!seleccion) {
+    seleccion = new Map();
+    seleccionPorBase.set(clave, seleccion);
+  }
+  return seleccion;
+}
+
+/** «1 fila» / «3 filas». */
+function recuentoDeFilas(n) {
+  return `${n} ${n === 1 ? "fila" : "filas"}`;
+}
+
+/** «a», «b» y «c». Con tope: veinte títulos seguidos no se leen, y lo que no se
+ * lee es como si no se dijera. */
+function enumerarTitulos(titulos, max = 6) {
+  const citados = titulos.slice(0, max).map((t) => `«${t}»`);
+  if (titulos.length <= max) return citados.join(", ");
+  return `${citados.join(", ")} y ${titulos.length - max} más`;
+}
+
+/** Un valor de propiedad en palabras, para el informe («ganado», «sí», «—»). */
+function textoDeValor(valor) {
+  if (valor === null || valor === undefined || valor === "") return "vacío";
+  if (typeof valor === "boolean") return valor ? "sí" : "no";
+  if (Array.isArray(valor)) return valor.length ? valor.join(", ") : "vacío";
+  return String(valor);
+}
+
+/** Un control (botón, casilla) que puede vivir DENTRO de una nota: las teclas
+ * que el control ya sabe usar no pueden subir al keymap de CodeMirror, que
+ * convertiría un Enter en un salto de línea en el `.md` de la nota. Fuera de
+ * una nota no estorba a nadie. */
+function aislarTeclasDeControl(el) {
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " " || e.key === "Escape") e.stopPropagation();
+  });
+}
+
+/** El informe de una acción en bloque: cuántas se hicieron, cuáles y —si
+ * fallaron— cuáles no y por qué. Una acción a medias sin decir qué se quedó
+ * fuera es peor que no hacerla, así que el informe se queda a la vista hasta
+ * que se descarta. */
+function renderInformeDeBloque(informe, alDescartar) {
+  const total = informe.ok.length + informe.fallos.length;
+  const caja = document.createElement("div");
+  caja.className = "db-sel-report";
+  caja.setAttribute("role", "status");
+
+  const cabeza = document.createElement("div");
+  cabeza.className = "db-sel-report-head";
+  const titulo = document.createElement("p");
+  titulo.className = "db-sel-report-title";
+  titulo.textContent = `${informe.titulo}: ${informe.ok.length} de ${recuentoDeFilas(total)}.`;
+  const cerrar = document.createElement("button");
+  cerrar.type = "button";
+  cerrar.className = "db-sel-report-close";
+  cerrar.innerHTML = svgIcon("i-x");
+  cerrar.title = "Descartar el informe";
+  cerrar.setAttribute("aria-label", "Descartar el informe");
+  aislarTeclasDeControl(cerrar);
+  cerrar.addEventListener("click", alDescartar);
+  cabeza.append(titulo, cerrar);
+  caja.appendChild(cabeza);
+
+  if (informe.ok.length) {
+    const hechas = document.createElement("p");
+    hechas.className = "db-sel-report-ok";
+    hechas.textContent = `${informe.hecho}: ${enumerarTitulos(informe.ok.map((f) => f.title))}`;
+    caja.appendChild(hechas);
+  }
+  if (informe.fallos.length) {
+    // Una a una y con su motivo: «se borraron 7 de 10» a secas no dice qué hay
+    // que volver a mirar, y aquí lo que hace falta es eso.
+    const fallidas = document.createElement("p");
+    fallidas.className = "db-sel-report-bad";
+    fallidas.textContent =
+      `${informe.noHecho}: ` + informe.fallos.map((f) => `«${f.title}» (${f.motivo})`).join("; ");
+    caja.appendChild(fallidas);
+  }
+  return caja;
+}
+
+/** Las acciones en bloque van fila a fila, en serie.
+ *
+ * Cada PATCH/DELETE escribe SU `.md` y el servidor publica un aviso por cada
+ * uno: en paralelo los fallos se mezclarían y el informe ya no sabría decir cuál
+ * sí y cuál no. El precio es el tiempo, y el avance se cuenta en la barra. */
+async function ejecutarEnBloque({ filas, accion, informe, alAvanzar }) {
+  for (let i = 0; i < filas.length; i += 1) {
+    try {
+      await accion(filas[i]);
+      informe.ok.push(filas[i]);
+    } catch (e) {
+      informe.fallos.push({ title: filas[i].title || "Sin título", motivo: describeError(e) });
+    }
+    alAvanzar?.(i + 1, filas.length);
+  }
+  return informe;
+}
+
+/** Pregunta la propiedad y el valor nuevo, y se lo pasa a `alAplicar`.
+ *
+ * El control del valor es el MISMO del clic en una celda (`buildPropertyInput`),
+ * así que vale para cualquier tipo: texto, número, fecha, casilla, selección,
+ * multiselección y url. Un valor vacío deja la propiedad sin valor.
+ *
+ * El diálogo se crea aquí y no en el HTML porque solo existe mientras se usa;
+ * cuelga de `<body>` para poder abrirse también desde la tabla de una nota. */
+function abrirDialogoDePropiedadEnBloque({ database, filas, alAplicar }) {
+  const props = database.schema_def || [];
+  if (!props.length) return;
+  const cuantas = recuentoDeFilas(filas.length);
+
+  const dialogo = document.createElement("dialog");
+  dialogo.className = "mdm-bulk-dialog";
+
+  const forma = document.createElement("form");
+  forma.noValidate = true;
+
+  const titulo = document.createElement("h2");
+  titulo.className = "mdm-bulk-title";
+  titulo.textContent = `Cambiar una propiedad en ${cuantas}`;
+
+  const campoProp = document.createElement("div");
+  campoProp.className = "field";
+  const etiquetaProp = document.createElement("label");
+  etiquetaProp.textContent = "Propiedad";
+  etiquetaProp.htmlFor = "mdm-bulk-prop";
+  const select = document.createElement("select");
+  select.id = "mdm-bulk-prop";
+  props.forEach((p) => {
+    const opcion = document.createElement("option");
+    opcion.value = p.key;
+    opcion.textContent = `${p.name} (${tipoVisible(p.type)})`;
+    select.appendChild(opcion);
+  });
+  campoProp.append(etiquetaProp, select);
+
+  const campoValor = document.createElement("div");
+  campoValor.className = "field";
+  const etiquetaValor = document.createElement("label");
+  etiquetaValor.textContent = "Valor nuevo";
+  etiquetaValor.htmlFor = "mdm-bulk-valor";
+
+  // El control se rehace cada vez que cambia la propiedad: un texto y una
+  // casilla no se piden igual. Se siembra vacío porque el valor es el NUEVO,
+  // no el de ninguna fila en concreto.
+  let lectura = null;
+  const pintarValor = () => {
+    const prop = props.find((p) => p.key === select.value) || props[0];
+    const { input, read } = buildPropertyInput(prop, undefined);
+    input.id = "mdm-bulk-valor";
+    campoValor.textContent = "";
+    campoValor.append(etiquetaValor, input);
+    lectura = () => ({ prop, valor: read() });
+  };
+  select.addEventListener("change", pintarValor);
+  pintarValor();
+
+  const nota = document.createElement("p");
+  nota.className = "mdm-bulk-note";
+  nota.textContent =
+    `Se escribe en el .md de ${cuantas}, una a una. ` +
+    "Las que no se puedan escribir se dirán una por una, con el motivo.";
+
+  const acciones = document.createElement("div");
+  acciones.className = "dialog-actions";
+  // El `close` del <dialog> no se dispara de forma fiable en todas las
+  // versiones, así que el nodo se retira a mano en los tres caminos (Aplicar,
+  // Cancelar y Escape); si no, cada apertura dejaba un diálogo colgando.
+  const retirar = () => {
+    if (dialogo.open) dialogo.close();
+    dialogo.remove();
+  };
+
+  const cancelar = document.createElement("button");
+  cancelar.type = "button";
+  cancelar.className = "btn";
+  cancelar.textContent = "Cancelar";
+  cancelar.addEventListener("click", retirar);
+  const aplicar = document.createElement("button");
+  aplicar.type = "submit";
+  aplicar.className = "btn btn-primary";
+  aplicar.textContent = `Aplicar a ${cuantas}`;
+  acciones.append(cancelar, aplicar);
+  forma.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const { prop, valor } = lectura ? lectura() : {};
+    if (!prop) return;
+    retirar();
+    alAplicar(prop, valor);
+  });
+
+  forma.append(campoProp, campoValor, nota, acciones);
+  dialogo.append(titulo, forma);
+  document.body.appendChild(dialogo);
+  dialogo.addEventListener("cancel", retirar);
+  dialogo.showModal();
+}
+
+/** La selección múltiple de una vista de filas: la barra de acciones, la casilla
+ * de cada fila y el estado que las une.
+ *
+ * La usan la tabla (también la incrustada en una nota) y la lista, para que las
+ * dos se comporten igual. Devuelve los nodos que van encima de las filas
+ * (`barra`, `informes`), los controles (`casillaDeFila`, `casillaDeCabecera`),
+ * `registrarFila` (qué nodo se marca) y `teclas` (Ctrl+A, Espacio, Supr, Esc).
+ *
+ * `puedeBorrar: false` es la tabla de una nota, donde borrar filas se hace en la
+ * base: la barra lo dice en vez de ofrecer un botón que no va a ninguna parte.
+ */
+function crearSeleccionDeFilas({
+  database,
+  rows,
+  puedeBorrar = true,
+  hooks = null,
+  onRepintar = null,
+}) {
+  const claveBase = String(database.id);
+  const sel = seleccionDeBase(claveBase);
+  const visibles = new Map(rows.map((r) => [String(r.id), r]));
+  const cajas = new Map(); // id de fila -> { contenedor, casilla }
+  let ocupado = false;
+
+  // Una fila renombrada lleva el título nuevo a la selección: el informe tiene
+  // que nombrarla como se llama ahora, no como se llamaba al marcarla.
+  for (const id of [...sel.keys()]) {
+    const fila = visibles.get(id);
+    if (fila) sel.set(id, fila.title || "Sin título");
+  }
+
+  const barra = document.createElement("div");
+  barra.className = "db-sel-bar";
+  barra.setAttribute("role", "region");
+  barra.setAttribute("aria-label", "Acciones de las filas seleccionadas");
+  barra.hidden = true;
+
+  const cuenta = document.createElement("span");
+  cuenta.className = "db-sel-count";
+  cuenta.setAttribute("aria-live", "polite");
+
+  // Lo que el filtro ha dejado fuera se cuenta aparte y se dice: si no, el
+  // recuento de la barra no cuadra con las filas marcadas que se ven.
+  const fuera = document.createElement("span");
+  fuera.className = "db-sel-fuera";
+
+  const avance = document.createElement("span");
+  avance.className = "db-sel-progress";
+  avance.hidden = true;
+
+  const acciones = document.createElement("div");
+  acciones.className = "db-sel-actions";
+
+  const informes = document.createElement("div");
+  informes.className = "db-sel-reports";
+
+  const seleccionadas = () => [...sel.entries()].map(([id, title]) => ({ id, title }));
+  const hayFueraDeVista = () => [...sel.keys()].filter((id) => !visibles.has(id)).length;
+
+  const cabecera = document.createElement("input");
+  cabecera.type = "checkbox";
+  cabecera.className = "row-check";
+  cabecera.addEventListener("change", () => {
+    if (cabecera.checked) seleccionarTodas();
+    else limpiar();
+  });
+  aislarTeclasDeControl(cabecera);
+
+  function sincronizar() {
+    const total = sel.size;
+    const fueraDeVista = hayFueraDeVista();
+    barra.hidden = total === 0;
+    cuenta.textContent = `${total} ${total === 1 ? "seleccionada" : "seleccionadas"}`;
+    fuera.hidden = fueraDeVista === 0;
+    fuera.textContent =
+      fueraDeVista === 0
+        ? ""
+        : `· ${fueraDeVista} de ellas ${fueraDeVista === 1 ? "no está" : "no están"} en esta vista: ${
+            fueraDeVista === 1 ? "entra" : "entran"
+          } igual en la acción`;
+    for (const [id, caja] of cajas) {
+      const marcada = sel.has(id);
+      caja.casilla.checked = marcada;
+      caja.contenedor.classList.toggle("is-selected", marcada);
+    }
+    // La cabecera solo habla de lo VISIBLE: entera si están todas, a medias si
+    // hay algunas, y nunca marcada si la vista no enseña ninguna fila.
+    const visiblesMarcadas = [...visibles.keys()].filter((id) => sel.has(id)).length;
+    cabecera.disabled = visibles.size === 0;
+    cabecera.checked = visibles.size > 0 && visiblesMarcadas === visibles.size;
+    cabecera.indeterminate = visiblesMarcadas > 0 && visiblesMarcadas < visibles.size;
+    cabecera.title =
+      visibles.size === 0
+        ? "No hay filas visibles que seleccionar"
+        : `Seleccionar las ${visibles.size} filas visibles`;
+    cabecera.setAttribute("aria-label", cabecera.title);
+    if (!ocupado) avance.hidden = true;
+  }
+
+  function alternar(id) {
+    const clave = String(id);
+    if (sel.has(clave)) {
+      sel.delete(clave);
+    } else {
+      const fila = visibles.get(clave);
+      sel.set(clave, fila ? fila.title || "Sin título" : "Sin título");
+    }
+    sincronizar();
+  }
+
+  function seleccionarTodas() {
+    for (const [id, fila] of visibles) sel.set(id, fila.title || "Sin título");
+    sincronizar();
+  }
+
+  function limpiar() {
+    sel.clear();
+    sincronizar();
+  }
+
+  /** El botón (o casilla) que marca una fila. `checked` se siembra ya, para que
+   * un repintado con selección encima nazca con las casillas correctas. */
+  function casillaDeFila(row) {
+    const marcada = sel.has(String(row.id));
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "row-check";
+    input.checked = marcada;
+    input.tabIndex = -1; // la tabla tiene UNA parada de Tab, y es la celda
+    const nombre = `Seleccionar «${row.title || "Sin título"}»`;
+    input.title = nombre;
+    input.setAttribute("aria-label", nombre);
+    input.addEventListener("change", () => alternar(row.id));
+    aislarTeclasDeControl(input);
+    return input;
+  }
+
+  /** `contenedor` es lo que se marca visualmente (el `<tr>`, la línea de la
+   * lista) y `casilla` el control que la representa. */
+  function registrarFila(row, contenedor, casilla) {
+    cajas.set(String(row.id), { contenedor, casilla });
+  }
+
+  /** La vista ha vuelto a pintar sus filas sin rehacer la barra (el alta en
+   * línea de la lista): las visibles son estas y no las de antes. */
+  function fijarVisibles(filas) {
+    visibles.clear();
+    for (const fila of filas) visibles.set(String(fila.id), fila);
+    sincronizar();
+  }
+
+  function pintarInforme() {
+    informes.textContent = "";
+    const informe = informeDeBloque.get(claveBase);
+    if (!informe) return;
+    informes.appendChild(
+      renderInformeDeBloque(informe, () => {
+        informeDeBloque.delete(claveBase);
+        pintarInforme();
+      }),
+    );
+  }
+
+  function marcarOcupado(valor) {
+    ocupado = valor;
+    for (const boton of acciones.querySelectorAll("button")) boton.disabled = valor;
+    avance.hidden = !valor;
+    if (!valor) avance.textContent = "";
+    sincronizar();
+  }
+
+  async function borrarSeleccion() {
+    if (ocupado) return;
+    const filas = seleccionadas();
+    if (!filas.length) return;
+    const fueraDeVista = hayFueraDeVista();
+    const avisoFuera = fueraDeVista
+      ? `\n${fueraDeVista} de ellas no ${fueraDeVista === 1 ? "está" : "están"} en esta vista, pero ${
+          fueraDeVista === 1 ? "entra" : "entran"
+        } igual en el borrado.`
+      : "";
+    // Lo que se dice y lo que pasa son lo mismo: van a la PAPELERA del vault
+    // (`.trash/<fecha y hora UTC>/`, un directorio por borrado), no se borran
+    // del disco y se pueden recuperar.
+    if (
+      !confirm(
+        `¿Borrar ${recuentoDeFilas(filas.length)}?${avisoFuera}\n\n` +
+          "Cada una va a su carpeta de la papelera del vault (.trash/<fecha y hora UTC>/):" +
+          " no se borran del disco.",
+      )
+    ) {
+      return;
+    }
+
+    const informe = {
+      titulo: `Borrar ${recuentoDeFilas(filas.length)} (a la papelera)`,
+      hecho: "Borradas",
+      noHecho: "No se borraron",
+      ok: [],
+      fallos: [],
+    };
+    marcarOcupado(true);
+    await ejecutarEnBloque({
+      filas,
+      informe,
+      alAvanzar: (i, n) => {
+        avance.textContent = `Borrando ${i} de ${n}…`;
+      },
+      accion: async (fila) => {
+        // El eco del SSE no debe repintar la nota a media tanda.
+        hooks?.onBeforeSave?.();
+        await api(`/databases/${database.id}/rows/${fila.id}`, { method: "DELETE" });
+      },
+    });
+    // Lo borrado sale de la selección; lo que falló se queda marcado, que es
+    // justo lo que hay que volver a mirar.
+    for (const fila of informe.ok) sel.delete(String(fila.id));
+    informeDeBloque.set(claveBase, informe);
+    marcarOcupado(false);
+    pintarInforme();
+    await onRepintar?.();
+  }
+
+  async function aplicarPropiedad(filas, prop, valor) {
+    const informe = {
+      titulo: `Cambiar «${prop.name}» a «${textoDeValor(valor)}»`,
+      hecho: "Cambiadas",
+      noHecho: "No se cambiaron",
+      ok: [],
+      fallos: [],
+    };
+    marcarOcupado(true);
+    await ejecutarEnBloque({
+      filas,
+      informe,
+      alAvanzar: (i, n) => {
+        avance.textContent = `Guardando ${i} de ${n}…`;
+      },
+      accion: async (fila) => {
+        hooks?.onBeforeSave?.();
+        await api(`/databases/${database.id}/rows/${fila.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ properties: { [prop.key]: valor } }),
+        });
+      },
+    });
+    // La selección NO se toca: cambiar una propiedad no es terminar con las
+    // filas (lo normal es cambiar y luego borrar, o al revés).
+    informeDeBloque.set(claveBase, informe);
+    marcarOcupado(false);
+    pintarInforme();
+    await onRepintar?.();
+  }
+
+  /** Ctrl/⌘+A selecciona las visibles, Espacio marca la fila con el foco, Supr
+   * borra la selección y Esc la quita. Se llama desde la captura de las filas,
+   * así que llega antes que el `keydown` de la celda (que se queda con Enter)
+   * y antes que el keymap de CodeMirror. */
+  function teclas(e) {
+    if (e.defaultPrevented || !(e.target instanceof Element)) return;
+    const activo = e.target;
+    // Un control de EDICIÓN manda: Ctrl+A selecciona su texto, Supr borra una
+    // letra y Espacio es un espacio. Una casilla no escribe nada, así que con
+    // ella enfocada Supr y Ctrl+A siguen siendo de la selección (Espacio, en
+    // cambio, es su tecla: la marca la propia casilla).
+    const campo = activo.closest("input, select, textarea, [contenteditable='true']");
+    const esCasilla = Boolean(
+      campo && campo.tagName === "INPUT" && (campo.type === "checkbox" || campo.type === "radio"),
+    );
+    if (campo && !esCasilla) return;
+
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "a" || e.key === "A")) {
+      e.preventDefault();
+      e.stopPropagation();
+      seleccionarTodas();
+      return;
+    }
+    if (e.key === "Escape") {
+      if (!sel.size) return;
+      e.preventDefault();
+      e.stopPropagation();
+      limpiar();
+      return;
+    }
+    if (e.key === "Delete") {
+      if (!sel.size || !puedeBorrar) return;
+      e.preventDefault();
+      e.stopPropagation();
+      borrarSeleccion();
+      return;
+    }
+    if (e.key === " ") {
+      if (esCasilla) return; // el navegador ya marca/desmarca la casilla
+      const fila = activo.closest("[data-row-id]");
+      if (!fila) return;
+      // En la tabla el foco está en una celda y Espacio marca; en la lista la
+      // fila ES un botón y también marca (abrir es Enter). Los demás botones
+      // de la fila (borrar) se siguen pulsando con Espacio como siempre.
+      const esBotonDeFila = fila.classList.contains("list-row");
+      if (!esBotonDeFila && activo.closest("button, a[href]")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      alternar(fila.dataset.rowId);
+    }
+  }
+
+  function botonDeBarra(texto, accion, alPulsar, clase = "btn") {
+    const boton = document.createElement("button");
+    boton.type = "button";
+    boton.className = clase;
+    boton.textContent = texto;
+    // Dentro de una nota, el widget del editor se lleva el `mousedown` de todo
+    // lo que no lleve este marcador (ver DatabaseBlockWidget en entry.js).
+    if (hooks?.embed) boton.dataset.dbAction = accion;
+    aislarTeclasDeControl(boton);
+    boton.addEventListener("click", alPulsar);
+    return boton;
+  }
+
+  const btnPropiedad = botonDeBarra("Cambiar propiedad", "cambiar-propiedad", () => {
+    if (ocupado) return;
+    const filas = seleccionadas();
+    if (!filas.length) return;
+    abrirDialogoDePropiedadEnBloque({
+      database,
+      filas,
+      alAplicar: (prop, valor) => aplicarPropiedad(filas, prop, valor),
+    });
+  });
+  if (!(database.schema_def || []).length) {
+    btnPropiedad.disabled = true;
+    btnPropiedad.title = "La base no tiene propiedades: no hay nada que cambiar.";
+  }
+
+  const btnQuitar = botonDeBarra("Quitar selección", "quitar-seleccion", () => limpiar());
+  acciones.append(btnPropiedad);
+  if (puedeBorrar) {
+    const btnBorrar = botonDeBarra("Borrar", "borrar-seleccion", () => borrarSeleccion(), "btn btn-danger");
+    acciones.append(btnBorrar);
+  } else {
+    // En la tabla de una nota no se borran filas: borrar se hace en la base.
+    const nota = document.createElement("span");
+    nota.className = "db-sel-note";
+    nota.textContent = "Para borrar, abre la base.";
+    acciones.append(nota);
+  }
+  acciones.append(btnQuitar);
+
+  barra.append(cuenta, fuera, avance, acciones);
+  sincronizar();
+  pintarInforme();
+
+  return {
+    barra,
+    informes,
+    teclas,
+    registrarFila,
+    fijarVisibles,
+    casillaDeFila,
+    casillaDeCabecera: () => cabecera,
+    sincronizar,
+  };
+}
+
 /** La tabla de una base. Es la MISMA en la página de la base y dentro de una
  * nota (bloque ```mdm-database, P17.2): mismos valores, mismas clases y las
  * mismas celdas editables -- dos renders distintos acabarían enseñando cosas
- * distintas. La única diferencia es `deletable: false`, que quita la columna de
- * acciones (en una nota no se borran filas) y el `colSpan` correspondiente.
+ * distintas. La única diferencia es `deletable: false`, que quita el botón de
+ * borrar de la columna de acciones (en una nota no se borran filas); la casilla
+ * de la selección está en las dos.
  *
  * `hooks` es el comportamiento extra de la copia incrustada y se pasa de mano
  * en mano hasta `saveRow` (`paintCell` -> `editCell` -> `saveRow`); una celda
@@ -6103,12 +6702,36 @@ async function saveRow(database, row, changes, hooks = null) {
  * explícito, porque el clic en una celda —que es lo que edita— no puede
  * comerse la apertura. También se abre con Ctrl/Cmd+Enter desde cualquier
  * celda de la fila (ver el listener del tbody al final).
+ *
+ * La última es la de acciones: la casilla de la selección múltiple (y el botón
+ * de borrar cuando `deletable`). `onRepintar` es lo que se llama después de una
+ * acción en bloque para volver a pintar con lo que diga el servidor.
  */
 function renderTable(
   database,
   rows,
-  { deletable = true, hooks = null, sort = [], onToggleSort = null, vacio = null } = {},
+  {
+    deletable = true,
+    hooks = null,
+    sort = [],
+    onToggleSort = null,
+    vacio = null,
+    onRepintar = null,
+  } = {},
 ) {
+  // La selección múltiple envuelve la tabla (barra e informe encima), pero
+  // `.table-wrap` sigue siendo el nodo que desplaza: quien pinte esto encuentra
+  // la tabla donde estaba.
+  const shell = document.createElement("div");
+  shell.className = "db-sel-shell";
+  const sel = crearSeleccionDeFilas({
+    database,
+    rows,
+    puedeBorrar: deletable,
+    hooks,
+    onRepintar,
+  });
+
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
 
@@ -6145,13 +6768,19 @@ function renderTable(
   database.schema_def.forEach((p) =>
     headRow.appendChild(celdaDeCabecera(p, sort, onToggleSort)),
   );
-  if (deletable) {
+  // La columna de acciones lleva la casilla de la fila y, cuando la vista deja
+  // borrar (`deletable`), también el botón de borrar. La casilla está SIEMPRE,
+  // también en la tabla incrustada de una nota (allí no hay botón de borrar,
+  // pero marcar en bloque sí vale). Su cabecera es la casilla de «seleccionar
+  // todas las visibles».
+  {
     const th = document.createElement("th");
     th.scope = "col";
+    th.className = "row-sel-head";
     const soloTexto = document.createElement("span");
     soloTexto.className = "sr-only";
-    soloTexto.textContent = "Acciones";
-    th.appendChild(soloTexto);
+    soloTexto.textContent = deletable ? "Seleccionar y acciones" : "Seleccionar";
+    th.append(sel.casillaDeCabecera(), soloTexto);
     headRow.appendChild(th);
   }
   thead.appendChild(headRow);
@@ -6163,8 +6792,8 @@ function renderTable(
   if (rows.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan =
-      database.schema_def.length + (muestraTitulo ? 1 : 0) + 1 + (deletable ? 1 : 0);
+    // +2: la columna de abrir la fila y la de acciones, que ahora está siempre.
+    td.colSpan = database.schema_def.length + (muestraTitulo ? 1 : 0) + 2;
     td.className = "search-empty";
     td.textContent = vacio || "Sin filas todavía.";
     tr.appendChild(td);
@@ -6255,13 +6884,24 @@ function renderTable(
       abrir();
     });
 
+    // La casilla de la fila, en la columna de acciones y antes del botón de
+    // borrar. Dentro de una nota, `data-db-action` deja pasar el clic: sin él
+    // el widget del editor se lo traga y la tabla se desmonta.
+    const accTd = document.createElement("td");
+    accTd.className = "row-sel-cell";
+    if (hooks?.embed) accTd.dataset.dbAction = "seleccionar-fila";
+    const casilla = sel.casillaDeFila(row);
+    accTd.appendChild(casilla);
+    tr.appendChild(accTd);
+    sel.registrarFila(row, tr, casilla);
+
     if (!deletable) {
-      // Sin columna de acciones: la fila se borra desde la página de la base.
+      // Sin botón de borrar: la fila se borra desde la página de la base (en
+      // una nota, borrar filas es demasiado fácil de hacer sin querer).
       tbody.appendChild(tr);
       return;
     }
 
-    const delTd = document.createElement("td");
     const delBtn = document.createElement("button");
     delBtn.className = "row-del";
     delBtn.innerHTML = svgIcon("i-trash");
@@ -6272,8 +6912,7 @@ function renderTable(
       await api(`/databases/${database.id}/rows/${row.id}`, { method: "DELETE" });
       selectDatabase(database.id);
     });
-    delTd.appendChild(delBtn);
-    tr.appendChild(delTd);
+    accTd.appendChild(delBtn);
 
     tbody.appendChild(tr);
   });
@@ -6306,8 +6945,18 @@ function renderTable(
   // flechas mueven el foco (y el tabIndex=0) entre celdas -- ver paintCell.
   const firstCell = tbody.querySelector('td[data-editable="1"]');
   if (firstCell) setRovingCell(firstCell);
+
+  // Teclado de la selección, en captura: llega antes que el `keydown` de la
+  // celda (que se queda con Enter) y antes que el keymap de CodeMirror cuando
+  // la tabla vive dentro de una nota.
+  table.addEventListener("keydown", (e) => sel.teclas(e), true);
+  // Las casillas nacen con lo que diga la selección; esto pinta además la
+  // cabecera y el recuento.
+  sel.sincronizar();
+
   wrap.appendChild(table);
-  return wrap;
+  shell.append(sel.barra, sel.informes, wrap);
+  return shell;
 }
 
 /** Deja el testigo del roving tabindex en una sola celda de la tabla: la
@@ -6364,9 +7013,9 @@ function paintCell(td, database, row, prop, hooks = null) {
   // entry.js. Mismo marcador que el encabezado y el «+ Nueva fila».
   if (hooks?.embed) td.dataset.dbAction = "editar";
   // Roving tabindex: las celdas no son 72 paradas de Tab, solo la que está en
-  // curso (renderTable deja tabIndex=0 en la primera). Enter/Espacio abren la
-  // edición, igual que el clic; las flechas y Tab mueven el foco como en una
-  // hoja.
+  // curso (renderTable deja tabIndex=0 en la primera). Enter abre la edición,
+  // igual que el clic (Espacio marca la fila: ver `crearSeleccionDeFilas`); las
+  // flechas y Tab mueven el foco como en una hoja.
   td.tabIndex = -1;
   td.onkeydown = (e) => {
     if (e.target !== td) return; // el <input>/<select> de editCell() manda
@@ -6387,7 +7036,10 @@ function paintCell(td, database, row, prop, hooks = null) {
       enfocarCelda(destino);
       return;
     }
-    if (e.key === "Enter" || e.key === " ") {
+    // Enter abre la edición; Espacio NO: con la selección múltiple marca la
+    // fila (ver `crearSeleccionDeFilas`), como en un gestor de ficheros. El
+    // `keydown` de la tabla llega antes (va en captura) y ya lo ha consumido.
+    if (e.key === "Enter") {
       e.preventDefault();
       parar();
       td.click();
@@ -7137,8 +7789,24 @@ function renderCalendar(database, rows, view, refresh) {
  * cada línea abre la fila, que es donde se edita, igual que una tarjeta del
  * tablero. */
 function renderList(database, rows, view, refresh) {
+  const shell = document.createElement("div");
+  shell.className = "db-sel-shell";
+  // Misma selección que la tabla: una fila marcada en la lista y luego vista en
+  // la tabla (otra pestaña) sigue marcada.
+  const sel = crearSeleccionDeFilas({ database, rows, onRepintar: refresh });
+
   const wrap = document.createElement("div");
   wrap.className = "db-list";
+
+  // La lista no tiene cabecera de columnas, así que «seleccionar todas las
+  // visibles» va en una línea propia, encima de la primera fila.
+  const cabeza = document.createElement("div");
+  cabeza.className = "db-list-head";
+  const etiquetaCabeza = document.createElement("span");
+  etiquetaCabeza.className = "db-list-head-text";
+  etiquetaCabeza.textContent = "Seleccionar todas";
+  cabeza.append(sel.casillaDeCabecera(), etiquetaCabeza);
+  wrap.appendChild(cabeza);
 
   // El contenido de una línea se pinta aparte para poder REPINTARLA en el
   // sitio tras guardar en la vista de fila: el botón (que es el que tiene el
@@ -7163,21 +7831,28 @@ function renderList(database, rows, view, refresh) {
   };
 
   const lineaDeFila = (row) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "list-row";
-    item.dataset.rowId = row.id;
-    pintarLinea(item, row);
+    // La casilla va FUERA del botón: dentro no puede ir (un botón no lleva
+    // otro control) y, si se envolviera, el clic de la casilla abriría la fila.
+    const item = document.createElement("div");
+    item.className = "list-row-item";
+    const casilla = sel.casillaDeFila(row);
+    const boton = document.createElement("button");
+    boton.type = "button";
+    boton.className = "list-row";
+    boton.dataset.rowId = row.id;
+    pintarLinea(boton, row);
     // En la lista la fila ENTERA abre la página: no hay celdas que editar en
-    // el sitio, así que no hay dos gestos que separar.
-    item.addEventListener("click", () =>
+    // el sitio, así que no hay dos gestos que separar (Espacio la marca).
+    boton.addEventListener("click", () =>
       openRowPage(database, row, {
-        origin: item,
+        origin: boton,
         rows,
         index: rows.indexOf(row),
-        onSaved: () => pintarLinea(item, row),
+        onSaved: () => pintarLinea(boton, row),
       }),
     );
+    item.append(casilla, boton);
+    sel.registrarFila(row, item, casilla);
     return item;
   };
 
@@ -7194,16 +7869,25 @@ function renderList(database, rows, view, refresh) {
     className: "db-add-row db-add-row--list",
     onCreate: (titulo) => crearFilaEnVista(database, view, titulo),
     onDone: (res) => {
-      for (const hijo of [...wrap.children]) if (hijo !== addRow) hijo.remove();
+      // La cabecera (la casilla de «todas») se queda: se rehacen las filas.
+      for (const hijo of [...wrap.children]) {
+        if (hijo !== addRow && hijo !== cabeza) hijo.remove();
+      }
       if (res.filas.length === 0) wrap.insertBefore(avisoVacio(), addRow);
       res.filas.forEach((fila) => wrap.insertBefore(lineaDeFila(fila), addRow));
+      sel.fijarVisibles(res.filas);
       refrescarRecuentoDeVista(wrap, res.filas.length, res.total);
       if (res.visible) enfocarFila(wrap, res.fila.id);
     },
   });
   wrap.appendChild(addRow);
 
-  return wrap;
+  // Mismo teclado que la tabla, con el foco en la lista.
+  wrap.addEventListener("keydown", (e) => sel.teclas(e), true);
+  sel.sincronizar();
+
+  shell.append(sel.barra, sel.informes, wrap);
+  return shell;
 }
 
 // ------------------------------------------------ fila abierta como página
