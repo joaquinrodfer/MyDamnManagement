@@ -4702,11 +4702,18 @@ async function renderDatabaseEmbed(block, container) {
   };
 
   const pintar = (filas) => {
+    // Si en ESTE bloque hay una celda abierta, el repintado no puede llevársela
+    // por delante: un guardado en OTRO bloque de la misma base pide aquí filas
+    // nuevas (`refrescarOtrosEmbeds`) y vaciar `body` destruiría el `<input>`
+    // --y el foco-- de lo que el usuario está escribiendo. Se aparta fila,
+    // columna y valor tecleado, y se vuelve a abrir después de pintar.
+    const enEdicion = celdaEnEdicion(body);
     meta.textContent = `${activeView ? activeView.name : "Todas"} · ${filas.length} ${
       filas.length === 1 ? "fila" : "filas"
     }`;
     body.textContent = "";
     body.append(renderTable(database, filas, { deletable: false, hooks }));
+    if (enEdicion) reabrirCeldaEnEdicion(body, database, filas, enEdicion, hooks);
   };
   pintar(rows);
 
@@ -4749,6 +4756,75 @@ async function renderDatabaseEmbed(block, container) {
       },
     }),
   );
+}
+
+/** La celda que se está editando dentro de un bloque incrustado, si hay
+ * alguna: `{rowId, columna, valor, enfocada}`. `columna` es el índice entre las
+ * celdas editables de la fila (0 es el título cuando la tabla lo enseña).
+ *
+ * La usa `pintar()` para no perder lo que se está escribiendo cuando llega un
+ * repintado de fuera: un guardado en otro bloque de la misma base repinta este
+ * entero (ver `refrescarOtrosEmbeds`), y sin esto el `<input>` de la celda
+ * abierta se va con el `body`. */
+function celdaEnEdicion(container) {
+  const control = container.querySelector(
+    'td[data-editable="1"] input, td[data-editable="1"] select, td[data-editable="1"] textarea',
+  );
+  if (!control) return null;
+  const td = control.closest("td");
+  const tr = td?.parentElement;
+  if (!tr || !tr.dataset.rowId) return null;
+  return {
+    rowId: String(tr.dataset.rowId),
+    columna: celdasEditables(tr).indexOf(td),
+    valor: control.value,
+    enfocada: td.contains(document.activeElement),
+  };
+}
+
+/** Vuelve a abrir, en la tabla recién pintada, la celda que estaba en edición
+ * (`estado` de `celdaEnEdicion`) con el valor tecleado dentro.
+ *
+ * La fila se busca por `data-row-id` y la columna por índice: la vista puede
+ * venir reordenada o filtrada, pero la fila y sus columnas son las mismas. Si
+ * la fila ya no está en la vista no hay nada que reabrir y se descarta.
+ *
+ * Es un reabrir, no un guardar: `editCell` siembra el control con lo que hay en
+ * el servidor y aquí se sustituye por lo tecleado, así que su `seeded` sigue
+ * siendo el valor del `.md` y el próximo commit (Enter, Tab o blur) guarda lo
+ * que el usuario escribió. El foco solo se recupera si lo tenía: si el
+ * repintado lo provocó algo que ya se lo llevó a otro sitio, robarlo sería
+ * perder lo que estaba haciendo. */
+function reabrirCeldaEnEdicion(container, database, filas, estado, hooks) {
+  const fila = filas.find((r) => String(r.id) === estado.rowId);
+  if (!fila) return false;
+  const tr = container.querySelector(`tr[data-row-id="${CSS.escape(estado.rowId)}"]`);
+  const td = tr ? celdasEditables(tr)[estado.columna] : null;
+  if (!td) return false;
+  // La columna 0 es el título cuando la tabla lo enseña (`renderTable`).
+  const muestraTitulo = !database.title_hidden;
+  const prop = muestraTitulo
+    ? database.schema_def[estado.columna - 1] || null
+    : database.schema_def[estado.columna] || null;
+  editCell(td, database, fila, prop, hooks);
+  const control = td.querySelector("input, select, textarea");
+  if (!control) return false;
+  control.value = estado.valor;
+  if (estado.enfocada) {
+    // El foco va DIRECTO al control, no a la celda: `td.focus()` dispara el
+    // `blur` del input que acaba de crear `editCell`, y ese blur guarda y
+    // repinta la celda -- se llevaría por delante la edición recién reabierta.
+    // Solo se mueve el testigo del roving tabindex.
+    setRovingCell(td);
+    control.focus?.();
+    // El cursor, al final de lo tecleado. `number`/`date` no saben de rangos.
+    try {
+      control.setSelectionRange?.(estado.valor.length, estado.valor.length);
+    } catch {
+      /* control sin selección de texto */
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------- añadir filas desde una vista
@@ -5128,6 +5204,9 @@ async function saveRow(database, row, changes, hooks = null) {
  *   - `embed`: marca las celdas con `data-db-action` para que el widget del
  *     editor no se trague el clic y para que las teclas que consumimos no
  *     lleguen al keymap de CodeMirror (ver `DatabaseBlockWidget` en entry.js).
+ *     También es lo que habilita el recorrido con Tab celda a celda: en la
+ *     página de la base el Tab es el del navegador, que pasa por los botones de
+ *     borrar de cada fila (aquí no hay columna de acciones).
  *   - `onBeforeSave()` / `onSaved()`: ver `renderDatabaseEmbed`.
  */
 function renderTable(database, rows, { deletable = true, hooks = null } = {}) {
@@ -5276,9 +5355,12 @@ function paintCell(td, database, row, prop, hooks = null) {
     // CodeMirror (su Enter inserta un salto de línea en el `.md`): se corta en
     // la celda. En la página de la base no hay nada encima que lo quiera.
     const parar = () => e.stopPropagation();
-    if (e.key === "Tab") {
-      // Tab / Shift+Tab van celda a celda y de fila en fila; en los extremos de
-      // la tabla no se toca, para poder salir de ella con Tab.
+    if (e.key === "Tab" && hooks?.embed) {
+      // Tab / Shift+Tab van celda a celda y de fila en fila, pero SOLO en el
+      // bloque incrustado. En la página de la base el recorrido es el del
+      // navegador, que pasa por los botones «Borrar fila» de cada fila: aquí no
+      // hay columna de acciones y saltárselos era una regresión. En los
+      // extremos de la tabla no se consume, para poder salir con Tab.
       const destino = celdaVecina(td, e.shiftKey ? -1 : 1);
       if (!destino) return;
       e.preventDefault();
@@ -5458,9 +5540,12 @@ function editCell(td, database, row, prop, hooks = null) {
       repaint(true);
       return;
     }
-    if (e.key !== "Tab") return;
-    // Tab / Shift+Tab guardan y pasan a la celda siguiente/anterior. En los
-    // extremos de la tabla no se consume: Tab sale y el blur guarda lo escrito.
+    // Tab / Shift+Tab guardan y pasan a la celda siguiente/anterior, solo en el
+    // bloque incrustado (mismo motivo que en `paintCell`: en la página de la
+    // base el Tab del navegador conserva su recorrido, que incluye «Borrar
+    // fila»). En los extremos de la tabla no se consume: Tab sale y el blur
+    // guarda lo escrito.
+    if (e.key !== "Tab" || !hooks?.embed) return;
     const destino = celdaVecina(td, e.shiftKey ? -1 : 1);
     if (!destino) return;
     e.preventDefault();
