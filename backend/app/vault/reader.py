@@ -368,6 +368,7 @@ def views_from_frontmatter(
             config = {**nested, **config}
         elif nested not in (None, ""):
             warnings.append(f"{path}: 'config' de la vista {name!r} no es un mapa: se ignora")
+        config = _columnas_de_vista(config, name, path, warnings)
         vid, derived = view_id(item.get("id"), database_page_id, position, name)
         if derived:
             warnings.append(
@@ -376,6 +377,66 @@ def views_from_frontmatter(
             )
         views.append({"id": vid, "name": name or "Vista", "type": vtype, "config": config})
     return views
+
+
+def _columnas_de_vista(config: dict, name: str, path: str, warnings: list[str]) -> dict:
+    """`widths` y `order`: el ancho y el orden de las columnas, POR VISTA.
+
+    El parser del frontmatter no infiere tipos (una clave vale lo que está
+    escrito), así que `widths: {empresa: 180}` llega aquí como el texto `"180"`
+    y el índice se queda con eso si no se convierte. El ancho se guarda como
+    entero: es un número de píxeles, no texto, y el frontend lo resta y lo
+    compara. Lo que no sea un ancho positivo se descarta con un aviso en vez de
+    propagarse — un valor raro en el `.md` no puede romper la tabla.
+
+    `order` es la lista de claves de propiedad en el orden en que se enseñan.
+    No se filtra contra el schema a propósito: una propiedad puede renombrarse
+    o borrarse y la vista tiene que seguir abriendo (el frontend ignora las
+    claves que no existen y añade al final las que no están en la lista).
+    """
+    widths = config.get("widths")
+    if widths not in (None, ""):
+        if not isinstance(widths, dict):
+            warnings.append(f"{path}: 'widths' de la vista {name!r} no es un mapa; se ignora")
+            config.pop("widths", None)
+        else:
+            limpios: dict[str, int] = {}
+            for key, value in widths.items():
+                ancho = 0
+                if isinstance(value, (int, str)):
+                    try:
+                        ancho = int(str(value).strip())
+                    except ValueError:
+                        ancho = 0
+                if ancho > 0:
+                    limpios[str(key)] = ancho
+                else:
+                    warnings.append(
+                        f"{path}: ancho no válido {value!r} para {key!r} en la vista "
+                        f"{name!r}; se ignora"
+                    )
+            if limpios:
+                config["widths"] = limpios
+            else:
+                config.pop("widths", None)
+    elif "widths" in config:
+        config.pop("widths", None)
+
+    order = config.get("order")
+    if order is not None:
+        if isinstance(order, list):
+            claves = [
+                clave.strip() for clave in order
+                if isinstance(clave, str) and clave.strip()
+            ]
+            if claves:
+                config["order"] = claves
+            else:
+                config.pop("order", None)
+        else:
+            warnings.append(f"{path}: 'order' de la vista {name!r} no es una lista; se ignora")
+            config.pop("order", None)
+    return config
 
 
 def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:

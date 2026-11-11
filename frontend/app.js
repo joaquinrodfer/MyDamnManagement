@@ -4645,13 +4645,21 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // Guardar el filtro o el orden es un PATCH a la vista y un repintado con lo
   // que el servidor acaba de escribir: la pantalla no guarda su propia copia.
   const aplicarConfig = async (cambios) => {
+    // El ancho y el orden de las columnas repintan la base entera (el `.md`
+    // manda, la pantalla no guarda su propia copia): se apunta dónde estaba
+    // mirando el usuario para devolverlo después. Sin esto, soltar el asa con
+    // la tabla desplazada la mandaba a la primera columna, y el foco del
+    // teclado se quedaba en `<body>` entre dos reordenaciones seguidas.
+    const sonColumnas = "widths" in cambios || "order" in cambios;
+    const antes = sonColumnas ? estadoDeColumnas() : null;
     try {
       await guardarConfigDeVista(database, activeView, cambios);
     } catch (e) {
-      reportError("No se pudo guardar el filtro ni el orden de la vista", e);
+      reportError("No se pudo guardar la vista", e);
       return;
     }
     await recargarVistas();
+    if (antes) restaurarColumnas(antes);
   };
 
   if (activeView) {
@@ -4671,7 +4679,8 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     const notaTodas = document.createElement("p");
     notaTodas.className = "db-view-note";
     notaTodas.textContent =
-      "«Todas» es la base entera: el filtro y el orden son de una vista. Elige una pestaña para filtrar.";
+      "«Todas» es la base entera: el filtro, el orden de las filas y el ancho y " +
+      "el orden de las columnas son de una vista. Elige una pestaña para cambiarlos.";
     main.insertBefore(notaTodas, content);
   }
 
@@ -4705,7 +4714,10 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
           ? (key) => aplicarConfig({ sort: alternarOrden(clavesOrden, key) })
           : null,
         vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+        // El ancho y el orden de las columnas se guardan en la vista activa:
+        // sin vista no hay entrada en el `.md` donde escribirlos.
         view: activeView,
+        onCambioColumnas: activeView ? aplicarConfig : null,
         onChanged: recargarVistas,
         // Tras borrar o cambiar una propiedad en bloque, la tabla se repinta
         // con lo que diga el servidor: nada de ir tocando filas a mano.
@@ -4844,7 +4856,10 @@ async function guardarConfigDeVista(database, view, cambios) {
     if (
       valor === undefined ||
       valor === null ||
-      (Array.isArray(valor) && valor.length === 0)
+      (Array.isArray(valor) && valor.length === 0) ||
+      // Un mapa vacío tampoco se escribe: `widths: {}` es un flow map, que el
+      // parser del frontmatter no sabe leer y la clave se perdería al releer.
+      (typeof valor === "object" && !Array.isArray(valor) && Object.keys(valor).length === 0)
     ) {
       delete config[clave];
     } else {
@@ -5622,7 +5637,16 @@ async function renderDatabaseEmbed(block, container) {
         },
       }),
     );
-    if (enEdicion) reabrirCeldaEnEdicion(body, database, filas, enEdicion, hooks);
+    if (enEdicion) {
+      reabrirCeldaEnEdicion(
+        body,
+        database,
+        filas,
+        enEdicion,
+        hooks,
+        columnasDeVista(database, activeView),
+      );
+    }
   };
 
   /** Después de tocar el esquema o la vista desde la cabecera del bloque: se
@@ -5743,17 +5767,19 @@ function celdaEnEdicion(container) {
  * que el usuario escribió. El foco solo se recupera si lo tenía: si el
  * repintado lo provocó algo que ya se lo llevó a otro sitio, robarlo sería
  * perder lo que estaba haciendo. */
-function reabrirCeldaEnEdicion(container, database, filas, estado, hooks) {
+function reabrirCeldaEnEdicion(container, database, filas, estado, hooks, columnas = null) {
   const fila = filas.find((r) => String(r.id) === estado.rowId);
   if (!fila) return false;
   const tr = container.querySelector(`tr[data-row-id="${CSS.escape(estado.rowId)}"]`);
   const td = tr ? celdasEditables(tr)[estado.columna] : null;
   if (!td) return false;
-  // La columna 0 es el título cuando la tabla lo enseña (`renderTable`).
+  // La columna 0 es el título cuando la tabla lo enseña (`renderTable`). Las
+  // columnas son las DE LA VISTA (orden y ocultas incluidas), no el schema.
   const muestraTitulo = !database.title_hidden;
+  const columnasTabla = columnas || database.schema_def;
   const prop = muestraTitulo
-    ? database.schema_def[estado.columna - 1] || null
-    : database.schema_def[estado.columna] || null;
+    ? columnasTabla[estado.columna - 1] || null
+    : columnasTabla[estado.columna] || null;
   editCell(td, database, fila, prop, hooks);
   const control = td.querySelector("input, select, textarea");
   if (!control) return false;
@@ -7295,6 +7321,478 @@ function crearSeleccionDeFilas({
   };
 }
 
+// --------------------------------------- ancho y orden de las columnas
+// Las dos cosas son de LA VISTA, no de la base: viven en su `config` --el
+// frontmatter de `Bases/<slug>.md`-- junto al filtro y al orden de las filas.
+// `widths` es un mapa clave -> píxeles y `order` la lista de claves en el orden
+// en que se enseñan. «Todas (sin vista)» no tiene entrada donde guardarlos, así
+// que sigue con el orden del schema y el reparto del navegador: prometer un
+// ancho que se pierde al recargar sería peor que no ofrecerlo.
+
+/** Lo que hay que devolver a su sitio cuando el repintado de una columna rehace
+ * la base entera: el desplazamiento horizontal de la tabla y el foco.
+ *
+ * El ancho y el orden viven en la vista, así que guardar cualquiera de los dos
+ * vuelve a pedir la base y a pintar la tabla de cero. Con anchos guardados la
+ * tabla se sale del panel: sin devolver el `scrollLeft`, soltar el asa con la
+ * tabla desplazada la mandaba a la primera columna. Y sin el foco, `Alt+flecha`
+ * (mover una columna con el teclado) lo dejaba en `<body>`: dos reordenaciones
+ * seguidas exigían volver a enfocar la cabecera.
+ *
+ * Se busca la tabla en el documento y no en una referencia guardada: el
+ * repintado crea un `#main` nuevo. */
+function estadoDeColumnas() {
+  const wrap = document.querySelector("#main .table-wrap");
+  if (!wrap) return null;
+  const activo = document.activeElement;
+  let foco = null;
+  if (activo && wrap.contains(activo)) {
+    const th = activo.closest?.("th[data-col-key]");
+    if (th) foco = { clave: th.dataset.colKey, asa: Boolean(activo.closest(".col-resizer")) };
+  }
+  return { scrollLeft: wrap.scrollLeft, foco };
+}
+
+/** Devuelve el desplazamiento y el foco que apuntó `estadoDeColumnas`, sobre la
+ * tabla recién pintada. Si la columna ya no está (o la vista cambió de tipo) no
+ * se toca nada: el foco se queda donde lo haya dejado el navegador. */
+function restaurarColumnas({ scrollLeft, foco }) {
+  const wrap = document.querySelector("#main .table-wrap");
+  if (!wrap) return;
+  if (scrollLeft) wrap.scrollLeft = scrollLeft;
+  if (!foco) return;
+  const th = wrap.querySelector(`th[data-col-key="${CSS.escape(foco.clave)}"]`);
+  if (!th) return;
+  // El asa (`separator`) o el botón de ordenar, que es lo que tiene el foco
+  // cuando se reordena con el teclado.
+  const destino = foco.asa ? th.querySelector(".col-resizer") : th.querySelector(".th-sort");
+  destino?.focus({ preventScroll: true });
+}
+
+const ANCHO_MINIMO = 64;   // por debajo no cabe ni el nombre de la columna
+const ANCHO_MAXIMO = 560;  // más que esto y la columna se come la tabla
+
+function acotarAncho(px) {
+  return Math.min(ANCHO_MAXIMO, Math.max(ANCHO_MINIMO, Math.round(px)));
+}
+
+/** Las columnas que no son del schema: la de abrir la fila, la del título y la
+ * de acciones. En el DOM llevan `@` delante para no chocar con una propiedad
+ * con esa clave (`open`, `title`, `actions`), pero solo la del título tiene
+ * ancho guardado, y bajo la clave `title`. */
+const CLAVES_DE_SERVICIO = new Set(["@open", "@title", "@actions", "@add"]);
+
+/** La clave con la que se guarda el ancho de una columna en `views[].widths`:
+ * la de la propiedad, o `title` para la columna del título. Las de servicio
+ * (abrir la fila y acciones) no tienen: su ancho es parte del dibujo de la
+ * tabla, no un dato de la vista, y por eso no llevan asa. */
+function claveDeAncho(domKey) {
+  if (domKey === "@title") return "title";
+  return CLAVES_DE_SERVICIO.has(domKey) ? null : domKey;
+}
+
+/** Los anchos guardados de una vista: clave de propiedad (o `title` para la
+ * columna del título) -> píxeles, ya dentro de los límites.
+ *
+ * El `.md` guarda el ancho como entero y el índice lo devuelve así, pero un
+ * fichero escrito a mano puede traerlo como texto: `Number` y el filtro de
+ * `Number.isFinite` dejan fuera lo que no sea un número sin romper la tabla. */
+function anchosDeVista(view) {
+  const guardados = view?.config?.widths;
+  const anchos = new Map();
+  if (!guardados || typeof guardados !== "object") return anchos;
+  for (const [clave, valor] of Object.entries(guardados)) {
+    const px = Number(valor);
+    if (Number.isFinite(px) && px > 0) anchos.set(String(clave), acotarAncho(px));
+  }
+  return anchos;
+}
+
+/** Las columnas de una vista, en su orden: `order` manda y
+ * `visible_properties` quita. Lo que no esté en `order` va detrás, en el orden
+ * del schema, así que añadir una propiedad no la esconde ni la manda al
+ * principio. Sin vista («Todas») o sin nada guardado, es el schema tal cual.
+ *
+ * Las claves de `order` que ya no existen (una propiedad renombrada o borrada)
+ * se saltan sin más: el `.md` es del usuario y puede hablar de una columna que
+ * la app ya no tiene. */
+function columnasEnOrden(database, view) {
+  const schema = database.schema_def || [];
+  if (!view) return schema.slice();
+  const porClave = new Map(schema.map((p) => [p.key, p]));
+  const orden = Array.isArray(view.config?.order) ? view.config.order : [];
+  const columnas = [];
+  for (const clave of orden) {
+    const prop = porClave.get(String(clave));
+    if (!prop) continue;
+    columnas.push(prop);
+    porClave.delete(prop.key);
+  }
+  for (const prop of schema) {
+    if (porClave.has(prop.key)) columnas.push(prop);
+  }
+  return columnas;
+}
+
+/** Las columnas que la tabla enseña: el orden de `ordenadas` sin las ocultas
+ * (`visible_properties`). Una lista vacía es «todas» (el `.md` no la escribe):
+ * solo se filtra cuando la vista dice de verdad cuáles enseña. */
+function columnasDeVista(database, view) {
+  const columnas = columnasEnOrden(database, view);
+  const ocultas = view?.config?.visible_properties;
+  if (!Array.isArray(ocultas) || ocultas.length === 0) return columnas;
+  const visibles = new Set(ocultas.map(String));
+  return columnas.filter((p) => visibles.has(p.key));
+}
+
+/**
+ * El ancho de la tabla es la suma de sus columnas. Con `table-layout: fixed`
+ * el ancho de la tabla manda: si no cuadra con la suma de los `<col>`, el
+ * navegador reparte la diferencia y la columna que no se está tocando cambia
+ * de tamaño sola. Fijarlo a la suma deja cada columna exactamente en lo que
+ * dice la vista.
+ */
+function fijarAnchoDeTabla(table, cols) {
+  let suma = 0;
+  for (const col of cols.values()) suma += parseFloat(col.style.width) || 0;
+  if (suma > 0) table.style.width = `${suma}px`;
+}
+
+/** Con anchos guardados el reparto lo manda la vista y no el contenido, así
+ * que la tabla pasa a `table-layout: fixed`: en `auto` una columna nunca se
+ * estrecha por debajo de su texto, y el asa parecería no responder al
+ * arrastrarla hacia dentro. Para que las demás columnas no se repartan el
+ * hueco a partes iguales, primero se mide lo que ocupaban con el reparto
+ * automático (`getBoundingClientRect` del `<th>`, que es el ancho de la
+ * columna) y se congelan: a partir de ahí solo cambia la que se arrastra.
+ *
+ * Necesita la tabla en el documento: si aún no lo está (medidas a cero) no
+ * toca nada y se queda el reparto del navegador con el ancho guardado como
+ * mínimo, que es lo que había antes de esta función. */
+function congelarAnchos(table, cols, anchos) {
+  if (table.classList.contains("has-col-widths") || cols.size === 0) return;
+  // Se mide con el reparto automático y SIN los anchos guardados: un `<col>`
+  // con ancho hace que el navegador mida las demás por su mínimo (la palabra
+  // más larga), no por su contenido, y al congelar se quedarían estrechas.
+  const previos = new Map([...cols].map(([clave, col]) => [clave, col.style.width]));
+  for (const col of cols.values()) col.style.width = "";
+  const medidos = new Map();
+  for (const clave of cols.keys()) {
+    const celda = table.querySelector(`th[data-col-key="${CSS.escape(clave)}"]`);
+    const natural = Math.ceil(celda ? celda.getBoundingClientRect().width : 0);
+    if (!natural) {
+      // La tabla aún no tiene caja (no está en el documento): no se puede
+      // medir. Se deja como estaba y manda el reparto del navegador.
+      for (const [k, ancho] of previos) {
+        const col = cols.get(k);
+        if (col && ancho) col.style.width = ancho;
+      }
+      return;
+    }
+    medidos.set(clave, natural);
+  }
+  table.classList.add("has-col-widths");
+  for (const [clave, col] of cols) {
+    const anchoMd = claveDeAncho(clave);
+    const ancho = (anchoMd && anchos.get(anchoMd)) || medidos.get(clave);
+    if (ancho) col.style.width = `${ancho}px`;
+  }
+  fijarAnchoDeTabla(table, cols);
+}
+
+/** El ancho que ocupa el contenido de una columna, medido con el reparto
+ * automático y con la tabla a su ancho natural (`max-content`): es lo que hace
+ * un doble clic en el asa, como en una hoja de cálculo. Deja la tabla
+ * congelada con las demás columnas como estaban y devuelve el ancho acotado.
+ *
+ * La medida se toma SIN el `max-width: 240px` de las celdas (`is-measuring`):
+ * ese tope es el recorte de la pintura, no el contenido, y cortaba la medida en
+ * 240 px, así que cualquier texto más largo se quedaba en 240 y con puntos
+ * suspensivos —justo el caso en el que se usa el doble clic—. El tope de
+ * verdad lo pone `acotarAncho` (64-560). */
+function ajustarAlContenido(table, cols, domKey, anchos) {
+  const previos = new Map([...cols].map(([k, col]) => [k, col.style.width]));
+  const eraFija = table.classList.contains("has-col-widths");
+  const anchoTabla = table.style.width;
+  table.classList.remove("has-col-widths");
+  table.classList.add("is-measuring");
+  table.style.width = "max-content";
+  for (const col of cols.values()) col.style.width = "";
+  const celda = table.querySelector(`th[data-col-key="${CSS.escape(domKey)}"]`);
+  const medido = Math.ceil(celda ? celda.getBoundingClientRect().width : 0);
+  table.style.width = anchoTabla;
+  table.classList.remove("is-measuring");
+  for (const [k, ancho] of previos) {
+    const col = cols.get(k);
+    if (col) col.style.width = ancho;
+  }
+  if (eraFija) table.classList.add("has-col-widths");
+  if (!medido) return null;
+  congelarAnchos(table, cols, anchos);
+  const px = acotarAncho(medido);
+  const col = cols.get(domKey);
+  if (col) col.style.width = `${px}px`;
+  fijarAnchoDeTabla(table, cols);
+  return px;
+}
+
+/** El asa del borde derecho de una cabecera: arrastra para el ancho, doble
+ * clic para ajustarlo al contenido y las flechas (con el foco en el asa) para
+ * moverlo sin ratón.
+ *
+ * Es un `div` con `role="separator"` y no un botón: no tiene texto propio y su
+ * nombre accesible es el de la columna. Mide 9 px de zona táctil aunque se vea
+ * como una línea de 1 px, y lleva `touch-action: none` para que el dedo ajuste
+ * el ancho en vez de desplazar la tabla.
+ *
+ * `clave` es la clave con la que se guarda el ancho en la vista y `domKey` la
+ * de la columna en la tabla: desde que las columnas de servicio llevan `@`
+ * delante (`@title`) no son la misma, y una propiedad llamada «Open» no puede
+ * quedarse con el ancho de la columna del botón de abrir.
+ *
+ * El `.md` se escribe UNA vez, al soltar: mientras se arrastra solo cambia el
+ * `<col>` de esa columna, así que la pantalla responde en cada píxel sin
+ * mandar un PATCH por movimiento. */
+function asaDeAncho({ clave, domKey, nombre, table, cols, anchos, onCambio }) {
+  const asa = document.createElement("div");
+  asa.className = "col-resizer";
+  asa.dataset.colResizer = clave;
+  asa.setAttribute("role", "separator");
+  asa.setAttribute("aria-orientation", "vertical");
+  asa.setAttribute("aria-label", `Ancho de la columna «${nombre}»`);
+  asa.title = `Arrastra para cambiar el ancho de «${nombre}» · doble clic: ajustar al contenido`;
+  asa.tabIndex = 0;
+
+  const celdaDe = () => table.querySelector(`th[data-col-key="${CSS.escape(domKey)}"]`);
+  const guardar = (px) => {
+    if (px === null) return;
+    anchos.set(clave, px);
+    onCambio({ widths: Object.fromEntries(anchos) });
+  };
+  const anchoActual = () => {
+    const celda = celdaDe();
+    return Math.ceil(celda ? celda.getBoundingClientRect().width : 0);
+  };
+
+  let arrastre = null;
+  let conCalma = null;
+  asa.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Antes de mover nada: la tabla pasa a `fixed` con las columnas de ahora
+    // congeladas (si no, arrastrar hacia dentro no estrecha nada).
+    congelarAnchos(table, cols, anchos);
+    arrastre = { x: e.clientX, inicio: anchoActual(), ultimo: null };
+    asa.setPointerCapture?.(e.pointerId);
+    asa.classList.add("is-resizing");
+  });
+  asa.addEventListener("pointermove", (e) => {
+    if (!arrastre) return;
+    const px = acotarAncho(arrastre.inicio + (e.clientX - arrastre.x));
+    arrastre.ultimo = px;
+    const col = cols.get(domKey);
+    if (col) col.style.width = `${px}px`;
+    fijarAnchoDeTabla(table, cols);
+  });
+  const soltar = () => {
+    if (!arrastre) return;
+    const px = arrastre.ultimo;
+    arrastre = null;
+    asa.classList.remove("is-resizing");
+    // Sin movimiento no hay nada que guardar: un clic en el asa no escribe en
+    // el `.md` (y así el doble clic puede ser otra cosa).
+    if (px !== null) guardar(px);
+  };
+  asa.addEventListener("pointerup", soltar);
+  asa.addEventListener("pointercancel", soltar);
+
+  asa.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    guardar(ajustarAlContenido(table, cols, domKey, anchos));
+  });
+
+  asa.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const paso = (e.key === "ArrowLeft" ? -8 : 8) * (e.shiftKey ? 4 : 1);
+    congelarAnchos(table, cols, anchos);
+    const px = acotarAncho(anchoActual() + paso);
+    const col = cols.get(domKey);
+    if (col) col.style.width = `${px}px`;
+    fijarAnchoDeTabla(table, cols);
+    // Las flechas se repiten: se guarda cuando dejas de pulsar, no una vez por
+    // píxel (cada guardado repinta la base entera y se llevaría el foco).
+    clearTimeout(conCalma);
+    conCalma = setTimeout(() => guardar(px), 300);
+  });
+  return asa;
+}
+
+/** Arrastrar una cabecera para cambiar el orden de las columnas de la vista.
+ *
+ * Con eventos de puntero y no con el arrastre nativo del navegador: el nativo
+ * no existe en táctil, no deja pintar una línea de inserción propia y su
+ * `dataTransfer` no aporta nada aquí. Empieza tras 5 px de movimiento para que
+ * un clic siga siendo un clic (la cabecera ordena) y el arrastre sea otra cosa.
+ *
+ * El ciclo de vida va en `document` y el puntero se captura en cuanto el
+ * arrastre empieza de verdad. Colgado de `pointerup` en la cabecera, soltar
+ * sobre las filas (el gesto más normal: arrastras y sueltas un poco más abajo)
+ * no disparaba nada: la línea de inserción y la cabecera al 45 % se quedaban
+ * puestas y el siguiente `pointerup` suelto —sin pulsar— ejecutaba el
+ * `reordenar` pendiente y reescribía `views[].order` solo.
+ *
+ * Solo con ratón: en el móvil arrastrar sobre la cabecera es el scroll
+ * horizontal de la tabla, y quedarse ese gesto dejaría la tabla sin
+ * desplazamiento. El ancho, en cambio, sí se ajusta con el dedo (el asa es su
+ * propia zona táctil). Con teclado, Alt+flecha mueve la columna enfocada.
+ */
+function instalarArrastreDeColumnas({ wrap, headRow, columnas, todas, onCambio }) {
+  const claves = columnas.map((p) => p.key);
+  const sinOcultar = (todas || columnas).map((p) => p.key);
+  const cabeceras = () =>
+    [...headRow.querySelectorAll("th[data-col-key]")].filter((th) =>
+      claves.includes(th.dataset.colKey),
+    );
+
+  let arrastre = null;
+  let linea = null;
+  let ultimoArrastre = 0;
+
+  const terminar = () => {
+    if (linea) linea.remove();
+    linea = null;
+    wrap.classList.remove("is-col-dragging");
+    cabeceras().forEach((th) => th.classList.remove("is-col-dragging"));
+    arrastre = null;
+    document.removeEventListener("pointermove", mover);
+    document.removeEventListener("pointerup", soltar);
+    document.removeEventListener("pointercancel", terminar);
+    headRow.removeEventListener("lostpointercapture", terminar);
+  };
+
+  /** El orden nuevo, sobre TODAS las columnas: las ocultas se quedan en su
+   * sitio y las visibles se recolocan entre ellas, que es lo que el usuario ve
+   * y lo que no puede perder al volver a mostrar una columna.
+   *
+   * `destino` se cuenta sobre las columnas visibles de ahora, antes de quitar
+   * la que se suelta. */
+  const reordenar = (clave, destino) => {
+    const desde = claves.indexOf(clave);
+    if (desde === -1 || destino === null) return false;
+    const hueco = destino > desde ? destino - 1 : destino;
+    if (hueco === desde) return false; // se ha soltado donde estaba
+    const nuevas = claves.filter((k) => k !== clave);
+    nuevas.splice(hueco, 0, clave);
+    let i = 0;
+    onCambio({ order: sinOcultar.map((k) => (claves.includes(k) ? nuevas[i++] : k)) });
+    return true;
+  };
+
+  /** Se suelta el botón: se cierra el arrastre SIEMPRE (haya o no arrastre de
+   * verdad, esté el puntero sobre la cabecera o sobre una fila) y solo se
+   * reordena si de verdad se ha arrastrado. */
+  const soltar = () => {
+    const estado = arrastre;
+    terminar();
+    if (!estado || !estado.activo) return;
+    ultimoArrastre = Date.now();
+    reordenar(estado.clave, estado.destino);
+  };
+
+  const mover = (e) => {
+    if (!arrastre) return;
+    if (!arrastre.activo) {
+      if (Math.abs(e.clientX - arrastre.x) < 5) return;
+      arrastre.activo = true;
+      arrastre.th.classList.add("is-col-dragging");
+      wrap.classList.add("is-col-dragging");
+      linea = document.createElement("div");
+      linea.className = "col-drop-line";
+      wrap.appendChild(linea);
+      // La captura se pide aquí y no en el `pointerdown`: capturar antes se
+      // comería el clic que ordena la columna. Con la captura puesta,
+      // `pointerup` llega aunque se suelte fuera de la ventana.
+      try {
+        headRow.setPointerCapture(e.pointerId);
+      } catch {
+        // Sin captura basta con los oyentes del documento.
+      }
+    }
+    const cajas = cabeceras();
+    // La mitad de cada cabecera es el punto de cambio: a la izquierda de su
+    // centro la columna cae antes, a la derecha después.
+    let destino = cajas.length;
+    for (let i = 0; i < cajas.length; i += 1) {
+      const caja = cajas[i].getBoundingClientRect();
+      if (e.clientX < caja.left + caja.width / 2) {
+        destino = i;
+        break;
+      }
+    }
+    arrastre.destino = destino;
+    const fila = headRow.getBoundingClientRect();
+    const marco = wrap.getBoundingClientRect();
+    const x = destino === 0 ? cajas[0].getBoundingClientRect().left : cajas[destino - 1].getBoundingClientRect().right;
+    linea.style.left = `${x - marco.left + wrap.scrollLeft - 1}px`;
+    linea.style.top = `${fila.top - marco.top}px`;
+    linea.style.height = `${fila.height}px`;
+  };
+
+  headRow.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.pointerType !== "mouse") return;
+    // En el borde manda el asa, y el «⋯» y el «+» son botones: un arrastre que
+    // empiece en ellos no reordena nada (se quedaría el menú de la columna sin
+    // abrir, o el formulario de la columna nueva).
+    if (e.target.closest(".col-resizer, .db-col-menu-btn, .db-col-add-btn")) return;
+    const th = e.target.closest("th[data-col-key]");
+    if (!th || !claves.includes(th.dataset.colKey)) return;
+    terminar(); // un arrastre anterior a medias no se hereda
+    arrastre = { th, clave: th.dataset.colKey, x: e.clientX, activo: false, destino: null };
+    document.addEventListener("pointermove", mover);
+    document.addEventListener("pointerup", soltar);
+    document.addEventListener("pointercancel", terminar);
+    headRow.addEventListener("lostpointercapture", terminar);
+  });
+
+  // El clic que cierra el arrastre no puede ordenar la columna: soltar una
+  // cabecera encima de otra posición no es «ordena por esta».
+  headRow.addEventListener(
+    "click",
+    (e) => {
+      if (Date.now() - ultimoArrastre < 250) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true,
+  );
+
+  headRow.addEventListener("keydown", (e) => {
+    if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    const th = e.target.closest?.("th[data-col-key]");
+    if (!th || !claves.includes(th.dataset.colKey)) return;
+    // La tecla se consume ANTES de mirar el borde: en la primera columna
+    // `Alt+←` no tiene a dónde mover, pero el navegador sí sabe qué hacer con
+    // ella (atrás) y la app se iría a la página anterior —justo la pulsación
+    // de más al llevar una columna al principio—. Lo mismo con `Alt+→` en la
+    // última, que dispara «adelante».
+    e.preventDefault();
+    e.stopPropagation();
+    const desde = claves.indexOf(th.dataset.colKey);
+    const hasta = desde + (e.key === "ArrowLeft" ? -1 : 1);
+    if (hasta < 0 || hasta >= claves.length) return;
+    const nuevas = claves.slice();
+    nuevas.splice(desde, 1);
+    nuevas.splice(hasta, 0, th.dataset.colKey);
+    let i = 0;
+    onCambio({ order: sinOcultar.map((k) => (claves.includes(k) ? nuevas[i++] : k)) });
+  });
+}
+
 /** La tabla de una base. Es la MISMA en la página de la base y dentro de una
  * nota (bloque ```mdm-database, P17.2): mismos valores, mismas clases y las
  * mismas celdas editables -- dos renders distintos acabarían enseñando cosas
@@ -7351,15 +7849,6 @@ function clavesVisibles(database, view) {
   const existentes = new Set((database.schema_def || []).map((p) => p.key));
   const claves = [...new Set(visible.filter((k) => existentes.has(k)))];
   return claves.length ? claves : null;
-}
-
-/** Las propiedades de la tabla de una vista, en el orden de `visible_properties`. */
-function propiedadesVisibles(database, view) {
-  const todas = database.schema_def || [];
-  const claves = clavesVisibles(database, view);
-  if (!claves) return todas;
-  const porClave = new Map(todas.map((p) => [p.key, p]));
-  return claves.map((k) => porClave.get(k)).filter(Boolean);
 }
 
 /** Un valor de celda cuenta como «tiene valor» en el recuento de la
@@ -8171,6 +8660,13 @@ function cabeceraDeColumna(contexto, prop, nombre) {
     : document.createElement("th");
   th.scope = "col";
   th.classList.add("db-col-head");
+  // La clave de la columna en el DOM: de aquí cuelgan el asa del ancho y el
+  // arrastre para reordenar (`views[].widths` / `views[].order`). Las columnas
+  // de servicio llevan `@` delante para no chocar con una propiedad con esa
+  // clave —una propiedad «Open» comparte clave con el botón de abrir la fila—;
+  // `claveDeAncho` traduce `@title` a `title`, que es como se guarda el ancho
+  // de la columna del título.
+  th.dataset.colKey = prop ? prop.key : "@title";
   // En el bloque incrustado, el widget del editor previene el `mousedown` del
   // bloque salvo en lo que lleve `data-db-action` (ver DatabaseBlockWidget).
   if (contexto.embed) th.dataset.dbAction = "columna";
@@ -8294,6 +8790,7 @@ function renderTable(
     view = null,
     onChanged = null,
     onRepintar = null,
+    onCambioColumnas = null,
   } = {},
 ) {
   // La selección múltiple envuelve la tabla (barra e informe encima), pero
@@ -8311,11 +8808,17 @@ function renderTable(
 
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
-  // Qué columnas enseña ESTA vista (`visible_properties`), quién repinta tras
-  // un cambio hecho desde la cabecera (el menú de una columna y el «+») y con
-  // qué se ordena al pinchar el rótulo (`filtros-vista`: solo con vista, que es
-  // donde se guarda el orden).
-  const propiedades = propiedadesVisibles(database, view);
+  // Qué columnas enseña ESTA vista, en su orden: `order` manda, `visible_properties`
+  // quita y lo que no esté en `order` va detrás, en el orden del schema (así
+  // añadir una propiedad no la esconde ni la manda al principio). Sin vista
+  // («Todas») es el schema tal cual.
+  const propiedades = columnasDeVista(database, view);
+  // Las mismas sin quitar las ocultas: el orden que se guarda al arrastrar
+  // tiene que decir también dónde estaban las que esa vista no enseña.
+  const todasLasColumnas = columnasEnOrden(database, view);
+  // Los anchos de ESTA vista (`views[].widths`), ya acotados y con la clave de
+  // la propiedad (o `title` para la columna del título).
+  const anchos = anchosDeVista(view);
   const contextoDeColumna = {
     database,
     view,
@@ -8327,6 +8830,11 @@ function renderTable(
 
   const table = document.createElement("table");
   table.className = "rows-table";
+  // Un `<col>` por columna: el ancho guardado se declara una vez y vale para la
+  // cabecera y para las celdas de todas las filas, y es lo único que se toca
+  // mientras se arrastra el asa (sin repintar la tabla en cada píxel).
+  const colgroup = document.createElement("colgroup");
+  const cols = new Map();
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
@@ -8338,6 +8846,13 @@ function renderTable(
   const abrirHead = document.createElement("th");
   abrirHead.scope = "col";
   abrirHead.className = "row-open-head";
+  // `@` delante: las columnas de servicio no pueden chocar con una propiedad del
+  // schema. Con una propiedad llamada «Open» (clave `open`), las dos columnas
+  // compartían clave, así que el ancho de una se pintaba en la otra, la
+  // propiedad se quedaba sin asa y la suma de la tabla no cuadraba.
+  // `claveDeAncho` traduce la clave del DOM a la del `.md` (`@title` ->
+  // `title`); las de servicio no tienen y por eso no se redimensionan.
+  abrirHead.dataset.colKey = "@open";
   const abrirSolo = document.createElement("span");
   abrirSolo.className = "sr-only";
   abrirSolo.textContent = "Abrir";
@@ -8357,6 +8872,7 @@ function renderTable(
     const addHead = document.createElement("th");
     addHead.scope = "col";
     addHead.className = "db-col-add-head";
+    addHead.dataset.colKey = "@add";
     const addBtn = document.createElement("button");
     addBtn.type = "button";
     addBtn.className = "db-col-add-btn";
@@ -8383,11 +8899,48 @@ function renderTable(
     const th = document.createElement("th");
     th.scope = "col";
     th.className = "row-sel-head";
+    th.dataset.colKey = "@actions";
     const soloTexto = document.createElement("span");
     soloTexto.className = "sr-only";
     soloTexto.textContent = deletable ? "Seleccionar y acciones" : "Seleccionar";
     th.append(sel.casillaDeCabecera(), soloTexto);
     headRow.appendChild(th);
+  }
+  // El ancho y el orden viven en la vista del `.md`: sin vista activa no hay
+  // dónde guardarlos, así que «Todas (sin vista)» se queda con el reparto del
+  // navegador, el orden del schema y sin asas ni arrastre.
+  headRow.querySelectorAll("th[data-col-key]").forEach((th) => {
+    const clave = th.dataset.colKey;
+    const col = document.createElement("col");
+    col.dataset.colKey = clave;
+    // Solo las columnas del schema (y el título) tienen ancho guardado: un
+    // `widths` con una clave que no es de ninguna columna —o una de servicio—
+    // no pinta nada.
+    const anchoMd = claveDeAncho(clave);
+    const ancho = anchoMd ? anchos.get(anchoMd) : null;
+    if (ancho) col.style.width = `${ancho}px`;
+    cols.set(clave, col);
+    colgroup.appendChild(col);
+  });
+  if (onCambioColumnas) {
+    headRow.querySelectorAll("th[data-col-key]").forEach((th) => {
+      const clave = claveDeAncho(th.dataset.colKey);
+      // Las de servicio (abrir la fila, el «+» y acciones) no se redimensionan:
+      // su ancho es parte del dibujo de la tabla, no un dato de la vista.
+      if (!clave) return;
+      const prop = propiedades.find((p) => p.key === clave);
+      th.appendChild(
+        asaDeAncho({
+          clave,
+          domKey: th.dataset.colKey,
+          nombre: prop ? prop.name : rotuloTitulo,
+          table,
+          cols,
+          anchos,
+          onCambio: onCambioColumnas,
+        }),
+      );
+    });
   }
   thead.appendChild(headRow);
 
@@ -8426,6 +8979,7 @@ function renderTable(
     // título: ahí el clic edita, y editar no puede tragarse la apertura.
     const openTd = document.createElement("td");
     openTd.className = "row-open-cell";
+    openTd.dataset.colKey = "@open";
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "row-open";
@@ -8455,6 +9009,7 @@ function renderTable(
 
     if (muestraTitulo) {
       const titleTd = document.createElement("td");
+      titleTd.dataset.colKey = "@title";
       paintCell(titleTd, database, row, null, hooks);
       celdas.set(null, titleTd);
       tr.appendChild(titleTd);
@@ -8462,6 +9017,7 @@ function renderTable(
 
     propiedades.forEach((p) => {
       const td = document.createElement("td");
+      td.dataset.colKey = p.key;
       paintCell(td, database, row, p, hooks);
       celdas.set(p.key, td);
       tr.appendChild(td);
@@ -8515,6 +9071,7 @@ function renderTable(
     // el widget del editor se lo traga y la tabla se desmonta.
     const accTd = document.createElement("td");
     accTd.className = "row-sel-cell";
+    accTd.dataset.colKey = "@actions";
     if (hooks?.embed) accTd.dataset.dbAction = "seleccionar-fila";
     const casilla = sel.casillaDeFila(row);
     accTd.appendChild(casilla);
@@ -8566,7 +9123,18 @@ function renderTable(
     true,
   );
 
-  table.append(thead, tbody);
+  // Arrastrar una cabecera cambia el orden de las columnas de esta vista.
+  if (onCambioColumnas && propiedades.length > 1) {
+    instalarArrastreDeColumnas({
+      wrap,
+      headRow,
+      columnas: propiedades,
+      todas: todasLasColumnas,
+      onCambio: onCambioColumnas,
+    });
+  }
+
+  table.append(colgroup, thead, tbody);
   // Una sola parada de Tab en toda la tabla: la primera celda editable. Las
   // flechas mueven el foco (y el tabIndex=0) entre celdas -- ver paintCell.
   const firstCell = tbody.querySelector('td[data-editable="1"]');
@@ -8581,6 +9149,12 @@ function renderTable(
   sel.sincronizar();
 
   wrap.appendChild(table);
+  if (anchos.size) {
+    // La tabla todavía no está en el documento y no se puede medir: se congela
+    // en la microtarea que sigue, cuando el llamante ya la ha colgado y antes
+    // de que se pinte nada (nada de parpadeo con el reparto de antes).
+    queueMicrotask(() => congelarAnchos(table, cols, anchos));
+  }
   shell.append(sel.barra, sel.informes, wrap);
   return shell;
 }
@@ -9509,7 +10083,8 @@ function renderList(database, rows, view, refresh) {
     title.className = "list-row-title";
     title.textContent = row.title || "Sin título";
     item.appendChild(title);
-    database.schema_def.forEach((p) => {
+    // Las mismas columnas que la tabla: el orden de la vista y las ocultas fuera.
+    columnasDeVista(database, view).forEach((p) => {
       const v = row.properties?.[p.key];
       if (v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) return;
       const span = document.createElement("span");

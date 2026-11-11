@@ -1892,12 +1892,77 @@
     color: var(--ink-muted);
     font-weight: 600;
   }
+  /* ------------------------------------------ ancho y orden de las columnas
+     (por vista: `views[].widths` y `views[].order` del `.md`). El asa vive
+     DENTRO del `<th>` --que lleva `overflow: hidden`-- pegada al borde derecho:
+     9 px de zona táctil que se ven como una línea de 1 px. */
+  .rows-table th[data-col-key] { position: relative; }
+  .col-resizer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 9px;
+    background: none;
+    cursor: col-resize;
+    /* El dedo ajusta el ancho aquí; el desplazamiento de la tabla se hace en
+       el resto de la cabecera y en las celdas. */
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    z-index: 2;
+  }
+  .col-resizer::after {
+    content: "";
+    position: absolute;
+    top: 22%;
+    bottom: 22%;
+    right: 4px;
+    width: 1px;
+    background: var(--panel-border);
+  }
+  .col-resizer:hover::after,
+  .col-resizer.is-resizing::after,
+  .col-resizer:focus-visible::after { width: 2px; background: var(--accent); }
+  .col-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 3px; }
+  @media (pointer: coarse) {
+    .col-resizer { width: 12px; }
+    .col-resizer::after { right: 5px; }
+  }
+  /* Con anchos guardados manda la vista, no el contenido: `fixed` es lo que
+     deja estrechar una columna por debajo de su texto (la celda ya recorta con
+     puntos suspensivos). El ancho de la tabla lo pone `fijarAnchoDeTabla` en
+     píxeles (la suma de sus columnas): con `max-content` el navegador decidía
+     el ancho por su cuenta y repartía el hueco entre las columnas que no se
+     estaban arrastrando. */
+  table.rows-table.has-col-widths { table-layout: fixed; }
+  /* Mientras dura la medida de «ajustar al contenido» el tope de 240 px de las
+     celdas no cuenta: es el recorte de la pintura, no el contenido, y cortaba
+     la medida en 240 px (cualquier texto más largo se quedaba igual y con
+     puntos suspensivos). El tope real lo pone `acotarAncho` (64-560). */
+  table.rows-table.is-measuring th,
+  table.rows-table.is-measuring td { max-width: none; }
+  /* La cabecera que se está arrastrando y la línea que dice dónde cae. */
+  .rows-table th.is-col-dragging { opacity: 0.45; }
+  .table-wrap.is-col-dragging { cursor: grabbing; }
+  .col-drop-line {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    background: var(--accent);
+    border-radius: 1px;
+    pointer-events: none;
+    z-index: 3;
+  }
+
   /* ------------------------------------------ columnas desde la cabecera (P3)
      Cada `<th>` lleva su botón de tres puntos (o el propio rótulo, que también
      abre) y el «+» del final añade una columna. El menú NO vive dentro del th:
      `.table-wrap` tiene scroll horizontal y recortaría un desplegable; va
      colgado de <body> con `position: fixed` (ver `abrirPanelFlotante`). */
-  .rows-table th.db-col-head { position: relative; padding-right: 26px; }
+  /* 34 px de hueco a la derecha: el botón «⋯» (18 px a 13 px del borde) y el
+     asa del ancho (9 px; 12 en táctil) no comparten ni un píxel. */
+  .rows-table th.db-col-head { position: relative; padding-right: 34px; }
   .db-col-label {
     display: inline-block;
     max-width: 100%;
@@ -1920,7 +1985,9 @@
   }
   .db-col-menu-btn {
     position: absolute;
-    right: 4px;
+    /* A la izquierda del asa del ancho: si no, media zona táctil del asa se
+       comía el botón y el menú de la columna no abría. */
+    right: 13px;
     top: 50%;
     transform: translateY(-50%);
     width: 18px;
