@@ -386,6 +386,28 @@ def test_borrar_la_fila_destino_deja_el_id_y_el_titulo_a_null(client, vault_path
     assert datos["contacto"] == ana["id"]
 
 
+def test_borrar_una_de_varias_filas_deja_solo_esa_sin_titulo(client):
+    """En una relación múltiple, cada id resuelve (o no) por su cuenta."""
+    contactos, reuniones = dos_bases_multiple(client)
+    ana = crear_fila(client, contactos["id"], title="Ana", properties={})
+    luis = crear_fila(client, contactos["id"], title="Luis", properties={})
+    fila = crear_fila(
+        client,
+        reuniones["id"],
+        title="Kickoff",
+        properties={"contacto": [ana["id"], luis["id"]]},
+    )
+
+    assert client.delete(f"/databases/{contactos['id']}/rows/{luis['id']}").status_code == 204
+
+    leida = client.get(f"/databases/{reuniones['id']}/rows/{fila['id']}").json()
+    assert leida["properties"]["contacto"] == [ana["id"], luis["id"]]
+    assert [(r["id"], r["title"]) for r in leida["related"]["contacto"]] == [
+        (ana["id"], "Ana"),
+        (luis["id"], None),
+    ]
+
+
 def test_borrar_la_base_destino_marca_la_propiedad_sin_romper_nada(client):
     contactos, reuniones = dos_bases(client)
     ana = crear_fila(client, contactos["id"], title="Ana", properties={})
