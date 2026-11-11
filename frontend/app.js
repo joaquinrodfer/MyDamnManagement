@@ -6176,12 +6176,14 @@ function pintarRelacionEnCelda(td, database, row, prop, hooks = null) {
     const ref = refs.get(id);
     const titulo = ref?.title || null;
     if (!titulo) {
-      // Fila borrada: no es un enlace (no hay a dónde ir) y el id va en el
-      // `title` para poder buscarla.
+      // Fila borrada: no es un enlace (no hay a dónde ir). El `title` es el id
+      // LITERAL, que es lo que hace falta para buscarla; la explicación va en
+      // el `aria-label`.
       const rota = document.createElement("span");
       rota.className = "rel-chip rel-borrada";
       rota.textContent = "(borrada)";
-      rota.title = `La fila ${id} ya no existe`;
+      rota.title = id;
+      rota.setAttribute("aria-label", `La fila ${id} ya no existe`);
       caja.appendChild(rota);
       return;
     }
@@ -6373,7 +6375,14 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
   function elegir(fila) {
     const id = String(fila.id);
     if (!relacionMultiple(prop)) {
-      encolar(() => guardarIds([id])).then(() => cerrarSelectorDeRelacion({ foco: true }));
+      encolar(() => guardarIds([id])).then(() => {
+        // Si el guardado falló, el panel se queda abierto con el motivo dentro
+        // (cerrarlo dejaría al usuario con un aviso y sin el sitio donde
+        // arreglarlo).
+        if (idsDeRelacion(row.properties?.[prop.key]).includes(id)) {
+          cerrarSelectorDeRelacion({ foco: true });
+        }
+      });
       return;
     }
     encolar(() => {
