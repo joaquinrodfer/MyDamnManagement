@@ -209,6 +209,10 @@ class RowUpdate(BaseModel):
     title: Optional[str] = None
     icon: Optional[str] = None
     properties: Optional[dict[str, Any]] = None
+    # Cuerpo markdown de la fila. Ausente (o `null`) = no tocarlo; `""` = dejarlo
+    # vacío. El router distingue «no viene» de `""` con `model_fields_set`, así
+    # que guardar una celda no puede borrar el cuerpo sin querer.
+    body_markdown: Optional[str] = None
 
 
 class RelatedRow(BaseModel):
@@ -238,6 +242,18 @@ class RowRead(BaseModel):
     related: dict[str, list[RelatedRow]] = {}
     created_at: datetime
     updated_at: datetime
+
+
+class RowPageRead(RowRead):
+    """Una fila leída para abrirla como página: lo de `RowRead` + su cuerpo.
+
+    El cuerpo va SOLO en la lectura de UNA fila
+    (`GET /databases/{id}/rows/{row}`) y en `PATCH` no vuelve: una tabla de
+    cien filas no tiene por qué arrastrar cien cuerpos que no se van a
+    enseñar, y el PATCH de una celda —que es el caso frecuente— tampoco.
+    """
+
+    body_markdown: str = ""
 
 
 class ViewCreate(BaseModel):
