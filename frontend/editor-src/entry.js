@@ -481,12 +481,17 @@ function arrowPlugin() {
 // tampoco hay autoguardado ni un guardado a medias.
 
 class DatabaseBlockWidget extends WidgetType {
-  constructor(block, render, epoch = 0) {
+  constructor(block, render, epoch = 0, index = -1, selected = false) {
     super();
     this.from = block.from;
     this.parse = block.parse;
     this.render = render;
     this.epoch = epoch;
+    // Índice del bloque en `blockField` (el mismo que llevan las asas de las
+    // líneas) y si está marcado. El asa de ESTE bloque vive dentro del widget
+    // -- ver `blockHandleDom` --, así que la decoración tiene que pasarlos.
+    this.index = index;
+    this.selected = selected;
   }
   eq(other) {
     // Mismo bloque, mismo sitio y misma app: CodeMirror reutiliza el DOM (y no
@@ -497,6 +502,8 @@ class DatabaseBlockWidget extends WidgetType {
       other.render === this.render &&
       other.epoch === this.epoch &&
       other.from === this.from &&
+      other.index === this.index &&
+      other.selected === this.selected &&
       other.parse.ok === this.parse.ok &&
       other.parse.id === this.parse.id &&
       other.parse.view === this.parse.view &&
@@ -504,8 +511,15 @@ class DatabaseBlockWidget extends WidgetType {
       other.parse.motivo === this.parse.motivo
     );
   }
-  ignoreEvent() {
-    return true; // los clics del bloque (encabezado, «abrir») son nuestros
+  ignoreEvent(event) {
+    // Los clics del bloque (encabezado, celdas, «abrir») son nuestros: CodeMirror
+    // no los toca. El ASA no: su mousedown/contextmenu/pulsación larga tienen
+    // que llegar a los handlers del editor (seleccionar, arrastrar, menú), y
+    // CodeMirror descarta los eventos de un widget cuyo `ignoreEvent` dice que
+    // sí (eventBelongsToEditor).
+    return !(
+      event.target instanceof Element && event.target.closest(".cm-mdm-block-handle-wrap")
+    );
   }
   toDOM(view) {
     const wrap = document.createElement("div");
@@ -515,13 +529,21 @@ class DatabaseBlockWidget extends WidgetType {
     // base entera. Ni una celda con contenteditable dentro del bloque.
     wrap.contentEditable = "false";
 
+    // El asa del bloque, DENTRO del widget: este reemplazo tapa la primera
+    // línea de la valla, así que el asa que la decoración de línea pinta en su
+    // sitio no se llega a ver (ver `blockHandleDom`). Va la primera para que
+    // también la tenga una valla rota: su tarjeta de error es igual de movible.
+    if (this.index >= 0) wrap.appendChild(blockHandleDom(this.index, this.selected));
+
     // Un clic en el bloque (menos en lo que ya es un botón, como el
     // encabezado: eso lleva a la base) pone el cursor en la valla, que
     // reaparece en crudo. Con ignoreEvent() este clic no lo ve CodeMirror.
     // Vale también para la tarjeta de error: una valla rota se arregla con el
     // ratón, no solo con las flechas.
     wrap.addEventListener("mousedown", (event) => {
-      if (event.target.closest("[data-db-action]")) return;
+      // El asa y los controles de la tabla tienen su propio camino (el asa, en
+      // `ignoreEvent`; los controles, en `data-db-action`).
+      if (event.target.closest("[data-db-action], .cm-mdm-block-handle-wrap")) return;
       event.preventDefault();
       view.dispatch({ selection: { anchor: this.from } });
       view.focus();
@@ -586,9 +608,23 @@ function databaseBlockDecorations(state, render, epoch = 0) {
   const ranges = [];
   if (render) {
     const doc = state.doc;
+    // El asa de cada bloque de base se pinta DENTRO de su widget (ver
+    // `blockHandleDom`), así que el widget necesita lo mismo que el asa de una
+    // línea: el índice del bloque en `blockField` y si está marcado. `blockField`
+    // se crea antes que este campo (ver la lista de extensiones), así que aquí
+    // ya está.
+    const { blocks, selected } = state.field(blockField);
     for (const block of scanDatabaseBlocks(doc.toString())) {
-      if (selectionIntersects(state, block.from, block.to)) continue;
-      const widget = new DatabaseBlockWidget(block, render, epoch);
+      const index = blocks.findIndex((b) => block.from >= b.from && block.from <= b.to);
+      // Con el cursor DENTRO, la valla se ve en crudo y editable (es como se
+      // cambia la vista o se arregla el YAML). Pero un bloque MARCADO con el
+      // asa no son ganas de editar la valla: es el bloque elegido para moverlo
+      // o borrarlo, y desmontar la tabla en ese momento -- justo al empezar a
+      // arrastrarlo -- hacía que la nota se encogiera bajo el puntero y que la
+      // línea de inserción bailara. Marcado con el asa, la tabla se queda.
+      const marked = index >= 0 && selected.has(index);
+      if (!marked && selectionIntersects(state, block.from, block.to)) continue;
+      const widget = new DatabaseBlockWidget(block, render, epoch, index, marked);
       ranges.push(
         Decoration.replace({ widget, block: true }).range(
           doc.lineAt(block.from).from,
@@ -823,6 +859,39 @@ function emptyGapEffect(from, insert = "\n\n") {
   return /^\n{2,}$/.test(insert) ? [addEmptyGap.of({ from, to: from + insert.length })] : [];
 }
 
+/**
+ * El DOM del asa de un bloque: el «+» y el «⋮⋮», con el índice del bloque en
+ * `data-block-index` (de ahí lo leen los handlers de `blockHandleEventHandlers`).
+ *
+ * Lo comparten la decoración de línea (`BlockHandleWidget`) y el widget de una
+ * base incrustada. La base se pinta sustituyendo la valla ENTERA -- primera
+ * línea incluida --, y una decoración que cae DENTRO de un reemplazo no se
+ * pinta nunca (CodeMirror: «Create a replace decoration which replaces the
+ * given range with a widget, or simply hides it»). Por eso el asa de una base
+ * no existía -- ni asa, ni arrastre, ni «+», ni Alt+↑/↓ con un punto de entrada
+ * claro -- y el widget tiene que llevar el asa dentro. Tarjeta t_45697398.
+ */
+function blockHandleDom(index, isSelected) {
+  const wrap = document.createElement("span");
+  wrap.className = "cm-mdm-block-handle-wrap";
+
+  const addBtn = document.createElement("span");
+  addBtn.className = "cm-mdm-block-add";
+  addBtn.textContent = "+";
+  addBtn.dataset.blockIndex = String(index);
+  addBtn.title = "Añadir un bloque después de este · Alt+clic: antes";
+
+  const handle = document.createElement("span");
+  handle.className = "cm-mdm-block-handle" + (isSelected ? " cm-mdm-block-handle-selected" : "");
+  handle.textContent = "⋮⋮";
+  handle.dataset.blockIndex = String(index);
+  handle.title =
+    "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones · arrastrar: mover";
+
+  wrap.append(addBtn, handle);
+  return wrap;
+}
+
 // El handle de cada bloque NO es un gutter de CodeMirror: se probó primero
 // con gutter() (como lineNumbers()) y las filas no se alineaban con el
 // contenido real -- un gutter asume altura de línea uniforme, y aquí los
@@ -842,24 +911,7 @@ class BlockHandleWidget extends WidgetType {
     return other.index === this.index && other.isSelected === this.isSelected;
   }
   toDOM() {
-    const wrap = document.createElement("span");
-    wrap.className = "cm-mdm-block-handle-wrap";
-
-    const addBtn = document.createElement("span");
-    addBtn.className = "cm-mdm-block-add";
-    addBtn.textContent = "+";
-    addBtn.dataset.blockIndex = String(this.index);
-    addBtn.title = "Añadir un bloque después de este · Alt+clic: antes";
-
-    const handle = document.createElement("span");
-    handle.className = "cm-mdm-block-handle" + (this.isSelected ? " cm-mdm-block-handle-selected" : "");
-    handle.textContent = "⋮⋮";
-    handle.dataset.blockIndex = String(this.index);
-    handle.title =
-      "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones · arrastrar: mover";
-
-    wrap.append(addBtn, handle);
-    return wrap;
+    return blockHandleDom(this.index, this.isSelected);
   }
   ignoreEvent() {
     return false; // que el mousedown/contextmenu le lleguen a nuestros handlers

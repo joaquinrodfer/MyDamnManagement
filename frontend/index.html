@@ -1007,7 +1007,14 @@
      el scroll y el aspecto de la tabla ya son los de `.table-wrap`; aquí solo
      el hueco, el esqueleto de carga y las tarjetas benignas (bloque roto o
      base que ya no está), que nunca borran el texto del documento. */
-  .cm-mdm-dblock { margin: 8px 0; }
+  /* `position: relative` para que el asa, que vive DENTRO del widget (ver
+     blockHandleDom en entry.js), se coloque respecto a la tabla y no respecto
+     al scroller del editor (a -60 px de ahí se salía de la pantalla). Y se
+     enseña al pasar el ratón por el bloque, como el asa de cualquier línea:
+     sin el hover no había ni asa ni arrastre ni «+» en una base incrustada. */
+  .cm-mdm-dblock { position: relative; margin: 8px 0; }
+  .cm-mdm-dblock:hover > .cm-mdm-block-handle-wrap,
+  .cm-mdm-dblock:focus-within > .cm-mdm-block-handle-wrap { opacity: 1; }
   /* La tabla del bloque incrustado tiene que desplazarse DENTRO de la nota.
      `table.rows-table` lleva `min-width: max-content` (las columnas no se
      comprimen), y eso fijaba el ancho intrínseco de `.cm-content` al de la
