@@ -6012,6 +6012,520 @@ function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row"
   return wrap;
 }
 
+// ----------------------------------------------------- relaciones entre bases
+// Una celda de relación guarda en el `.md` el **id** de una fila (y el schema
+// dice de qué base: `target_database`). El servidor devuelve además `related`,
+// los ids de la respuesta resueltos a `{id, title, base_id}` con una sola
+// consulta. Aquí vive lo que la interfaz hace con eso: enseñar el título
+// (nunca el id), decir «(borrada)» cuando el id ya no resuelve, y elegir filas
+// en la celda.
+
+/** El tope de filas que ofrece el selector de una celda de relación.
+ *
+ * Es el mismo del selector de `/page` (PAGE_CHOICES_LIMIT en
+ * `editor-src/page-choice.js`): 50 filas son más de las que se recorren antes
+ * de escribir una letra más, y lo que queda fuera se avisa en una fila final
+ * («… y N más, sigue escribiendo»). app.js no importa el bundle del editor, así
+ * que la regla se repite aquí; es una constante, no una copia del motor. */
+const RELATION_CHOICES_LIMIT = 50;
+
+/** Los ids que enlaza una celda de relación, normalizados.
+ *
+ * `properties` trae un id suelto (relación simple) o una lista (múltiple);
+ * ausente, `null` o `""` es «sin valor». El servidor **omite la clave en
+ * `related`** cuando la celda está vacía: se lee como lista vacía. */
+function idsDeRelacion(value) {
+  if (value === null || value === undefined || value === "") return [];
+  const crudos = Array.isArray(value) ? value : [value];
+  const ids = [];
+  for (const crudo of crudos) {
+    const id = String(crudo ?? "").trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/** Las filas que resolvió el servidor para una celda (`related`), por id.
+ * La clave ausente es una celda sin valor: el mapa vacío lo dice. */
+function refsDeRelacion(row, key) {
+  const refs = row?.related?.[key];
+  const mapa = new Map();
+  if (!Array.isArray(refs)) return mapa;
+  refs.forEach((ref) => {
+    if (ref && ref.id != null) mapa.set(String(ref.id), ref);
+  });
+  return mapa;
+}
+
+/** ¿La relación enlaza varias filas?
+ *
+ * El `.md` guarda `multiple` tal y como lo leyó el parser de YAML: `false`
+ * puede llegar como la cadena `"false"` (verdadera en Python). Se normaliza
+ * igual que el servidor (`PropertyDef.multiple_is_truthy`). */
+function relacionMultiple(prop) {
+  const valor = prop?.multiple;
+  if (valor === true) return true;
+  if (valor === false || valor === undefined || valor === null) return false;
+  return ["true", "1", "yes", "on", "si", "sí"].includes(
+    String(valor).trim().toLowerCase(),
+  );
+}
+
+/** Sin mayúsculas ni tildes: «ano» tiene que encontrar «Año». Misma regla que
+ * `plegar` del selector de `/page`. */
+function plegarTexto(texto) {
+  return String(texto ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+/** Las filas candidatas de una relación, filtradas y ordenadas como el
+ * selector de `/page`: primero las que empiezan por lo escrito y luego por
+ * título, sin distinguir mayúsculas ni tildes.
+ *
+ * Devuelve `{filas, ocultas}` con el tope ya aplicado: lo que sobra se cuenta
+ * para poder avisarlo, que es lo que evita que una lista recortada parezca el
+ * vault entero. */
+function filtrarFilasDeRelacion(filas, consulta, limite = RELATION_CHOICES_LIMIT) {
+  const q = plegarTexto(String(consulta ?? "").trim());
+  const lista = Array.isArray(filas) ? filas : [];
+  const porTitulo = (a, b) =>
+    String(a.title || "").localeCompare(String(b.title || ""), "es", {
+      sensitivity: "base",
+    });
+  let ordenadas;
+  if (!q) {
+    ordenadas = lista.slice().sort(porTitulo);
+  } else {
+    const encontradas = [];
+    lista.forEach((fila) => {
+      const titulo = plegarTexto(fila.title || "");
+      if (!titulo.includes(q)) return;
+      encontradas.push({ fila, rango: titulo.startsWith(q) ? 0 : 1 });
+    });
+    encontradas.sort((a, b) => a.rango - b.rango || porTitulo(a.fila, b.fila));
+    ordenadas = encontradas.map((m) => m.fila);
+  }
+  const tope =
+    Number.isFinite(limite) && limite >= 0 ? Math.floor(limite) : RELATION_CHOICES_LIMIT;
+  return { filas: ordenadas.slice(0, tope), ocultas: Math.max(0, ordenadas.length - tope) };
+}
+
+/** Una celda de relación en HTML plano (la lista, la tarjeta del tablero):
+ * el TÍTULO de cada fila enlazada, o «(borrada)» en gris con el id en el
+ * `title` para poder buscarla. Nunca el id como texto. */
+function htmlDeRelacion(value, prop, row) {
+  const ids = idsDeRelacion(value);
+  if (!ids.length) return "—";
+  const refs = refsDeRelacion(row, prop.key);
+  return `<span class="rel-cell">${ids
+    .map((id) => {
+      const ref = refs.get(id);
+      const titulo = ref?.title || null;
+      return titulo
+        ? `<span class="rel-chip">${escapeHtml(titulo)}</span>`
+        : `<span class="rel-chip rel-borrada" title="${escapeHtml(id)}">(borrada)</span>`;
+    })
+    .join("")}</span>`;
+}
+
+/** Abre la fila a la que apunta una celda de relación, como página.
+ *
+ * Se lee la base destino entera porque la vista de fila pinta las propiedades
+ * con los tipos de SU base (`database.schema_def`); la fila, en cambio, se pide
+ * por su id al abrirla, como cualquier otra. */
+async function abrirFilaDeRelacion(ref, origen) {
+  if (!ref?.id || !ref.base_id) return;
+  try {
+    const base = await api(`/databases/${ref.base_id}`);
+    if (rowPage) return; // una fila abierta a la vez
+    await openRowPage(
+      base,
+      {
+        id: ref.id,
+        database_id: ref.base_id,
+        title: ref.title || "Sin título",
+        properties: {},
+        related: {},
+      },
+      { origin: origen },
+    );
+  } catch (e) {
+    reportError("No se pudo abrir la fila enlazada", e);
+  }
+}
+
+/** Pinta una celda de relación con los títulos que resolvió el servidor.
+ *
+ * El clic en un título abre esa fila; por eso editar la celda no puede ser el
+ * clic (se comería la navegación): se edita con el lápiz de la propia celda o
+ * con Enter sobre ella. En una celda vacía no hay títulos y el clic sigue
+ * abriendo el selector, como en cualquier otra celda. */
+function pintarRelacionEnCelda(td, database, row, prop, hooks = null) {
+  const ids = idsDeRelacion(row.properties?.[prop.key]);
+  td.textContent = "";
+  if (!ids.length) {
+    td.textContent = "—";
+    return;
+  }
+  const refs = refsDeRelacion(row, prop.key);
+  const caja = document.createElement("span");
+  caja.className = "rel-cell";
+  ids.forEach((id) => {
+    const ref = refs.get(id);
+    const titulo = ref?.title || null;
+    if (!titulo) {
+      // Fila borrada: no es un enlace (no hay a dónde ir). El `title` es el id
+      // LITERAL, que es lo que hace falta para buscarla; la explicación va en
+      // el `aria-label`.
+      const rota = document.createElement("span");
+      rota.className = "rel-chip rel-borrada";
+      rota.textContent = "(borrada)";
+      rota.title = id;
+      rota.setAttribute("aria-label", `La fila ${id} ya no existe`);
+      caja.appendChild(rota);
+      return;
+    }
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "rel-chip";
+    chip.textContent = titulo;
+    chip.title = `Abrir «${titulo}»`;
+    chip.setAttribute("aria-label", `Abrir «${titulo}»`);
+    // La tabla tiene UNA parada de Tab (la celda): los enlaces no añaden otra.
+    chip.tabIndex = -1;
+    if (hooks?.embed) chip.dataset.dbAction = "abrir-fila-relacion";
+    chip.addEventListener("click", (e) => {
+      e.stopPropagation();
+      abrirFilaDeRelacion(ref, chip);
+    });
+    chip.addEventListener("keydown", (e) => e.stopPropagation());
+    caja.appendChild(chip);
+  });
+  td.appendChild(caja);
+  const lapiz = document.createElement("button");
+  lapiz.type = "button";
+  lapiz.className = "rel-edit";
+  lapiz.innerHTML = svgIcon("i-pencil");
+  lapiz.title = `Elegir las filas de «${prop.name}»`;
+  lapiz.setAttribute("aria-label", `Elegir las filas de «${prop.name}»`);
+  lapiz.tabIndex = -1;
+  if (hooks?.embed) lapiz.dataset.dbAction = "editar-relacion";
+  lapiz.addEventListener("click", (e) => {
+    e.stopPropagation();
+    editarCeldaDeRelacion(td, database, row, prop, hooks);
+  });
+  lapiz.addEventListener("keydown", (e) => e.stopPropagation());
+  td.appendChild(lapiz);
+}
+
+// --- el selector de filas de una celda -----------------------------------
+
+// El selector abierto (uno a la vez). Cuelga de <body>: `.table-wrap` tiene
+// scroll horizontal y un desplegable dentro del `<td>` saldría recortado.
+let selectorDeRelacion = null;
+
+function cerrarSelectorDeRelacion({ foco = false } = {}) {
+  const abierto = selectorDeRelacion;
+  if (!abierto) return;
+  selectorDeRelacion = null;
+  abierto.limpiar();
+  abierto.panel.remove();
+  if (foco && abierto.ancla?.isConnected) abierto.ancla.focus({ preventScroll: true });
+}
+
+/** Abre el selector de filas de la base destino sobre una celda de relación.
+ *
+ * Reglas del selector de `/page`: se filtra escribiendo, sin mayúsculas ni
+ * tildes, y la lista se corta a 50 con «… y N más». Con `multiple` se añaden
+ * varias filas y se quitan de una en una (la × de la fila elegida); sin él,
+ * elegir sustituye a la anterior y el panel se cierra. Cada cambio se guarda
+ * en el `.md` por el mismo PATCH que una celda. */
+async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
+  if (selectorDeRelacion) return;
+  const target = String(prop.target_database || "");
+  let base = null;
+  let filas = [];
+  let error = "";
+  if (!target) {
+    error =
+      "Esta relación no dice a qué base apunta: elígela en «Propiedades» (el menú de la columna).";
+  } else {
+    try {
+      const [datosBase, lista] = await Promise.all([
+        api(`/databases/${target}`),
+        api(`/databases/${target}/rows`),
+      ]);
+      base = datosBase;
+      filas = Array.isArray(lista) ? lista : [];
+    } catch (e) {
+      error =
+        e?.status === 404
+          ? "La base a la que apunta esta relación ya no existe."
+          : `No se pudieron leer las filas: ${describeError(e)}`;
+    }
+  }
+  // La tabla pudo repintarse mientras llegaba la respuesta (otro bloque, otra
+  // pestaña): sin ancla no hay dónde colgar el panel.
+  if (!td.isConnected) return;
+
+  const panel = document.createElement("div");
+  panel.className = "rel-picker";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", `Elegir las filas de «${prop.name}»`);
+
+  const cabecera = document.createElement("div");
+  cabecera.className = "rel-picker-head";
+  const nombre = document.createElement("span");
+  nombre.className = "rel-picker-name";
+  nombre.textContent = prop.name;
+  const modo = document.createElement("span");
+  modo.className = "rel-picker-mode";
+  modo.textContent = relacionMultiple(prop) ? "varias filas" : "una fila";
+  cabecera.append(nombre, modo);
+
+  const elegidas = document.createElement("div");
+  elegidas.className = "rel-picker-chosen";
+
+  const buscar = document.createElement("input");
+  buscar.type = "search";
+  buscar.className = "rel-picker-search";
+  buscar.placeholder = "Buscar por título…";
+  buscar.autocomplete = "off";
+  buscar.setAttribute("aria-label", "Buscar una fila por su título");
+  buscar.disabled = Boolean(error) || !filas.length;
+
+  const lista = document.createElement("div");
+  lista.className = "rel-picker-list";
+  lista.setAttribute("role", "listbox");
+
+  const nota = document.createElement("p");
+  nota.className = "rel-picker-note";
+  nota.setAttribute("role", "status");
+
+  panel.append(cabecera, elegidas);
+  if (!error) panel.append(buscar);
+  panel.append(lista, nota);
+
+  const estado = { activo: -1, opciones: [] };
+  const valorActual = () => idsDeRelacion(row.properties?.[prop.key]);
+
+  // Un PATCH por turno, en cadena: dos toques seguidos en una relación
+  // múltiple no pueden pisarse (el segundo se calcula sobre lo que dejó el
+  // primero, ya guardado).
+  let cola = Promise.resolve();
+  const encolar = (fn) => {
+    cola = cola.then(fn).catch(() => {});
+    return cola;
+  };
+
+  const guardarIds = async (ids) => {
+    const valor = relacionMultiple(prop) ? (ids.length ? ids : null) : ids[0] ?? null;
+    if (sameValue(valor, row.properties?.[prop.key] ?? null)) return;
+    try {
+      await saveRow(database, row, { properties: { [prop.key]: valor } }, hooks);
+      nota.textContent = "Guardado.";
+    } catch (e) {
+      nota.textContent = `No se pudo guardar: ${describeError(e)}`;
+      reportError("No se pudo guardar la relación", e);
+    }
+    repaintCell(td, database, row, prop, false, hooks);
+    pintarElegidas();
+    pintarOpciones();
+    // El foco sigue en el buscador: elegir en una relación múltiple no puede
+    // devolverlo a la celda a mitad de la selección.
+    if (selectorDeRelacion) buscar.focus({ preventScroll: true });
+  };
+
+  function pintarElegidas() {
+    elegidas.textContent = "";
+    const ids = valorActual();
+    if (!ids.length) {
+      const vacio = document.createElement("span");
+      vacio.className = "rel-picker-empty";
+      vacio.textContent = "Sin filas elegidas";
+      elegidas.appendChild(vacio);
+      return;
+    }
+    const refs = refsDeRelacion(row, prop.key);
+    ids.forEach((id) => {
+      const ref = refs.get(id);
+      const chip = document.createElement("span");
+      chip.className = "rel-picker-chip" + (ref?.title ? "" : " rel-borrada");
+      const texto = document.createElement("span");
+      texto.className = "rel-picker-chip-text";
+      texto.textContent = ref?.title || "(borrada)";
+      if (!ref?.title) texto.title = id;
+      const quitar = document.createElement("button");
+      quitar.type = "button";
+      quitar.className = "rel-picker-chip-x";
+      quitar.innerHTML = svgIcon("i-x");
+      quitar.title = `Quitar «${ref?.title || "la fila borrada"}»`;
+      quitar.setAttribute("aria-label", quitar.title);
+      quitar.addEventListener("click", (e) => {
+        e.stopPropagation();
+        encolar(() => guardarIds(valorActual().filter((otro) => otro !== id)));
+      });
+      chip.append(texto, quitar);
+      elegidas.appendChild(chip);
+    });
+  }
+
+  function elegir(fila) {
+    const id = String(fila.id);
+    if (!relacionMultiple(prop)) {
+      encolar(() => guardarIds([id])).then(() => {
+        // Si el guardado falló, el panel se queda abierto con el motivo dentro
+        // (cerrarlo dejaría al usuario con un aviso y sin el sitio donde
+        // arreglarlo).
+        if (idsDeRelacion(row.properties?.[prop.key]).includes(id)) {
+          cerrarSelectorDeRelacion({ foco: true });
+        }
+      });
+      return;
+    }
+    encolar(() => {
+      const ids = valorActual();
+      const nuevos = ids.includes(id) ? ids.filter((otro) => otro !== id) : [...ids, id];
+      return guardarIds(nuevos);
+    });
+  }
+
+  function pintarOpciones() {
+    lista.textContent = "";
+    estado.opciones = [];
+    estado.activo = -1;
+    if (error) {
+      const p = document.createElement("p");
+      p.className = "rel-picker-note";
+      p.textContent = error;
+      lista.appendChild(p);
+      return;
+    }
+    const { filas: visibles, ocultas } = filtrarFilasDeRelacion(filas, buscar.value);
+    if (!visibles.length) {
+      const p = document.createElement("p");
+      p.className = "rel-picker-note";
+      p.textContent = filas.length
+        ? "Ninguna fila coincide con lo escrito."
+        : `La base «${base?.title || "de destino"}» todavía no tiene filas.`;
+      lista.appendChild(p);
+      return;
+    }
+    const elegidasIds = new Set(valorActual());
+    visibles.forEach((fila) => {
+      const id = String(fila.id);
+      const marcada = elegidasIds.has(id);
+      const opcion = document.createElement("button");
+      opcion.type = "button";
+      opcion.className = "rel-picker-option" + (marcada ? " is-chosen" : "");
+      opcion.setAttribute("role", "option");
+      opcion.setAttribute("aria-selected", marcada ? "true" : "false");
+      const titulo = document.createElement("span");
+      titulo.className = "rel-picker-option-title";
+      titulo.textContent = fila.title || "Sin título";
+      const suBase = document.createElement("span");
+      suBase.className = "rel-picker-option-base";
+      suBase.textContent = base?.title || "su base";
+      opcion.append(titulo, suBase);
+      if (marcada) {
+        const marca = document.createElement("span");
+        marca.className = "rel-picker-check";
+        marca.setAttribute("aria-hidden", "true");
+        marca.textContent = "✓";
+        opcion.appendChild(marca);
+      }
+      opcion.addEventListener("click", (e) => {
+        e.stopPropagation();
+        elegir(fila);
+      });
+      estado.opciones.push(opcion);
+      lista.appendChild(opcion);
+    });
+    if (ocultas > 0) {
+      const mas = document.createElement("p");
+      mas.className = "rel-picker-more";
+      mas.textContent = `… y ${ocultas} más, sigue escribiendo`;
+      lista.appendChild(mas);
+    }
+  }
+
+  buscar.addEventListener("input", () => pintarOpciones());
+  buscar.addEventListener("keydown", (e) => {
+    // Dentro de una nota, lo que no se consuma aquí acaba en el keymap de
+    // CodeMirror (su Enter insertaría un salto en el `.md` de la nota).
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const opcion = estado.opciones[Math.max(estado.activo, 0)];
+      opcion?.click();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if (!estado.opciones.length) return;
+    e.preventDefault();
+    estado.activo =
+      e.key === "ArrowDown"
+        ? (estado.activo + 1) % estado.opciones.length
+        : (estado.activo - 1 + estado.opciones.length) % estado.opciones.length;
+    estado.opciones.forEach((op, i) => op.classList.toggle("is-active", i === estado.activo));
+    estado.opciones[estado.activo].scrollIntoView({ block: "nearest" });
+  });
+
+  document.body.appendChild(panel);
+  colocarPanelFlotante(panel, td);
+  const fuera = (e) => {
+    if (panel.contains(e.target) || td.contains(e.target)) return;
+    cerrarSelectorDeRelacion();
+  };
+  // Escape se escucha en el documento y no en el buscador: cuando la relación
+  // no tiene base destino el panel no lleva buscador, así que no habría ningún
+  // control enfocado que recibiera la tecla, y un panel que solo se cierra con
+  // el ratón deja tirado a quien va con el teclado.
+  const teclas = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    cerrarSelectorDeRelacion({ foco: true });
+  };
+  const recolocar = () => {
+    if (!td.isConnected) {
+      cerrarSelectorDeRelacion();
+      return;
+    }
+    colocarPanelFlotante(panel, td);
+  };
+  document.addEventListener("mousedown", fuera, true);
+  document.addEventListener("keydown", teclas, true);
+  window.addEventListener("scroll", recolocar, true);
+  window.addEventListener("resize", recolocar);
+  // El panel crece al llegar las filas (ya están) o al escribir: se recoloca
+  // para no quedarse pegado al borde de la ventana.
+  const observador =
+    typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => recolocar());
+  observador?.observe(panel);
+  selectorDeRelacion = {
+    panel,
+    ancla: td,
+    limpiar: () => {
+      observador?.disconnect();
+      document.removeEventListener("mousedown", fuera, true);
+      document.removeEventListener("keydown", teclas, true);
+      window.removeEventListener("scroll", recolocar, true);
+      window.removeEventListener("resize", recolocar);
+    },
+  };
+  pintarElegidas();
+  pintarOpciones();
+  if (error) {
+    panel.tabIndex = -1;
+    panel.focus({ preventScroll: true });
+  } else {
+    buscar.focus({ preventScroll: true });
+  }
+}
+
 function formatPropValue(value, prop) {
   if (value === undefined || value === null || value === "") return "—";
   if (prop.type === "checkbox") return value ? "✓" : "—";
@@ -6021,11 +6535,13 @@ function formatPropValue(value, prop) {
 
 /** Igual que formatPropValue, pero listo para innerHTML: el "sí" de un
  * checkbox es el icono de check del sprite (con texto para lectores de
- * pantalla) y todo lo demás va escapado. */
-function formatPropValueHtml(value, prop) {
+ * pantalla), una relación enseña el TÍTULO de sus filas (no el id: `row` es
+ * quien trae los títulos resueltos) y todo lo demás va escapado. */
+function formatPropValueHtml(value, prop, row = null) {
   if (prop.type === "checkbox") {
     return value ? `${svgIcon("i-check")}<span class="sr-only">Sí</span>` : "—";
   }
+  if (prop.type === "relation") return htmlDeRelacion(value, prop, row);
   return escapeHtml(formatPropValue(value, prop));
 }
 
@@ -7287,10 +7803,13 @@ async function borrarColumna({ database, prop, onChanged }) {
  * (`visible_properties`), la nueva entra también al final de la lista: una
  * columna recién creada que no se ve en la pestaña en la que estás es un
  * misterio, no un resultado. */
-async function crearColumnaEnLaBase(contexto, { nombre, tipo, destino }) {
+async function crearColumnaEnLaBase(contexto, { nombre, tipo, destino, multiple = false }) {
   const { database, view, onChanged } = contexto;
   const nueva = { name: nombre, type: tipo };
-  if (tipo === "relation" && destino) nueva.target_database = destino;
+  if (tipo === "relation") {
+    if (destino) nueva.target_database = destino;
+    if (multiple) nueva.multiple = true;
+  }
   const schema = [...(database.schema_def || []).map((p) => ({ ...p })), nueva];
   const actualizada = await guardarEsquemaDeColumnas(database, schema);
   const creada = actualizada.schema_def[actualizada.schema_def.length - 1];
@@ -7521,9 +8040,15 @@ function abrirFormularioDeColumna(anchor, contexto) {
   const campoDestino = document.createElement("label");
   campoDestino.textContent = "Base destino";
   const destino = document.createElement("select");
+  // Misma elección que en el diálogo «Propiedades»: una fila o varias.
+  const campoMultiple = document.createElement("label");
+  campoMultiple.className = "db-col-add-check";
+  const multiple = document.createElement("input");
+  multiple.type = "checkbox";
+  campoMultiple.append(multiple, document.createTextNode(" Permite varias filas"));
   const campoDestinoWrap = document.createElement("div");
   campoDestinoWrap.className = "db-col-add-field";
-  campoDestinoWrap.append(campoDestino, destino);
+  campoDestinoWrap.append(campoDestino, destino, campoMultiple);
   campoDestinoWrap.hidden = true;
 
   const error = document.createElement("p");
@@ -7608,6 +8133,7 @@ function abrirFormularioDeColumna(anchor, contexto) {
         nombre: texto,
         tipo: tipo.value,
         destino: tipo.value === "relation" ? destino.value : null,
+        multiple: tipo.value === "relation" ? multiple.checked : false,
       });
       cerrarPanelDeColumna();
     } catch (err) {
@@ -8093,13 +8619,23 @@ function repaintCell(td, database, row, prop, focus, hooks = null) {
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
  * `prop === null` es la celda del título. */
 function paintCell(td, database, row, prop, hooks = null) {
-  td.innerHTML = prop
-    ? formatPropValueHtml(row.properties?.[prop.key], prop)
-    : escapeHtml(row.title || "Sin título");
+  const esRelacion = prop?.type === "relation";
+  if (esRelacion) {
+    pintarRelacionEnCelda(td, database, row, prop, hooks);
+  } else {
+    td.innerHTML = prop
+      ? formatPropValueHtml(row.properties?.[prop.key], prop, row)
+      : escapeHtml(row.title || "Sin título");
+  }
   // La columna del título se lee como jerarquía (la regla CSS va por clase:
   // la primera columna de la tabla es la de abrir la fila).
   td.classList.toggle("cell-title", !prop);
-  td.title = "Clic para editar";
+  // `cell-rel` deja que los títulos salten de línea: el `td` recorta a 240 px
+  // y un id (que ya no se enseña) salía siempre en una sola línea.
+  td.classList.toggle("cell-rel", Boolean(esRelacion));
+  td.title = esRelacion
+    ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
+    : "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
   // Dentro de una nota, el widget del editor se lleva el `mousedown` del bloque
@@ -8234,6 +8770,14 @@ async function toggleCheckbox(td, database, row, prop, hooks = null) {
  */
 function editCell(td, database, row, prop, hooks = null) {
   if (td.querySelector("input, select, textarea")) return;
+  // Una relación no se edita escribiendo un id: se elige la fila en un
+  // selector con títulos (ver `editarCeldaDeRelacion`).
+  if (prop?.type === "relation") {
+    editarCeldaDeRelacion(td, database, row, prop, hooks).catch((e) =>
+      reportError("No se pudo abrir el selector de filas", e),
+    );
+    return;
+  }
   const isTitle = !prop;
   const def = isTitle ? { key: "title", name: "Título", type: "text" } : prop;
   const { input, read } = buildPropertyInput(def, isTitle ? row.title : row.properties?.[def.key]);
@@ -8339,10 +8883,58 @@ let boardDrag = null;
 function renderBoard(database, rows, view, refresh) {
   const groupKey = view.config.group_by;
   const prop = database.schema_def.find((p) => p.key === groupKey);
-  const columns = prop?.options?.length ? prop.options : uniqueValues(rows, groupKey);
 
   const board = document.createElement("div");
   board.className = "board";
+
+  // Una relación agrupa por el TÍTULO de la fila destino: una columna por
+  // título, no por id (un id no se lee). Solo vale con una relación simple;
+  // con `multiple` una fila caería en varias columnas y arrastrarla escribiría
+  // un id suelto encima de la lista, así que se dice en vez de romper el dato.
+  if (prop?.type === "relation") {
+    if (relacionMultiple(prop)) {
+      return avisoDeVista(
+        "Esta vista agrupa por una relación que enlaza varias filas.",
+        "Una fila con varias filas enlazadas no cae en una sola columna. Cambia la agrupación a una relación simple.",
+      );
+    }
+    const etiquetas = new Map();
+    rows.forEach((r) => {
+      refsDeRelacion(r, groupKey).forEach((ref, id) => {
+        if (ref?.title && !etiquetas.has(id)) etiquetas.set(id, ref.title);
+      });
+    });
+    const grupos = new Map();
+    const sueltas = [];
+    rows.forEach((r) => {
+      const id = idsDeRelacion(r.properties?.[groupKey])[0] || null;
+      if (!id) {
+        sueltas.push(r);
+        return;
+      }
+      if (!grupos.has(id)) grupos.set(id, []);
+      grupos.get(id).push(r);
+    });
+    grupos.forEach((filas, id) =>
+      board.appendChild(
+        renderBoardColumn(database, etiquetas.get(id) || "(borrada)", filas, {
+          groupKey,
+          refresh,
+          // El valor que se escribe al soltar una tarjeta es el ID (lo que
+          // guarda el `.md`); lo que se lee en la columna es el título.
+          value: id,
+        }),
+      ),
+    );
+    if (sueltas.length) {
+      board.appendChild(
+        renderBoardColumn(database, "Sin valor", sueltas, { groupKey, refresh, value: null }),
+      );
+    }
+    return board;
+  }
+
+  const columns = prop?.options?.length ? prop.options : uniqueValues(rows, groupKey);
 
   const grouped = new Map(columns.map((c) => [c, []]));
   const other = [];
@@ -8426,7 +9018,7 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
       if (!propDef || v === null || v === "" || v === undefined) return;
       const line = document.createElement("div");
       line.className = "board-card-prop";
-      line.innerHTML = `${escapeHtml(propDef.name)}: ${formatPropValueHtml(v, propDef)}`;
+      line.innerHTML = `${escapeHtml(propDef.name)}: ${formatPropValueHtml(v, propDef, row)}`;
       card.appendChild(line);
     });
 
@@ -8917,7 +9509,7 @@ function renderList(database, rows, view, refresh) {
       if (v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) return;
       const span = document.createElement("span");
       span.className = "list-row-prop";
-      span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p)}`;
+      span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p, row)}`;
       item.appendChild(span);
     });
     const nombre = `Abrir «${row.title || "Sin título"}» como página`;
@@ -9665,7 +10257,60 @@ const dbDialog = document.getElementById("dialog-database");
 const propRowsContainer = document.getElementById("prop-rows");
 // `titleHidden` es el estado de la columna del título en el diálogo (se quita
 // y se vuelve a poner sin cerrarlo); `database` es null al crear.
-let dbDialogContext = null; // { database: Database|null, refresh, titleHidden }
+let dbDialogContext = null; // { database: Database|null, refresh, titleHidden, basesPrometidas }
+
+/** Las bases del vault para el `<select>` de una relación del diálogo.
+ *
+ * Lista TODAS, también la propia: una relación de una base consigo misma es
+ * válida y el servidor la admite, así que esconderla dejaría bases que no se
+ * pueden guardar. Se pide una vez por diálogo y solo cuando hay una fila de
+ * tipo Relación: abrir «Propiedades» de una base sin relaciones no la llama. */
+function basesDelVaultParaElDialogo() {
+  const ctx = dbDialogContext;
+  if (!ctx) return Promise.resolve([]);
+  if (!ctx.basesPrometidas) {
+    ctx.basesPrometidas = api("/databases")
+      .then((bases) => (Array.isArray(bases) ? bases : []))
+      .catch((e) => {
+        reportError("No se pudieron leer las bases del vault", e);
+        return [];
+      });
+  }
+  return ctx.basesPrometidas;
+}
+
+/** Apaga «Guardar» mientras alguna relación no tenga base destino y dice por
+ * qué, en una línea.
+ *
+ * Sin destino la propiedad no se puede guardar: la celda de una relación se
+ * valida contra la base a la que apunta (que la fila exista y sea de allí) y
+ * sin ella no hay nada que validar. El botón apagado sin explicación sería un
+ * callejón, así que el motivo va en `#db-save-hint`. */
+function actualizarGuardadoDelDialogo() {
+  const guardar = document.getElementById("btn-save-database");
+  const aviso = document.getElementById("db-save-hint");
+  if (!guardar || !aviso) return;
+  const sinDestino = [];
+  propRowsContainer.querySelectorAll(".prop-row-wrap:not(.prop-title-row)").forEach((wrap) => {
+    if (wrap.querySelector(".prop-type")?.value !== "relation") return;
+    if (wrap.querySelector(".prop-target")?.value) return;
+    sinDestino.push(wrap.querySelector(".prop-name")?.value.trim() || "una propiedad");
+  });
+  if (!sinDestino.length) {
+    guardar.disabled = false;
+    aviso.textContent = "";
+    aviso.hidden = true;
+    return;
+  }
+  aviso.hidden = false;
+  aviso.textContent =
+    sinDestino.length === 1
+      ? `Elige la base destino de «${sinDestino[0]}» para poder guardar.`
+      : `Elige la base destino de ${sinDestino
+          .map((n) => `«${n}»`)
+          .join(", ")} para poder guardar.`;
+  guardar.disabled = true;
+}
 
 /** La fila de la columna del título.
  *
@@ -9763,7 +10408,6 @@ function addPropertyRow(prop = null) {
   removeBtn.className = "icon-btn";
   removeBtn.title = "Quitar esta propiedad";
   removeBtn.setAttribute("aria-label", "Quitar esta propiedad");
-  removeBtn.addEventListener("click", () => wrap.remove());
 
   row.append(nameInput, typeSelect, removeBtn);
 
@@ -9771,6 +10415,71 @@ function addPropertyRow(prop = null) {
   optionsInput.placeholder = "opciones separadas por coma (Selección / Multiselección)";
   optionsInput.className = "prop-options-input";
   optionsInput.hidden = true;
+
+  // Relación: a qué base apunta (`target_database`) y si enlaza una fila o
+  // varias (`multiple`). Solo se enseña con el tipo Relación.
+  const relWrap = document.createElement("div");
+  relWrap.className = "prop-relation";
+  relWrap.hidden = true;
+
+  const targetLabel = document.createElement("label");
+  targetLabel.className = "prop-relation-label";
+  const targetText = document.createElement("span");
+  targetText.textContent = "Base destino";
+  const targetSelect = document.createElement("select");
+  targetSelect.className = "prop-target";
+  targetSelect.setAttribute("aria-label", "Base a la que apunta la relación");
+  targetLabel.append(targetText, targetSelect);
+
+  const multipleLabel = document.createElement("label");
+  multipleLabel.className = "prop-relation-multiple";
+  const multipleBox = document.createElement("input");
+  multipleBox.type = "checkbox";
+  multipleBox.className = "prop-multiple";
+  multipleBox.checked = relacionMultiple(prop);
+  multipleLabel.append(multipleBox, document.createTextNode(" Permite varias filas"));
+
+  relWrap.append(targetLabel, multipleLabel);
+
+  let destinoPedido = false;
+  /** Rellena el `<select>` la primera vez que hace falta: una base sin
+   * relaciones no pide la lista de bases. */
+  const llenarDestino = () => {
+    if (destinoPedido) return;
+    destinoPedido = true;
+    const actual = String(prop?.target_database || "");
+    const vacio = document.createElement("option");
+    vacio.value = "";
+    vacio.textContent = "Elige una base…";
+    targetSelect.appendChild(vacio);
+    basesDelVaultParaElDialogo().then((bases) => {
+      const hayActual = bases.some((b) => String(b.id) === actual);
+      bases.forEach((b) => {
+        const opt = document.createElement("option");
+        opt.value = String(b.id);
+        opt.textContent = b.title || "Sin título";
+        targetSelect.appendChild(opt);
+      });
+      // Un destino que ya no está en el vault no se puede ofrecer por nombre:
+      // se queda como opción (no se pierde lo que dice el `.md`) y se puede
+      // cambiar por otra.
+      if (actual && !hayActual) {
+        const rota = document.createElement("option");
+        rota.value = actual;
+        rota.textContent = "Base ya no disponible (elige otra)";
+        targetSelect.appendChild(rota);
+      }
+      targetSelect.value = actual;
+      actualizarGuardadoDelDialogo();
+    });
+  };
+
+  const aplicarVisibilidad = () => {
+    const esRelacion = typeSelect.value === "relation";
+    relWrap.hidden = !esRelacion;
+    optionsInput.hidden = !["select", "multiselect"].includes(typeSelect.value);
+    if (esRelacion) llenarDestino();
+  };
 
   if (prop) {
     nameInput.value = prop.name;
@@ -9780,11 +10489,21 @@ function addPropertyRow(prop = null) {
   }
 
   typeSelect.addEventListener("change", () => {
-    optionsInput.hidden = !["select", "multiselect"].includes(typeSelect.value);
+    aplicarVisibilidad();
+    actualizarGuardadoDelDialogo();
+  });
+  nameInput.addEventListener("input", () => actualizarGuardadoDelDialogo());
+  targetSelect.addEventListener("change", () => actualizarGuardadoDelDialogo());
+  // Al quitar una fila de propiedad, el aviso y el botón se recalculan: la
+  // relación incompleta que bloqueaba puede ser justo la que se ha quitado.
+  removeBtn.addEventListener("click", () => {
+    wrap.remove();
+    actualizarGuardadoDelDialogo();
   });
 
-  wrap.append(row, optionsInput);
+  wrap.append(row, optionsInput, relWrap);
   propRowsContainer.appendChild(wrap);
+  aplicarVisibilidad();
 }
 
 /** Abre el diálogo en alta (`database` nulo) o para editar una existente.
@@ -9796,6 +10515,7 @@ function openDatabaseDialog(database = null, refresh = null) {
     database,
     refresh,
     titleHidden: Boolean(database?.title_hidden),
+    basesPrometidas: null,
   };
   document.getElementById("db-dialog-title").textContent = database
     ? "Propiedades de la base de datos"
@@ -9807,6 +10527,7 @@ function openDatabaseDialog(database = null, refresh = null) {
   // Sin propiedades de serie: una base nueva nace con `schema_def: []`. Para
   // añadir una columna está el botón «Propiedad».
   (database?.schema_def || []).forEach((p) => addPropertyRow(p));
+  actualizarGuardadoDelDialogo();
   dbDialog.showModal();
 }
 
@@ -9825,6 +10546,13 @@ function readSchemaFromDialog() {
     if (["select", "multiselect"].includes(type) && optionsRaw) {
       prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
     }
+    if (type === "relation") {
+      // Se manda SIEMPRE lo que dice el `<select>`, también vacío: el servidor
+      // conserva el destino de antes cuando la clave no viaja, y aquí lo que
+      // vale es lo que el usuario ve en el diálogo.
+      prop.target_database = wrap.querySelector(".prop-target")?.value || "";
+      prop.multiple = Boolean(wrap.querySelector(".prop-multiple")?.checked);
+    }
     schema_def.push(prop);
   });
   return schema_def;
@@ -9838,7 +10566,10 @@ function readTitleColumnFromDialog() {
   return { title_name, title_hidden: Boolean(dbDialogContext?.titleHidden) };
 }
 
-document.getElementById("btn-add-prop").addEventListener("click", () => addPropertyRow());
+document.getElementById("btn-add-prop").addEventListener("click", () => {
+  addPropertyRow();
+  actualizarGuardadoDelDialogo();
+});
 document.getElementById("btn-cancel-database").addEventListener("click", () => {
   dbDialogContext = null;
   dbDialog.close();
@@ -9849,6 +10580,12 @@ document.getElementById("btn-save-database").addEventListener("click", async () 
   const schema_def = readSchemaFromDialog();
   const { title_name, title_hidden } = readTitleColumnFromDialog();
   const { database, refresh } = dbDialogContext || {};
+  // El botón ya está apagado; esto es la red por si se llega por otra vía
+  // (Enter en un campo). El motivo lo escribe `actualizarGuardadoDelDialogo`.
+  if (schema_def.some((p) => p.type === "relation" && !p.target_database)) {
+    actualizarGuardadoDelDialogo();
+    return;
+  }
 
   if (!database) {
     try {
@@ -9905,6 +10642,9 @@ function openViewDialog(database) {
   const groupSelect = document.getElementById("view-groupby");
   groupSelect.innerHTML = "";
   database.schema_def.forEach((p) => {
+    // Una relación múltiple no puede ser columna de un tablero: una fila con
+    // varias filas enlazadas caería en varias a la vez.
+    if (p.type === "relation" && relacionMultiple(p)) return;
     const opt = document.createElement("option");
     opt.value = p.key;
     opt.textContent = p.name;
