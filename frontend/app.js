@@ -6120,6 +6120,23 @@ const seleccionPorBase = new Map();
  * repintado que sigue a la acción, que es justo cuando hay que leerlo. */
 const informeDeBloque = new Map();
 
+/** Aviso de que la selección de una base ha cambiado.
+ *
+ * La selección es UNA por base, pero puede haber varias barras vivas a la vez
+ * (una nota con dos vallas ```mdm-database de la misma base, patrón normal: ver
+ * `refrescarOtrosEmbeds`). Si solo repintara la barra que recibió el clic, las
+ * demás enseñarían un recuento viejo —o ninguna barra— mientras la acción
+ * cambiaría más filas de las que dicen. Cada barra escucha este aviso y repinta
+ * lo suyo, que es lo único que sabe (su lista de visibles).
+ */
+const EVENTO_SELECCION_BARRAS = "mdm:seleccion-barras";
+
+function avisarCambioDeSeleccion(databaseId) {
+  document.dispatchEvent(
+    new CustomEvent(EVENTO_SELECCION_BARRAS, { detail: { clave: String(databaseId) } }),
+  );
+}
+
 function seleccionDeBase(databaseId) {
   const clave = String(databaseId);
   let seleccion = seleccionPorBase.get(clave);
@@ -6379,6 +6396,20 @@ function crearSeleccionDeFilas({
   const informes = document.createElement("div");
   informes.className = "db-sel-reports";
 
+  /** Otra instancia viva de la MISMA base ha cambiado la selección: esta barra
+   * repinta su recuento (y aparece si toca) con lo que hay ahora en el Map
+   * compartido. Una barra que ya no está en el documento —la nota se repintó, se
+   * cambió de vista— se da de baja aquí, que es cuando se nota, para no seguir
+   * escuchando para siempre. */
+  function alCambiarSeleccion(e) {
+    if (!e.detail || e.detail.clave !== claveBase) return;
+    if (!barra.isConnected) {
+      document.removeEventListener(EVENTO_SELECCION_BARRAS, alCambiarSeleccion);
+      return;
+    }
+    sincronizar();
+  }
+
   const seleccionadas = () => [...sel.entries()].map(([id, title]) => ({ id, title }));
   const hayFueraDeVista = () => [...sel.keys()].filter((id) => !visibles.has(id)).length;
 
@@ -6430,17 +6461,17 @@ function crearSeleccionDeFilas({
       const fila = visibles.get(clave);
       sel.set(clave, fila ? fila.title || "Sin título" : "Sin título");
     }
-    sincronizar();
+    avisarCambioDeSeleccion(claveBase);
   }
 
   function seleccionarTodas() {
     for (const [id, fila] of visibles) sel.set(id, fila.title || "Sin título");
-    sincronizar();
+    avisarCambioDeSeleccion(claveBase);
   }
 
   function limpiar() {
     sel.clear();
-    sincronizar();
+    avisarCambioDeSeleccion(claveBase);
   }
 
   /** El botón (o casilla) que marca una fila. `checked` se siembra ya, para que
@@ -6545,6 +6576,7 @@ function crearSeleccionDeFilas({
     // Lo borrado sale de la selección; lo que falló se queda marcado, que es
     // justo lo que hay que volver a mirar.
     for (const fila of informe.ok) sel.delete(String(fila.id));
+    if (informe.ok.length) avisarCambioDeSeleccion(claveBase);
     informeDeBloque.set(claveBase, informe);
     marcarOcupado(false);
     pintarInforme();
@@ -6688,6 +6720,7 @@ function crearSeleccionDeFilas({
   acciones.append(btnQuitar);
 
   barra.append(cuenta, fuera, avance, acciones);
+  document.addEventListener(EVENTO_SELECCION_BARRAS, alCambiarSeleccion);
   sincronizar();
   pintarInforme();
 
