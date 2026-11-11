@@ -939,6 +939,11 @@
     font-family: var(--font-body); /* prosa con pinta de Notion; el código se fuerza aparte a --font-mono */
     font-size: 15px;
     line-height: 1.6;
+    /* Altura de una línea del cuerpo (15 x 1.6): la usan las líneas en blanco
+       (que ocupan una entera), el aire que descuentan los cm-mdm-space-* por
+       cada línea en blanco y la línea del final. Si cambia el font-size o el
+       line-height de aquí, cambia este número (y el del móvil, más abajo). */
+    --mdm-line: 24px;
     color: var(--ink);
     caret-color: var(--ink);
   }
@@ -1192,13 +1197,66 @@
   .cm-mdm-quote-bars { display: inline-flex; gap: 4px; margin-right: 10px; vertical-align: middle; }
   .cm-mdm-quote-bar { display: inline-block; width: 3px; height: 1.1em; border-radius: 2px; background: var(--accent); vertical-align: middle; }
 
-  /* Líneas en blanco usadas solo para separar bloques en Markdown: se
-     colapsan casi a 0 mientras no se está escribiendo ahí (cursor-aware,
-     ver blankLineDecorations en entry.js) -- el espacio real entre bloques
-     ya no sale de aquí, sino de cm-mdm-space-* (ver más abajo); esto solo
-     evita que el salto de línea que exige Markdown se vea como un hueco. */
-  #note-body .cm-mdm-blank-collapsed { font-size: 1px; line-height: 3px; }
-  #row-page-body .cm-mdm-blank-collapsed { font-size: 1px; line-height: 3px; }
+  /* Líneas en blanco: ocupan su altura de línea, como cualquier otra (ver
+     blankLineDecorations en entry.js). Antes se colapsaban a 3 px y una línea
+     en blanco entre dos párrafos no se distinguía del margen entre bloques;
+     ahora el hueco delata cuántas hay -- una deja una línea de aire y dos el
+     doble. La clase no cambia la altura (una .cm-line vacía ya mide lo que
+     mide una línea del cuerpo): es el gancho del indicador y del descuento de
+     aire que hacen los cm-mdm-space-*.
+
+     El indicador de la línea vacía donde está el cursor es un PUNTO tenue en
+     el margen, no un «escribe…»: el cursor ya dice dónde se escribe (una
+     barra repetiría el caret) y un texto de relleno parecería un formulario;
+     además mentiría en la línea en blanco que solo separa dos párrafos, donde
+     escribir parte el párrafo en vez de crear un bloque. Sin cursor no hay
+     nada; como mucho, el punto al pasar el ratón por encima. */
+  #note-body .cm-mdm-blank::after,
+  #row-page-body .cm-mdm-blank::after {
+    content: "";
+    position: absolute;
+    left: -14px;
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 50%;
+    background: var(--ink-muted);
+    opacity: 0;
+    pointer-events: none;
+  }
+  #note-body .cm-mdm-blank-active::after,
+  #row-page-body .cm-mdm-blank-active::after { opacity: 0.45; }
+  #note-body .cm-mdm-blank:hover::after,
+  #row-page-body .cm-mdm-blank:hover::after { opacity: 0.22; }
+
+  /* La línea vacía del final: SIEMPRE hay una debajo del último bloque, con su
+     altura, para seguir escribiendo sin buscar el hueco. Es un `::after` de
+     .cm-content, o sea puro CSS: el `.md` no gana ni un carácter (el cuerpo
+     guardado no acaba en salto, ver canonicalBody en body.js). Clicar ahí ya
+     crea el bloque nuevo -- ver el `mousedown` de blockHandleEventHandlers,
+     que intercepta los clics por debajo de la última línea. Si la última línea
+     del documento ya está vacía, se esconde: esa ES la línea del final. */
+  #note-body .cm-content::after,
+  #row-page-body .cm-content::after {
+    content: "";
+    display: block;
+    height: var(--mdm-line, 24px);
+    cursor: text;
+  }
+  #note-body .cm-content:has(.cm-mdm-last-line)::after,
+  #row-page-body .cm-content:has(.cm-mdm-last-line)::after { display: none; }
+  /* Al pasar el ratón por el cuerpo aparece el mismo punto, allí donde se
+     seguiría escribiendo -- el mismo criterio que las asas de bloque, que
+     también se enseñan al pasar por encima. Es `:hover` del .cm-content y no
+     del `::after` a propósito: un pseudo-elemento no recibe el ratón (la
+     regla `::after:hover` no casa nunca, y el `elementFromPoint` de esa banda
+     devuelve el .cm-content). */
+  #note-body .cm-content:hover::after,
+  #row-page-body .cm-content:hover::after {
+    background-image: radial-gradient(circle at 6px 50%, var(--ink-muted) 0 2px, transparent 2.5px);
+    opacity: 0.3;
+  }
 
   /* ---------- separación entre bloques (al estilo Notion) ----------
      Padding-top en la PRIMERA línea de cada bloque, según su tipo -- ver
@@ -1213,19 +1271,27 @@
      (el hueco se comía el bloque anterior) ni 6 px (que lo pegaba al de
      arriba). Los H1/H2 llevan además 4/3 px por debajo para que no se
      apoyen en el párrafo siguiente. El asa de bloque de más abajo repite el
-     padding-top de cada nivel: si cambia uno, cambia el otro. */
-  #note-body .cm-mdm-space-normal { padding-top: 6px; }
-  #row-page-body .cm-mdm-space-normal { padding-top: 6px; }
-  #note-body .cm-mdm-space-h1 { padding-top: 28px; padding-bottom: 4px; }
-  #row-page-body .cm-mdm-space-h1 { padding-top: 28px; padding-bottom: 4px; }
-  #note-body .cm-mdm-space-h2 { padding-top: 22px; padding-bottom: 3px; }
-  #row-page-body .cm-mdm-space-h2 { padding-top: 22px; padding-bottom: 3px; }
-  #note-body .cm-mdm-space-h3 { padding-top: 18px; }
-  #row-page-body .cm-mdm-space-h3 { padding-top: 18px; }
-  #note-body .cm-mdm-space-h4 { padding-top: 14px; }
-  #row-page-body .cm-mdm-space-h4 { padding-top: 14px; }
-  #note-body .cm-mdm-space-h5 { padding-top: 12px; }
-  #row-page-body .cm-mdm-space-h5 { padding-top: 12px; }
+     padding-top de cada nivel: si cambia uno, cambia el otro.
+
+     Las líneas en blanco que el autor puso delante del bloque también son
+     aire, y NO se suman: `--mdm-blank` (lo pone blockSpacingDecorations
+     contando líneas) resta `--mdm-line` por cada una sin bajar de 0, así que
+     el hueco es max(espacio del tipo, líneas en blanco x línea). Una línea en
+     blanco entre dos párrafos deja exactamente una línea (24 px), dos dejan el
+     doble, y un H1 con una línea en blanco delante conserva sus 28 px
+     (28 - 24 = 4 de padding + los 24 de la línea). */
+  #note-body .cm-mdm-space-normal { padding-top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-normal { padding-top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h1 { padding-top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 4px; }
+  #row-page-body .cm-mdm-space-h1 { padding-top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 4px; }
+  #note-body .cm-mdm-space-h2 { padding-top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 3px; }
+  #row-page-body .cm-mdm-space-h2 { padding-top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 3px; }
+  #note-body .cm-mdm-space-h3 { padding-top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h3 { padding-top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h4 { padding-top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h4 { padding-top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h5 { padding-top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h5 { padding-top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
 
   /* ---------- handle de bloque (seleccionar/convertir/borrar) + botón "+" ----------
      Widget dentro de la línea (no gutter), posicionado en el hueco que deja
@@ -1260,18 +1326,18 @@
   .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) {
     opacity: 1;
   }
-  #note-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: 28px; }
-  #row-page-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: 28px; }
-  #note-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: 22px; }
-  #row-page-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: 22px; }
-  #note-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: 18px; }
-  #row-page-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: 18px; }
-  #note-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: 14px; }
-  #row-page-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: 14px; }
-  #note-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: 12px; }
-  #row-page-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: 12px; }
-  #note-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: 6px; }
-  #row-page-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: 6px; }
+  #note-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
   .cm-mdm-block-add,
   .cm-mdm-block-handle {
     width: 28px;
@@ -2468,7 +2534,13 @@
       padding: 4px 2px 40vh 92px;
       font-size: 16px;
       line-height: 1.65;
+      --mdm-line: calc(16px * 1.65); /* la misma cuenta que font-size x line-height */
     }
+    /* El punto de la línea vacía no cabe a la izquierda: ahí van las dos asas
+       de 44 px (de -92 a -4). Va pegado al principio del texto, y solo se ve
+       mientras la línea está vacía y con el cursor dentro. */
+    #note-body .cm-mdm-blank::after,
+    #row-page-body .cm-mdm-blank::after { left: 2px; }
     /* Asas de bloque en el móvil: «+» y «⋮⋮» seguidos, 44×44 cada uno, y el
        hueco de la izquierda crece a 92 px (44 + 44 + 4 de aire) para que los
        dos quepan sin tapar el texto. Antes el «+» se ocultaba y el asa no se
