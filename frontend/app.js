@@ -6488,7 +6488,12 @@ function crearSeleccionDeFilas({
 
   function marcarOcupado(valor) {
     ocupado = valor;
-    for (const boton of acciones.querySelectorAll("button")) boton.disabled = valor;
+    // «Cambiar propiedad» sigue apagado si la base no tiene propiedades: al
+    // terminar una acción no se le devuelve un botón que no puede hacer nada.
+    const sinPropiedades = !(database.schema_def || []).length;
+    for (const boton of acciones.querySelectorAll("button")) {
+      boton.disabled = valor || (sinPropiedades && boton === btnPropiedad);
+    }
     avance.hidden = !valor;
     if (!valor) avance.textContent = "";
     sincronizar();
@@ -6588,7 +6593,11 @@ function crearSeleccionDeFilas({
     // letra y Espacio es un espacio. Una casilla no escribe nada, así que con
     // ella enfocada Supr y Ctrl+A siguen siendo de la selección (Espacio, en
     // cambio, es su tecla: la marca la propia casilla).
-    const campo = activo.closest("input, select, textarea, [contenteditable='true']");
+    //
+    // Lo que se mira es el control, NO un `[contenteditable]` de por medio: la
+    // tabla de una nota cuelga del `contenteditable` del editor, y con esa
+    // comprobación el teclado de la selección no funcionaba ahí dentro.
+    const campo = activo.closest("input, select, textarea");
     const esCasilla = Boolean(
       campo && campo.tagName === "INPUT" && (campo.type === "checkbox" || campo.type === "radio"),
     );
@@ -6608,7 +6617,14 @@ function crearSeleccionDeFilas({
       return;
     }
     if (e.key === "Delete") {
-      if (!sel.size || !puedeBorrar) return;
+      if (!sel.size) return;
+      if (!puedeBorrar) {
+        // En la tabla de una nota no se borran filas: la tecla se queda aquí y
+        // no sube al keymap del editor, que suprimiría texto del `.md`.
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       borrarSeleccion();
