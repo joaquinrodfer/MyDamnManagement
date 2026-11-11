@@ -1672,6 +1672,123 @@
      estado mudo). */
   .db-view-note { margin: -8px 0 16px; font-size: var(--text-sm); color: var(--ink-muted); }
 
+  /* ---------- filtros y orden de una vista ---------- */
+  /* La barra vive entre las pestañas y el cuerpo de la vista: los botones y el
+     recuento arriba, los chips de las condiciones activas debajo (encima de la
+     tabla, como se pide). */
+  .db-tools { display: flex; flex-direction: column; gap: 8px; margin: -6px 0 12px; }
+  .db-tools-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .db-tools .btn.is-active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  .db-count { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .db-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .db-chips:empty { display: none; }
+  .db-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 2px 3px 2px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 12px;
+  }
+  .db-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .db-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    border: none;
+    border-radius: 999px;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+  }
+  .db-chip-remove .svg-icon { width: 12px; height: 12px; }
+  .db-chip-remove:hover { background: var(--surface-elevated); }
+  .db-chip-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .db-sort-summary { font-size: 12px; color: var(--ink-muted); }
+  .btn-link {
+    padding: 2px 4px;
+    border: none;
+    background: none;
+    color: var(--accent-ink);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .btn-link:hover { color: var(--ink); }
+  .btn-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+
+  /* Cabecera que ordena: es un botón, pero se lee como la cabecera de antes. */
+  .th-sort {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .th-sort:hover { color: var(--accent-ink); }
+  .th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .th-sort.is-sorted { color: var(--accent-ink); }
+  .sort-arrow { font-size: 11px; }
+  .sort-priority { font-size: 10px; color: var(--ink-muted); }
+
+  /* Paneles de filtro y orden: una fila por condición o clave. */
+  .filter-rows { display: flex; flex-direction: column; gap: 8px; }
+  .filter-empty { margin: 0; font-size: var(--text-sm); color: var(--ink-muted); line-height: 1.5; }
+  .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .filter-row select,
+  .filter-row input {
+    min-width: 0;
+    min-height: var(--control-size);
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-input);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+  }
+  .filter-row .filter-prop { flex: 0 1 150px; }
+  .filter-row .filter-op { flex: 0 1 122px; }
+  .filter-row .filter-value { display: flex; flex: 1 1 130px; min-width: 0; }
+  .filter-row .filter-value > * { width: 100%; }
+  .filter-remove,
+  .filter-move {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .filter-remove .svg-icon { width: 14px; height: 14px; }
+  .filter-remove:hover,
+  .filter-move:hover:not([disabled]) { border-color: var(--panel-border); color: var(--ink); background: var(--code-bg); }
+  .filter-remove:focus-visible,
+  .filter-move:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filter-move[disabled] { opacity: 0.35; cursor: default; }
+  .filter-add { align-self: flex-start; margin-top: 10px; }
+  .field-note { margin: 10px 0 0; font-size: 12px; color: var(--ink-muted); line-height: 1.5; }
+  .dialog-status { margin: 8px 0 0; font-size: 12.5px; color: var(--warn); }
+  .dialog-status:empty { display: none; }
+
   /* «+ Nueva fila» de una vista: tabla incrustada en una nota, lista y agenda
      del calendario. El botón se cambia por el campo del nombre (form) y la
      fila se crea con Enter; el aviso de «el filtro no la enseña» va debajo. */
@@ -3046,6 +3163,36 @@
     <div class="dialog-actions">
       <button class="btn" id="btn-cancel-view">Cancelar</button>
       <button class="btn btn-primary" id="btn-create-view">Crear</button>
+    </div>
+  </dialog>
+
+  <!-- Filtrar una vista: condiciones sobre sus propiedades, unidas con Y, que
+       se guardan en ESA vista (su `config` del .md), no en la base. -->
+  <dialog id="dialog-filter">
+    <h3>Filtrar «<span id="filter-view-name"></span>»</h3>
+    <div id="filter-rows" class="filter-rows"></div>
+    <button type="button" class="btn filter-add" id="btn-add-filter"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Condición</button>
+    <p class="field-note">Se enseñan las filas que cumplen <strong>todas</strong> las condiciones (Y). El filtro es de esta vista: las demás pestañas no lo heredan.</p>
+    <p class="dialog-status" id="filter-status" role="status"></p>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-clear-filter">Quitar filtro</button>
+      <button class="btn" id="btn-cancel-filter">Cancelar</button>
+      <button class="btn btn-primary" id="btn-apply-filter">Aplicar</button>
+    </div>
+  </dialog>
+
+  <!-- Ordenar una vista: varias claves en orden de prioridad, también en su
+       `config`. -->
+  <dialog id="dialog-sort">
+    <h3>Ordenar «<span id="sort-view-name"></span>»</h3>
+    <div id="sort-rows" class="filter-rows"></div>
+    <button type="button" class="btn filter-add" id="btn-add-sort"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Clave</button>
+    <p class="field-note">Manda la primera clave; las siguientes desempatan. Las filas sin valor van al final en las dos direcciones.</p>
+    <p class="dialog-status" id="sort-status" role="status"></p>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-clear-sort">Quitar orden</button>
+      <button class="btn" id="btn-cancel-sort">Cancelar</button>
+      <button class="btn btn-primary" id="btn-apply-sort">Aplicar</button>
     </div>
   </dialog>
 

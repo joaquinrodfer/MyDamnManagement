@@ -208,7 +208,9 @@ Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]
 | `/databases/templates` | GET | Lista las plantillas disponibles (`crm`, `tasks`) |
 | `/databases/from-template` | POST | Crea una `database` desde una plantilla: schema + vistas por defecto en una llamada |
 
-Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": {"key":"valor","dir":"desc"}, "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend; `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
+Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": [{"key":"valor","dir":"desc"}], "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend (`app/views.py`) sobre las filas de la vista, y son **de esa vista**: dos pestañas de la misma base pueden filtrar distinto y la base sin vista no filtra. `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
+
+`filters` es una lista de condiciones que se cumplen **todas** (Y). `op` es uno de `eq`, `neq`, `contains` (texto), `gt`, `gte`, `lt`, `lte` (número o fecha), `before`, `after` (fecha), `checked`, `unchecked` (casilla), `includes` (relación) e `is_empty`, `is_not_empty`; `value` no se escribe en los operadores que no lo necesitan. `sort` es una lista de claves en orden de prioridad (`dir`: `asc` o `desc`), y las filas sin valor en la clave van al final en las dos direcciones. La forma antigua de una sola clave (`"sort": {"key":"valor","dir":"desc"}`) se sigue leyendo; no se reescribe al editarla.
 
 ### Agentes (`/agent/...`)
 
