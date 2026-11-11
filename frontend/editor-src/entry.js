@@ -2038,6 +2038,19 @@ function blockIndexAtPos(state, pos) {
   return blocks.findIndex((b) => pos >= b.from && pos <= b.to);
 }
 
+/** ¿El puntero está DENTRO del bloque (4 px de gracia arriba y abajo)? Hace
+ * falta porque `posAtCoords` pega el hueco de debajo del último bloque al final
+ * del texto: sin esto, el punto aparecía también con el ratón en la banda
+ * vacía del final, que es justo el «punto suelto donde no hay bloque». */
+function pointerInsideBlock(view, index, y) {
+  const b = view.state.field(blockField).blocks[index];
+  if (!b) return false;
+  const top = view.coordsAtPos(b.from, -1);
+  const bottom = view.coordsAtPos(b.to, 1) || top;
+  if (!top || !bottom) return false;
+  return y >= top.top - 4 && y <= bottom.bottom + 4;
+}
+
 function dotDecorations(state) {
   const index = coarsePointer() ? blockIndexAtPos(state, state.selection.main.head) : state.field(dotField);
   if (index < 0) return Decoration.none;
@@ -2074,6 +2087,7 @@ function blockDotEventHandlers() {
       if (!coarsePointer()) {
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
         index = blockIndexAtPos(view.state, pos);
+        if (index >= 0 && !pointerInsideBlock(view, index, event.clientY)) index = -1;
       }
       if (index !== view.state.field(dotField)) view.dispatch({ effects: setDotBlock.of(index) });
       return false;

@@ -1,8 +1,8 @@
-// Cuántas líneas en blanco hay delante de un bloque: el número que
-// blockSpacingDecorations le pasa a CSS (`--mdm-blank`) para que el aire del
-// bloque NO se sume al que ya ocupan esas líneas. De ahí sale el pedido del
-// dueño -- una línea en blanco entre dos párrafos deja UNA línea de aire y dos
-// dejan el doble --, así que la cuenta es lo que hay que fijar.
+// Cuántas líneas en blanco hay delante de un bloque -- con eso
+// blockSpacingDecorations decide que el bloque NO sume su aire al que ya ocupan
+// esas líneas (`--mdm-flush`) -- y CUÁNTO mide cada una: lo dicta el bloque de
+// encima (H1 > H2 > texto > lista) y N seguidas miden N veces ese alto. Las dos
+// cosas son pedidos del dueño, así que son lo que hay que fijar.
 //
 // Se prueba sobre documentos de verdad (EditorState), no sobre un texto con
 // párrafos inventados: la cuenta depende de dónde acaban los rangos del parser
