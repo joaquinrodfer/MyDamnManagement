@@ -982,6 +982,31 @@ class Repository:
                 config["visible_properties"] = [
                     mapped(key) for key in visible if mapped(key) is not None
                 ]
+            # El ancho y el sitio de cada columna son de la vista y hablan de
+            # claves de propiedad: renombrar una se lleva su `widths` y su
+            # puesto en `order`, y borrarla deja las dos cosas fuera (una
+            # columna que ya no existe no ocupa un hueco). El ancho de la
+            # columna del título va con la clave `title`, que no es de ninguna
+            # propiedad y por eso `mapped` no la toca nunca.
+            widths = config.get("widths")
+            if isinstance(widths, dict):
+                traducidos = {
+                    nuevo: ancho
+                    for clave, ancho in widths.items()
+                    if (nuevo := mapped(clave)) is not None
+                }
+                if traducidos:
+                    config["widths"] = traducidos
+                else:
+                    config.pop("widths", None)
+            order = config.get("order")
+            if isinstance(order, list):
+                sitios = [mapped(clave) for clave in order if isinstance(clave, str)]
+                sitios = [clave for clave in sitios if clave is not None]
+                if sitios:
+                    config["order"] = sitios
+                else:
+                    config.pop("order", None)
             view["config"] = config
         return views
 
