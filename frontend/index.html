@@ -1734,6 +1734,181 @@
     color: var(--ink-muted);
     font-weight: 600;
   }
+  /* ------------------------------------------ columnas desde la cabecera (P3)
+     Cada `<th>` lleva su botón de tres puntos (o el propio rótulo, que también
+     abre) y el «+» del final añade una columna. El menú NO vive dentro del th:
+     `.table-wrap` tiene scroll horizontal y recortaría un desplegable; va
+     colgado de <body> con `position: fixed` (ver `abrirPanelFlotante`). */
+  .rows-table th.db-col-head { position: relative; padding-right: 26px; }
+  .db-col-label {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+  }
+  .db-col-menu-btn,
+  .db-col-add-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease-std), opacity var(--dur-fast) var(--ease-std);
+  }
+  .db-col-menu-btn {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    opacity: 0.6;
+  }
+  /* En táctil no hay hover: el botón se ve siempre, algo más apagado. */
+  .db-col-head:hover .db-col-menu-btn,
+  .db-col-menu-btn:focus-visible { opacity: 1; }
+  .db-col-menu-btn:hover { background: var(--accent-soft); color: var(--ink); }
+  .db-col-menu-btn .svg-icon { width: 14px; height: 14px; }
+  .rows-table th.db-col-add-head { width: 30px; padding: 0; text-align: center; }
+  .db-col-add-btn { width: 100%; height: 100%; min-height: 26px; color: var(--ink-muted); }
+  .db-col-add-btn:hover { background: var(--accent-soft); color: var(--accent-ink); }
+  .db-col-add-btn .svg-icon { width: 14px; height: 14px; }
+  /* Renombrar en el sitio: el campo ocupa el hueco del rótulo, sin versalitas
+     (el th las hereda) y con el foco a la vista. */
+  .db-col-rename {
+    width: 100%;
+    min-width: 88px;
+    font: inherit;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink);
+    padding: 2px 5px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: var(--panel);
+  }
+  /* El panel flotante del menú y del formulario del «+». A 375 px mide como
+     mucho el ancho de la ventana menos los márgenes y nunca se sale. */
+  .db-col-floating {
+    position: fixed;
+    z-index: 1000;
+    min-width: 208px;
+    max-width: min(300px, calc(100vw - 16px));
+    max-height: min(70vh, 560px);
+    overflow-y: auto;
+    padding: 5px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    color: var(--ink);
+    font-size: var(--text-sm);
+  }
+  .db-col-menu-label {
+    padding: 5px 8px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .db-col-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    padding: 7px 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .db-col-menu-item:hover,
+  .db-col-menu-item:focus-visible { background: var(--code-bg); }
+  .db-col-menu-item.danger { color: var(--down); }
+  .db-col-menu-item.danger:hover,
+  .db-col-menu-item.danger:focus-visible { background: var(--down-bg); }
+  /* Apagado pero alcanzable: al pulsarlo escribe el motivo (en táctil no hay
+     `title` que leer). */
+  .db-col-menu-item.is-off { color: var(--ink-muted); cursor: default; }
+  .db-col-menu-item.is-off:hover { background: var(--code-bg); }
+  .db-col-menu-mark { color: var(--ink-muted); font-size: 12px; }
+  .db-col-menu-sep { height: 1px; background: var(--panel-border); margin: 5px 4px; }
+  .db-col-menu-note {
+    margin: 2px 8px 6px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink-muted);
+  }
+  .db-col-menu-note:empty { display: none; }
+  /* Barra de «N columnas ocultas en esta vista · Mostrar». Va dentro de
+     `.table-wrap` (que desplaza en horizontal), pegada al borde izquierdo para
+     que no se vaya con las columnas. */
+  .db-hidden-cols {
+    position: sticky;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    width: 100%;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--surface-elevated);
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+  .db-hidden-cols-btn {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent-ink);
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  /* Formulario del «+»: nombre, tipo y (solo Relación) base destino. */
+  .db-col-add-form { display: grid; gap: 8px; padding: 4px; }
+  .db-col-add-title { font-size: 12.5px; font-weight: 600; }
+  .db-col-add-field { display: grid; gap: 3px; }
+  .db-col-add-field[hidden] { display: none; }
+  .db-col-add-field label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .db-col-add-field input,
+  .db-col-add-field select {
+    width: 100%;
+    min-width: 0;
+    font: inherit;
+    font-size: 13px;
+    padding: 5px 7px;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .db-col-add-actions { display: flex; justify-content: flex-end; gap: 6px; }
+  .db-col-add-form .btn { font-size: 12.5px; }
+  .db-col-add-error { margin: 0; font-size: 12px; color: var(--down); }
+  .db-col-add-error:empty { display: none; }
   /* La columna del título es la jerarquía de la tabla. Va por clase y no por
      `:first-child`: desde la vista de fila la primera columna es la de abrir
      (`renderTable`), y con el título oculto (`title_hidden`) no hay ninguna
@@ -2724,6 +2899,7 @@
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
       <symbol id="i-grip-vertical" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
       <symbol id="i-arrow-left-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 8 4 4-4 4"/><path d="M2 12h20"/><path d="m6 8-4 4 4 4"/></symbol>
       <symbol id="i-list-tree" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></symbol>
