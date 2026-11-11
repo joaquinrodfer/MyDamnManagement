@@ -240,6 +240,10 @@ function pageIconProps(type, icon) {
  * memoria) aunque su DOM ya no exista, porque quitarle el nodo padre no lo
  * destruye por sí solo. */
 function clearMain() {
+  // La fila abierta como página cuelga de <body>, no de #main: si se navega
+  // (un wikilink, atrás, borrar la página abierta) hay que cerrarla, o se
+  // quedaría encima de otra página con el editor de la fila viejo dentro.
+  cerrarRowPage({ devolverFoco: false });
   // El selector de bases (/base) escribe su filtro DENTRO del documento
   // mientras está abierto. Al dejar la nota su ViewPlugin se destruye y nadie
   // borraba ese tramo: el filtro se quedaba de párrafo suelto y el
@@ -2147,6 +2151,150 @@ function closeSuggestionsPanel() {
   }
 }
 
+/** El menú contextual de un bloque (el asa): convertir, insertar, duplicar,
+ * mover y eliminar. Es el MISMO en una nota y en una fila abierta como
+ * página; lo único que cambia es qué hay que hacer después de editar el
+ * documento, y eso llega en `alEditar` (guardar la nota, guardar la fila). */
+function mostrarMenuDeBloque(payload, alEditar) {
+  const n = payload.count;
+  const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
+  const mover = [];
+  // Mover es de UN bloque: con varios marcados no se ofrece (no está claro a
+  // dónde va el grupo). En móvil es la vía del reordenado -- el arrastre con el
+  // asa es cosa del ratón.
+  if (n === 1) {
+    if (payload.canMoveUp) {
+      mover.push({
+        label: "Mover arriba",
+        onClick: () => {
+          payload.moveUp();
+          alEditar();
+        },
+      });
+    }
+    if (payload.canMoveDown) {
+      mover.push({
+        label: "Mover abajo",
+        onClick: () => {
+          payload.moveDown();
+          alEditar();
+        },
+      });
+    }
+  }
+  showContextMenu(payload.x, payload.y, [
+    { label: header, items: [] },
+    {
+      label: "Convertir a",
+      items: payload.types.map((t) => ({
+        label: t.label,
+        onClick: () => {
+          payload.convertTo(t.type);
+          alEditar();
+        },
+      })),
+    },
+    {
+      items: [
+        {
+          label: "Insertar bloque arriba",
+          onClick: () => {
+            payload.insertAbove();
+            alEditar();
+          },
+        },
+        {
+          label: `Duplicar ${n > 1 ? "bloques" : "bloque"}`,
+          onClick: () => {
+            payload.duplicateBlocks();
+            alEditar();
+          },
+        },
+        ...mover,
+      ],
+    },
+    {
+      items: [
+        {
+          label: `Eliminar ${n > 1 ? "bloques" : "bloque"}`,
+          danger: true,
+          onClick: () => {
+            payload.deleteBlocks();
+            alEditar();
+          },
+        },
+      ],
+    },
+  ]);
+}
+
+/** Crea una nota HERMANA de la que se está mirando (mismo `parent_id`, o la
+ * raíz si no tiene): es lo que pide un `[[Título nuevo]]` escrito en el
+ * cuerpo. Compartida por la nota y la fila abierta como página -- la fila no
+ * puede ser carpeta de nada, así que la nueva nota no cuelga de ella. */
+async function crearNotaHermana(parentId, title) {
+  try {
+    const created = await api("/pages", {
+      method: "POST",
+      body: JSON.stringify({ title, parent_id: parentId ?? null, body_markdown: "" }),
+    });
+    await loadTree();
+    return { id: created.id, title: created.title };
+  } catch (e) {
+    if (e?.status === 401) return null; // ya se está yendo al login
+    reportError(`No se pudo crear la nota «${title}»`, e);
+    return null; // el editor no inserta nada si no hay título
+  }
+}
+
+/** Renombra una nota del vault desde el selector de `/page` del editor: el
+ * nombre tiene que estar libre entre sus hermanas (el servidor desambigua en
+ * silencio con un «(2)», y ese duplicado es justo lo que no se quiere).
+ * Devuelve `{id, title}` con el nombre que quedó, o `null`.
+ *
+ * Lo comparten la nota (que además refresca su cabecera si se ha renombrado a
+ * sí misma) y la fila abierta como página. */
+async function renombrarPaginaDelVault(pageId, title) {
+  const nombre = String(title || "").trim();
+  const node = state.pagesById.get(pageId);
+  if (!nombre || !node) return null;
+  // Se compara la carpeta tal cual -- `""` y `null` son la raíz --, no con
+  // childTitleTaken: esa compara `String(null)` y con la raíz nunca encontraba
+  // nada.
+  const carpeta = (n) => String(n.parent_id ?? "");
+  for (const otra of state.pagesById.values()) {
+    if (String(otra.id) === String(pageId)) continue;
+    if (carpeta(otra) !== carpeta(node)) continue;
+    if (!sameTitle(otra.title, nombre)) continue;
+    showError(`Ya hay una página llamada «${otra.title}» en esa carpeta. Elige otro nombre.`);
+    return null;
+  }
+  let updated;
+  try {
+    updated = await api(`/pages/${pageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title: nombre }),
+    });
+  } catch (e) {
+    if (e?.status === 401) return null;
+    reportError(`No se pudo renombrar «${node.title}»`, e);
+    return null;
+  }
+  await loadTree();
+  // El vigilante verá el `.md` renombrado y lo contará por /events como una
+  // edición de FUERA; es nuestra, así que se apunta para no enseñar el aviso
+  // «esta nota cambió en disco» (que además bloquearía el guardado pendiente
+  // del nombre que el editor acaba de quitar del cuerpo).
+  state.ownRemoteEvents.set(String(pageId), Date.now());
+  if (!sameTitle(updated.title, nombre)) {
+    showError(
+      `La página se llama ahora «${updated.title}»: «${nombre}» no estaba libre ` +
+        "o no vale como nombre de fichero.",
+    );
+  }
+  return { id: pageId, title: updated.title };
+}
+
 function renderNote(page, backlinks) {
   const main = clearMain();
 
@@ -2844,52 +2992,17 @@ function renderNote(page, backlinks) {
   // duplicado es justo lo que no se quiere). Devuelve cómo ha quedado para que
   // el editor escriba el enlace con el título real.
   async function renamePageFromSlash(pageId, title) {
-    const nombre = String(title || "").trim();
-    const node = state.pagesById.get(pageId);
-    if (!nombre || !node) return null;
-    // El nombre nuevo tiene que estar libre entre sus hermanas. Se compara la
-    // carpeta tal cual -- `""` y `null` son la raíz --, no con childTitleTaken:
-    // esa compara `String(null)` y con la raíz nunca encontraba nada.
-    const carpeta = (n) => String(n.parent_id ?? "");
-    for (const otra of state.pagesById.values()) {
-      if (String(otra.id) === String(pageId)) continue;
-      if (carpeta(otra) !== carpeta(node)) continue;
-      if (!sameTitle(otra.title, nombre)) continue;
-      showError(`Ya hay una página llamada «${otra.title}» en esa carpeta. Elige otro nombre.`);
-      return null;
-    }
-    let updated;
-    try {
-      updated = await api(`/pages/${pageId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ title: nombre }),
-      });
-    } catch (e) {
-      if (e?.status === 401) return null;
-      reportError(`No se pudo renombrar «${node.title}»`, e);
-      return null;
-    }
-    await loadTree();
-    // El vigilante verá el `.md` renombrado y lo contará por /events como una
-    // edición de FUERA; es nuestra, así que se apunta para no enseñar el aviso
-    // «esta nota cambió en disco» (que además bloquearía el guardado pendiente
-    // del nombre que el editor acaba de quitar del cuerpo).
-    state.ownRemoteEvents.set(String(pageId), Date.now());
+    const resultado = await renombrarPaginaDelVault(pageId, title);
+    if (!resultado) return null;
     // Si se renombra la nota que está abierta, su cabecera tiene que enseñar
     // el nombre nuevo: el PATCH va por el editor, no por el campo del título.
     if (String(page.id) === String(pageId)) {
-      page.title = updated.title;
-      titleInput.value = updated.title;
+      page.title = resultado.title;
+      titleInput.value = resultado.title;
       autoResizeTitle();
       markActive(pageId);
     }
-    if (!sameTitle(updated.title, nombre)) {
-      showError(
-        `La página se llama ahora «${updated.title}»: «${nombre}» no estaba libre ` +
-          "o no vale como nombre de fichero.",
-      );
-    }
-    return { id: pageId, title: updated.title };
+    return resultado;
   }
 
   // Comando "Crear «…»" del autocompletado de "[[" (entry.js): la nota nueva
@@ -2902,18 +3015,7 @@ function renderNote(page, backlinks) {
   // con el título que haya quedado DE VERDAD en el servidor: el nombre se
   // normaliza al crearlo y "Lo que sea" puede acabar siendo otra cosa.
   async function createLinkedPage(title) {
-    try {
-      const created = await api("/pages", {
-        method: "POST",
-        body: JSON.stringify({ title, parent_id: page.parent_id ?? null, body_markdown: "" }),
-      });
-      await loadTree();
-      return { id: created.id, title: created.title };
-    } catch (e) {
-      if (e?.status === 401) return null; // ya se está yendo al login
-      reportError(`No se pudo crear la nota «${title}»`, e);
-      return null; // el editor no inserta nada si no hay título
-    }
+    return crearNotaHermana(page.parent_id, title);
   }
 
   // Comando "/base" (P17.3): crear la base aquí, colgando de ESTA nota -- el
@@ -2980,78 +3082,12 @@ function renderNote(page, backlinks) {
     onListPages: listPageEntries,
     currentPageId: page.id,
     onCreateLink: createLinkedPage,
-    onBlockContextMenu: (payload) => {
-      const n = payload.count;
-      const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
-      const mover = [];
-      // Mover es de UN bloque: con varios marcados no se ofrece (no está claro
-      // a dónde va el grupo). En móvil es la vía del reordenado -- el arrastre
-      // con el asa es cosa del ratón.
-      if (n === 1) {
-        if (payload.canMoveUp) {
-          mover.push({
-            label: "Mover arriba",
-            onClick: () => {
-              payload.moveUp();
-              scheduleSave();
-            },
-          });
-        }
-        if (payload.canMoveDown) {
-          mover.push({
-            label: "Mover abajo",
-            onClick: () => {
-              payload.moveDown();
-              scheduleSave();
-            },
-          });
-        }
-      }
-      showContextMenu(payload.x, payload.y, [
-        { label: header, items: [] },
-        {
-          label: "Convertir a",
-          items: payload.types.map((t) => ({
-            label: t.label,
-            onClick: () => {
-              payload.convertTo(t.type);
-              scheduleSave();
-            },
-          })),
-        },
-        {
-          items: [
-            {
-              label: "Insertar bloque arriba",
-              onClick: () => {
-                payload.insertAbove();
-                scheduleSave();
-              },
-            },
-            {
-              label: `Duplicar ${n > 1 ? "bloques" : "bloque"}`,
-              onClick: () => {
-                payload.duplicateBlocks();
-                scheduleSave();
-              },
-            },
-            ...mover,
-          ],
-        },
-        {
-          items: [
-            {
-              label: `Eliminar ${n > 1 ? "bloques" : "bloque"}`,
-              danger: true,
-              onClick: () => {
-                payload.deleteBlocks();
-                scheduleSave();
-              },
-            },
-          ],
-        },
-      ]);
-    },
+    onBlockContextMenu: (payload) =>
+      mostrarMenuDeBloque(payload, () => {
+        noteBodyFallback = bodyText();
+        scheduleSave();
+        renderOutline();
+      }),
     onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
@@ -5078,11 +5114,17 @@ async function saveRow(database, row, changes) {
   return saved;
 }
 
-/** La tabla de una base. `readOnly` es la variante que se incrusta en una
- * nota (P17.2, bloque ```mdm-database): mismos valores y mismas clases, pero
- * sin celdas editables, sin columna de borrado y sin alta -- ahí solo se lee,
- * y para cambiar algo se abre la base. Es la MISMA tabla a propósito: dos
- * renders distintos acabarían enseñando cosas distintas. */
+/** La tabla de una base. Es la MISMA en la página de la base y dentro de una
+ * nota (bloque ```mdm-database, P17.2): mismos valores, mismas clases y mismas
+ * celdas editables. La diferencia es `readOnly: true` en la incrustada, que
+ * deja las celdas en texto (ahí no se edita una celda) y quita la columna de
+ * acciones.
+ *
+ * La primera columna es la puerta a la fila como página: un botón de abrir
+ * explícito, porque el clic en una celda —que es lo que edita— no puede
+ * comerse la apertura. También se abre con Ctrl/Cmd+Enter desde cualquier
+ * celda de la fila (ver el listener del tbody al final).
+ */
 function renderTable(database, rows, { readOnly = false } = {}) {
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
@@ -5098,17 +5140,21 @@ function renderTable(database, rows, { readOnly = false } = {}) {
   const muestraTitulo = !database.title_hidden;
   const rotuloTitulo = database.title_name || "Título";
   headRow.innerHTML =
+    '<th scope="col" class="row-open-head"><span class="sr-only">Abrir</span></th>' +
     (muestraTitulo ? `<th scope="col">${escapeHtml(rotuloTitulo)}</th>` : "") +
     database.schema_def.map((p) => `<th scope="col">${escapeHtml(p.name)}</th>`).join("") +
     (readOnly ? "" : '<th scope="col"><span class="sr-only">Acciones</span></th>');
   thead.appendChild(headRow);
 
   const tbody = document.createElement("tbody");
+  // Cómo repintar cada fila cuando la vista de fila guarda algo (se rellena
+  // en el bucle): lo usa también la puerta de teclado del final.
+  const refrescadores = new Map();
   if (rows.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     td.colSpan =
-      database.schema_def.length + (muestraTitulo ? 1 : 0) + (readOnly ? 0 : 1);
+      database.schema_def.length + (muestraTitulo ? 1 : 0) + 1 + (readOnly ? 0 : 1);
     td.className = "search-empty";
     td.textContent = "Sin filas todavía.";
     tr.appendChild(td);
@@ -5121,13 +5167,43 @@ function renderTable(database, rows, { readOnly = false } = {}) {
     // la fila que acaba de crear (ver `enfocarFila`).
     tr.dataset.rowId = row.id;
 
-    // Título y celdas editables en el sitio: lo que se ve es el valor del
-    // `.md`, y un clic abre el control del tipo de esa propiedad. En la tabla
-    // incrustada (readOnly) las celdas son solo texto: no hay nada que abrir.
+    // 1) Abrir la fila como página. En su propia columna para que funcione
+    // también con el título oculto (`title_hidden`), y fuera de la celda del
+    // título: ahí el clic edita, y editar no puede tragarse la apertura.
+    const openTd = document.createElement("td");
+    openTd.className = "row-open-cell";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "row-open";
+    openBtn.innerHTML = svgIcon("i-expand");
+    // El teclado abre con Ctrl/Cmd+Enter desde la celda: así la tabla sigue
+    // teniendo UNA sola parada de Tab (el recorrido de celdas es de cuadrícula)
+    // en vez de una más por fila. En la incrustada (readOnly) no hay celdas
+    // editables por las que recorrer, así que el botón SÍ es tabulable: es la
+    // única puerta de teclado que queda.
+    openBtn.tabIndex = readOnly ? 0 : -1;
+    // Dentro de una nota, el widget del editor se lleva el `mousedown` del
+    // bloque; `data-db-action` es el permiso que deja pasar el clic (ver
+    // DatabaseBlockWidget en entry.js). Fuera de una nota no molesta a nadie.
+    openBtn.dataset.dbAction = "abrir-fila";
+    const etiquetar = () => {
+      const nombre = `Abrir «${row.title || "Sin título"}» como página (Ctrl+Enter)`;
+      openBtn.title = nombre;
+      openBtn.setAttribute("aria-label", nombre);
+    };
+    etiquetar();
+    openTd.appendChild(openBtn);
+    tr.appendChild(openTd);
+
+    // 2) Título y propiedades editables en el sitio: lo que se ve es el valor
+    // del `.md`, y un clic abre el control del tipo de esa propiedad.
+    const celdas = new Map(); // clave de la propiedad (null = título) -> <td>
+
     if (muestraTitulo) {
       const titleTd = document.createElement("td");
       if (readOnly) paintReadOnlyCell(titleTd, row, null);
       else paintCell(titleTd, database, row, null);
+      celdas.set(null, titleTd);
       tr.appendChild(titleTd);
     }
 
@@ -5135,7 +5211,41 @@ function renderTable(database, rows, { readOnly = false } = {}) {
       const td = document.createElement("td");
       if (readOnly) paintReadOnlyCell(td, row, p);
       else paintCell(td, database, row, p);
+      celdas.set(p.key, td);
       tr.appendChild(td);
+    });
+
+    const propDe = (clave) =>
+      clave === null ? null : database.schema_def.find((p) => p.key === clave) || null;
+
+    /** El servidor acaba de aceptar un PATCH de esta fila desde la vista de
+     * fila: se repinta la fila con `row`, que queda al día con el `.md`. Sin
+     * repintar la tabla entera: eso perdería el foco y el testigo del recorrido
+     * con teclado. */
+    const refrescar = () => {
+      etiquetar();
+      const testigo = tr.querySelector('td[data-editable="1"][tabindex="0"]');
+      for (const [clave, td] of celdas) {
+        if (readOnly) paintReadOnlyCell(td, row, propDe(clave));
+        else paintCell(td, database, row, propDe(clave));
+      }
+      if (testigo) setRovingCell(testigo);
+    };
+
+    refrescadores.set(String(row.id), refrescar);
+
+    const abrir = () =>
+      openRowPage(database, row, {
+        origin: openBtn,
+        rows,
+        index: rows.indexOf(row),
+        onSaved: refrescar,
+      });
+
+    // El clic del botón no puede llegar a la celda (abriría el editor).
+    openBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      abrir();
     });
 
     if (readOnly) {
@@ -5159,6 +5269,29 @@ function renderTable(database, rows, { readOnly = false } = {}) {
 
     tbody.appendChild(tr);
   });
+
+  // Ctrl/Cmd+Enter en cualquier celda de la fila abre la fila como página. En
+  // captura: el `keydown` de la celda (Enter edita) no llega a ver la
+  // combinación, que si no abriría el editor y la página a la vez.
+  tbody.addEventListener(
+    "keydown",
+    (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return;
+      const tr = e.target.closest?.("tr[data-row-id]");
+      if (!tr) return;
+      const fila = rows.find((r) => String(r.id) === tr.dataset.rowId);
+      if (!fila) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openRowPage(database, fila, {
+        origin: e.target.closest("td") || tr,
+        rows,
+        index: rows.indexOf(fila),
+        onSaved: refrescadores.get(String(fila.id)) || null,
+      });
+    },
+    true,
+  );
 
   table.append(thead, tbody);
   // Una sola parada de Tab en toda la tabla: la primera celda editable. Las
@@ -5211,6 +5344,9 @@ function paintCell(td, database, row, prop) {
   td.innerHTML = prop
     ? formatPropValueHtml(row.properties?.[prop.key], prop)
     : escapeHtml(row.title || "Sin título");
+  // La columna del título se lee como jerarquía (la regla CSS va por clase:
+  // la primera columna de la tabla es la de abrir la fila).
+  td.classList.toggle("cell-title", !prop);
   td.title = "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
@@ -5259,6 +5395,7 @@ function paintReadOnlyCell(td, row, prop) {
   td.innerHTML = prop
     ? formatPropValueHtml(row.properties?.[prop.key], prop)
     : escapeHtml(row.title || "Sin título");
+  td.classList.toggle("cell-title", !prop);
 }
 
 /** Un booleano no tiene "modo edición": el clic lo cambia y se guarda. */
@@ -5462,9 +5599,12 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
         document.querySelectorAll(".board-col.is-dragover").forEach((c) => c.classList.remove("is-dragover"));
       });
     }
-    // La tarjeta abre su fila: las propiedades se editan en el diálogo, con
-    // los mismos controles por tipo que la tabla.
-    card.addEventListener("click", () => openRowDialog(database, row, refresh));
+    // La tarjeta abre su fila como página, con el cuerpo y las propiedades.
+    // El tablero no es una secuencia (no hay «fila siguiente»): se cierra y se
+    // repinta con lo que se haya guardado.
+    card.addEventListener("click", () =>
+      openRowPage(database, row, { origin: card, onClose: () => refresh?.() }),
+    );
     // Con teclado, Enter/Espacio abren la misma fila que el clic.
     makeKeyboardActivatable(card, "button", 0);
 
@@ -5704,7 +5844,9 @@ function renderCalendar(database, rows, view, refresh) {
     chip.textContent = row.title || "Sin título";
     chip.title = row.title || "Sin título";
     chip.dataset.rowId = row.id;
-    chip.addEventListener("click", () => openRowDialog(database, row, refresh));
+    chip.addEventListener("click", () =>
+      openRowPage(database, row, { origin: chip, onClose: () => refresh?.() }),
+    );
     return chip;
   };
 
@@ -5891,11 +6033,11 @@ function renderList(database, rows, view, refresh) {
   const wrap = document.createElement("div");
   wrap.className = "db-list";
 
-  const lineaDeFila = (row) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "list-row";
-    item.dataset.rowId = row.id;
+  // El contenido de una línea se pinta aparte para poder REPINTARLA en el
+  // sitio tras guardar en la vista de fila: el botón (que es el que tiene el
+  // foco al volver) no se reemplaza, solo lo de dentro.
+  const pintarLinea = (item, row) => {
+    item.textContent = "";
     const title = document.createElement("span");
     title.className = "list-row-title";
     title.textContent = row.title || "Sin título";
@@ -5908,7 +6050,27 @@ function renderList(database, rows, view, refresh) {
       span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p)}`;
       item.appendChild(span);
     });
-    item.addEventListener("click", () => openRowDialog(database, row, refresh));
+    const nombre = `Abrir «${row.title || "Sin título"}» como página`;
+    item.title = nombre;
+    item.setAttribute("aria-label", nombre);
+  };
+
+  const lineaDeFila = (row) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "list-row";
+    item.dataset.rowId = row.id;
+    pintarLinea(item, row);
+    // En la lista la fila ENTERA abre la página: no hay celdas que editar en
+    // el sitio, así que no hay dos gestos que separar.
+    item.addEventListener("click", () =>
+      openRowPage(database, row, {
+        origin: item,
+        rows,
+        index: rows.indexOf(row),
+        onSaved: () => pintarLinea(item, row),
+      }),
+    );
     return item;
   };
 
@@ -5936,76 +6098,499 @@ function renderList(database, rows, view, refresh) {
   return wrap;
 }
 
-// -------------------------------------------------------- diálogo: editar fila
+// ------------------------------------------------ fila abierta como página
+// En Notion cada fila es una página. Aquí la fila YA es un `.md`
+// (`Bases/<slug>/<id8>.md`) con frontmatter y cuerpo: el cuerpo es el cuerpo
+// del fichero y las propiedades su frontmatter. Lo que faltaba era la puerta y
+// la vista.
+//
+// La vista se pinta ENCIMA de lo que estabas mirando (la tabla de la base, la
+// tabla incrustada en una nota, la lista) y deja la de debajo viva: cerrar
+// devuelve al mismo sitio, con el foco donde estaba, sin volver a pedir ni
+// repintar nada. Por eso no es una ruta más del historial (volver atrás no es
+// «cerrar la fila») ni un `<dialog>`: sus menús flotantes —el `/`, el del asa,
+// el contextual— cuelgan de `<body>` y se quedarían debajo del top layer.
+//
+// Se guarda en el MISMO `.md`, con el mismo PATCH que una celda: el título y
+// las propiedades al frontmatter, el cuerpo al cuerpo. El fichero no se mueve
+// (se llama por el id de la fila) y el índice se actualiza en la misma
+// operación.
+//
+// Lo que se edita es el MISMO editor de notas (`createNoteEditor`, el bundle
+// de `frontend/editor-src`): mismos bloques, mismos atajos y mismo menú `/`.
+// Lo único que no ofrece es crear páginas o bases colgando de la fila: una
+// fila no es carpeta (`_folder_for_parent` en el vault lo rechaza), así que el
+// nombre se queda escrito y se dice por qué.
 
-const rowDialog = document.getElementById("dialog-row");
-const rowPropsContainer = document.getElementById("row-props");
-let rowDialogContext = null; // { database, row, refresh, fields }
+const ROW_PAGE_DEBOUNCE_MS = 700;
 
-function openRowDialog(database, row, refresh) {
-  const fields = [];
-  rowPropsContainer.innerHTML = "";
-  document.getElementById("row-title").value = row.title || "";
-  database.schema_def.forEach((p, index) => {
-    const field = document.createElement("div");
-    field.className = "field";
-    const label = document.createElement("label");
-    label.textContent = `${p.name} (${tipoVisible(p.type)})`;
-    const { input, read } = buildPropertyInput(p, row.properties?.[p.key]);
-    // Mismo nombre accesible que en el alta inline: `for` + `id` (el prefijo
-    // `fila-dialogo` evita chocar con los del formulario, que vive a la vez).
-    const inputId = idDeCampo("fila-dialogo", index, p.key);
-    input.id = inputId;
-    label.htmlFor = inputId;
-    field.append(label, input);
-    rowPropsContainer.appendChild(field);
-    fields.push({ prop: p, read });
-  });
-  rowDialogContext = { database, row, refresh, fields };
-  rowDialog.showModal();
+let rowPage = null; // la fila abierta ahora mismo, o null
+
+/** Cierra la fila abierta. `devolverFoco` es lo normal (volver a la celda, al
+ * botón o a la línea desde la que se abrió); al navegar a otra página no, que
+ * el foco es de la página nueva.
+ *
+ * Lo que quede sin guardar se manda con `keepalive` ANTES de destruir el
+ * editor: cerrar por un repintado de la vista de debajo (o al ocultar la
+ * pestaña) no puede esperar a la respuesta. */
+function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
+  const ctx = rowPage;
+  if (!ctx) return;
+  rowPage = null;
+  ctx.cerrada = true;
+  clearTimeout(ctx.temporizador);
+  ctx.temporizador = null;
+  ctx.beacon?.();
+  try {
+    ctx.editor?.destroy();
+  } catch (_) {
+    // destruir dos veces no es un fallo que haya que contar
+  }
+  ctx.editor = null;
+  // Los flotantes del editor (el menú `/`, el contextual, la vista previa de
+  // un wikilink) cuelgan de <body>: cerrar la fila tiene que llevárselos.
+  closeSlashMenu();
+  closeContextMenu();
+  stopLinkPreview();
+  ctx.caja.remove();
+  for (const el of ctx.inertes) el.inert = false;
+  document.body.classList.remove("row-page-open");
+  // La tabla y la lista repintan su fila con `onSaved`; el tablero y el
+  // calendario no tienen una fila que repintar en el sitio y se rehacen aquí.
+  // Antes del foco: el repintado puede cambiar el DOM al que se vuelve.
+  if (avisar && ctx.guardadoAlgo) ctx.onClose?.();
+  if (devolverFoco) devolverElFoco(ctx);
 }
 
-document.getElementById("btn-cancel-row").addEventListener("click", () => {
-  rowDialogContext = null;
-  rowDialog.close();
-});
+/** Devuelve el foco a donde estaba: el control desde el que se abrió la fila
+ * (la celda, el botón de abrir, la línea de la lista).
+ *
+ * Si la vista de debajo se repintó mientras la fila estaba abierta —el eco del
+ * guardado repinta la tabla incrustada en una nota, por ejemplo—, ese control
+ * ya no está en el documento: se busca el de la MISMA fila en lo que hay
+ * ahora, que es el sitio equivalente. */
+function devolverElFoco(ctx) {
+  if (ctx.origin?.isConnected) {
+    ctx.origin.focus();
+    return;
+  }
+  const fila = document.querySelector(`[data-row-id="${ctx.resumen.id}"]`);
+  if (!fila) return;
+  const destino = fila.matches("button") ? fila : fila.querySelector(".row-open");
+  destino?.focus();
+}
 
-document.getElementById("btn-save-row").addEventListener("click", async () => {
-  const ctx = rowDialogContext;
-  if (!ctx) return;
-  const { database, row, refresh, fields } = ctx;
+/** Abre una fila como página encima de la vista actual.
+ *
+ * `origin` es el control desde el que se abre (la celda, el botón de abrir, la
+ * línea de la lista): al cerrar, el foco vuelve ahí. `rows` —con `index`, la
+ * posición de esta fila— es la vista que se está mirando, para `Alt+↑/↓`.
+ * `onSaved(guardada, cambios)` se llama tras cada PATCH aceptado (la tabla y
+ * la lista repintan su fila en el sitio con eso) y `onClose()` al cerrar, solo
+ * si algo se guardó.
+ */
+async function openRowPage(
+  database,
+  resumen,
+  { origin = null, rows = null, index = -1, onSaved = null, onClose = null } = {},
+) {
+  if (rowPage) return; // una fila abierta a la vez: no hay filas dentro de filas
 
-  const changes = {};
-  const title = document.getElementById("row-title").value.trim() || "Sin título";
-  if (!sameValue(title, row.title)) changes.title = title;
-  const properties = {};
-  fields.forEach(({ prop, read }) => {
-    const value = read();
-    const actual = row.properties?.[prop.key];
-    // Un checkbox que la fila no tenía y sigue sin marcar no se escribe: al
-    // `.md` solo va lo que ha cambiado.
-    if (prop.type === "checkbox" && actual === undefined && value === false) return;
-    if (!sameValue(value, actual)) properties[prop.key] = value;
+  // Lo de debajo se queda en el documento (para volver sin repintar) pero
+  // `inert`: no se puede tabular ni clicar dentro mientras la fila está
+  // abierta, y el foco no se escapa de la vista de fila.
+  const inertes = ["header", "#sidebar-aside", "#main"]
+    .map((sel) => document.querySelector(sel))
+    .filter(Boolean);
+
+  const caja = document.createElement("div");
+  caja.className = "row-page";
+
+  const fondo = document.createElement("div");
+  fondo.className = "row-page-backdrop";
+
+  const panel = document.createElement("div");
+  panel.className = "row-page-panel";
+  panel.tabIndex = -1;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-label", `Fila de ${database.title || "la base"}`);
+
+  const barra = document.createElement("div");
+  barra.className = "row-page-bar";
+  const ruta = document.createElement("span");
+  ruta.className = "row-page-crumbs";
+  ruta.textContent = database.title || "Base de datos";
+  const estado = document.createElement("span");
+  estado.className = "row-page-savestatus";
+  estado.setAttribute("role", "status");
+  const cerrar = document.createElement("button");
+  cerrar.type = "button";
+  cerrar.className = "icon-btn row-page-close";
+  cerrar.innerHTML = svgIcon("i-x");
+  cerrar.title = "Cerrar la fila";
+  cerrar.setAttribute("aria-label", "Cerrar la fila");
+  barra.append(ruta, estado, cerrar);
+
+  const scroll = document.createElement("div");
+  scroll.className = "row-page-scroll";
+  const titulo = document.createElement("textarea");
+  titulo.id = "row-page-title";
+  titulo.className = "row-page-title";
+  titulo.rows = 1;
+  titulo.setAttribute("aria-label", "Título de la fila");
+  const propsEl = document.createElement("div");
+  propsEl.className = "row-page-props";
+  const cuerpoEl = document.createElement("div");
+  cuerpoEl.id = "row-page-body";
+  cuerpoEl.className = "row-page-body";
+  scroll.append(titulo, propsEl, cuerpoEl);
+  panel.append(barra, scroll);
+  caja.append(fondo, panel);
+
+  const ctx = {
+    database,
+    resumen,
+    rows,
+    index,
+    origin,
+    onSaved,
+    onClose,
+    caja,
+    titulo,
+    propsEl,
+    cuerpoEl,
+    estado,
+    inertes,
+    editor: null,
+    campos: [], // [{prop, input, read}]
+    cuerpo: "", // lo que hay escrito AHORA en el cuerpo
+    enviado: "", // lo último que el servidor aceptó
+    ultimoBeacon: "",
+    cola: Promise.resolve(), // un PATCH por turno, en cadena
+    temporizador: null,
+    guardadoAlgo: false,
+    montada: false,
+    cerrada: false,
+  };
+  rowPage = ctx;
+
+  document.body.appendChild(caja);
+  document.body.classList.add("row-page-open");
+  for (const el of inertes) el.inert = true;
+  panel.focus();
+
+  // ------------------------------------------------------------ guardar
+
+  function marcar(texto) {
+    estado.textContent =
+      texto === "saving"
+        ? "Guardando…"
+        : texto === "dirty"
+          ? "Cambios sin guardar…"
+          : texto === "error"
+            ? "Error al guardar"
+            : "Guardado";
+    estado.classList.toggle("is-error", texto === "error");
+  }
+
+  /** Lo que hay que mandar: solo lo que difiere de lo que el servidor ya tiene.
+   * El título va aparte del mapa de propiedades, como en la API. */
+  function cambios() {
+    const salida = {};
+    if (!ctx.montada) return salida;
+    const nombre = (titulo.value || "").trim() || "Sin título";
+    if (!sameValue(nombre, ctx.resumen.title)) salida.title = nombre;
+    const properties = {};
+    for (const { prop, read } of ctx.campos) {
+      const valor = read();
+      const actual = ctx.resumen.properties?.[prop.key];
+      // Un checkbox que la fila no tenía y sigue sin marcar no se escribe: al
+      // `.md` solo va lo que ha cambiado.
+      if (prop.type === "checkbox" && actual === undefined && valor === false) continue;
+      if (!sameValue(valor, actual)) properties[prop.key] = valor;
+    }
+    if (Object.keys(properties).length) salida.properties = properties;
+    if (ctx.cuerpo !== ctx.enviado) salida.body_markdown = ctx.cuerpo;
+    return salida;
+  }
+
+  /** Guardado de emergencia: la petición sigue viva aunque la pestaña se vaya
+   * (`keepalive`) y el contenido que ya iba de camino no se repite. Los
+   * cambios no se dan por guardados: si la pestaña sigue, el guardado normal
+   * los reenvía. */
+  function beacon() {
+    const cambiosAhora = cambios();
+    if (!Object.keys(cambiosAhora).length) return;
+    const cuerpo = JSON.stringify(cambiosAhora);
+    if (cuerpo === ctx.ultimoBeacon) return;
+    ctx.ultimoBeacon = cuerpo;
+    try {
+      fetch(`/databases/${ctx.database.id}/rows/${ctx.resumen.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: cuerpo,
+        keepalive: new TextEncoder().encode(cuerpo).length <= KEEPALIVE_MAX_BYTES,
+      }).catch(() => {});
+    } catch {
+      // sin red o página ya descargándose
+    }
+  }
+  ctx.beacon = beacon; // lo llaman cerrarRowPage y el guardado de emergencia
+
+  function programar() {
+    clearTimeout(ctx.temporizador);
+    ctx.temporizador = setTimeout(() => {
+      ctx.temporizador = null;
+      guardar();
+    }, ROW_PAGE_DEBOUNCE_MS);
+  }
+
+  /** Un PATCH por turno, en cadena: dos escrituras solapadas con contenidos
+   * distintos pueden aplicarse al revés y dejar en el servidor el texto viejo.
+   * Cada vuelta lee el estado de AHORA (título, campos, cuerpo), así que lo que
+   * se escribió mientras la anterior estaba en vuelo no se pierde.
+   * Devuelve `true` si al final no queda nada por guardar. */
+  function guardar() {
+    clearTimeout(ctx.temporizador);
+    ctx.temporizador = null;
+    ctx.cola = ctx.cola.then(async () => {
+      if (ctx.cerrada) return true;
+      const pendiente = cambios();
+      if (!Object.keys(pendiente).length) {
+        marcar("saved");
+        return true;
+      }
+      marcar("saving");
+      const cuerpoEnviado = "body_markdown" in pendiente ? pendiente.body_markdown : null;
+      try {
+        const guardada = await api(`/databases/${ctx.database.id}/rows/${ctx.resumen.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(pendiente),
+        });
+        Object.assign(ctx.resumen, guardada);
+        if (cuerpoEnviado !== null) ctx.enviado = cuerpoEnviado;
+        ctx.guardadoAlgo = true;
+        ctx.onSaved?.(guardada, pendiente);
+        marcar("saved");
+        return true;
+      } catch (e) {
+        // No se da por guardado: al cerrar se vuelve a intentar y, si no hay
+        // manera, la fila se queda abierta con el motivo a la vista.
+        marcar("error");
+        reportError("No se pudo guardar la fila", e);
+        return false;
+      }
+    });
+    return ctx.cola;
+  }
+
+  /** Cerrar guarda: cerrar sin guardar daría a entender que se escribió en el
+   * `.md`. Si el PATCH falla, la fila se queda abierta (el motivo ya se ha
+   * avisado) y se puede corregir el campo y reintentar. */
+  async function intentarCerrar() {
+    if (rowPage !== ctx) return;
+    const ok = await guardar();
+    if (!ok || rowPage !== ctx) return;
+    cerrarRowPage();
+  }
+
+  cerrar.addEventListener("click", () => intentarCerrar());
+  fondo.addEventListener("click", () => intentarCerrar());
+
+  // ------------------------------------------------------ montar la fila
+
+  function ajustarTitulo() {
+    titulo.style.height = "auto";
+    titulo.style.height = `${titulo.scrollHeight}px`;
+  }
+  titulo.addEventListener("input", ajustarTitulo);
+  // Enter guarda y sale del campo, como el título de una nota; Escape no
+  // cancela: el texto ya está en el campo y se guarda al cerrar.
+  titulo.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    titulo.blur();
   });
-  if (Object.keys(properties).length) changes.properties = properties;
+  titulo.addEventListener("change", () => guardar());
+  titulo.addEventListener("blur", () => guardar());
 
-  if (Object.keys(changes).length === 0) {
-    rowDialogContext = null;
-    rowDialog.close();
-    return;
+  function montarPropiedades(detalle) {
+    propsEl.textContent = "";
+    ctx.campos = [];
+    if (!database.schema_def.length) {
+      const vacio = document.createElement("p");
+      vacio.className = "row-page-prop-empty";
+      vacio.textContent = "Esta base no tiene propiedades.";
+      propsEl.appendChild(vacio);
+      return;
+    }
+    database.schema_def.forEach((prop, i) => {
+      const campo = document.createElement("div");
+      campo.className = "row-page-prop";
+      const label = document.createElement("label");
+      label.textContent = prop.name;
+      const { input, read } = buildPropertyInput(prop, detalle.properties?.[prop.key]);
+      const inputId = idDeCampo("fila-pagina", i, prop.key);
+      input.id = inputId;
+      label.htmlFor = inputId;
+      // El mismo criterio que una celda: se guarda al confirmar el control
+      // (`change`: Enter o salir del campo), no en cada tecla.
+      input.addEventListener("change", () => guardar());
+      if (input.tagName !== "SELECT" && input.type !== "checkbox") {
+        input.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          input.blur(); // el `change` del blur es el que guarda
+        });
+      }
+      campo.append(label, input);
+      propsEl.appendChild(campo);
+      ctx.campos.push({ prop, input, read });
+    });
   }
+
+  /** Irse a otra página desde dentro de la fila (un wikilink, el selector de
+   * `/page`): se guarda lo escrito antes de moverse, y no se navega si el
+   * guardado falló -- el texto es del usuario y no se tira por navegar. */
+  async function salirANavegar(pageId) {
+    if (!pageId) return;
+    const ok = await guardar();
+    if (!ok) return;
+    if (rowPage === ctx) cerrarRowPage({ devolverFoco: false });
+    await navigateToPage(pageId);
+  }
+
+  function montar(detalle) {
+    // El objeto de la tabla/lista es el mismo que se queda al día con cada
+    // PATCH (`ctx.resumen`): el repintado en el sitio lee de aquí.
+    Object.assign(ctx.resumen, detalle);
+    ctx.cuerpo = detalle.body_markdown || "";
+    ctx.enviado = ctx.cuerpo;
+    ctx.ultimoBeacon = "";
+
+    titulo.value = detalle.title || "";
+    ajustarTitulo();
+    montarPropiedades(detalle);
+
+    cuerpoEl.textContent = "";
+    try {
+      ctx.editor = createNoteEditor({
+        parent: cuerpoEl,
+        doc: ctx.cuerpo,
+        resolvePage: (nombre) => findPageByTitle(nombre),
+        onNavigate: (pageId) => salirANavegar(pageId),
+        onChange: () => {
+          ctx.cuerpo = ctx.editor?.getValue() ?? ctx.cuerpo;
+          marcar("dirty");
+          programar();
+        },
+        // Una fila no es carpeta de nada (`_folder_for_parent` lo rechaza en
+        // el vault): se dice en vez de dejar un comando que no hace nada.
+        onCreatePage: () => {
+          showError(
+            "Una fila no puede tener subpáginas: crea la nota desde la barra lateral.",
+          );
+          return null;
+        },
+        onCreateDatabase: () => {
+          showError(
+            "Una fila no puede tener una base colgando: crea la base desde una nota.",
+          );
+          return null;
+        },
+        onOpenPage: (pageId) => salirANavegar(pageId),
+        onRenamePage: renombrarPaginaDelVault,
+        onListPages: listPageEntries,
+        currentPageId: detalle.id,
+        onCreateLink: (nombre) => crearNotaHermana(null, nombre),
+        onBlockContextMenu: (payload) =>
+          mostrarMenuDeBloque(payload, () => {
+            ctx.cuerpo = ctx.editor?.getValue() ?? ctx.cuerpo;
+            marcar("dirty");
+            programar();
+          }),
+        onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
+        onWikilinkHoverEnd: () => stopLinkPreview(),
+        onSlashMenu: (menuState) => renderSlashMenu(menuState),
+        onListDatabases: listDatabaseEntries,
+        onPickDatabase: databaseBlockFor,
+        renderDatabaseBlock: renderDatabaseEmbed,
+      });
+    } catch (e) {
+      reportError("No se pudo abrir el editor de la fila", e);
+    }
+    ctx.editor?.setLinkTargets?.(linkTargets());
+    ctx.montada = true;
+    marcar("saved");
+    // El foco entra por el título (y el cursor al final): es lo que se toca
+    // primero al abrir una fila y lo que Notion deja listo para renombrar.
+    titulo.focus();
+    titulo.setSelectionRange(titulo.value.length, titulo.value.length);
+  }
+
+  // -------------------------------------------------- teclado de la vista
+
+  caja.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !e.defaultPrevented) {
+      // El editor consume el suyo cuando tiene un menú abierto (y lo deja
+      // `defaultPrevented`): ahí Escape cierra el menú, no la fila.
+      e.preventDefault();
+      e.stopPropagation();
+      intentarCerrar();
+      return;
+    }
+    if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      e.stopPropagation();
+      irAFilaVecina(e.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      e.stopPropagation();
+      guardar();
+    }
+  });
+
+  /** `Alt+↑/↓`: la fila anterior/siguiente de la vista que se está mirando,
+   * para revisar una lista seguida sin salir y volver a entrar. Solo cuando
+   * se abrió desde una vista con orden (tabla y lista); en el tablero y el
+   * calendario la vista no es una secuencia y no se ofrece. */
+  async function irAFilaVecina(paso) {
+    if (!ctx.rows || ctx.index < 0) return;
+    const destino = ctx.rows[ctx.index + paso];
+    if (!destino) return;
+    const ok = await guardar();
+    if (!ok) return;
+    const { origin, rows, onSaved, onClose } = ctx;
+    const indice = ctx.index + paso;
+    // Se cierra sin devolver el foco (lo va a tomar la fila nueva) y sin
+    // repintar lo de debajo: la tabla sigue ahí y su fila ya está al día.
+    cerrarRowPage({ devolverFoco: false, avisar: false });
+    await openRowPage(database, destino, {
+      origin,
+      rows,
+      index: indice,
+      onSaved,
+      onClose,
+    });
+  }
+
+  // ------------------------------------------------------------ abrir
+
+  let detalle;
   try {
-    // Un PATCH con título y propiedades: renombra el `.md` y escribe valores.
-    await saveRow(database, row, changes);
+    detalle = await api(`/databases/${database.id}/rows/${resumen.id}`);
   } catch (e) {
-    // El diálogo no se cierra: cerrarlo daría a entender que se guardó.
-    reportError("No se pudo guardar la fila", e);
+    cerrarRowPage({ devolverFoco: true });
+    // Sacarla del todo y pintar la vista de debajo: ya está intacta.
+    if (!(e && e.status === 401)) reportError("No se pudo abrir la fila", e);
     return;
   }
-  rowDialogContext = null;
-  rowDialog.close();
-  refresh?.();
-});
+  if (rowPage !== ctx) return; // se cerró mientras llegaba la respuesta
+  montar(detalle);
+}
 
 function renderAddRowForm(database) {
   const wrap = document.createElement("div");
@@ -6666,6 +7251,13 @@ function flushOnExit(alive) {
     state.flushSaveBeacon?.({ alive });
   } catch {
     // la pestaña se está yendo: ni aviso ni reintento posibles
+  }
+  try {
+    // La fila abierta como página se guarda por el mismo camino: su cuerpo es
+    // texto del usuario igual que el de una nota.
+    rowPage?.beacon?.();
+  } catch {
+    // ídem
   }
 }
 window.addEventListener("beforeunload", () => flushOnExit(false));
