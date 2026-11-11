@@ -8908,8 +8908,7 @@ function renderTable(
   }
   // El ancho y el orden viven en la vista del `.md`: sin vista activa no hay
   // dónde guardarlos, así que «Todas (sin vista)» se queda con el reparto del
-  // navegador y el orden del schema (por eso allí no hay asas ni arrastre, y
-  // sigue el orden del schema, que es lo que promete el botón).
+  // navegador, el orden del schema y sin asas ni arrastre.
   headRow.querySelectorAll("th[data-col-key]").forEach((th) => {
     const clave = th.dataset.colKey;
     const col = document.createElement("col");
