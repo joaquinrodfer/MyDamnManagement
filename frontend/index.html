@@ -2914,6 +2914,20 @@
     .rows-table th.row-sel-head,
     .rows-table td.row-sel-cell { width: 44px; padding: 4px 6px; }
     .row-check { width: 22px; height: 22px; }
+    /* A 375 px la tabla se desplaza de lado y la columna de acciones queda
+       fuera: con la casilla pegada al borde derecho, marcar una fila no obliga
+       a desplazar la tabla (y la casilla de la cabecera se ve siempre). El
+       fondo hay que ponerlo a mano: `border-collapse` no arrastra el del <tr>
+       a una celda que se pega. */
+    .rows-table th.row-sel-head,
+    .rows-table td.row-sel-cell {
+      position: sticky;
+      right: 0;
+      background: var(--panel);
+      box-shadow: -1px 0 0 var(--panel-border);
+    }
+    .rows-table tr:hover td.row-sel-cell { background: var(--code-bg); }
+    .rows-table tr.is-selected td.row-sel-cell { background: var(--accent-soft); }
   }
 
   /* Cabecera muy estrecha / móvil pequeño: el nombre de usuario se queda en su

@@ -4671,7 +4671,14 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 
   // Vacío honesto: no una tabla en blanco, sino el motivo escrito y la salida.
   if (filtros.length && rows.length === 0) {
-    content.appendChild(avisoDeFiltroVacio(() => aplicarConfig({ filters: [] })));
+    // Sin filas no hay tabla, pero la selección de antes sigue viva: la barra
+    // se pinta igual (dice cuántas hay y que el filtro las ha dejado fuera).
+    // Esconderla dejaría una selección invisible que, aun así, actúa.
+    const hueco = document.createElement("div");
+    hueco.className = "db-sel-shell";
+    const sel = crearSeleccionDeFilas({ database, rows: [], onRepintar: refresh });
+    hueco.append(sel.barra, sel.informes, avisoDeFiltroVacio(() => aplicarConfig({ filters: [] })));
+    content.appendChild(hueco);
   } else if (activeView && activeView.type === "board" && activeView.config?.group_by) {
     content.appendChild(renderBoard(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "calendar") {
