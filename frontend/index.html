@@ -2102,6 +2102,113 @@
     color: inherit;
   }
 
+  /* ---------- selección múltiple de filas ---------- */
+  /* La casilla vive en la columna de acciones, con el botón de borrar cuando
+     la vista deja borrar. Estrecha: es un control, no una columna de datos. */
+  .rows-table th.row-sel-head { width: 34px; text-align: center; }
+  .rows-table td.row-sel-cell {
+    width: 34px;
+    max-width: none;
+    padding: 2px 4px;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .row-check {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    padding: 0;
+    vertical-align: middle;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  /* La fila marcada se tiñe entera: con la casilla sola no se ve de un vistazo
+     cuáles van a entrar en la acción. Va DESPUÉS del `:hover` de la tabla, que
+     tiene la misma especificidad. */
+  .rows-table tr.is-selected td { background: var(--accent-soft); }
+
+  /* La barra aparece con la primera fila marcada y va encima de la tabla (y de
+     la lista), en el flujo: no tapa filas ni se va con su scroll horizontal. */
+  .db-sel-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-size: 12.5px;
+  }
+  .db-sel-bar[hidden] { display: none; }
+  .db-sel-count {
+    font-weight: 600;
+    color: var(--accent-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .db-sel-fuera { color: var(--ink-muted); font-size: var(--text-sm); }
+  .db-sel-fuera[hidden] { display: none; }
+  .db-sel-progress { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .db-sel-progress[hidden] { display: none; }
+  .db-sel-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
+  .db-sel-note { color: var(--ink-muted); font-size: var(--text-sm); }
+
+  /* El informe de una acción en bloque: qué se hizo, cuáles y —si fallaron—
+     cuáles no y por qué. Se queda hasta que se descarta. */
+  .db-sel-report {
+    margin: 0 0 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--panel-border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+  .db-sel-report-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .db-sel-report-title { margin: 0; font-weight: 600; color: var(--ink); }
+  .db-sel-report-close {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+  }
+  .db-sel-report-close:hover { background: var(--code-bg); color: var(--ink); }
+  .db-sel-report-close .svg-icon { width: 12px; height: 12px; }
+  .db-sel-report-ok { margin: 4px 0 0; color: var(--ok); }
+  .db-sel-report-bad { margin: 4px 0 0; color: var(--down); }
+
+  /* Diálogo de «cambiar una propiedad»: los campos son los de siempre
+     (`.field`); aquí solo lo propio del diálogo. */
+  .mdm-bulk-title { margin: 0 0 14px; font-size: var(--text-md); color: var(--ink); }
+  .mdm-bulk-note {
+    margin: 0 0 14px;
+    color: var(--ink-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+
   .board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; }
   /* Cada carril es un contenedor visual propio (--bg sobre el --panel del
      lienzo): así se ve dónde empieza y acaba la columna, no solo el hueco. */
@@ -2294,6 +2401,39 @@
     font-family: var(--font-body);
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
+  }
+  /* La fila de la lista lleva la casilla FUERA del botón (dentro no cabría:
+     un botón no contiene otro control). El borde y el fondo los lleva la
+     línea, para que el resalte coja también la casilla. */
+  .db-list-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--surface-elevated);
+    color: var(--ink-muted);
+  }
+  .db-list-head-text {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .list-row-item {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-left: 10px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .list-row-item:hover { background: var(--code-bg); }
+  .list-row-item.is-selected { background: var(--accent-soft); }
+  .list-row-item .list-row {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    border-bottom: none;
   }
 
   /* --- aviso de una vista que no puede pintarse (calendario sin fecha) --- */
@@ -2941,6 +3081,32 @@
       min-height: 44px;
     }
     .user-menu-item { min-height: 44px; padding: 10px 12px; }
+
+    /* --- selección múltiple a 375 px ---
+       El recuento y los botones no caben en una línea: los botones bajan a la
+       suya y se reparten el ancho (44 px de alto ya los pone `.btn`). La
+       casilla se toca con el dedo: 44 px de celda y 22 de casilla. */
+    .db-sel-bar { gap: 6px 8px; }
+    .db-sel-fuera { flex: 1 1 100%; }
+    .db-sel-actions { width: 100%; margin-left: 0; }
+    .db-sel-actions .btn { flex: 1 1 auto; }
+    .rows-table th.row-sel-head,
+    .rows-table td.row-sel-cell { width: 44px; padding: 4px 6px; }
+    .row-check { width: 22px; height: 22px; }
+    /* A 375 px la tabla se desplaza de lado y la columna de acciones queda
+       fuera: con la casilla pegada al borde derecho, marcar una fila no obliga
+       a desplazar la tabla (y la casilla de la cabecera se ve siempre). El
+       fondo hay que ponerlo a mano: `border-collapse` no arrastra el del <tr>
+       a una celda que se pega. */
+    .rows-table th.row-sel-head,
+    .rows-table td.row-sel-cell {
+      position: sticky;
+      right: 0;
+      background: var(--panel);
+      box-shadow: -1px 0 0 var(--panel-border);
+    }
+    .rows-table tr:hover td.row-sel-cell { background: var(--code-bg); }
+    .rows-table tr.is-selected td.row-sel-cell { background: var(--accent-soft); }
   }
 
   /* Cabecera muy estrecha / móvil pequeño: el nombre de usuario se queda en su
