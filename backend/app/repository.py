@@ -21,7 +21,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from app import index as index_mod
 from app.config import settings
@@ -57,6 +57,14 @@ def _uuid(value: Optional[str]) -> Optional[uuid.UUID]:
 
 def _load(value: Optional[str], default: Any) -> Any:
     return json.loads(value) if value else default
+
+
+# Cuántos ids caben en una consulta de resolución de relaciones. SQLite admite
+# miles de parámetros, pero el tope es del motor (32766 en las versiones que la
+# app soporta) y no queremos depender de él. Trocear sigue sin depender del
+# número de filas de la respuesta: una tabla de 20 filas resuelve sus títulos
+# con una sola consulta.
+_REFS_CHUNK = 900
 
 
 @dataclass(frozen=True)
@@ -972,6 +980,45 @@ class Repository:
             (str(database_id),),
         ).fetchall()
         return [_page(r) for r in rows]
+
+    def database_ids(self) -> set[str]:
+        """Los ids de todas las bases del índice, de una vez.
+
+        Lo usa la serialización de una base para saber si la `target_database`
+        de una propiedad `relation` sigue existiendo. Es una consulta, no una
+        por propiedad: la tabla tiene una fila por base del vault.
+        """
+        return {row["id"] for row in self.conn.execute("SELECT id FROM databases")}
+
+    def row_refs(self, ids: Iterable[str]) -> dict[str, tuple[str, str]]:
+        """`id -> (título, id de su base)` de las filas que existan.
+
+        **Una consulta por respuesta**, no una por celda ni una por fila: es lo
+        que evita el N+1 al devolver una tabla con relaciones (veinte filas con
+        relación resuelven sus veinte títulos en un solo `IN (...)`). Los ids que
+        ya no existen simplemente no aparecen en el mapa, y quien serializa los
+        pinta con `title: null` (fila borrada).
+
+        Se piden a `rows` (y no a `pages`) a propósito: solo una fila de una base
+        puede ser el destino de una relación, y así una página suelta con el
+        mismo id no se colaría como si fuera una fila.
+        """
+        wanted = [str(one) for one in ids]
+        if not wanted:
+            return {}
+        refs: dict[str, tuple[str, str]] = {}
+        for start in range(0, len(wanted), _REFS_CHUNK):
+            chunk = wanted[start:start + _REFS_CHUNK]
+            marks = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                "SELECT p.id AS id, p.title AS title, r.database_id AS database_id"
+                " FROM rows r JOIN pages p ON p.id = r.id"
+                f" WHERE r.id IN ({marks})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                refs[row["id"]] = (row["title"], row["database_id"])
+        return refs
 
     def get_row(self, database_id: uuid.UUID, row_id: uuid.UUID) -> Optional[Page]:
         row = self.conn.execute(

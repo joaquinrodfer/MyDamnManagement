@@ -86,9 +86,12 @@ def test_una_propiedad_se_crea_con_solo_el_nombre(client, vault_path):
             {"name": "Fecha de entrega", "type": "text"},
         ],
     )
+    # La respuesta es lo que dice el `.md`: una propiedad sin opciones no lleva
+    # `options: null` (antes lo inventaba el modelo de respuesta y metía ruido
+    # en todas las columnas; ver `schemas.DatabaseRead.schema_def`).
     assert base["schema_def"] == [
-        {"key": "fecha_de_entrega", "name": "Fecha de entrega", "type": "date", "options": None},
-        {"key": "fecha_de_entrega_2", "name": "Fecha de entrega", "type": "text", "options": None},
+        {"key": "fecha_de_entrega", "name": "Fecha de entrega", "type": "date"},
+        {"key": "fecha_de_entrega_2", "name": "Fecha de entrega", "type": "text"},
     ]
     datos = frontmatter(vault_path / "Bases" / "Pedidos.md")
     assert [p["key"] for p in datos["schema"]] == ["fecha_de_entrega", "fecha_de_entrega_2"]
