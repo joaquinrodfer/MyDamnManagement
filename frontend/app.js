@@ -5662,7 +5662,15 @@ async function ocultarColumna({ database, view, prop, onChanged }) {
   if (!view || !prop) return;
   const visibles = clavesVisibles(database, view) || (database.schema_def || []).map((p) => p.key);
   const nuevas = visibles.filter((k) => k !== prop.key);
-  if (!nuevas.length) return;
+  // Una lista vacía se lee como «todas» (ver `clavesVisibles`), así que
+  // esconder la última propiedad no se puede guardar y el menú ni lo ofrece.
+  // Si se llega aquí es que la guarda falló: callarlo dejaría la vista
+  // enseñándolo todo como si hubiera funcionado.
+  if (!nuevas.length) {
+    throw new Error(
+      "no se puede ocultar la última propiedad de la vista: la lista vacía se lee como «todas»",
+    );
+  }
   const actualizada = await api(`/databases/${database.id}/views/${view.id}`, {
     method: "PATCH",
     body: JSON.stringify({ config: { ...(view.config || {}), visible_properties: nuevas } }),
@@ -5676,12 +5684,23 @@ async function ocultarColumna({ database, view, prop, onChanged }) {
  * una lista con todas). */
 async function mostrarColumna({ database, view, prop, onChanged }) {
   if (!view || !prop) return;
-  const visibles = clavesVisibles(database, view) || [];
+  const visibles = clavesVisibles(database, view);
+  // Sin lista explícita la vista enseña todas: no hay nada oculto que devolver.
+  if (!visibles) return;
   const config = { ...(view.config || {}) };
-  const nuevas = (database.schema_def || [])
-    .filter((p) => visibles.includes(p.key) || p.key === prop.key)
-    .map((p) => p.key);
-  if (nuevas.length === (database.schema_def || []).length) delete config.visible_properties;
+  // La devuelta entra AL FINAL de la lista de la vista. Reconstruir la lista
+  // desde `schema_def` (lo que hacía antes) la devolvía a su sitio del
+  // esquema y reordenaba una vista que tenía su propio orden: volver a
+  // enseñar una columna no puede mover las demás. Su posición anterior no
+  // está guardada en ningún sitio (al ocultarla sale de `visible_properties`),
+  // así que el final es el único hueco que no descoloca a nadie.
+  const nuevas = [...visibles.filter((k) => k !== prop.key), prop.key];
+  const esquema = (database.schema_def || []).map((p) => p.key);
+  // «Todas» es la ausencia de la clave, pero solo si el orden es el del
+  // esquema: con un orden propio, borrar la lista lo perdería.
+  const enOrdenDelEsquema =
+    nuevas.length === esquema.length && nuevas.every((k, i) => k === esquema[i]);
+  if (enOrdenDelEsquema) delete config.visible_properties;
   else config.visible_properties = nuevas;
   const actualizada = await api(`/databases/${database.id}/views/${view.id}`, {
     method: "PATCH",
@@ -5890,11 +5909,17 @@ function abrirMenuDeColumna(anchor, contexto) {
         }),
       );
     } else if (visibles.length <= 1) {
+      // La columna del título no es una propiedad y sigue en la tabla, pero
+      // una vista sin NINGUNA propiedad no se puede guardar: la lista vacía
+      // se lee como «todas». El motivo cuenta la columna del título en vez
+      // de decir «la última columna visible» con el título a la vista.
+      const motivo = database.title_hidden
+        ? "Es la única propiedad de esta vista: ocultarla dejaría la tabla sin ninguna columna, y una vista sin columnas no se puede guardar."
+        : "Es la única propiedad de esta vista: quedaría solo la columna del título, y una vista sin propiedades se guarda como «todas».";
       menu.appendChild(
         itemDeColumna("Ocultar esta columna", {
-          motivo: "Es la última columna visible de la vista: no se puede dejar la tabla sin columnas.",
-          alElegir: () =>
-            avisar("Es la última columna visible de la vista: no se puede dejar la tabla sin columnas."),
+          motivo,
+          alElegir: () => avisar(motivo),
         }),
       );
     } else {
@@ -6337,6 +6362,17 @@ function renderTable(
       celdas.set(p.key, td);
       tr.appendChild(td);
     });
+
+    // 3) El hueco del «+» de la cabecera. El `<th>` del «+» va ANTES del de
+    // «Acciones» y las filas también: sin esta celda la cabecera tendría una
+    // celda más que cada fila, el «+» caería encima de la papelera de borrar
+    // fila y sobraría una franja de cabecera a la derecha. Misma anchura que
+    // el `<th>` (ver `.db-col-add-cell`).
+    if (onChanged) {
+      const addTd = document.createElement("td");
+      addTd.className = "db-col-add-cell";
+      tr.appendChild(addTd);
+    }
 
     const propDe = (clave) =>
       clave === null ? null : database.schema_def.find((p) => p.key === clave) || null;

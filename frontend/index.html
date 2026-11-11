@@ -1775,6 +1775,10 @@
   .db-col-menu-btn:hover { background: var(--accent-soft); color: var(--ink); }
   .db-col-menu-btn .svg-icon { width: 14px; height: 14px; }
   .rows-table th.db-col-add-head { width: 30px; padding: 0; text-align: center; }
+  /* Las filas llevan el hueco del «+» en la misma posición (antes de
+     «Acciones») y con la misma anchura: si no, la cabecera tendría una celda
+     más que las filas y el «+» caería encima de las papeleras. */
+  .rows-table td.db-col-add-cell { width: 30px; padding: 0; }
   .db-col-add-btn { width: 100%; height: 100%; min-height: 26px; color: var(--ink-muted); }
   .db-col-add-btn:hover { background: var(--accent-soft); color: var(--accent-ink); }
   .db-col-add-btn .svg-icon { width: 14px; height: 14px; }
