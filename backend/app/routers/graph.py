@@ -24,8 +24,20 @@ Decisiones que la respuesta hace explícitas:
 - **`truncated`** solo puede ser cierto en `global`: dice que se han dejado
   nodos fuera por el tope. En `local` la vecindad se sirve entera.
 - **`degree`** es el número de filas de `links` que tocan la página, en
-  cualquier dirección. Mismo número en los dos modos, para que el tamaño del
-  nodo no baile al cambiar de vista.
+  cualquier dirección, más las aristas de pertenencia (`row`) topadas (ver
+  abajo). Mismo número en los dos modos, para que el tamaño del nodo no baile
+  al cambiar de vista.
+- **Aristas `row`**: una fila de base es una página (`database_row`) y
+  pertenece a su base. Esa pertenencia **no vive en `links`** y no se escribe
+  ahí: la base listaría sus 300 filas en los backlinks, que es justo lo que
+  nadie quiere leer. Se deduce de `rows.database_id` -> `databases.page_id` al
+  vuelo y se sirve como arista `source=base, target=fila, kind="row"`. Como no
+  hay fila en `links`, `GET /pages/{id}/backlinks`, el recuento de enlaces
+  rotos y el resto de vistas no cambian.
+- **Grado de las aristas `row`**: topado a `ROW_DEGREE_CAP`. Una base con 200
+  filas tendría grado 200 y el tamaño del nodo (log topado en 12) la dejaría
+  enorme; cuenta como mucho 5, y solo esa parte se topa: los wikilinks y los
+  embeds cuentan enteros.
 
 Los tipos de página no se filtran: un wikilink puede apuntar a una base de
 datos (o, de forma rara, a una fila) y esconderla sería mentir sobre el grafo.
@@ -96,6 +108,48 @@ _DEGREE_IN = (
 _DEGREE_ALL_OUT = "SELECT from_id AS id, count(*) AS n FROM links GROUP BY from_id"
 _DEGREE_ALL_IN = "SELECT to_id AS id, count(*) AS n FROM links GROUP BY to_id"
 
+# Aristas de pertenencia base -> fila. No están en `links` (los backlinks de
+# una base listarían sus filas): se deducen de `rows` + `databases` en cada
+# petición. Se piden por `r.id`, que es la clave primaria de `rows`: cada fila
+# aparece una sola vez y su base sale del JOIN, así que una arista nunca se
+# duplica ni depende del tamaño del grafo.
+ROW_KIND = "row"
+
+# Tope del grado que aporta la pertenencia. El tamaño del nodo va con log
+# topado en 12: una base de 200 filas se pintaba como el nodo más grande del
+# vault sin haber escrito un solo enlace. Cinco basta para que una base se lea
+# como «con filas» sin competir con las notas enlazadas, y no toca el recuento
+# de wikilinks/embeds, que suma entero.
+ROW_DEGREE_CAP = 5
+
+_ROW_EDGES_IN = (
+    "SELECT d.page_id AS source, r.id AS target"
+    " FROM rows r JOIN databases d ON d.id = r.database_id"
+    " WHERE r.id IN ({marks})"
+)
+# Descenso del grafo local: de la base a sus filas.
+_ROW_CHILDREN = (
+    "SELECT r.id AS id FROM rows r WHERE r.database_id IN"
+    " (SELECT id FROM databases WHERE page_id IN ({marks}))"
+)
+# Ascenso: de la fila a su base.
+_ROW_PARENT = (
+    "SELECT d.page_id AS id FROM rows r JOIN databases d ON d.id = r.database_id"
+    " WHERE r.id IN ({marks})"
+)
+# Grado de pertenencia: `count(*)` por base y 1 por fila, que solo puede tener
+# una base (rows.database_id es NOT NULL y la clave es el id de la fila).
+_ROW_DEGREE_BASES = (
+    "SELECT d.page_id AS id, count(*) AS n"
+    " FROM rows r JOIN databases d ON d.id = r.database_id"
+    " WHERE d.page_id IN ({marks}) GROUP BY d.page_id"
+)
+_ROW_DEGREE_ROWS = "SELECT id AS id, 1 AS n FROM rows WHERE id IN ({marks})"
+_ROW_DEGREE_ALL_BASES = (
+    "SELECT d.page_id AS id, count(*) AS n"
+    " FROM rows r JOIN databases d ON d.id = r.database_id GROUP BY d.page_id"
+)
+
 
 def _chunks(items: list[str]):
     for start in range(0, len(items), _PARAM_CHUNK):
@@ -121,13 +175,44 @@ def _bump(degrees: dict[str, int], rows) -> None:
         degrees[row["id"]] = degrees.get(row["id"], 0) + row["n"]
 
 
+def _bump_capped(degrees: dict[str, int], rows, cap: int) -> None:
+    """Suma como mucho `cap` por nodo.
+
+    El tope es por nodo y por grupo de aristas: cada llamada suma su recuento
+    ya topado, así que la pertenencia nunca aporta más de `cap` y los
+    wikilinks, que se suman con `_bump`, siguen contando enteros.
+    """
+    for row in rows:
+        degrees[row["id"]] = degrees.get(row["id"], 0) + min(row["n"], cap)
+
+
+def _row_degrees(conn: sqlite3.Connection, ids: list[str]) -> dict[str, int]:
+    """Grado que aporta la pertenencia, topado a `ROW_DEGREE_CAP`.
+
+    Dos consultas por bloque: `n` filas por base (esa parte se topa) y 1 por
+    cada id que sea fila. Son aportaciones distintas -- una página puede ser
+    base y fila a la vez --, así que se suman y cada una va topada.
+    """
+    degrees: dict[str, int] = {}
+    for chunk in _chunks(ids):
+        marks = ",".join("?" for _ in chunk)
+        bases = conn.execute(_ROW_DEGREE_BASES.format(marks=marks), chunk)
+        filas = conn.execute(_ROW_DEGREE_ROWS.format(marks=marks), chunk)
+        _bump_capped(degrees, bases, ROW_DEGREE_CAP)
+        _bump_capped(degrees, filas, ROW_DEGREE_CAP)
+    return degrees
+
+
 def _degrees(conn: sqlite3.Connection, ids: list[str]) -> dict[str, int]:
-    """Grado de esos nodos (entrantes + salientes). Los que no aparecen: 0."""
+    """Grado de esos nodos (entrantes + salientes + pertenencia). Sin fila: 0."""
     degrees: dict[str, int] = {}
     for chunk in _chunks(ids):
         marks = ",".join("?" for _ in chunk)
         _bump(degrees, conn.execute(_DEGREE_OUT.format(marks=marks), chunk))
         _bump(degrees, conn.execute(_DEGREE_IN.format(marks=marks), chunk))
+    # `_row_degrees` ya devuelve la aportación topada por nodo.
+    for key, n in _row_degrees(conn, ids).items():
+        degrees[key] = degrees.get(key, 0) + n
     return degrees
 
 
@@ -136,6 +221,10 @@ def _all_degrees(conn: sqlite3.Connection) -> dict[str, int]:
     degrees: dict[str, int] = {}
     _bump(degrees, conn.execute(_DEGREE_ALL_OUT))
     _bump(degrees, conn.execute(_DEGREE_ALL_IN))
+    _bump_capped(degrees, conn.execute(_ROW_DEGREE_ALL_BASES), ROW_DEGREE_CAP)
+    # Cada fila suma uno por su base, que ya está contada arriba.
+    for row in conn.execute("SELECT id FROM rows"):
+        degrees[row["id"]] = degrees.get(row["id"], 0) + 1
     return degrees
 
 
@@ -146,12 +235,20 @@ def _all_page_ids(conn: sqlite3.Connection) -> list[str]:
 
 
 def _neighbors(conn: sqlite3.Connection, ids: list[str]) -> set[str]:
-    """Vecinos a un salto, en las dos direcciones."""
+    """Vecinos a un salto, en las dos direcciones.
+
+    Incluye la pertenencia `row` en los dos sentidos: de una base se baja a sus
+    filas y de una fila se sube a su base. Sin esto, el grafo local de una base
+    (o de una fila) se quedaba en un nodo suelto aunque el grafo global sí
+    pintara la arista.
+    """
     found: set[str] = set()
     for chunk in _chunks(ids):
         marks = ",".join("?" for _ in chunk)
         found.update(r["id"] for r in conn.execute(_NEIGHBORS_OUT.format(marks=marks), chunk))
         found.update(r["id"] for r in conn.execute(_NEIGHBORS_IN.format(marks=marks), chunk))
+        found.update(r["id"] for r in conn.execute(_ROW_CHILDREN.format(marks=marks), chunk))
+        found.update(r["id"] for r in conn.execute(_ROW_PARENT.format(marks=marks), chunk))
     return found
 
 
@@ -190,12 +287,35 @@ def _nodes(conn: sqlite3.Connection, ids: list[str], degrees: dict[str, int]):
     return nodes, bodies
 
 
+def _row_edges_among(conn: sqlite3.Connection, node_ids: list[str]) -> list[dict]:
+    """Aristas `base -> fila` con los dos extremos dentro del conjunto.
+
+    Se piden por `r.id` (clave primaria de `rows`), así que cada fila cae en un
+    solo bloque y ninguna arista se duplica. La base puede quedar fuera del
+    conjunto (nodo recortado en global): esa arista se descarta, igual que las
+    de `links`.
+    """
+    wanted = set(node_ids)
+    edges: list[dict] = []
+    for chunk in _chunks(node_ids):
+        marks = ",".join("?" for _ in chunk)
+        rows = conn.execute(_ROW_EDGES_IN.format(marks=marks), chunk).fetchall()
+        # La consulta no tiene columna `kind`: la pertenencia siempre es `row`.
+        edges.extend(
+            {"source": r["source"], "target": r["target"], "kind": ROW_KIND}
+            for r in rows
+            if r["source"] in wanted and r["target"] in wanted
+        )
+    return edges
+
+
 def _edges_among(conn: sqlite3.Connection, node_ids: list[str]) -> list[dict]:
     """Aristas con los dos extremos dentro del conjunto.
 
-    Se pide por bloques de `from_id` (índice `links_from`) y se filtra el
-    destino en memoria: así el número de parámetros nunca depende del tamaño
-    del grafo y no hace falta una tabla temporal.
+    Las de `links` se piden por bloques de `from_id` (índice `links_from`) y se
+    filtra el destino en memoria: así el número de parámetros nunca depende del
+    tamaño del grafo y no hace falta una tabla temporal. Las de pertenencia
+    (`kind="row"`) se añaden desde `rows`/`databases`, sin pasar por `links`.
     """
     wanted = set(node_ids)
     edges: list[dict] = []
@@ -207,6 +327,7 @@ def _edges_among(conn: sqlite3.Connection, node_ids: list[str]) -> list[dict]:
             chunk,
         ).fetchall()
         edges.extend(_as_edge(r) for r in rows if r["target"] in wanted)
+    edges.extend(_row_edges_among(conn, node_ids))
     edges.sort(key=lambda e: (e["source"], e["target"], e["kind"]))
     return edges
 

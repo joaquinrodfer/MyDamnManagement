@@ -15,6 +15,9 @@
 // - las aristas se pintan con un color propio de contraste medido (3,93:1
 //   sobre el fondo, ver `graph.css`), no con el borde de panel que las dejaba
 //   en 1,15:1. Las que tocan el nodo bajo el ratón van en acento y más gruesas.
+// - la pertenencia base -> fila (`kind: "row"`) NO es un enlace escrito: va
+//   más fina y más tenue que un wikilink o un embed, para que se lea como
+//   «esta fila vive en esta base» y no como «alguien escribió este vínculo».
 // - el grafo global se pide **entero** (sin `limit`); si la respuesta pasa de
 //   2 MB se recorta aquí, por tamaño y no por un número de nodos, y se avisa.
 // - la simulación se enfría (`alpha`) y el `requestAnimationFrame` **se para**
@@ -45,6 +48,15 @@ const NODE_R_MAX = 15; // tope: el más conectado no se come la pantalla
 const NODE_ALPHA_MIN = 0.55; // grado 0 sobre el fondo: 3,20:1, se distingue
 const DEGREE_FULL = 12; // grado al que la escala ya está arriba (el 12 del dueño)
 const MIN_NODE_SCREEN_R = 1.6; // px de pantalla: al alejar el zoom nadie desaparece
+
+// Trazo de la pertenencia base -> fila (`kind: "row"`). Mismo color que un
+// enlace -- es una relación del mismo grafo, no otra cosa -- pero a 0,9 px en
+// vez de 1,6 y al 45 % de opacidad: se ve si la miras y no compite con las
+// aristas que alguien escribió. Sin guiones: una línea discontinua de medio
+// píxel, al alejar el zoom, se convierte en una textura gris que ensucia el
+// dibujo en vez de explicarlo.
+const ROW_EDGE_WIDTH = 0.9;
+const ROW_EDGE_ALPHA = 0.45;
 
 let view = null; // la vista abierta (solo puede haber una)
 
@@ -350,43 +362,42 @@ function createView({ pageId, onOpenPage }) {
     // en acento (7,65:1) y más gruesas (2,6 px frente a 1,6), y las demás se
     // apagan para que el foco se lea de un vistazo.
     //
-    // Se pintan en **dos pasadas y un solo `stroke()` por pasada**: con 7.000
-    // nodos y 10.000 aristas, un `stroke()` por arista con su `beginPath` es lo
-    // que hacía que la simulación se arrastrara. El color y el grosor son los
-    // mismos para todas las de una pasada, así que el resultado es idéntico.
+    // Se pintan en **una pasada por estilo y un solo `stroke()` por pasada**:
+    // con 7.000 nodos y 10.000 aristas, un `stroke()` por arista con su
+    // `beginPath` es lo que hacía que la simulación se arrastrara. El color y
+    // el grosor son los mismos para todas las de una pasada, así que el
+    // resultado es idéntico al de pintarlas de una en una.
     const ancho = 1.6 / t.k;
+    const anchoRow = ROW_EDGE_WIDTH / t.k;
     const anchoActivo = 2.6 / t.k;
+    // Una pasada = un estilo: se abre el camino, se meten las aristas que
+    // tocan y se pinta. La pertenencia va siempre primero: queda debajo.
+    const traza = (filtro, color, grosor, alfa) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = grosor;
+      ctx.globalAlpha = alfa;
+      ctx.beginPath();
+      let algo = false;
+      for (const e of state.edges) {
+        if (!filtro(e)) continue;
+        ctx.moveTo(e.a.x, e.a.y);
+        ctx.lineTo(e.b.x, e.b.y);
+        algo = true;
+      }
+      if (algo) ctx.stroke();
+    };
+    const esRow = (e) => e.kind === "row";
     if (!hover) {
-      ctx.strokeStyle = colors.edge;
-      ctx.lineWidth = ancho;
-      ctx.globalAlpha = 1;
-      ctx.beginPath();
-      for (const e of state.edges) {
-        ctx.moveTo(e.a.x, e.a.y);
-        ctx.lineTo(e.b.x, e.b.y);
-      }
-      ctx.stroke();
+      traza(esRow, colors.edge, anchoRow, ROW_EDGE_ALPHA);
+      traza((e) => !esRow(e), colors.edge, ancho, 1);
     } else {
-      ctx.strokeStyle = colors.edge;
-      ctx.lineWidth = ancho;
-      ctx.globalAlpha = 0.18;
-      ctx.beginPath();
-      for (const e of state.edges) {
-        if (e.a === hover || e.b === hover) continue;
-        ctx.moveTo(e.a.x, e.a.y);
-        ctx.lineTo(e.b.x, e.b.y);
-      }
-      ctx.stroke();
-      ctx.strokeStyle = colors.edgeActive;
-      ctx.lineWidth = anchoActivo;
-      ctx.globalAlpha = 1;
-      ctx.beginPath();
-      for (const e of state.edges) {
-        if (e.a !== hover && e.b !== hover) continue;
-        ctx.moveTo(e.a.x, e.a.y);
-        ctx.lineTo(e.b.x, e.b.y);
-      }
-      ctx.stroke();
+      const fuera = (e) => e.a !== hover && e.b !== hover;
+      traza((e) => esRow(e) && fuera(e), colors.edge, anchoRow, ROW_EDGE_ALPHA * 0.4);
+      traza((e) => !esRow(e) && fuera(e), colors.edge, ancho, 0.18);
+      // El foco del ratón sube la pertenencia también a acento, pero sigue
+      // siendo más fina: el grosor es lo que dice qué clase de arista es.
+      traza((e) => esRow(e) && !fuera(e), colors.edgeActive, anchoRow * 1.4, 0.85);
+      traza((e) => !esRow(e) && !fuera(e), colors.edgeActive, anchoActivo, 1);
     }
     ctx.globalAlpha = 1;
 
@@ -643,10 +654,15 @@ function createView({ pageId, onOpenPage }) {
     }
     el.querySelector(".graph-depths").hidden = state.mode !== "local";
     const { nodes, edges, truncated, broken } = state.data;
+    // Las aristas `row` no son enlaces escritos: se cuentan aparte, o la barra
+    // diría «300 enlaces» de una base que solo tiene filas.
+    const filas = edges.filter((e) => e.kind === "row").length;
+    const enlaces = edges.length - filas;
     const partes = [
       `${nodes.length} nodo${nodes.length === 1 ? "" : "s"}`,
-      `${edges.length} enlace${edges.length === 1 ? "" : "s"}`,
+      `${enlaces} enlace${enlaces === 1 ? "" : "s"}`,
     ];
+    if (filas) partes.push(`${filas} fila${filas === 1 ? "" : "s"} en su base`);
     if (truncated) {
       // El aviso de siempre, con la cuenta cuando la sabemos (el corte por
       // tamaño de este lado) para no dejar al usuario con un "hay más".
