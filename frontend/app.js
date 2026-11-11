@@ -3723,14 +3723,15 @@ function handleDatabaseEvent(data) {
   if (!session) return;
   // El id va dentro de la valla; si no está en esta nota, el aviso no es suyo.
   if (!state.editor?.getValue?.().includes(data.database_id)) return;
-  // Eco de una fila que se acaba de añadir desde el propio bloque: su tabla ya
-  // se repintó con lo que devolvió la API (y el aviso y el foco están
-  // puestos), así que volver a pintarla desde cero solo los perdería. El
-  // cambio hecho en otra ventana no pasa por aquí y sí repinta.
+  // Eco de una fila que se acaba de añadir o de editar desde el propio bloque:
+  // su tabla ya está repintada con lo que devolvió la API (y el aviso, el foco
+  // y la celda en edición están puestos), así que volver a pintarla desde cero
+  // solo los perdería. El cambio hecho en otra ventana no pasa por aquí y sí
+  // repinta.
   if (
     data.action === "rows" &&
-    String(data.database_id) === ultimaFilaPropia.databaseId &&
-    Date.now() - ultimaFilaPropia.ts < 3000
+    String(data.database_id) === ultimoCambioPropio.databaseId &&
+    Date.now() - ultimoCambioPropio.ts < 3000
   ) {
     return;
   }
@@ -4609,14 +4610,22 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 // ------------------------------------- bases dentro de una nota (P17.2)
 /** Pinta, dentro de la nota, la base de un bloque ```mdm-database.
  *
- * Solo lectura para las CELDAS: la tabla es la MISMA de la base (`renderTable`
- * con `readOnly`), sin celdas editables ni borrado; el encabezado (un botón)
- * lleva a la base entera, que es donde se editan los valores. Lo único que se
- * escribe desde aquí es una fila nueva con su nombre: el «+ Nueva fila» del
- * final, que es lo que faltaba en el sitio donde trabaja el dueño.
+ * La tabla es exactamente la de la base (`renderTable`), celdas editables
+ * incluidas: un clic abre el control del tipo de esa celda y lo que se escribe
+ * va al `.md` de ESA fila, nunca al de la nota (el bloque guarda la referencia,
+ * no los datos). También el título de la fila se edita aquí: es lo que más se
+ * toca, y renombrar es lo mismo que renombrar desde la base (cambia el `title`
+ * del frontmatter y el fichero `<id8>.md` no se mueve).
+ *
+ * Lo que NO se hace desde aquí: borrar filas ni tocar el esquema. La tabla va
+ * sin columna de acciones (`deletable: false`) porque borrar desde dentro de
+ * una nota es demasiado fácil de hacer sin querer; el encabezado (un botón)
+ * lleva a la base entera, que es donde viven las dos cosas.
  *
  * Pintar no toca el documento: la valla, el cursor y el autoguardado siguen
- * donde estaban. Al añadir una fila se repintan solo el contador y la tabla.
+ * donde estaban. Al añadir una fila o al guardar una celda se repintan solo el
+ * contador y la tabla de este bloque; los demás bloques de la misma base piden
+ * sus filas al servidor (`refrescarOtrosEmbeds`).
  *
  * Si la base ya no está, se avisa con `notFound` para que el editor pinte
  * «Base no encontrada: <title|id>»; cualquier otro fallo se propaga con su
@@ -4672,12 +4681,32 @@ async function renderDatabaseEmbed(block, container) {
   // ya viene filtrada y ordenada por `?view=`.
   const body = document.createElement("div");
   body.className = "db-embed-body";
+  // Comportamiento propio de la copia incrustada (ver `renderTable`): el
+  // marcador que deja pasar el clic a través del widget del editor y los dos
+  // avisos del guardado.
+  const hooks = {
+    embed: true,
+    // ANTES del PATCH: el servidor publica `rows` en /events antes de
+    // responder, así que el aviso llega a esta pestaña antes que el guardado.
+    // Se apunta que el cambio es de aquí para descartar el eco: si no, el
+    // editor repintaría el bloque desde cero y se llevaría por delante la
+    // celda que se está editando (y su input, con el foco dentro).
+    onBeforeSave: () => {
+      ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+    },
+    // Guardado de verdad: los DEMÁS bloques de esta misma base piden sus filas
+    // al servidor. Sin esto se quedan con lo de antes, porque el eco del SSE se
+    // descarta arriba. Este bloque no entra: su celda ya está repintada con lo
+    // que devolvió el PATCH.
+    onSaved: () => refrescarOtrosEmbeds(database.id, container),
+  };
+
   const pintar = (filas) => {
     meta.textContent = `${activeView ? activeView.name : "Todas"} · ${filas.length} ${
       filas.length === 1 ? "fila" : "filas"
     }`;
     body.textContent = "";
-    body.append(renderTable(database, filas, { readOnly: true }));
+    body.append(renderTable(database, filas, { deletable: false, hooks }));
   };
   pintar(rows);
 
@@ -4727,10 +4756,12 @@ async function renderDatabaseEmbed(block, container) {
 // entera: «+ Nueva fila» al final crea la fila por el mismo POST que el alta de
 // la base y repinta lo justo para que aparezca donde le toque, sin recargar.
 
-/** Última fila escrita desde esta pestaña: `{databaseId, ts}`. Sirve para no
- * repintar el bloque incrustado con el eco de nuestro propio POST (ver
- * `handleDatabaseEvent`). */
-let ultimaFilaPropia = { databaseId: null, ts: 0 };
+/** Último cambio escrito desde esta pestaña: `{databaseId, ts}`. Sirve para no
+ * repintar el bloque incrustado con el eco de nuestro propio POST o PATCH (ver
+ * `handleDatabaseEvent`): crear una fila y editar una celda publican el mismo
+ * evento `rows`, y repintar el bloque desde cero se llevaría por delante la
+ * celda que se está editando. */
+let ultimoCambioPropio = { databaseId: null, ts: 0 };
 
 /** Crea una fila por el camino de siempre y vuelve a pedir la lista DE LA
  * VISTA ACTIVA.
@@ -4746,7 +4777,7 @@ async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   // apunta que el cambio es de aquí para ignorar el eco (si no, el editor
   // repinta el bloque desde cero y se lleva por delante el aviso y el foco que
   // se ponen al volver). El cambio de OTRA ventana no pasa por aquí.
-  ultimaFilaPropia = { databaseId: String(database.id), ts: Date.now() };
+  ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
   const fila = await api(`/databases/${database.id}/rows`, {
     method: "POST",
     body: JSON.stringify({ title: titulo, properties: extra }),
@@ -4808,13 +4839,14 @@ function enfocarFila(container, rowId) {
   const el = container.querySelector(`[data-row-id="${rowId}"]`);
   if (!el) return false;
   if (el.tagName === "TR") {
-    // La tabla no tiene filas enfocables: el nombre es la primera celda. En la
-    // incrustada esa celda no es editable (la tabla de una nota es de solo
-    // lectura), así que se enfoca para que el lector anuncie el título y el
-    // siguiente Tab siga desde la fila nueva.
-    const celda = el.querySelector("td");
+    // La tabla no tiene filas enfocables: el nombre es la primera celda, que ya
+    // es editable (también en la incrustada). Si por lo que sea no lo es, la
+    // celda se enfoca igual: así el lector anuncia el título y el siguiente Tab
+    // sigue desde la fila nueva.
+    const celda = el.querySelector('td[data-editable="1"]') || el.querySelector("td");
     if (!celda) return false;
-    celda.tabIndex = -1;
+    if (celda.dataset.editable === "1") setRovingCell(celda);
+    else celda.tabIndex = -1;
     celda.focus();
     return true;
   }
@@ -5068,27 +5100,48 @@ function sameValue(a, b) {
 /** Único camino de guardado de una fila: un PATCH y el estado local al día
  * con lo que el servidor acaba de escribir en el `.md`. Si lanza, quien llama
  * avisa con reportError() y repinta el valor viejo: nada se da por guardado
- * sin haberse guardado. */
-async function saveRow(database, row, changes) {
+ * sin haberse guardado.
+ *
+ * `hooks` es opcional y solo lo usan las celdas de la tabla incrustada en una
+ * nota (ver `renderTable`): `onBeforeSave()` justo antes del PATCH y
+ * `onSaved(guardada)` solo si el servidor lo aceptó. */
+async function saveRow(database, row, changes, hooks = null) {
+  hooks?.onBeforeSave?.();
   const saved = await api(`/databases/${database.id}/rows/${row.id}`, {
     method: "PATCH",
     body: JSON.stringify(changes),
   });
   Object.assign(row, saved);
+  hooks?.onSaved?.(saved);
   return saved;
 }
 
-/** La tabla de una base. `readOnly` es la variante que se incrusta en una
- * nota (P17.2, bloque ```mdm-database): mismos valores y mismas clases, pero
- * sin celdas editables, sin columna de borrado y sin alta -- ahí solo se lee,
- * y para cambiar algo se abre la base. Es la MISMA tabla a propósito: dos
- * renders distintos acabarían enseñando cosas distintas. */
-function renderTable(database, rows, { readOnly = false } = {}) {
+/** Los hooks de cada tabla pintada (ver `renderTable`): `table -> hooks`. En un
+ * `WeakMap` para no dejar basura ni una propiedad inventada en el elemento. */
+const hooksDeTabla = new WeakMap();
+
+/** La tabla de una base. Es la MISMA en la página de la base y dentro de una
+ * nota (bloque ```mdm-database, P17.2): mismos valores, mismas clases y las
+ * mismas celdas editables -- dos renders distintos acabarían enseñando cosas
+ * distintas. La única diferencia es `deletable: false`, que quita la columna de
+ * acciones (en una nota no se borran filas) y el `colSpan` correspondiente.
+ *
+ * `hooks` es el comportamiento extra de la copia incrustada; viaja en un
+ * `WeakMap` por tabla para que una celda repintada lo conserve sin arrastrarlo
+ * por toda la cadena de llamadas (`paintCell` -> `editCell` -> `saveRow`):
+ *   - `embed`: marca las celdas con `data-db-action` para que el widget del
+ *     editor no se trague el clic y para que las teclas que consumimos no
+ *     lleguen al keymap de CodeMirror (ver `DatabaseBlockWidget` en entry.js).
+ *   - `onBeforeSave()` / `onSaved()`: ver `renderDatabaseEmbed`.
+ */
+function renderTable(database, rows, { deletable = true, hooks = null } = {}) {
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
 
   const table = document.createElement("table");
   table.className = "rows-table";
+  // Antes de pintar la primera celda: `paintCell` los lee de aquí.
+  if (hooks) hooksDeTabla.set(table, hooks);
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
@@ -5100,7 +5153,7 @@ function renderTable(database, rows, { readOnly = false } = {}) {
   headRow.innerHTML =
     (muestraTitulo ? `<th scope="col">${escapeHtml(rotuloTitulo)}</th>` : "") +
     database.schema_def.map((p) => `<th scope="col">${escapeHtml(p.name)}</th>`).join("") +
-    (readOnly ? "" : '<th scope="col"><span class="sr-only">Acciones</span></th>');
+    (deletable ? '<th scope="col"><span class="sr-only">Acciones</span></th>' : "");
   thead.appendChild(headRow);
 
   const tbody = document.createElement("tbody");
@@ -5108,7 +5161,7 @@ function renderTable(database, rows, { readOnly = false } = {}) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     td.colSpan =
-      database.schema_def.length + (muestraTitulo ? 1 : 0) + (readOnly ? 0 : 1);
+      database.schema_def.length + (muestraTitulo ? 1 : 0) + (deletable ? 1 : 0);
     td.className = "search-empty";
     td.textContent = "Sin filas todavía.";
     tr.appendChild(td);
@@ -5122,24 +5175,23 @@ function renderTable(database, rows, { readOnly = false } = {}) {
     tr.dataset.rowId = row.id;
 
     // Título y celdas editables en el sitio: lo que se ve es el valor del
-    // `.md`, y un clic abre el control del tipo de esa propiedad. En la tabla
-    // incrustada (readOnly) las celdas son solo texto: no hay nada que abrir.
+    // `.md`, y un clic abre el control del tipo de esa propiedad. Dentro de una
+    // nota es lo mismo: se edita ahí y se guarda en el `.md` de la fila.
     if (muestraTitulo) {
       const titleTd = document.createElement("td");
-      if (readOnly) paintReadOnlyCell(titleTd, row, null);
-      else paintCell(titleTd, database, row, null);
+      paintCell(titleTd, database, row, null);
       tr.appendChild(titleTd);
     }
 
     database.schema_def.forEach((p) => {
       const td = document.createElement("td");
-      if (readOnly) paintReadOnlyCell(td, row, p);
-      else paintCell(td, database, row, p);
+      paintCell(td, database, row, p);
       tr.appendChild(td);
     });
 
-    if (readOnly) {
-      tbody.appendChild(tr); // sin columna de acciones: no hay nada que borrar
+    if (!deletable) {
+      // Sin columna de acciones: la fila se borra desde la página de la base.
+      tbody.appendChild(tr);
       return;
     }
 
@@ -5208,20 +5260,42 @@ function repaintCell(td, database, row, prop, focus) {
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
  * `prop === null` es la celda del título. */
 function paintCell(td, database, row, prop) {
+  const hooks = hooksDeCelda(td);
   td.innerHTML = prop
     ? formatPropValueHtml(row.properties?.[prop.key], prop)
     : escapeHtml(row.title || "Sin título");
   td.title = "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
+  // Dentro de una nota, el widget del editor se lleva el `mousedown` del bloque
+  // (previene el default, mete el cursor en la valla y la tabla desaparece)
+  // salvo en lo que lleve `data-db-action` -- ver DatabaseBlockWidget en
+  // entry.js. Mismo marcador que el encabezado y el «+ Nueva fila».
+  if (hooks?.embed) td.dataset.dbAction = "editar";
   // Roving tabindex: las celdas no son 72 paradas de Tab, solo la que está en
   // curso (renderTable deja tabIndex=0 en la primera). Enter/Espacio abren la
-  // edición, igual que el clic; las flechas mueven el foco como en una hoja.
+  // edición, igual que el clic; las flechas y Tab mueven el foco como en una
+  // hoja.
   td.tabIndex = -1;
   td.onkeydown = (e) => {
     if (e.target !== td) return; // el <input>/<select> de editCell() manda
+    // Dentro de una nota todo lo que no consumamos se lo quedaría el keymap de
+    // CodeMirror (su Enter inserta un salto de línea en el `.md`): se corta en
+    // la celda. En la página de la base no hay nada encima que lo quiera.
+    const parar = () => e.stopPropagation();
+    if (e.key === "Tab") {
+      // Tab / Shift+Tab van celda a celda y de fila en fila; en los extremos de
+      // la tabla no se toca, para poder salir de ella con Tab.
+      const destino = celdaVecina(td, e.shiftKey ? -1 : 1);
+      if (!destino) return;
+      e.preventDefault();
+      parar();
+      enfocarCelda(destino);
+      return;
+    }
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
+      parar();
       td.click();
       return;
     }
@@ -5230,10 +5304,9 @@ function paintCell(td, database, row, prop) {
     const tbody = tr.parentElement;
     const allRows = [...tbody.querySelectorAll("tr")];
     const rIdx = allRows.indexOf(tr);
-    const cells = [...tr.querySelectorAll('td[data-editable="1"]')];
+    const cells = celdasEditables(tr);
     const cIdx = cells.indexOf(td);
-    const editableIn = (rowIdx) =>
-      allRows[rowIdx] ? [...allRows[rowIdx].querySelectorAll('td[data-editable="1"]')] : [];
+    const editableIn = (rowIdx) => celdasEditables(allRows[rowIdx]);
     let target = null;
     if (e.key === "ArrowRight") target = cells[cIdx + 1] || editableIn(rIdx + 1)[0] || null;
     else if (e.key === "ArrowLeft") {
@@ -5241,10 +5314,13 @@ function paintCell(td, database, row, prop) {
       target = cells[cIdx - 1] || prev[prev.length - 1] || null;
     } else if (e.key === "ArrowDown") target = editableIn(rIdx + 1)[cIdx] || null;
     else if (e.key === "ArrowUp") target = editableIn(rIdx - 1)[cIdx] || null;
-    if (!target) return; // sin destino, la flecha sigue haciendo lo de siempre
+    if (!target) {
+      if (hooks?.embed) parar(); // sin destino, la flecha no debe mover el cursor de la nota
+      return;
+    }
     e.preventDefault();
-    setRovingCell(target);
-    target.focus();
+    parar();
+    enfocarCelda(target);
   };
   td.onclick =
     prop && prop.type === "checkbox"
@@ -5252,31 +5328,79 @@ function paintCell(td, database, row, prop) {
       : () => editCell(td, database, row, prop);
 }
 
-/** El valor de una celda, sin nada que editar: desde la tabla incrustada en una
- * nota no se guarda nada (un clic no puede abrir un control ni un PATCH). Sin
- * `data-editable` tampoco entra en el recorrido de teclado de la tabla. */
-function paintReadOnlyCell(td, row, prop) {
-  td.innerHTML = prop
-    ? formatPropValueHtml(row.properties?.[prop.key], prop)
-    : escapeHtml(row.title || "Sin título");
+/** Los hooks de la tabla a la que pertenece una celda (ver `renderTable`), o
+ * `null` si es la tabla de la página de la base. En un `WeakMap` como
+ * `embedsDeBase`: cuando la tabla se va con el repintado, la entrada también. */
+function hooksDeCelda(td) {
+  const table = td.closest("table");
+  return table ? hooksDeTabla.get(table) || null : null;
+}
+
+/** Las celdas editables de una fila, en orden. */
+function celdasEditables(tr) {
+  return tr ? [...tr.querySelectorAll('td[data-editable="1"]')] : [];
+}
+
+/** La celda que toca al pasar de una celda a otra con Tab (`paso` = +1 / -1),
+ * en orden de lectura: al final de una fila, la primera de la siguiente.
+ * `null` en los extremos, donde Tab sigue su camino de siempre (salir de la
+ * tabla). */
+function celdaVecina(td, paso) {
+  const table = td.closest("table");
+  if (!table) return null;
+  const celdas = [...table.querySelectorAll('tbody td[data-editable="1"]')];
+  const i = celdas.indexOf(td);
+  return i === -1 ? null : celdas[i + paso] || null;
+}
+
+/** La celda de la misma columna en la fila siguiente: Enter guarda y baja, como
+ * en una hoja de cálculo. Salta las filas sin celdas editables (la del «Sin
+ * filas todavía»). */
+function celdaDeAbajo(td) {
+  const tr = td.parentElement;
+  const tbody = tr?.parentElement;
+  if (!tbody) return null;
+  const filas = [...tbody.querySelectorAll("tr")];
+  const col = celdasEditables(tr).indexOf(td);
+  for (let i = filas.indexOf(tr) + 1; i < filas.length; i += 1) {
+    const abajo = celdasEditables(filas[i])[col];
+    if (abajo) return abajo;
+  }
+  return null;
+}
+
+/** Mueve el foco a otra celda de la tabla, con el testigo del roving tabindex
+ * (una sola parada de Tab en la tabla, la de la celda en curso). */
+function enfocarCelda(td) {
+  if (!td) return false;
+  setRovingCell(td);
+  td.focus();
+  return true;
 }
 
 /** Un booleano no tiene "modo edición": el clic lo cambia y se guarda. */
 async function toggleCheckbox(td, database, row, prop) {
   const next = !row.properties?.[prop.key];
   try {
-    await saveRow(database, row, { properties: { [prop.key]: next } });
+    await saveRow(database, row, { properties: { [prop.key]: next } }, hooksDeCelda(td));
   } catch (e) {
     reportError("No se pudo guardar el cambio", e);
   }
   repaintCell(td, database, row, prop); // si falló, este es el valor del servidor
 }
 
-/** Edita una celda con el input de su tipo. Guarda al confirmar (Enter o salir
- * del campo) y, si el PATCH falla, repinta el valor viejo: la tabla nunca
- * enseña un valor que el `.md` no tiene. */
+/** Edita una celda con el input de su tipo. Guarda al confirmar (Enter, Tab o
+ * salir del campo) y, si el PATCH falla, repinta el valor viejo: la tabla nunca
+ * enseña un valor que el `.md` no tiene.
+ *
+ * Teclado: Enter guarda y baja a la celda de la misma columna en la fila
+ * siguiente; Tab / Shift+Tab guardan y pasan a la celda siguiente / anterior
+ * (de la fila, o al final de la fila a la primera de la siguiente); Esc cancela
+ * y deja la celda como estaba. Así se recorre una fila entera sin ratón.
+ */
 function editCell(td, database, row, prop) {
   if (td.querySelector("input, select, textarea")) return;
+  const hooks = hooksDeCelda(td);
   const isTitle = !prop;
   const def = isTitle ? { key: "title", name: "Título", type: "text" } : prop;
   const { input, read } = buildPropertyInput(def, isTitle ? row.title : row.properties?.[def.key]);
@@ -5296,12 +5420,24 @@ function editCell(td, database, row, prop) {
     repaintCell(td, database, row, prop, focus);
   }
 
-  async function commit(focus) {
+  /** Repinta la celda y deja el foco donde toca: en `destino` si la tecla pide
+   * moverse (Tab/Enter), en la propia celda si el guardado lo provocó el
+   * usuario y no hay a dónde ir, y en ningún sitio si el foco se fue a otro
+   * control (blur: robarlo es perder lo que estaba haciendo). El repintado se
+   * hace sin foco propio y lo pone `enfocarCelda`/`td.focus` al final: así hay
+   * una sola parada de Tab, la de la celda que se queda. */
+  function terminar(focus, destino) {
+    repaint(false);
+    if (destino) enfocarCelda(destino);
+    else if (focus) td.focus();
+  }
+
+  async function commit(focus, destino = null) {
     if (finished) return;
     finished = true;
     if (input.value === seeded) {
       // Sin tocar el control no hay PATCH: el `.md` se queda como está.
-      repaint(focus);
+      terminar(focus, destino);
       return;
     }
     let changes = null;
@@ -5315,22 +5451,36 @@ function editCell(td, database, row, prop) {
     if (changes) {
       try {
         // El título vive en el frontmatter: el `.md` no se mueve; saveRow trae el nuevo.
-        await saveRow(database, row, changes);
+        await saveRow(database, row, changes, hooks);
       } catch (e) {
         reportError("No se pudo guardar el cambio", e);
       }
     }
-    repaint(focus);
+    terminar(focus, destino);
   }
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      commit(true); // el foco vuelve a la celda: la tabla sigue siendo navegable
-    } else if (e.key === "Escape") {
-      finished = true;
-      repaint(true); // se sale sin guardar
+      // Enter guarda y baja: la tabla sigue siendo navegable sin ratón.
+      commit(true, celdaDeAbajo(td));
+      return;
     }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      finished = true; // se sale sin guardar: la celda queda como estaba
+      repaint(true);
+      return;
+    }
+    if (e.key !== "Tab") return;
+    // Tab / Shift+Tab guardan y pasan a la celda siguiente/anterior. En los
+    // extremos de la tabla no se consume: Tab sale y el blur guarda lo escrito.
+    const destino = celdaVecina(td, e.shiftKey ? -1 : 1);
+    if (!destino) return;
+    e.preventDefault();
+    e.stopPropagation();
+    commit(true, destino);
   });
   input.addEventListener("blur", () => commit(false));
   if (input.tagName === "SELECT") input.addEventListener("change", () => commit(true));

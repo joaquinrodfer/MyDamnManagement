@@ -1657,6 +1657,19 @@
   .table-wrap::-webkit-scrollbar-track { background: var(--bg); border-top: 1px solid var(--panel-border); }
   .table-wrap::-webkit-scrollbar-thumb { background: var(--border-input); border-radius: 5px; border: 2px solid var(--bg); }
   .table-wrap table { margin: 0; }
+  /* El editor de una celda (`editCell`) vive DENTRO del td, y el td lleva
+     `max-width: 240px` + `overflow: hidden`: sin esto, un `input[type=date]`
+     (que trae ancho intrínseco propio) desbordaba la celda a 375 px y el
+     editor se salía de la tabla. `font: inherit` para que el control se lea
+     como el valor que sustituye, no como un campo de formulario ajeno. */
+  .rows-table td input,
+  .rows-table td select {
+    max-width: 100%;
+    min-width: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+  }
 
   .board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; }
   /* Cada carril es un contenedor visual propio (--bg sobre el --panel del
