@@ -240,10 +240,12 @@ function pageIconProps(type, icon) {
  * memoria) aunque su DOM ya no exista, porque quitarle el nodo padre no lo
  * destruye por sí solo. */
 function clearMain() {
-  // La fila abierta como página cuelga de <body>, no de #main: si se navega
-  // (un wikilink, atrás, borrar la página abierta) hay que cerrarla, o se
-  // quedaría encima de otra página con el editor de la fila viejo dentro.
-  cerrarRowPage({ devolverFoco: false });
+  // La fila abierta como página vive DENTRO de #main: si se navega (un
+  // wikilink, atrás, borrar la página abierta) hay que cerrarla ANTES del
+  // `main.innerHTML = ""` de abajo, o el editor de la fila se iría con el DOM
+  // sin destruirse. Se cierran todas: una fila puede contener otra (una base
+  // incrustada en su cuerpo, y una fila de esa base).
+  while (rowPage) cerrarRowPage({ devolverFoco: false });
   // El selector de bases (/base) escribe su filtro DENTRO del documento
   // mientras está abierto. Al dejar la nota su ViewPlugin se destruye y nadie
   // borraba ese tramo: el filtro se quedaba de párrafo suelto y el
@@ -3879,6 +3881,10 @@ async function goTo(kind, id, { fromHistory = false } = {}) {
     state.history.push({ kind, id });
     state.historyPos = state.history.length - 1;
   }
+  // Lo que se esté escribiendo en una fila abierta como página es texto del
+  // usuario igual que el de una nota: se manda antes de navegar. Cerrar la
+  // fila también lo manda (con `keepalive`), pero eso no espera respuesta.
+  if (rowPage) await rowPage.guardar?.();
   // Abrir una base con una navegación nueva (árbol, recientes, búsqueda, una
   // plantilla) deja el foco en el primer campo del alta; volver con atrás o
   // adelante no, que el foco es del usuario, no del historial.
@@ -6165,7 +6171,6 @@ async function abrirFilaDeRelacion(ref, origen) {
   if (!ref?.id || !ref.base_id) return;
   try {
     const base = await api(`/databases/${ref.base_id}`);
-    if (rowPage) return; // una fila abierta a la vez
     await openRowPage(
       base,
       {
@@ -10159,12 +10164,21 @@ function renderList(database, rows, view, refresh) {
 // del fichero y las propiedades su frontmatter. Lo que faltaba era la puerta y
 // la vista.
 //
-// La vista se pinta ENCIMA de lo que estabas mirando (la tabla de la base, la
-// tabla incrustada en una nota, la lista) y deja la de debajo viva: cerrar
-// devuelve al mismo sitio, con el foco donde estaba, sin volver a pedir ni
-// repintar nada. Por eso no es una ruta más del historial (volver atrás no es
-// «cerrar la fila») ni un `<dialog>`: sus menús flotantes —el `/`, el del asa,
-// el contextual— cuelgan de `<body>` y se quedarían debajo del top layer.
+// La vista es una PÁGINA, no una capa: se pinta dentro de #main, con el mismo
+// contenedor y los mismos márgenes que una nota (ver `.row-page-view` en
+// index.html), así que el cuerpo mide lo mismo y una fila con cuerpo largo,
+// bases incrustadas o código cabe entera —en escritorio y a 375 px—.
+//
+// La vista de la que se viene NO se destruye: se queda en el documento, tapada
+// por la página de la fila y `inert`. Eso es lo que hace que cerrar devuelva al
+// sitio exacto —el scroll de #main, el de la tabla incrustada, el foco— sin
+// volver a pedir ni repintar nada, y sin dos editores peleándose por el
+// teclado: con `inert` ni el Tab ni el clic llegan a lo de debajo, y el editor
+// de la fila es el único que recibe teclas.
+//
+// No es una ruta más del historial (volver atrás no es «cerrar la fila») ni un
+// `<dialog>`: sus menús flotantes —el `/`, el del asa, el contextual— cuelgan
+// de `<body>` y se quedarían debajo del top layer.
 //
 // Se guarda en el MISMO `.md`, con el mismo PATCH que una celda: el título y
 // las propiedades al frontmatter, el cuerpo al cuerpo. El fichero no se mueve
@@ -10175,15 +10189,26 @@ function renderList(database, rows, view, refresh) {
 // de `frontend/editor-src`): mismos bloques, mismos atajos y mismo menú `/`.
 // Lo único que no ofrece es crear páginas o bases colgando de la fila: una
 // fila no es carpeta (`_folder_for_parent` en el vault lo rechaza), así que el
-// nombre se queda escrito y se dice por qué.
+// nombre se queda escrito y se dice por qué. Insertar una base que YA existe
+// sí (`/base`, o la valla ```mdm-database``` a mano), y sus filas se abren
+// desde dentro: la fila nueva se apila encima de esta, y al cerrarla se vuelve
+// a esta —no a la nota—.
 
 const ROW_PAGE_DEBOUNCE_MS = 700;
 
-let rowPage = null; // la fila abierta ahora mismo, o null
+let rowPage = null; // la fila abierta ahora mismo (la de arriba de la pila), o null
+// Cuántas páginas de fila se han abierto en la sesión: con dos apiladas (una
+// base dentro del cuerpo de una fila, y una fila de esa base) los `id` de los
+// campos serían los mismos en las dos y el `<label for>` de la de arriba
+// enfocaría el control de la de abajo.
+let rowPageSeq = 0;
 
-/** Cierra la fila abierta. `devolverFoco` es lo normal (volver a la celda, al
- * botón o a la línea desde la que se abrió); al navegar a otra página no, que
- * el foco es de la página nueva.
+/** Cierra la fila de arriba de la pila. `devolverFoco` es lo normal (volver a
+ * la celda, al botón o a la línea desde la que se abrió); al navegar a otra
+ * página no, que el foco es de la página nueva.
+ *
+ * Si debajo hay otra fila (una fila abierta desde una base incrustada en el
+ * cuerpo de una fila), se vuelve a ESA, que seguía abierta e intacta.
  *
  * Lo que quede sin guardar se manda con `keepalive` ANTES de destruir el
  * editor: cerrar por un repintado de la vista de debajo (o al ocultar la
@@ -10191,7 +10216,7 @@ let rowPage = null; // la fila abierta ahora mismo, o null
 function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
   const ctx = rowPage;
   if (!ctx) return;
-  rowPage = null;
+  rowPage = ctx.padre || null;
   ctx.cerrada = true;
   clearTimeout(ctx.temporizador);
   ctx.temporizador = null;
@@ -10208,8 +10233,19 @@ function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
   closeContextMenu();
   stopLinkPreview();
   ctx.caja.remove();
-  for (const el of ctx.inertes) el.inert = false;
-  document.body.classList.remove("row-page-open");
+  const main = document.getElementById("main");
+  if (rowPage) {
+    // Debajo hay otra fila: vuelve a estar disponible y se queda a la vista
+    // (está justo debajo en #main, que no se ha desplazado mientras tanto).
+    rowPage.caja.inert = false;
+    if (main) main.scrollTop = 0;
+  } else {
+    // Se sale a la vista de la que se vino: se le devuelve el estado en el que
+    // estaba —`inert` incluido, que puede no ser «nada»— y su scroll exacto.
+    for (const { el, estaba } of ctx.debajo) el.inert = estaba;
+    document.body.classList.remove("row-page-open");
+    if (main) main.scrollTop = ctx.scrollTop;
+  }
   // La tabla y la lista repintan su fila con `onSaved`; el tablero y el
   // calendario no tienen una fila que repintar en el sitio y se rehacen aquí.
   // Antes del foco: el repintado puede cambiar el DOM al que se vuelve.
@@ -10258,19 +10294,24 @@ function focoPerdido() {
   );
 }
 
-/** El bloque de base incrustada en el que vive un control de la fila, si vive
- * en uno: su base y su posición entre los bloques de esa base. El editor
- * rehace el widget entero al repintar la nota, así que para volver al MISMO
- * bloque cuando la misma base está incrustada dos veces se recuerda cuál era. */
+/** El bloque de base incrustada en el que vive un control, si vive en uno: su
+ * base, su posición entre los bloques de esa base y el editor en el que está.
+ *
+ * El editor rehace el widget entero al repintar la nota, así que para volver
+ * al MISMO bloque cuando la misma base está incrustada dos veces se recuerda
+ * cuál era. La búsqueda se queda dentro de ese editor: con una fila abierta
+ * encima de una nota hay dos editores en el documento y el orden de los
+ * bloques de una misma base no es el mismo en los dos. */
 function bloqueDeOrigen(origin) {
   const bloque = origin?.closest?.(".cm-mdm-dblock-body");
   const databaseId = bloque?.dataset?.databaseId;
   if (!databaseId) return null;
-  const hermanos = [...document.querySelectorAll(".cm-mdm-dblock-body")].filter(
+  const raiz = bloque.closest(".cm-editor") || document;
+  const hermanos = [...raiz.querySelectorAll(".cm-mdm-dblock-body")].filter(
     (c) => c.dataset.databaseId === databaseId,
   );
   const orden = hermanos.indexOf(bloque);
-  return orden < 0 ? null : { databaseId, orden };
+  return orden < 0 ? null : { databaseId, orden, raiz };
 }
 
 /** El control al que hay que volver: el de la fila, dentro del bloque del que
@@ -10279,10 +10320,13 @@ function controlDeVuelta(ctx) {
   if (ctx.origin?.isConnected) return ctx.origin;
   let raiz = document;
   if (ctx.originEmbed) {
-    const bloques = [...document.querySelectorAll(".cm-mdm-dblock-body")].filter(
+    // El editor del que se salió puede haberse repintado entero: si su raíz ya
+    // no está en el documento, se busca en lo que haya ahora.
+    const contenedor = ctx.originEmbed.raiz?.isConnected ? ctx.originEmbed.raiz : document;
+    const bloques = [...contenedor.querySelectorAll(".cm-mdm-dblock-body")].filter(
       (c) => c.dataset.databaseId === ctx.originEmbed.databaseId,
     );
-    raiz = bloques[ctx.originEmbed.orden] || document;
+    raiz = bloques[ctx.originEmbed.orden] || contenedor;
   }
   const fila = raiz.querySelector(`[data-row-id="${ctx.resumen.id}"]`);
   if (!fila) return null;
@@ -10318,7 +10362,17 @@ function devolverElFoco(ctx) {
   document.addEventListener("pointerdown", pendiente.interrumpir, true);
 }
 
-/** Abre una fila como página encima de la vista actual.
+/** ¿Esta fila ya está abierta en algún punto de la pila? Abrir una fila dentro
+ * de sí misma (una relación que apunta a la fila que ya está abierta, o una
+ * base incrustada en la propia fila) sería una pila que no termina. */
+function filaAbierta(id) {
+  for (let ctx = rowPage; ctx; ctx = ctx.padre) {
+    if (String(ctx.resumen.id) === String(id)) return true;
+  }
+  return false;
+}
+
+/** Abre una fila como página en el área de contenido.
  *
  * `origin` es el control desde el que se abre (la celda, el botón de abrir, la
  * línea de la lista): al cerrar, el foco vuelve ahí. `rows` —con `index`, la
@@ -10326,50 +10380,76 @@ function devolverElFoco(ctx) {
  * `onSaved(guardada, cambios)` se llama tras cada PATCH aceptado (la tabla y
  * la lista repintan su fila en el sitio con eso) y `onClose()` al cerrar, solo
  * si algo se guardó.
- */
+ *
+ * Se puede abrir una fila encima de otra (una base incrustada en el cuerpo de
+ * una fila): la de debajo se queda en el documento, `inert` y tapada, y cerrar
+ * vuelve a ella. La misma fila dos veces, no. */
 async function openRowPage(
   database,
   resumen,
   { origin = null, rows = null, index = -1, onSaved = null, onClose = null } = {},
 ) {
-  if (rowPage) return; // una fila abierta a la vez: no hay filas dentro de filas
+  if (!resumen?.id) return;
+  if (filaAbierta(resumen.id)) return;
   cancelarFocoPendiente(); // el foco de la fila anterior ya no es de nadie
+  const main = document.getElementById("main");
+  if (!main) return;
 
-  // Lo de debajo se queda en el documento (para volver sin repintar) pero
-  // `inert`: no se puede tabular ni clicar dentro mientras la fila está
-  // abierta, y el foco no se escapa de la vista de fila.
-  const inertes = ["header", "#sidebar-aside", "#main"]
-    .map((sel) => document.querySelector(sel))
-    .filter(Boolean);
+  const padre = rowPage;
+  // Lo que queda debajo, y cómo estaba: la fila anterior si hay pila, o la
+  // vista de la que se viene (la nota, la base, la lista). Se apunta el `inert`
+  // que tenía cada uno para devolvérselo tal cual al cerrar: la vista de debajo
+  // no se toca, solo se aparta.
+  const debajo = (padre ? [padre.caja] : [...main.children]).map((el) => ({
+    el,
+    estaba: el.inert,
+  }));
+  const scrollTop = main.scrollTop;
 
+  // ---- la página
   const caja = document.createElement("div");
-  caja.className = "row-page";
-
-  const fondo = document.createElement("div");
-  fondo.className = "row-page-backdrop";
-
-  const panel = document.createElement("div");
-  panel.className = "row-page-panel";
-  panel.tabIndex = -1;
-  panel.setAttribute("role", "dialog");
-  panel.setAttribute("aria-modal", "true");
-  panel.setAttribute("aria-label", `Fila de ${database.title || "la base"}`);
+  caja.className = "row-page-view";
+  caja.tabIndex = -1;
+  caja.setAttribute("role", "region");
+  caja.setAttribute("aria-label", `Fila ${resumen.title || "sin título"}`);
 
   const barra = document.createElement("div");
   barra.className = "row-page-bar";
-  const ruta = document.createElement("span");
+
+  // Volver, con su palabra: sigue siendo el gesto de cerrar la fila (y `Esc`),
+  // pero en una página entera una × no diría a dónde se vuelve.
+  const volver = document.createElement("button");
+  volver.type = "button";
+  volver.className = "btn row-page-back";
+  volver.innerHTML = `${svgIcon("i-arrow-left")}Volver`;
+  volver.title = "Volver a donde estabas (Esc)";
+
+  // Miga de pan: en una página entera ya no se ve la cabecera de la base, y sin
+  // ella no se sabe de qué base es la fila ni cómo volver a su tabla. El primer
+  // trozo es un botón (lleva a la base); el último es esta fila y se lee como
+  // el sitio actual.
+  const ruta = document.createElement("nav");
   ruta.className = "row-page-crumbs";
-  ruta.textContent = database.title || "Base de datos";
+  ruta.setAttribute("aria-label", "Dónde estás");
+  const migaBase = document.createElement("button");
+  migaBase.type = "button";
+  migaBase.className = "row-page-crumb";
+  migaBase.textContent = database.title || "Base de datos";
+  migaBase.title = `Abrir «${database.title || "la base"}»`;
+  const sep = document.createElement("span");
+  sep.className = "row-page-crumb-sep";
+  sep.setAttribute("aria-hidden", "true");
+  sep.textContent = "/";
+  const migaFila = document.createElement("span");
+  migaFila.className = "row-page-crumb row-page-crumb-current";
+  migaFila.setAttribute("aria-current", "page");
+  migaFila.textContent = resumen.title || "Sin título";
+  ruta.append(migaBase, sep, migaFila);
+
   const estado = document.createElement("span");
   estado.className = "row-page-savestatus";
   estado.setAttribute("role", "status");
-  const cerrar = document.createElement("button");
-  cerrar.type = "button";
-  cerrar.className = "icon-btn row-page-close";
-  cerrar.innerHTML = svgIcon("i-x");
-  cerrar.title = "Cerrar la fila";
-  cerrar.setAttribute("aria-label", "Cerrar la fila");
-  barra.append(ruta, estado, cerrar);
+  barra.append(volver, ruta, estado);
 
   const scroll = document.createElement("div");
   scroll.className = "row-page-scroll";
@@ -10384,8 +10464,7 @@ async function openRowPage(
   cuerpoEl.id = "row-page-body";
   cuerpoEl.className = "row-page-body";
   scroll.append(titulo, propsEl, cuerpoEl);
-  panel.append(barra, scroll);
-  caja.append(fondo, panel);
+  caja.append(barra, scroll);
 
   const ctx = {
     database,
@@ -10396,12 +10475,15 @@ async function openRowPage(
     originEmbed: bloqueDeOrigen(origin),
     onSaved,
     onClose,
+    padre,
+    seq: ++rowPageSeq,
     caja,
     titulo,
     propsEl,
     cuerpoEl,
     estado,
-    inertes,
+    debajo,
+    scrollTop,
     editor: null,
     campos: [], // [{prop, input, read}]
     cuerpo: "", // lo que hay escrito AHORA en el cuerpo
@@ -10415,10 +10497,14 @@ async function openRowPage(
   };
   rowPage = ctx;
 
-  document.body.appendChild(caja);
+  // La página va la PRIMERA de #main —es la que se ve— y #main vuelve a 0: lo
+  // de debajo queda detrás, fuera de la vista (la página mide el área de
+  // contenido entera) y sin scroll propio mientras dure.
+  main.insertBefore(caja, main.firstChild);
+  main.scrollTop = 0;
   document.body.classList.add("row-page-open");
-  for (const el of inertes) el.inert = true;
-  panel.focus();
+  for (const { el } of debajo) el.inert = true;
+  caja.focus();
 
   // ------------------------------------------------------------ guardar
 
@@ -10524,6 +10610,7 @@ async function openRowPage(
     });
     return ctx.cola;
   }
+  ctx.guardar = guardar; // lo espera goTo() antes de navegar desde la barra lateral
 
   /** Cerrar guarda: cerrar sin guardar daría a entender que se escribió en el
    * `.md`. Si el PATCH falla, la fila se queda abierta (el motivo ya se ha
@@ -10535,8 +10622,18 @@ async function openRowPage(
     cerrarRowPage();
   }
 
-  cerrar.addEventListener("click", () => intentarCerrar());
-  fondo.addEventListener("click", () => intentarCerrar());
+  /** Irse a la base desde la miga de pan: se guarda lo escrito antes de
+   * moverse, y no se navega si el guardado falló — el texto es del usuario y no
+   * se tira por navegar. */
+  async function irALaBase() {
+    const ok = await guardar();
+    if (!ok) return;
+    if (rowPage === ctx) cerrarRowPage({ devolverFoco: false });
+    goTo("database", database.id);
+  }
+
+  volver.addEventListener("click", () => intentarCerrar());
+  migaBase.addEventListener("click", () => irALaBase());
 
   // ------------------------------------------------------ montar la fila
 
@@ -10544,7 +10641,13 @@ async function openRowPage(
     titulo.style.height = "auto";
     titulo.style.height = `${titulo.scrollHeight}px`;
   }
-  titulo.addEventListener("input", ajustarTitulo);
+  titulo.addEventListener("input", () => {
+    ajustarTitulo();
+    // La miga sigue al título que se está escribiendo: es el nombre con el que
+    // se va a guardar la fila.
+    migaFila.textContent = (titulo.value || "").trim() || "Sin título";
+    caja.setAttribute("aria-label", `Fila ${(titulo.value || "").trim() || "sin título"}`);
+  });
   // Enter guarda y sale del campo, como el título de una nota; Escape no
   // cancela: el texto ya está en el campo y se guarda al cerrar.
   titulo.addEventListener("keydown", (e) => {
@@ -10571,7 +10674,7 @@ async function openRowPage(
       const label = document.createElement("label");
       label.textContent = prop.name;
       const { input, read } = buildPropertyInput(prop, detalle.properties?.[prop.key]);
-      const inputId = idDeCampo("fila-pagina", i, prop.key);
+      const inputId = idDeCampo(`fila-pagina-${ctx.seq}`, i, prop.key);
       input.id = inputId;
       label.htmlFor = inputId;
       // El mismo criterio que una celda: se guarda al confirmar el control
@@ -10611,6 +10714,7 @@ async function openRowPage(
 
     titulo.value = detalle.title || "";
     ajustarTitulo();
+    migaFila.textContent = detalle.title || "Sin título";
     montarPropiedades(detalle);
 
     cuerpoEl.textContent = "";
@@ -10708,6 +10812,10 @@ async function openRowPage(
     if (!ctx.rows || ctx.index < 0) return;
     const destino = ctx.rows[ctx.index + paso];
     if (!destino) return;
+    // Esa fila ya está abierta debajo (la base de la fila enseña la misma base):
+    // no se apila dos veces, y sobre todo no se cierra esta para dejarla sin
+    // abrir -- `openRowPage` la rechazaría y el paso se quedaría a medias.
+    if (filaAbierta(destino.id)) return;
     const ok = await guardar();
     if (!ok) return;
     const { origin, rows, onSaved, onClose } = ctx;
@@ -10731,7 +10839,6 @@ async function openRowPage(
     detalle = await api(`/databases/${database.id}/rows/${resumen.id}`);
   } catch (e) {
     cerrarRowPage({ devolverFoco: true });
-    // Sacarla del todo y pintar la vista de debajo: ya está intacta.
     if (!(e && e.status === 401)) reportError("No se pudo abrir la fila", e);
     return;
   }
@@ -11548,9 +11655,10 @@ function flushOnExit(alive) {
     // la pestaña se está yendo: ni aviso ni reintento posibles
   }
   try {
-    // La fila abierta como página se guarda por el mismo camino: su cuerpo es
-    // texto del usuario igual que el de una nota.
-    rowPage?.beacon?.();
+    // Las filas abiertas como página se guardan por el mismo camino: su
+    // cuerpo es texto del usuario igual que el de una nota. Todas, porque una
+    // fila puede tener otra abierta encima (una base en su cuerpo).
+    for (let ctx = rowPage; ctx; ctx = ctx.padre) ctx.beacon?.();
   } catch {
     // ídem
   }
