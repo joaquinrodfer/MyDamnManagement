@@ -571,22 +571,32 @@ Un solo contenedor (`api`), sin Postgres y sin puerto 5432: el índice es un fic
 
 ### Puesta en marcha
 
-En el servidor (Docker con el plugin `compose` v2 y Tailscale instalado):
+**Guía completa, paso a paso, en [`docs/DESPLIEGUE-PROXMOX.md`](docs/DESPLIEGUE-PROXMOX.md).** Resumen:
 
 ```bash
-git clone <url-del-repo> MyDamnManagement
-cd MyDamnManagement
-git switch v2.1.0             # se despliega una ETIQUETA, no una rama (ver docs/FLUJO-GIT.md)
-cp .env.example .env           # opcional: ADMIN_USER/ADMIN_PASSWORD; el resto lo fija el compose
-docker compose -f docker-compose.prod.yml up -d --build
+mkdir -p /opt/mdm && cd /opt/mdm
+curl -fsSLO https://raw.githubusercontent.com/joaquinrodfer/MyDamnManagement/main/docker-compose.prod.yml
+printf 'MDM_TAG=v2.1.0\nMDM_IMAGE=ghcr.io/joaquinrodfer/mydamnmanagement\nADMIN_USER=tu-usuario\nADMIN_PASSWORD=algo-largo\n' > .env
+chmod 600 .env
+docker compose -f docker-compose.prod.yml pull   # descarga la imagen publicada
+docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod.yml ps     # api ... (healthy)
 curl -s http://127.0.0.1:8000/health
 ```
 
+- **El servidor no compila**: la imagen se publica en GHCR al crear una etiqueta
+  (`.github/workflows/release.yml`) y el servidor la descarga. Si prefieres
+  compilar en el servidor, descomenta el bloque `build:` del compose y usa
+  `up -d --build`.
+- **Se despliega una etiqueta** (`MDM_TAG=v2.1.0`), nunca `latest`: con `latest`,
+  un `pull` te cambia de versión sin que lo hayas decidido.
+- Si el paquete de GHCR está privado, antes del `pull`:
+  `echo "<token con read:packages>" | docker login ghcr.io -u <usuario> --password-stdin`.
+
 - **Estado del healthcheck:** `docker inspect --format '{{.State.Health.Status}}' mdm_api_prod` (`starting` hasta que pasa el periodo de gracia del arranque, luego `healthy`). El motivo del último fallo, con texto: `docker inspect --format '{{json .State.Health}}' mdm_api_prod | python3 -m json.tool`. Está definido en el compose y, desde v1.3, no pregunta a `/status` (que como el resto pide sesión y el healthcheck no tiene credenciales): comprueba desde dentro del contenedor lo mismo — que la API contesta en `/health` y que el índice y el vault se leen de verdad — y sale con código 1 diciendo qué falla: `la API no responde en /health: …`, `/health dice error: …` (el reindexado falló o se atascó), `el índice no se puede escribir: …`, `el índice no se puede leer: …`, `el índice está vacío (0 páginas) pero hay N ficheros en el vault …: POST /reindex o reinicia el contenedor`, `no existe el vault … (¿volumen sin montar?)`, `el vault no se puede recorrer: …`.
   **Desde P16 hay tres estados, no dos.** `starting` (el índice se está construyendo) es **aceptable**: el contenedor está vivo y trabajando, y el chequeo sale con 0 diciendo por dónde va (`indexando: enlazando (98%), 271.8 s en marcha; 12000 ficheros del vault`). `ok` es el único que además comprueba que el índice tiene contenido y se puede escribir. `error` (503) es un fallo. Quien vigila el atasco es la app, no el `healthcheck`: pasados `STARTUP_STALL_SECONDS` sin progreso, `/health` deja de decir `starting` y pasa a `503 error`, así que no hay dos relojes que puedan discrepar.
   El del índice vacío es el caso traicionero: si el fichero del índice se pierde con la app en marcha, el índice se recrea vacío y la API sirve el panel en blanco (y las cuentas se pierden con él, ver «Usuarios y acceso»); por eso el chequeo exige que haya páginas cuando el vault tiene `.md`. Y como `restart: unless-stopped` **no** reinicia por `unhealthy`, el contenedor se quedaría así: la salida es `POST /reindex` o reiniciar. Un vault vacío de verdad (0 `.md`, 0 páginas) sigue dando `healthy`, y la deriva normal —un `.md` editado por fuera, `drift.modified`— **no** cuenta como caída: es lo esperado hasta el siguiente reindexado.
-- **Actualizar:** `git pull && docker compose -f docker-compose.prod.yml up -d --build`. Cada arranque reindexa el vault entero (ahora en segundo plano, P16), así que un cambio de código no necesita ningún paso extra sobre los datos.
+- **Actualizar:** cambia `MDM_TAG` en el `.env`, `docker compose -f docker-compose.prod.yml pull` y `up -d`. Volver atrás es lo mismo con la etiqueta anterior. Detalle en [`docs/DESPLIEGUE-PROXMOX.md`](docs/DESPLIEGUE-PROXMOX.md). Cada arranque reindexa el vault entero (ahora en segundo plano, P16), así que un cambio de versión no necesita ningún paso extra sobre los datos.
 - **No levantes los dos composes a la vez** en la misma máquina: los dos publican el puerto 8000 del host (el de desarrollo en todas las interfaces, el de producción en loopback) y el segundo se queda sin puerto.
 - **Los volúmenes se llaman `mdm-prod_mdm_data` y `mdm-prod_mdm_vault`** porque el compose fija `name: mdm-prod`. No dependen del directorio desde el que clones, y así el backup y el restore de más abajo son comandos exactos y no "mira a ver cómo se llama".
 

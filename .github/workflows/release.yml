@@ -1,0 +1,101 @@
+# Publica la imagen en GHCR al crear una etiqueta `vX.Y.Z`.
+#
+# Por qué solo con etiqueta: `main` es producción y una etiqueta es un punto que
+# no se mueve. Publicar en cada push a `main` llenaría el registro de imágenes
+# que nadie va a desplegar y haría que «la imagen de la v2.2.0» significara dos
+# cosas distintas según el día. Se despliega una etiqueta, no una rama.
+#
+# La imagen sale de `backend/Dockerfile`, el mismo que construye el job
+# `imagen` de `tests.yml` en cada push: si ese está verde, este construye lo
+# mismo con otro destino.
+#
+# Lo que hay que saber del registro:
+#   - sale PRIVADA por defecto (el repo es privado), así que el servidor tiene
+#     que hacer `docker login ghcr.io` con un token con `read:packages`;
+#   - si la pones pública (`Package settings → Change visibility`), el servidor
+#     se ahorra el login y el token;
+#   - `packages: write` lo da el propio `GITHUB_TOKEN`: no hay que crear ningún
+#     secreto para publicar.
+name: imagen
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Etiqueta o commit a publicar (por ejemplo v2.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publicar:
+    name: construir y publicar en GHCR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Código
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Entrar en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Las etiquetas de la imagen salen del nombre del tag: `v2.2.0` produce
+      # `v2.2.0`, `2.2` y `2`. La de `latest` NO se publica a propósito: con
+      # ella, el `.env` de un servidor que dice `MDM_TAG=latest` cambia de
+      # versión sin que nadie lo pida.
+      - name: Etiquetas y metadatos
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=,format=short
+
+      - name: Construir y publicar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          # Solo amd64: es lo que corre en el Proxmox del dueño y lo que
+          # construye el CI. Para ARM (una LXC en un NUC ARM, por ejemplo) hay
+          # que añadir `linux/arm64` aquí y comprobar que la imagen base lo
+          # tiene.
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resumen
+        run: |
+          {
+            echo "### Imagen publicada"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "Para desplegarla, en el servidor:"
+            echo ""
+            echo '```bash'
+            echo "MDM_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -1 | sed 's|.*:||') docker compose -f docker-compose.prod.yml pull"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
