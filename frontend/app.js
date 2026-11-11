@@ -9621,6 +9621,11 @@ function renderList(database, rows, view, refresh) {
 const ROW_PAGE_DEBOUNCE_MS = 700;
 
 let rowPage = null; // la fila abierta ahora mismo (la de arriba de la pila), o null
+// Cuántas páginas de fila se han abierto en la sesión: con dos apiladas (una
+// base dentro del cuerpo de una fila, y una fila de esa base) los `id` de los
+// campos serían los mismos en las dos y el `<label for>` de la de arriba
+// enfocaría el control de la de abajo.
+let rowPageSeq = 0;
 
 /** Cierra la fila de arriba de la pila. `devolverFoco` es lo normal (volver a
  * la celda, al botón o a la línea desde la que se abrió); al navegar a otra
@@ -9895,6 +9900,7 @@ async function openRowPage(
     onSaved,
     onClose,
     padre,
+    seq: ++rowPageSeq,
     caja,
     titulo,
     propsEl,
@@ -10092,7 +10098,7 @@ async function openRowPage(
       const label = document.createElement("label");
       label.textContent = prop.name;
       const { input, read } = buildPropertyInput(prop, detalle.properties?.[prop.key]);
-      const inputId = idDeCampo("fila-pagina", i, prop.key);
+      const inputId = idDeCampo(`fila-pagina-${ctx.seq}`, i, prop.key);
       input.id = inputId;
       label.htmlFor = inputId;
       // El mismo criterio que una celda: se guarda al confirmar el control
