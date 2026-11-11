@@ -5116,19 +5116,15 @@ async function saveRow(database, row, changes, hooks = null) {
   return saved;
 }
 
-/** Los hooks de cada tabla pintada (ver `renderTable`): `table -> hooks`. En un
- * `WeakMap` para no dejar basura ni una propiedad inventada en el elemento. */
-const hooksDeTabla = new WeakMap();
-
 /** La tabla de una base. Es la MISMA en la página de la base y dentro de una
  * nota (bloque ```mdm-database, P17.2): mismos valores, mismas clases y las
  * mismas celdas editables -- dos renders distintos acabarían enseñando cosas
  * distintas. La única diferencia es `deletable: false`, que quita la columna de
  * acciones (en una nota no se borran filas) y el `colSpan` correspondiente.
  *
- * `hooks` es el comportamiento extra de la copia incrustada; viaja en un
- * `WeakMap` por tabla para que una celda repintada lo conserve sin arrastrarlo
- * por toda la cadena de llamadas (`paintCell` -> `editCell` -> `saveRow`):
+ * `hooks` es el comportamiento extra de la copia incrustada y se pasa de mano
+ * en mano hasta `saveRow` (`paintCell` -> `editCell` -> `saveRow`); una celda
+ * repintada lo vuelve a recibir (`repaintCell`), así que no se pierde:
  *   - `embed`: marca las celdas con `data-db-action` para que el widget del
  *     editor no se trague el clic y para que las teclas que consumimos no
  *     lleguen al keymap de CodeMirror (ver `DatabaseBlockWidget` en entry.js).
@@ -5140,8 +5136,6 @@ function renderTable(database, rows, { deletable = true, hooks = null } = {}) {
 
   const table = document.createElement("table");
   table.className = "rows-table";
-  // Antes de pintar la primera celda: `paintCell` los lee de aquí.
-  if (hooks) hooksDeTabla.set(table, hooks);
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
@@ -5179,13 +5173,13 @@ function renderTable(database, rows, { deletable = true, hooks = null } = {}) {
     // nota es lo mismo: se edita ahí y se guarda en el `.md` de la fila.
     if (muestraTitulo) {
       const titleTd = document.createElement("td");
-      paintCell(titleTd, database, row, null);
+      paintCell(titleTd, database, row, null, hooks);
       tr.appendChild(titleTd);
     }
 
     database.schema_def.forEach((p) => {
       const td = document.createElement("td");
-      paintCell(td, database, row, p);
+      paintCell(td, database, row, p, hooks);
       tr.appendChild(td);
     });
 
@@ -5246,11 +5240,11 @@ function setRovingCell(td) {
  * ha ido a otro control y robarle el foco es perder lo que estaba haciendo).
  * Sin valor decide por el estado: lo recupera si el foco era de la propia
  * celda o se quedó huérfano en <body>. */
-function repaintCell(td, database, row, prop, focus) {
+function repaintCell(td, database, row, prop, focus, hooks = null) {
   // Antes de repintar: el input de editCell() se destruye al reemplazar el
   // innerHTML, así que "el foco era de la celda" hay que mirarlo ahora.
   const ownedFocus = td.contains(document.activeElement);
-  paintCell(td, database, row, prop);
+  paintCell(td, database, row, prop, hooks);
   if (!td.isConnected) return;
   setRovingCell(td);
   const shouldFocus = focus === undefined ? ownedFocus || document.activeElement === document.body : focus;
@@ -5259,8 +5253,7 @@ function repaintCell(td, database, row, prop, focus) {
 
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
  * `prop === null` es la celda del título. */
-function paintCell(td, database, row, prop) {
-  const hooks = hooksDeCelda(td);
+function paintCell(td, database, row, prop, hooks = null) {
   td.innerHTML = prop
     ? formatPropValueHtml(row.properties?.[prop.key], prop)
     : escapeHtml(row.title || "Sin título");
@@ -5324,16 +5317,8 @@ function paintCell(td, database, row, prop) {
   };
   td.onclick =
     prop && prop.type === "checkbox"
-      ? () => toggleCheckbox(td, database, row, prop)
-      : () => editCell(td, database, row, prop);
-}
-
-/** Los hooks de la tabla a la que pertenece una celda (ver `renderTable`), o
- * `null` si es la tabla de la página de la base. En un `WeakMap` como
- * `embedsDeBase`: cuando la tabla se va con el repintado, la entrada también. */
-function hooksDeCelda(td) {
-  const table = td.closest("table");
-  return table ? hooksDeTabla.get(table) || null : null;
+      ? () => toggleCheckbox(td, database, row, prop, hooks)
+      : () => editCell(td, database, row, prop, hooks);
 }
 
 /** Las celdas editables de una fila, en orden. */
@@ -5379,14 +5364,15 @@ function enfocarCelda(td) {
 }
 
 /** Un booleano no tiene "modo edición": el clic lo cambia y se guarda. */
-async function toggleCheckbox(td, database, row, prop) {
+async function toggleCheckbox(td, database, row, prop, hooks = null) {
   const next = !row.properties?.[prop.key];
   try {
-    await saveRow(database, row, { properties: { [prop.key]: next } }, hooksDeCelda(td));
+    await saveRow(database, row, { properties: { [prop.key]: next } }, hooks);
   } catch (e) {
     reportError("No se pudo guardar el cambio", e);
   }
-  repaintCell(td, database, row, prop); // si falló, este es el valor del servidor
+  // Si falló, lo que se repinta es el valor del servidor.
+  repaintCell(td, database, row, prop, undefined, hooks);
 }
 
 /** Edita una celda con el input de su tipo. Guarda al confirmar (Enter, Tab o
@@ -5398,9 +5384,8 @@ async function toggleCheckbox(td, database, row, prop) {
  * (de la fila, o al final de la fila a la primera de la siguiente); Esc cancela
  * y deja la celda como estaba. Así se recorre una fila entera sin ratón.
  */
-function editCell(td, database, row, prop) {
+function editCell(td, database, row, prop, hooks = null) {
   if (td.querySelector("input, select, textarea")) return;
-  const hooks = hooksDeCelda(td);
   const isTitle = !prop;
   const def = isTitle ? { key: "title", name: "Título", type: "text" } : prop;
   const { input, read } = buildPropertyInput(def, isTitle ? row.title : row.properties?.[def.key]);
@@ -5417,7 +5402,7 @@ function editCell(td, database, row, prop) {
   // solo si el repintado lo provoca el propio control (Enter, cambio, Escape);
   // al salir con blur el foco es del control al que el usuario se ha ido.
   function repaint(focus) {
-    repaintCell(td, database, row, prop, focus);
+    repaintCell(td, database, row, prop, focus, hooks);
   }
 
   /** Repinta la celda y deja el foco donde toca: en `destino` si la tecla pide
