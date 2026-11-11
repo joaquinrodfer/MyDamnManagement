@@ -6162,22 +6162,105 @@ function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
   if (devolverFoco) devolverElFoco(ctx);
 }
 
+/** ¿El evento viene del cuerpo editable de la fila? Ahí los atajos son los del
+ * editor (`Alt+↑/↓` mueve el bloque, `Escape` cierra sus menús): el cuerpo es
+ * el mismo editor de notas, no un campo de la vista de fila. */
+function esDelCuerpoDeLaFila(target) {
+  return target instanceof Element && Boolean(target.closest("#row-page-body"));
+}
+
+/** Los reintentos de devolver el foco, en ms desde el cierre: el primero va
+ * inmediato (abajo) y estos son los que vienen detrás.
+ *
+ * Uno solo no basta cuando la vuelta es a un control que el editor rehace: el
+ * eco del guardado repinta la tabla incrustada en una nota, CodeMirror
+ * reemplaza el widget —el botón de abrir incluido— y la tabla nueva aparece
+ * cuando llegan sus filas. Mientras tanto el foco se cae a `<body>`; con un
+ * intento único se queda ahí. */
+const FOCO_ESPERAS_MS = [60, 150, 300, 600, 1200];
+const FOCO_PLAZO_MS = 1600;
+
+/** La restauración de foco en curso, si la hay (`{vivos, interrumpir}`). */
+let focoPendiente = null;
+
+/** Deja de insistir en devolver el foco: lo tomó el usuario, se abrió otra
+ * fila o se acabó el plazo. */
+function cancelarFocoPendiente() {
+  const pendiente = focoPendiente;
+  if (!pendiente) return;
+  focoPendiente = null;
+  for (const id of pendiente.vivos) clearTimeout(id);
+  document.removeEventListener("keydown", pendiente.interrumpir, true);
+  document.removeEventListener("pointerdown", pendiente.interrumpir, true);
+}
+
+/** ¿El foco se ha quedado sin dueño? Pasa al quitar la fila y cada vez que se
+ * va el nodo enfocado (el navegador lo deja en `<body>`). */
+function focoPerdido() {
+  const activo = document.activeElement;
+  return (
+    !activo || activo === document.body || activo === document.documentElement || !activo.isConnected
+  );
+}
+
+/** El bloque de base incrustada en el que vive un control de la fila, si vive
+ * en uno: su base y su posición entre los bloques de esa base. El editor
+ * rehace el widget entero al repintar la nota, así que para volver al MISMO
+ * bloque cuando la misma base está incrustada dos veces se recuerda cuál era. */
+function bloqueDeOrigen(origin) {
+  const bloque = origin?.closest?.(".cm-mdm-dblock-body");
+  const databaseId = bloque?.dataset?.databaseId;
+  if (!databaseId) return null;
+  const hermanos = [...document.querySelectorAll(".cm-mdm-dblock-body")].filter(
+    (c) => c.dataset.databaseId === databaseId,
+  );
+  const orden = hermanos.indexOf(bloque);
+  return orden < 0 ? null : { databaseId, orden };
+}
+
+/** El control al que hay que volver: el de la fila, dentro del bloque del que
+ * salió (si salió de uno) y, si ese bloque ya no está, en cualquier otro. */
+function controlDeVuelta(ctx) {
+  if (ctx.origin?.isConnected) return ctx.origin;
+  let raiz = document;
+  if (ctx.originEmbed) {
+    const bloques = [...document.querySelectorAll(".cm-mdm-dblock-body")].filter(
+      (c) => c.dataset.databaseId === ctx.originEmbed.databaseId,
+    );
+    raiz = bloques[ctx.originEmbed.orden] || document;
+  }
+  const fila = raiz.querySelector(`[data-row-id="${ctx.resumen.id}"]`);
+  if (!fila) return null;
+  return fila.matches("button") ? fila : fila.querySelector(".row-open");
+}
+
 /** Devuelve el foco a donde estaba: el control desde el que se abrió la fila
  * (la celda, el botón de abrir, la línea de la lista).
  *
  * Si la vista de debajo se repintó mientras la fila estaba abierta —el eco del
  * guardado repinta la tabla incrustada en una nota, por ejemplo—, ese control
  * ya no está en el documento: se busca el de la MISMA fila en lo que hay
- * ahora, que es el sitio equivalente. */
+ * ahora, que es el sitio equivalente.
+ *
+ * Y como el repintado puede llegar DESPUÉS de cerrar (el widget se rehace
+ * cuando el aviso de la base llega por `/events`), no se intenta una sola vez:
+ * se reintenta durante un margen corto, solo mientras el foco siga perdido y
+ * el usuario no haya tocado el teclado ni el ratón. */
 function devolverElFoco(ctx) {
-  if (ctx.origin?.isConnected) {
-    ctx.origin.focus();
-    return;
-  }
-  const fila = document.querySelector(`[data-row-id="${ctx.resumen.id}"]`);
-  if (!fila) return;
-  const destino = fila.matches("button") ? fila : fila.querySelector(".row-open");
-  destino?.focus();
+  cancelarFocoPendiente();
+  const pendiente = { vivos: [], interrumpir: () => cancelarFocoPendiente() };
+  focoPendiente = pendiente;
+  const intentar = () => {
+    if (focoPendiente !== pendiente || !focoPerdido()) return;
+    controlDeVuelta(ctx)?.focus();
+  };
+  intentar(); // el caso normal: el control sigue donde estaba
+  for (const espera of FOCO_ESPERAS_MS) pendiente.vivos.push(setTimeout(intentar, espera));
+  pendiente.vivos.push(setTimeout(cancelarFocoPendiente, FOCO_PLAZO_MS));
+  // El usuario manda: en cuanto toca el teclado o el ratón, la restauración se
+  // cancela (no le robamos el foco a lo que acaba de enfocar).
+  document.addEventListener("keydown", pendiente.interrumpir, true);
+  document.addEventListener("pointerdown", pendiente.interrumpir, true);
 }
 
 /** Abre una fila como página encima de la vista actual.
@@ -6195,6 +6278,7 @@ async function openRowPage(
   { origin = null, rows = null, index = -1, onSaved = null, onClose = null } = {},
 ) {
   if (rowPage) return; // una fila abierta a la vez: no hay filas dentro de filas
+  cancelarFocoPendiente(); // el foco de la fila anterior ya no es de nadie
 
   // Lo de debajo se queda en el documento (para volver sin repintar) pero
   // `inert`: no se puede tabular ni clicar dentro mientras la fila está
@@ -6254,6 +6338,7 @@ async function openRowPage(
     rows,
     index,
     origin,
+    originEmbed: bloqueDeOrigen(origin),
     onSaved,
     onClose,
     caja,
@@ -6541,6 +6626,13 @@ async function openRowPage(
       return;
     }
     if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      // Dentro del cuerpo el atajo es del editor: `moveBlockKeymap` usa
+      // `Alt+↑/↓` para mover el bloque, y el evento sube hasta aquí porque su
+      // keymap no lo detiene (`defaultPrevented` no basta como guarda). Si
+      // además se cambiara de fila, el bloque reordenado acabaría guardado en
+      // la fila que ya no estás mirando. La navegación es para el título y las
+      // propiedades; en el cuerpo, `Alt+↑/↓` mueve bloques.
+      if (e.defaultPrevented || esDelCuerpoDeLaFila(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
       irAFilaVecina(e.key === "ArrowDown" ? 1 : -1);

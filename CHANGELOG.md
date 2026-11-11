@@ -54,6 +54,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Corregido
 
+- **`Alt+↑`/`Alt+↓` dentro del cuerpo de una fila movía el bloque Y cambiaba de fila.** El atajo es del editor (`moveBlockKeymap`): con el cursor en el primer bloque, el evento subía hasta la vista de fila y hacía las dos cosas — el `.md` quedaba reordenado **y** se abría la fila vecina, así que el cambio acababa guardado en la fila que ya no mirabas. La navegación ahora ignora lo que viene del cuerpo editable (`#row-page-body`) y se queda en el título y las propiedades; dentro del cuerpo, `Alt+↑/↓` sigue moviendo bloques.
+
+- **Al cerrar una fila abierta desde la tabla incrustada en una nota, el foco se quedaba en `<body>` si se había guardado algo.** El eco del guardado repinta la tabla, el editor rehace el widget de CodeMirror —con él, el botón de abrir que tenía el foco— y la tabla nueva aparece cuando llegan sus filas: devolver el foco una sola vez llegaba antes que el repintado. Ahora se reintenta durante un margen corto (60-1200 ms), solo mientras el foco siga perdido y el usuario no haya tocado el teclado ni el ratón, y el destino se busca dentro del MISMO bloque incrustado del que salió (dos bloques de la misma base en una nota ya no se confunden).
+
 - **El escritor de frontmatter trataba un `#` entre comillas como comentario YAML.** `title: "Acme #1"` renombrado a `#2` quedaba `title: "Acme #2" #1"` y **acumulaba basura en cada guardado** (`"#3" #2" #1"`). `fm._split_comment` separa ahora el `#` solo **fuera del escalar**, al escribir y al leer: los comentarios de verdad (`fase: lead # comentario`) se conservan y los valores con `#`, comillas, `'` o `:` dan ida y vuelta exacta. No era de las filas: afectaba al título de cualquier nota, a la descripción y al nombre de una vista.
 
 - **Al añadir una fila, los demás bloques de la misma base en la nota se quedaban viejos.** El eco del propio `POST` se sigue descartando, pero el alta pide a **los otros bloques** de esa base en la nota que se repinten: dos tablas de la misma base en una nota enseñan la fila nueva a la vez, sin recargar.
