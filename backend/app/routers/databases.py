@@ -9,7 +9,13 @@ from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
 from app.events import publish_database
-from app.properties import plan_schema, validate_properties
+from app.properties import (
+    plan_schema,
+    related_refs,
+    relation_ids,
+    schema_with_relation_warnings,
+    validate_properties,
+)
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app.templates import TEMPLATES
@@ -47,13 +53,22 @@ def _get_row_or_404(repo: Repository, database_id: uuid.UUID, row_id: uuid.UUID)
     return row
 
 
-def _serialize_database(db_def: Database) -> schemas.DatabaseRead:
+def _serialize_database(
+    db_def: Database, known_databases: set[str]
+) -> schemas.DatabaseRead:
+    """La base, con sus relaciones rotas marcadas (`warning` en la propiedad).
+
+    `known_databases` son los ids de las bases que existen ahora mismo
+    (`repo.database_ids()`, una consulta por respuesta): borrar la base destino
+    no toca el `.md` de quien la enlazaba, así que la propiedad solo puede
+    saberlo al leerse.
+    """
     return schemas.DatabaseRead(
         id=db_def.id,
         page_id=db_def.page_id,
         title=db_def.title,
         icon=db_def.icon,
-        schema_def=db_def.schema_def,
+        schema_def=schema_with_relation_warnings(db_def.schema_def, known_databases),
         title_name=db_def.title_name,
         title_hidden=db_def.title_hidden,
         created_at=as_utc(db_def.created_at),
@@ -61,16 +76,39 @@ def _serialize_database(db_def: Database) -> schemas.DatabaseRead:
     )
 
 
-def _serialize_row(row: Page) -> schemas.RowRead:
-    return schemas.RowRead(
-        id=row.id,
-        database_id=row.database_id,
-        title=row.title,
-        icon=row.icon,
-        properties=row.properties or {},
-        created_at=as_utc(row.created_at),
-        updated_at=as_utc(row.updated_at),
-    )
+def _serialize_rows(
+    repo: Repository, db_def: Database, rows: List[Page]
+) -> List[schemas.RowRead]:
+    """Serializa filas resolviendo sus relaciones **en una sola consulta**.
+
+    Los ids de todas las celdas de relación de la respuesta se juntan y se
+    resuelven de una vez (`repo.row_refs`): el coste es el de la respuesta, no
+    el de cada fila. Lo que no resuelve (fila borrada) sale con `title: null`,
+    y el id se queda en `properties`: la celda apunta a algo que ya no está y
+    el interfaz tiene que poder decirlo.
+    """
+    properties = [row.properties or {} for row in rows]
+    ids = relation_ids(db_def.schema_def, properties)
+    refs = repo.row_refs(ids) if ids else {}
+    return [
+        schemas.RowRead(
+            id=row.id,
+            database_id=row.database_id,
+            title=row.title,
+            icon=row.icon,
+            properties=props,
+            related=related_refs(db_def.schema_def, props, refs),
+            created_at=as_utc(row.created_at),
+            updated_at=as_utc(row.updated_at),
+        )
+        for row, props in zip(rows, properties)
+    ]
+
+
+def _serialize_row(
+    repo: Repository, db_def: Database, row: Page
+) -> schemas.RowRead:
+    return _serialize_rows(repo, db_def, [row])[0]
 
 
 def _serialize_view(view: View) -> schemas.ViewRead:
@@ -104,12 +142,13 @@ def create_database(
             created_by=user.display_name,
             schema_def=schema_def,
         )
-    return _serialize_database(db_def)
+    return _serialize_database(db_def, repo.database_ids())
 
 
 @router.get("", response_model=List[schemas.DatabaseRead])
 def list_databases(repo: Repository = Depends(get_repo)):
-    return [_serialize_database(d) for d in repo.list_databases()]
+    known = repo.database_ids()
+    return [_serialize_database(d, known) for d in repo.list_databases()]
 
 
 # Rutas literales de un segmento ("templates", "from-template") declaradas
@@ -143,12 +182,14 @@ def create_from_template(
             schema_def=template["schema_def"],
             views=template["views"],
         )
-    return _serialize_database(db_def)
+    return _serialize_database(db_def, repo.database_ids())
 
 
 @router.get("/{database_id}", response_model=schemas.DatabaseRead)
 def get_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
-    return _serialize_database(_get_database_or_404(repo, database_id))
+    return _serialize_database(
+        _get_database_or_404(repo, database_id), repo.database_ids()
+    )
 
 
 @router.patch("/{database_id}", response_model=schemas.DatabaseRead)
@@ -168,7 +209,7 @@ def update_database(
         raise HTTPException(404, "Base de datos no encontrada")
     # M2: otra pestaña con una nota que incrusta esta base repinta su bloque.
     publish_database(db_def.id, "updated")
-    return _serialize_database(db_def)
+    return _serialize_database(db_def, repo.database_ids())
 
 
 @router.delete("/{database_id}", status_code=204)
@@ -189,14 +230,16 @@ def create_row(
     database_id: uuid.UUID, payload: schemas.RowCreate, repo: Repository = Depends(get_repo)
 ):
     db_def = _get_database_or_404(repo, database_id)
-    cleaned = validate_properties(db_def.schema_def, payload.properties)
+    cleaned = validate_properties(
+        db_def.schema_def, payload.properties, refs=repo.row_refs
+    )
     with _vault_errors():
         row = repo.create_row(
             database_id, title=payload.title, icon=payload.icon, properties=cleaned
         )
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
     publish_database(database_id, "rows")
-    return _serialize_row(row)
+    return _serialize_row(repo, db_def, row)
 
 
 @router.get("/{database_id}/rows", response_model=List[schemas.RowRead])
@@ -205,7 +248,7 @@ def list_rows(
     view: Optional[uuid.UUID] = None,
     repo: Repository = Depends(get_repo),
 ):
-    _get_database_or_404(repo, database_id)
+    db_def = _get_database_or_404(repo, database_id)
     rows = repo.list_rows(database_id)
 
     if view is not None:
@@ -214,14 +257,15 @@ def list_rows(
             raise HTTPException(404, "Vista no encontrada")
         rows = apply_view(rows, view_def.config or {})
 
-    return [_serialize_row(r) for r in rows]
+    return _serialize_rows(repo, db_def, rows)
 
 
 @router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowRead)
 def get_row(
     database_id: uuid.UUID, row_id: uuid.UUID, repo: Repository = Depends(get_repo)
 ):
-    return _serialize_row(_get_row_or_404(repo, database_id, row_id))
+    db_def = _get_database_or_404(repo, database_id)
+    return _serialize_row(repo, db_def, _get_row_or_404(repo, database_id, row_id))
 
 
 @router.patch("/{database_id}/rows/{row_id}", response_model=schemas.RowRead)
@@ -236,7 +280,9 @@ def update_row(
 
     cleaned = None
     if payload.properties is not None:
-        cleaned = validate_properties(db_def.schema_def, payload.properties)
+        cleaned = validate_properties(
+            db_def.schema_def, payload.properties, refs=repo.row_refs
+        )
 
     with _vault_errors():
         row = repo.update_row(
@@ -249,7 +295,7 @@ def update_row(
     if row is None:
         raise HTTPException(404, "Fila no encontrada")
     publish_database(database_id, "rows")
-    return _serialize_row(row)
+    return _serialize_row(repo, db_def, row)
 
 
 @router.delete("/{database_id}/rows/{row_id}", status_code=204)
