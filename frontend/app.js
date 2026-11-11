@@ -4771,6 +4771,13 @@ function celdaEnEdicion(container) {
     'td[data-editable="1"] input, td[data-editable="1"] select, td[data-editable="1"] textarea',
   );
   if (!control) return null;
+  // El repintado va a vaciar `body` y a destruir este control: su `blur` no
+  // puede guardar nada. `filas` se pidió al servidor ANTES del repintado, así
+  // que un PATCH disparado por ese blur dejaría la fila obsoleta --la celda
+  // reabierta se sembraría con el valor viejo mientras el `.md` ya tiene el
+  // nuevo-- y Esc ya no podría cancelar lo tecleado. `commit()` sale si el
+  // control está marcado: lo tecleado vive solo en la celda que se reabre.
+  control.__descartado = true;
   const td = control.closest("td");
   const tr = td?.parentElement;
   if (!tr || !tr.dataset.rowId) return null;
@@ -5502,6 +5509,10 @@ function editCell(td, database, row, prop, hooks = null) {
   async function commit(focus, destino = null) {
     if (finished) return;
     finished = true;
+    // Control apartado por un repintado (ver `celdaEnEdicion`): se está
+    // destruyendo, no se guarda. Ni PATCH ni repintado -- la celda la vuelve a
+    // abrir `reabrirCeldaEnEdicion`, y la fila de `filas` sigue siendo verdad.
+    if (input.__descartado) return;
     if (input.value === seeded) {
       // Sin tocar el control no hay PATCH: el `.md` se queda como está.
       terminar(focus, destino);
