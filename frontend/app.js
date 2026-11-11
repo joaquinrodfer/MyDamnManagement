@@ -5064,20 +5064,21 @@ function filaDeCondicion(database, cond, indice) {
   const propSelect = document.createElement("select");
   propSelect.className = "filter-prop";
   propSelect.setAttribute("aria-label", `Propiedad de la condición ${indice + 1}`);
-  database.schema_def.forEach((prop) => {
+
+  // La propiedad de la condición. Si ya no existe (un `.md` editado a mano),
+  // se enseña su clave para poder quitarla: convertirla en una condición sobre
+  // la primera propiedad de la base cambiaría el filtro sin decirlo.
+  const prop = database.schema_def.find((p) => p.key === cond.key) || null;
+  const opciones = [...database.schema_def];
+  if (!prop) opciones.unshift({ key: cond.key, name: `${cond.key} (ya no existe)` });
+  opciones.forEach((p) => {
     const opcion = document.createElement("option");
-    opcion.value = prop.key;
-    opcion.textContent = prop.name;
+    opcion.value = p.key;
+    opcion.textContent = p.name;
     propSelect.appendChild(opcion);
   });
-
-  // La propiedad de la condición: si ya no existe (se borró), cae en la primera
-  // de la base, que es lo único que se puede ofrecer.
-  const prop =
-    database.schema_def.find((p) => p.key === cond.key) || database.schema_def[0] || null;
-  if (!prop) return fila;
-  cond.key = prop.key;
-  propSelect.value = prop.key;
+  const propParaElControl = prop || { key: cond.key, name: cond.key, type: "text" };
+  propSelect.value = propParaElControl.key;
   propSelect.addEventListener("change", () => {
     const nueva = database.schema_def.find((p) => p.key === propSelect.value);
     if (!nueva) return;
@@ -5090,14 +5091,14 @@ function filaDeCondicion(database, cond, indice) {
   const opSelect = document.createElement("select");
   opSelect.className = "filter-op";
   opSelect.setAttribute("aria-label", `Operador de la condición ${indice + 1}`);
-  operadoresDe(prop).forEach(([valor, etiqueta]) => {
+  operadoresDe(propParaElControl).forEach(([valor, etiqueta]) => {
     const opcion = document.createElement("option");
     opcion.value = valor;
     opcion.textContent = etiqueta;
     opSelect.appendChild(opcion);
   });
-  if (!operadoresDe(prop).some(([valor]) => valor === cond.op)) {
-    cond.op = operadorPorDefecto(prop);
+  if (!operadoresDe(propParaElControl).some(([valor]) => valor === cond.op)) {
+    cond.op = operadorPorDefecto(propParaElControl);
   }
   opSelect.value = cond.op;
   opSelect.addEventListener("change", () => {
@@ -5106,7 +5107,7 @@ function filaDeCondicion(database, cond, indice) {
     pintarFilasDeFiltro();
   });
 
-  const valor = controlDeValor(prop, cond, indice);
+  const valor = controlDeValor(propParaElControl, cond, indice);
 
   const quitar = document.createElement("button");
   quitar.type = "button";
