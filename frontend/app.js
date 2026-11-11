@@ -4578,16 +4578,79 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     main.insertBefore(nota, content);
   }
 
-  const rows = await api(`/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""));
+  // El filtro y el orden son de la vista y los aplica el servidor (`?view=`),
+  // que es el mismo `apply_view` que exporta el `.md`: no hay dos versiones de
+  // la regla. M no sale de la lista filtrada: cuando hay filtro se pide
+  // también la base entera, porque «3 de 10» es lo que hace honesto el recuento.
+  const filtros = filtrosDeVista(activeView);
+  const clavesOrden = clavesDeOrden(activeView?.config);
+  let rows;
+  let total = null;
+  if (!activeView) {
+    rows = await api(`/databases/${database.id}/rows`);
+  } else if (filtros.length) {
+    const [deLaVista, todas] = await Promise.all([
+      api(`/databases/${database.id}/rows?view=${activeView.id}`),
+      api(`/databases/${database.id}/rows`),
+    ]);
+    rows = deLaVista;
+    total = todas.length;
+  } else {
+    rows = await api(`/databases/${database.id}/rows?view=${activeView.id}`);
+  }
 
-  if (activeView && activeView.type === "board" && activeView.config?.group_by) {
+  // Guardar el filtro o el orden es un PATCH a la vista y un repintado con lo
+  // que el servidor acaba de escribir: la pantalla no guarda su propia copia.
+  const aplicarConfig = async (cambios) => {
+    try {
+      await guardarConfigDeVista(database, activeView, cambios);
+    } catch (e) {
+      reportError("No se pudo guardar el filtro ni el orden de la vista", e);
+      return;
+    }
+    await recargarVistas();
+  };
+
+  if (activeView) {
+    main.insertBefore(
+      renderViewTools({
+        database,
+        view: activeView,
+        visibles: rows.length,
+        total,
+        onCambio: aplicarConfig,
+      }),
+      content,
+    );
+  } else if (views.length) {
+    // «Todas» es la base entera y no tiene vista donde guardar un filtro: se
+    // dice, en vez de enseñar unos botones que no podrían recordar nada.
+    const notaTodas = document.createElement("p");
+    notaTodas.className = "db-view-note";
+    notaTodas.textContent =
+      "«Todas» es la base entera: el filtro y el orden son de una vista. Elige una pestaña para filtrar.";
+    main.insertBefore(notaTodas, content);
+  }
+
+  // Vacío honesto: no una tabla en blanco, sino el motivo escrito y la salida.
+  if (filtros.length && rows.length === 0) {
+    content.appendChild(avisoDeFiltroVacio(() => aplicarConfig({ filters: [] })));
+  } else if (activeView && activeView.type === "board" && activeView.config?.group_by) {
     content.appendChild(renderBoard(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "calendar") {
     content.appendChild(renderCalendar(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "list") {
     content.appendChild(renderList(database, rows, activeView, refresh));
   } else {
-    content.appendChild(renderTable(database, rows));
+    content.appendChild(
+      renderTable(database, rows, {
+        sort: clavesOrden,
+        onToggleSort: activeView
+          ? (key) => aplicarConfig({ sort: alternarOrden(clavesOrden, key) })
+          : null,
+        vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+      }),
+    );
   }
 
   const addRowForm = renderAddRowForm(database);
@@ -4605,6 +4668,731 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     tabButtons.get(activeViewId)?.focus({ preventScroll: true });
   }
 }
+
+// ------------------------------------------------ filtros y orden de una vista
+// El filtro y el orden son de LA VISTA, no de la base: viven en su `config`
+// --el frontmatter de `Bases/<slug>.md`-- y los aplica el servidor sobre
+// `GET /databases/{id}/rows?view=`. Aquí solo se editan y se enseñan; si se
+// filtrara otra vez en el navegador habría dos versiones de la regla y la
+// pantalla y el `.md` exportado podrían discrepar sin que nada lo dijera.
+//
+// Las condiciones se combinan con Y (una fila se enseña si las cumple todas).
+// El O entre grupos no existe todavía.
+
+const OPERADORES_TEXTO = [
+  ["eq", "es"],
+  ["neq", "no es"],
+  ["contains", "contiene"],
+  ["is_empty", "está vacío"],
+  ["is_not_empty", "no está vacío"],
+];
+
+/** Los operadores que ofrece cada tipo de propiedad, en el orden en que se
+ * leen. Los nombres son los que guarda el `.md` (`app/views.py`): cambiarlos
+ * aquí sin cambiarlos allí rompería los filtros ya escritos. */
+const OPERADORES_FILTRO = {
+  text: OPERADORES_TEXTO,
+  url: OPERADORES_TEXTO,
+  number: [
+    ["eq", "="],
+    ["neq", "≠"],
+    ["gt", ">"],
+    ["lt", "<"],
+    ["gte", "≥"],
+    ["lte", "≤"],
+    ["is_empty", "está vacío"],
+    ["is_not_empty", "no está vacío"],
+  ],
+  date: [
+    ["eq", "es"],
+    ["before", "antes de"],
+    ["after", "después de"],
+    ["is_empty", "está vacío"],
+  ],
+  select: [
+    ["eq", "es"],
+    ["neq", "no es"],
+  ],
+  multiselect: [
+    ["contains", "contiene"],
+    ["is_empty", "está vacío"],
+    ["is_not_empty", "no está vacío"],
+  ],
+  checkbox: [
+    ["checked", "marcado"],
+    ["unchecked", "desmarcado"],
+  ],
+  relation: [
+    ["includes", "incluye"],
+    ["is_empty", "está vacío"],
+    ["is_not_empty", "no está vacío"],
+  ],
+};
+
+/** Los operadores que no llevan valor: el estado lo dice el propio operador. */
+const OPS_SIN_VALOR = new Set(["is_empty", "is_not_empty", "checked", "unchecked"]);
+
+// Los títulos de las filas de las bases destino de una relación, para que el
+// valor de «incluye» sea un nombre y no un id. Se cachea por clave de
+// propiedad; si la base destino no se puede leer, el control pide el id.
+const titulosDeRelacion = new Map();
+
+function operadoresDe(prop) {
+  return OPERADORES_FILTRO[prop?.type] || OPERADORES_TEXTO;
+}
+
+function etiquetaDeOperador(prop, op) {
+  const par = operadoresDe(prop).find(([valor]) => valor === op);
+  return par ? par[1] : op;
+}
+
+function operadorPorDefecto(prop) {
+  return operadoresDe(prop)[0][0];
+}
+
+/** Los filtros de una vista, normalizados (una vista vieja puede no tener). */
+function filtrosDeVista(view) {
+  const filtros = view?.config?.filters;
+  if (!Array.isArray(filtros)) return [];
+  return filtros.filter((f) => f && typeof f === "object" && f.key && f.op);
+}
+
+/** Las claves de orden, aceptando la forma antigua de una sola clave
+ * (`sort: {key, dir}`), que las versiones anteriores escribían. */
+function clavesDeOrden(config) {
+  const bruto = config?.sort;
+  const lista = Array.isArray(bruto) ? bruto : bruto ? [bruto] : [];
+  return lista
+    .filter((clave) => clave && typeof clave === "object" && clave.key)
+    .map((clave) => ({ key: clave.key, dir: clave.dir === "desc" ? "desc" : "asc" }));
+}
+
+/** «3 filas» o «3 de 10 filas»: el recuento nunca cuenta solo una parte sin
+ * decir de qué es parte. `total` nulo es «no hay filtro». */
+function textoDeRecuento(visibles, total) {
+  const plural = (n) => (n === 1 ? "fila" : "filas");
+  if (total === null || total === undefined) return `${visibles} ${plural(visibles)}`;
+  return `${visibles} de ${total} ${plural(total)}`;
+}
+
+async function guardarConfigDeVista(database, view, cambios) {
+  const config = { ...(view.config || {}) };
+  for (const [clave, valor] of Object.entries(cambios)) {
+    // Lista vacía = no hay filtro ni orden: se quita la clave en vez de
+    // escribir `filters: []`, que el `.md` no necesita.
+    if (
+      valor === undefined ||
+      valor === null ||
+      (Array.isArray(valor) && valor.length === 0)
+    ) {
+      delete config[clave];
+    } else {
+      config[clave] = valor;
+    }
+  }
+  const guardada = await api(`/databases/${database.id}/views/${view.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ config }),
+  });
+  view.config = guardada?.config || config;
+  return guardada;
+}
+
+function nombreDePropiedad(database, key) {
+  return database.schema_def.find((p) => p.key === key)?.name || key;
+}
+
+/** Una condición en palabras, para el chip: «Fase es «lead»». */
+function textoDeCondicion(cond, database) {
+  const prop = database.schema_def.find((p) => p.key === cond.key);
+  if (!prop) return `${cond.key} ${cond.op}`;
+  const operador = etiquetaDeOperador(prop, cond.op);
+  if (OPS_SIN_VALOR.has(cond.op)) return `${prop.name} ${operador}`;
+  const valor =
+    prop.type === "relation"
+      ? titulosDeRelacion.get(prop.key)?.get(cond.value) || String(cond.value ?? "")
+      : String(cond.value ?? "");
+  return `${prop.name} ${operador} «${valor}»`;
+}
+
+/** Pinta UNA vez las condiciones como chips (con su aspa) y el resumen del
+ * orden. Se llama otra vez cuando llegan los títulos de las relaciones. */
+function pintarChipsDeVista(chips, database, filtros, claves, onCambio) {
+  chips.textContent = "";
+  filtros.forEach((cond, indice) => {
+    const chip = document.createElement("span");
+    chip.className = "db-chip";
+    const texto = document.createElement("span");
+    texto.textContent = textoDeCondicion(cond, database);
+    const quitar = document.createElement("button");
+    quitar.type = "button";
+    quitar.className = "db-chip-remove";
+    quitar.innerHTML = svgIcon("i-x");
+    quitar.title = "Quitar esta condición";
+    quitar.setAttribute("aria-label", `Quitar el filtro «${texto.textContent}»`);
+    quitar.addEventListener("click", () =>
+      onCambio({ filters: filtros.filter((_, i) => i !== indice) }),
+    );
+    chip.append(texto, quitar);
+    chips.appendChild(chip);
+  });
+  if (filtros.length > 1) {
+    const limpiar = document.createElement("button");
+    limpiar.type = "button";
+    limpiar.className = "btn-link";
+    limpiar.textContent = "Limpiar filtro";
+    limpiar.addEventListener("click", () => onCambio({ filters: [] }));
+    chips.appendChild(limpiar);
+  }
+  if (claves.length) {
+    const resumen = document.createElement("span");
+    resumen.className = "db-sort-summary";
+    const orden = claves
+      .map((clave) => `${nombreDePropiedad(database, clave.key)} ${clave.dir === "desc" ? "↓" : "↑"}`)
+      .join(" · ");
+    resumen.textContent = `Orden: ${orden}`;
+    const quitarOrden = document.createElement("button");
+    quitarOrden.type = "button";
+    quitarOrden.className = "btn-link";
+    quitarOrden.textContent = "Quitar orden";
+    quitarOrden.addEventListener("click", () => onCambio({ sort: [] }));
+    chips.append(resumen, quitarOrden);
+  }
+}
+
+/** La barra de la vista: «Filtrar», «Ordenar», el recuento honesto y los
+ * chips de las condiciones activas (encima de la tabla, como se pide). */
+function renderViewTools({ database, view, visibles, total, onCambio }) {
+  const filtros = filtrosDeVista(view);
+  const claves = clavesDeOrden(view.config);
+
+  const tools = document.createElement("div");
+  tools.className = "db-tools";
+
+  const cabeza = document.createElement("div");
+  cabeza.className = "db-tools-head";
+
+  const filtrar = document.createElement("button");
+  filtrar.type = "button";
+  filtrar.className = "btn" + (filtros.length ? " is-active" : "");
+  filtrar.textContent = filtros.length ? `Filtrar (${filtros.length})` : "Filtrar";
+  filtrar.setAttribute("aria-haspopup", "dialog");
+  if (database.schema_def.length === 0) {
+    // Sin propiedades no hay nada que filtrar: se dice, no se abre un panel
+    // vacío.
+    filtrar.disabled = true;
+    filtrar.title = "La base no tiene propiedades: no hay nada que filtrar.";
+  } else {
+    filtrar.addEventListener("click", () => openFilterDialog(database, view, onCambio));
+  }
+
+  const ordenar = document.createElement("button");
+  ordenar.type = "button";
+  ordenar.className = "btn" + (claves.length ? " is-active" : "");
+  ordenar.textContent = claves.length ? `Ordenar (${claves.length})` : "Ordenar";
+  ordenar.setAttribute("aria-haspopup", "dialog");
+  if (database.schema_def.length === 0) {
+    ordenar.disabled = true;
+    ordenar.title = "La base no tiene propiedades: no hay nada por lo que ordenar.";
+  } else {
+    ordenar.addEventListener("click", () => openSortDialog(database, view, onCambio));
+  }
+
+  const cuenta = document.createElement("span");
+  cuenta.className = "db-count";
+  cuenta.textContent = textoDeRecuento(visibles, filtros.length ? total : null);
+
+  cabeza.append(filtrar, ordenar, cuenta);
+  tools.appendChild(cabeza);
+
+  const chips = document.createElement("div");
+  chips.className = "db-chips";
+  if (filtros.length || claves.length) tools.appendChild(chips);
+  pintarChipsDeVista(chips, database, filtros, claves, onCambio);
+
+  // Un filtro sobre una relación enseña un id hasta que se conoce el título de
+  // la fila: con la lista de la base destino, el chip dice el nombre.
+  if (filtros.some((f) => database.schema_def.find((p) => p.key === f.key)?.type === "relation")) {
+    cargarTitulosDeRelacion(database).then(() => {
+      if (!chips.isConnected) return;
+      pintarChipsDeVista(chips, database, filtros, claves, onCambio);
+    });
+  }
+
+  return tools;
+}
+
+/** La cabecera de una columna: un botón que ordena, con su flecha y, si hay
+ * varias claves, el número de prioridad. */
+function celdaDeCabecera(prop, claves, onToggleSort) {
+  const th = document.createElement("th");
+  th.scope = "col";
+  if (!onToggleSort) {
+    th.textContent = prop.name;
+    return th;
+  }
+  const indice = claves.findIndex((clave) => clave.key === prop.key);
+  const activa = indice !== -1;
+  th.setAttribute(
+    "aria-sort",
+    activa ? (claves[indice].dir === "desc" ? "descending" : "ascending") : "none",
+  );
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "th-sort" + (activa ? " is-sorted" : "");
+  boton.title = activa
+    ? `Ordenado por ${prop.name}: pulsa para invertir`
+    : `Ordenar por ${prop.name}`;
+  boton.append(document.createTextNode(prop.name));
+  if (activa) {
+    const flecha = document.createElement("span");
+    flecha.className = "sort-arrow";
+    flecha.textContent = claves[indice].dir === "desc" ? "↓" : "↑";
+    flecha.setAttribute("aria-hidden", "true");
+    boton.appendChild(flecha);
+    if (claves.length > 1) {
+      const prioridad = document.createElement("span");
+      prioridad.className = "sort-priority";
+      prioridad.textContent = String(indice + 1);
+      prioridad.title = `Clave ${indice + 1} de ${claves.length}`;
+      boton.appendChild(prioridad);
+    }
+  }
+  boton.addEventListener("click", () => onToggleSort(prop.key));
+  th.appendChild(boton);
+  return th;
+}
+
+/** Clic en la cabecera: si esa columna manda, invierte el sentido; si no,
+ * pasa a mandar (ascendente) sin perder las demás, que quedan de desempate. */
+function alternarOrden(claves, key) {
+  const indice = claves.findIndex((clave) => clave.key === key);
+  if (indice === -1) return [{ key, dir: "asc" }, ...claves];
+  return claves.map((clave, i) =>
+    i === indice ? { key, dir: clave.dir === "asc" ? "desc" : "asc" } : clave,
+  );
+}
+
+/** El vacío con motivo: la vista no pinta una tabla en blanco, dice que el
+ * filtro no deja pasar nada y ofrece quitarlo. */
+function avisoDeFiltroVacio(onQuitar) {
+  const box = avisoDeVista(
+    "Ninguna fila cumple el filtro.",
+    "Las filas siguen en la base: es el filtro de esta vista el que no deja pasar ninguna.",
+  );
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "btn";
+  quitar.textContent = "Quitar el filtro";
+  quitar.addEventListener("click", onQuitar);
+  box.appendChild(quitar);
+  return box;
+}
+
+async function cargarTitulosDeRelacion(database) {
+  const props = database.schema_def.filter((p) => p.type === "relation" && p.target_database);
+  await Promise.all(
+    props.map(async (prop) => {
+      if (titulosDeRelacion.has(prop.key)) return;
+      try {
+        const filas = await api(`/databases/${prop.target_database}/rows`);
+        titulosDeRelacion.set(
+          prop.key,
+          new Map(filas.map((fila) => [fila.id, fila.title || "Sin título"])),
+        );
+      } catch (_) {
+        // La base destino no está (o no se puede leer): el id a mano sigue
+        // valiendo, así que el control no se queda sin nada.
+      }
+    }),
+  );
+}
+
+// --------------------------------------------------- panel de filtro (dialog)
+const filterDialog = document.getElementById("dialog-filter");
+const filterRowsEl = document.getElementById("filter-rows");
+const filterStatusEl = document.getElementById("filter-status");
+const sortDialog = document.getElementById("dialog-sort");
+const sortRowsEl = document.getElementById("sort-rows");
+const sortStatusEl = document.getElementById("sort-status");
+
+let filterDialogCtx = null; // { database, view, condiciones, onCambio }
+let sortDialogCtx = null; // { database, view, claves, onCambio }
+
+function openFilterDialog(database, view, onCambio) {
+  filterStatusEl.textContent = "";
+  document.getElementById("filter-view-name").textContent = view.name;
+  filterDialogCtx = {
+    database,
+    view,
+    onCambio,
+    condiciones: filtrosDeVista(view).map((filtro) => ({
+      key: filtro.key,
+      op: filtro.op,
+      value: filtro.value === undefined || filtro.value === null ? "" : String(filtro.value),
+    })),
+  };
+  pintarFilasDeFiltro();
+  filterDialog.showModal();
+  cargarTitulosDeRelacion(database).then(() => {
+    if (filterDialog.open) pintarFilasDeFiltro();
+  });
+}
+
+function pintarFilasDeFiltro() {
+  const ctx = filterDialogCtx;
+  if (!ctx) return;
+  filterRowsEl.textContent = "";
+  ctx.condiciones.forEach((cond, indice) => {
+    filterRowsEl.appendChild(filaDeCondicion(ctx.database, cond, indice));
+  });
+  if (ctx.condiciones.length === 0) {
+    const vacio = document.createElement("p");
+    vacio.className = "filter-empty";
+    vacio.textContent =
+      "Sin condiciones: la vista enseña todas las filas. Añade una para filtrar.";
+    filterRowsEl.appendChild(vacio);
+  }
+  const anadir = document.getElementById("btn-add-filter");
+  anadir.disabled = ctx.database.schema_def.length === 0;
+}
+
+function filaDeCondicion(database, cond, indice) {
+  const fila = document.createElement("div");
+  fila.className = "filter-row";
+
+  const propSelect = document.createElement("select");
+  propSelect.className = "filter-prop";
+  propSelect.setAttribute("aria-label", `Propiedad de la condición ${indice + 1}`);
+  database.schema_def.forEach((prop) => {
+    const opcion = document.createElement("option");
+    opcion.value = prop.key;
+    opcion.textContent = prop.name;
+    propSelect.appendChild(opcion);
+  });
+
+  // La propiedad de la condición: si ya no existe (se borró), cae en la primera
+  // de la base, que es lo único que se puede ofrecer.
+  const prop =
+    database.schema_def.find((p) => p.key === cond.key) || database.schema_def[0] || null;
+  if (!prop) return fila;
+  cond.key = prop.key;
+  propSelect.value = prop.key;
+  propSelect.addEventListener("change", () => {
+    const nueva = database.schema_def.find((p) => p.key === propSelect.value);
+    if (!nueva) return;
+    cond.key = nueva.key;
+    cond.op = operadorPorDefecto(nueva);
+    cond.value = "";
+    pintarFilasDeFiltro();
+  });
+
+  const opSelect = document.createElement("select");
+  opSelect.className = "filter-op";
+  opSelect.setAttribute("aria-label", `Operador de la condición ${indice + 1}`);
+  operadoresDe(prop).forEach(([valor, etiqueta]) => {
+    const opcion = document.createElement("option");
+    opcion.value = valor;
+    opcion.textContent = etiqueta;
+    opSelect.appendChild(opcion);
+  });
+  if (!operadoresDe(prop).some(([valor]) => valor === cond.op)) {
+    cond.op = operadorPorDefecto(prop);
+  }
+  opSelect.value = cond.op;
+  opSelect.addEventListener("change", () => {
+    cond.op = opSelect.value;
+    // El operador decide si hay valor que pedir: el control se rehace.
+    pintarFilasDeFiltro();
+  });
+
+  const valor = controlDeValor(prop, cond, indice);
+
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "filter-remove";
+  quitar.innerHTML = svgIcon("i-x");
+  quitar.title = "Quitar esta condición";
+  quitar.setAttribute("aria-label", `Quitar la condición ${indice + 1}`);
+  quitar.addEventListener("click", () => {
+    filterDialogCtx.condiciones.splice(indice, 1);
+    pintarFilasDeFiltro();
+  });
+
+  fila.append(propSelect, opSelect, valor, quitar);
+  return fila;
+}
+
+function controlDeValor(prop, cond, indice) {
+  const caja = document.createElement("span");
+  caja.className = "filter-value";
+  if (OPS_SIN_VALOR.has(cond.op)) return caja; // el operador ya lo dice todo
+
+  let control;
+  if (prop.type === "select") {
+    control = document.createElement("select");
+    const vacio = document.createElement("option");
+    vacio.value = "";
+    vacio.textContent = "—";
+    control.appendChild(vacio);
+    const opciones = [...(prop.options || [])];
+    if (cond.value && !opciones.includes(cond.value)) opciones.push(cond.value);
+    opciones.forEach((valor) => {
+      const opcion = document.createElement("option");
+      opcion.value = valor;
+      opcion.textContent = valor;
+      control.appendChild(opcion);
+    });
+    control.value = cond.value || "";
+  } else if (prop.type === "relation") {
+    control = controlDeRelacion(prop, cond);
+  } else if (prop.type === "date") {
+    control = document.createElement("input");
+    control.type = "date";
+    control.value = cond.value || "";
+  } else if (prop.type === "number") {
+    control = document.createElement("input");
+    control.type = "number";
+    control.step = "any";
+    control.value = cond.value ?? "";
+  } else {
+    control = document.createElement("input");
+    control.type = "text";
+    control.placeholder = "valor";
+    control.value = cond.value ?? "";
+  }
+
+  control.classList.add("filter-value-input");
+  control.setAttribute("aria-label", `Valor de la condición ${indice + 1}`);
+  const leer = () => {
+    cond.value = control.value;
+  };
+  control.addEventListener("input", leer);
+  control.addEventListener("change", leer);
+  caja.appendChild(control);
+  return caja;
+}
+
+function controlDeRelacion(prop, cond) {
+  const titulos = titulosDeRelacion.get(prop.key);
+  if (!titulos) {
+    // Sin la lista del destino: se escribe el id, que es lo que guarda la
+    // celda. El desplegable llega cuando carga `cargarTitulosDeRelacion`.
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "id de la fila";
+    input.value = cond.value ?? "";
+    return input;
+  }
+  const select = document.createElement("select");
+  const vacio = document.createElement("option");
+  vacio.value = "";
+  vacio.textContent = "—";
+  select.appendChild(vacio);
+  titulos.forEach((titulo, id) => {
+    const opcion = document.createElement("option");
+    opcion.value = id;
+    opcion.textContent = titulo;
+    select.appendChild(opcion);
+  });
+  if (cond.value && !titulos.has(cond.value)) {
+    const huerfana = document.createElement("option");
+    huerfana.value = cond.value;
+    huerfana.textContent = cond.value;
+    select.appendChild(huerfana);
+  }
+  select.value = cond.value || "";
+  return select;
+}
+
+document.getElementById("btn-add-filter").addEventListener("click", () => {
+  const ctx = filterDialogCtx;
+  const prop = ctx?.database.schema_def[0];
+  if (!ctx || !prop) return;
+  ctx.condiciones.push({ key: prop.key, op: operadorPorDefecto(prop), value: "" });
+  filterStatusEl.textContent = "";
+  pintarFilasDeFiltro();
+});
+
+document.getElementById("btn-cancel-filter").addEventListener("click", () => {
+  filterDialog.close();
+});
+
+document.getElementById("btn-clear-filter").addEventListener("click", async () => {
+  const ctx = filterDialogCtx;
+  if (!ctx) return;
+  filterDialog.close();
+  await ctx.onCambio({ filters: [] });
+});
+
+document.getElementById("btn-apply-filter").addEventListener("click", async () => {
+  const ctx = filterDialogCtx;
+  if (!ctx) return;
+  const filtros = [];
+  const sinValor = [];
+  ctx.condiciones.forEach((cond, indice) => {
+    if (!cond.key) return;
+    if (OPS_SIN_VALOR.has(cond.op)) {
+      filtros.push({ key: cond.key, op: cond.op });
+      return;
+    }
+    const valor = cond.value === null || cond.value === undefined ? "" : String(cond.value);
+    if (valor.trim() === "") {
+      sinValor.push(indice + 1);
+      return;
+    }
+    filtros.push({ key: cond.key, op: cond.op, value: valor.trim() });
+  });
+  if (sinValor.length) {
+    // A medias no: una condición sin valor filtraría por «vacío», que no es lo
+    // que se está pidiendo.
+    filterStatusEl.textContent = `Falta el valor de ${
+      sinValor.length === 1 ? "la condición" : "las condiciones"
+    } ${sinValor.join(", ")}.`;
+    return;
+  }
+  filterDialog.close();
+  await ctx.onCambio({ filters: filtros });
+});
+
+// ---------------------------------------------------- panel de orden (dialog)
+function openSortDialog(database, view, onCambio) {
+  sortStatusEl.textContent = "";
+  document.getElementById("sort-view-name").textContent = view.name;
+  sortDialogCtx = { database, view, onCambio, claves: clavesDeOrden(view.config) };
+  pintarFilasDeOrden();
+  sortDialog.showModal();
+}
+
+function pintarFilasDeOrden() {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  sortRowsEl.textContent = "";
+  ctx.claves.forEach((clave, indice) => {
+    sortRowsEl.appendChild(filaDeOrden(ctx.database, ctx.claves, clave, indice));
+  });
+  if (ctx.claves.length === 0) {
+    const vacio = document.createElement("p");
+    vacio.className = "filter-empty";
+    vacio.textContent = "Sin claves: las filas salen en el orden de la base.";
+    sortRowsEl.appendChild(vacio);
+  }
+  document.getElementById("btn-add-sort").disabled = ctx.database.schema_def.length === 0;
+}
+
+function filaDeOrden(database, claves, clave, indice) {
+  const fila = document.createElement("div");
+  fila.className = "filter-row";
+
+  const propSelect = document.createElement("select");
+  propSelect.className = "filter-prop";
+  propSelect.setAttribute("aria-label", `Propiedad de la clave ${indice + 1}`);
+  const usadas = new Set(claves.filter((_, i) => i !== indice).map((otra) => otra.key));
+  database.schema_def.forEach((prop) => {
+    if (usadas.has(prop.key)) return; // una propiedad, una clave
+    const opcion = document.createElement("option");
+    opcion.value = prop.key;
+    opcion.textContent = prop.name;
+    propSelect.appendChild(opcion);
+  });
+  if (![...propSelect.options].some((o) => o.value === clave.key)) {
+    const opcion = document.createElement("option");
+    opcion.value = clave.key;
+    opcion.textContent = nombreDePropiedad(database, clave.key);
+    propSelect.appendChild(opcion);
+  }
+  propSelect.value = clave.key;
+  propSelect.addEventListener("change", () => {
+    clave.key = propSelect.value;
+  });
+
+  const dirSelect = document.createElement("select");
+  dirSelect.className = "filter-op";
+  dirSelect.setAttribute("aria-label", `Dirección de la clave ${indice + 1}`);
+  [
+    ["asc", "ascendente ↑"],
+    ["desc", "descendente ↓"],
+  ].forEach(([valor, etiqueta]) => {
+    const opcion = document.createElement("option");
+    opcion.value = valor;
+    opcion.textContent = etiqueta;
+    dirSelect.appendChild(opcion);
+  });
+  dirSelect.value = clave.dir;
+  dirSelect.addEventListener("change", () => {
+    clave.dir = dirSelect.value === "desc" ? "desc" : "asc";
+  });
+
+  const mover = (texto, etiqueta, desplazamiento, desactivado) => {
+    const boton = document.createElement("button");
+    boton.type = "button";
+    boton.className = "filter-move";
+    boton.textContent = texto;
+    boton.title = etiqueta;
+    boton.setAttribute("aria-label", etiqueta);
+    boton.disabled = desactivado;
+    boton.addEventListener("click", () => {
+      const destino = indice + desplazamiento;
+      [claves[indice], claves[destino]] = [claves[destino], claves[indice]];
+      pintarFilasDeOrden();
+    });
+    return boton;
+  };
+
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "filter-remove";
+  quitar.innerHTML = svgIcon("i-x");
+  quitar.title = "Quitar esta clave";
+  quitar.setAttribute("aria-label", `Quitar la clave ${indice + 1}`);
+  quitar.addEventListener("click", () => {
+    claves.splice(indice, 1);
+    pintarFilasDeOrden();
+  });
+
+  fila.append(
+    propSelect,
+    dirSelect,
+    mover("↑", "Subir la clave", -1, indice === 0),
+    mover("↓", "Bajar la clave", 1, indice === claves.length - 1),
+    quitar,
+  );
+  return fila;
+}
+
+document.getElementById("btn-add-sort").addEventListener("click", () => {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  const usadas = new Set(ctx.claves.map((clave) => clave.key));
+  const libre = ctx.database.schema_def.find((prop) => !usadas.has(prop.key));
+  if (!libre) {
+    sortStatusEl.textContent = "Ya están todas las propiedades en el orden.";
+    return;
+  }
+  sortStatusEl.textContent = "";
+  ctx.claves.push({ key: libre.key, dir: "asc" });
+  pintarFilasDeOrden();
+});
+
+document.getElementById("btn-cancel-sort").addEventListener("click", () => {
+  sortDialog.close();
+});
+
+document.getElementById("btn-clear-sort").addEventListener("click", async () => {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  sortDialog.close();
+  await ctx.onCambio({ sort: [] });
+});
+
+document.getElementById("btn-apply-sort").addEventListener("click", async () => {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  sortDialog.close();
+  await ctx.onCambio({
+    sort: ctx.claves.map((clave) => ({ key: clave.key, dir: clave.dir })),
+  });
+});
 
 // ------------------------------------- bases dentro de una nota (P17.2)
 /** Pinta, dentro de la nota, la base de un bloque ```mdm-database.
@@ -4641,11 +5429,26 @@ async function renderDatabaseEmbed(block, container) {
   // primera -- el mismo criterio que selectDatabase.
   const activeView = views.find((v) => view && v.name === view) || views[0] || null;
 
+  // La tabla incrustada usa la vista con la que está configurada, y eso
+  // incluye su filtro y su orden: los aplica el mismo `apply_view` del
+  // servidor, así que no hay una segunda versión de la regla en el navegador.
+  const filtros = filtrosDeVista(activeView);
+  const clavesOrden = clavesDeOrden(activeView?.config);
   let rows;
+  let total = null;
   try {
-    rows = await api(
-      `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
-    );
+    if (filtros.length) {
+      const [deLaVista, todas] = await Promise.all([
+        api(`/databases/${database.id}/rows?view=${activeView.id}`),
+        api(`/databases/${database.id}/rows`),
+      ]);
+      rows = deLaVista;
+      total = todas.length;
+    } else {
+      rows = await api(
+        `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
+      );
+    }
   } catch (e) {
     throw new Error(describeError(e));
   }
@@ -4672,14 +5475,21 @@ async function renderDatabaseEmbed(block, container) {
   // ya viene filtrada y ordenada por `?view=`.
   const body = document.createElement("div");
   body.className = "db-embed-body";
-  const pintar = (filas) => {
-    meta.textContent = `${activeView ? activeView.name : "Todas"} · ${filas.length} ${
-      filas.length === 1 ? "fila" : "filas"
-    }`;
+  const pintar = (filas, totalBase = null) => {
+    meta.textContent = `${activeView ? activeView.name : "Todas"} · ${textoDeRecuento(
+      filas.length,
+      totalBase,
+    )}`;
     body.textContent = "";
-    body.append(renderTable(database, filas, { readOnly: true }));
+    body.append(
+      renderTable(database, filas, {
+        readOnly: true,
+        sort: clavesOrden,
+        vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+      }),
+    );
   };
-  pintar(rows);
+  pintar(rows, total);
 
   // El bloque se apunta para que otro bloque de la MISMA base pueda pedirle
   // que se repinte con lo que diga el servidor, sin rehacer el widget: así se
@@ -4692,10 +5502,15 @@ async function renderDatabaseEmbed(block, container) {
       const filas = await api(
         `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
       );
+      let totalBase = null;
+      if (filtros.length) {
+        const todas = await api(`/databases/${database.id}/rows`);
+        totalBase = todas.length;
+      }
       // El bloque pudo irse mientras llegaba la respuesta (el editor rehace
       // los widgets con cada aviso de base): pintar en el hueco que ya no está
       // no rompe nada, pero es trabajo tirado.
-      if (container.isConnected) pintar(filas);
+      if (container.isConnected) pintar(filas, totalBase);
     },
   });
 
@@ -5083,7 +5898,11 @@ async function saveRow(database, row, changes) {
  * sin celdas editables, sin columna de borrado y sin alta -- ahí solo se lee,
  * y para cambiar algo se abre la base. Es la MISMA tabla a propósito: dos
  * renders distintos acabarían enseñando cosas distintas. */
-function renderTable(database, rows, { readOnly = false } = {}) {
+function renderTable(
+  database,
+  rows,
+  { readOnly = false, sort = [], onToggleSort = null, vacio = null } = {},
+) {
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
 
@@ -5097,10 +5916,28 @@ function renderTable(database, rows, { readOnly = false } = {}) {
   // enseñarla; la fila se sigue llamando por su `id`, que es su fichero.
   const muestraTitulo = !database.title_hidden;
   const rotuloTitulo = database.title_name || "Título";
-  headRow.innerHTML =
-    (muestraTitulo ? `<th scope="col">${escapeHtml(rotuloTitulo)}</th>` : "") +
-    database.schema_def.map((p) => `<th scope="col">${escapeHtml(p.name)}</th>`).join("") +
-    (readOnly ? "" : '<th scope="col"><span class="sr-only">Acciones</span></th>');
+  if (muestraTitulo) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = rotuloTitulo;
+    headRow.appendChild(th);
+  }
+  // Cada propiedad es una cabecera que ordena, cuando hay dónde guardar ese
+  // orden (la pestaña «Todas» no tiene vista en la que escribirlo, y la tabla
+  // incrustada es de solo lectura). El título no: el servidor no ordena por
+  // él, y una flecha que no hace nada sería mentir.
+  database.schema_def.forEach((p) =>
+    headRow.appendChild(celdaDeCabecera(p, sort, onToggleSort)),
+  );
+  if (!readOnly) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    const soloTexto = document.createElement("span");
+    soloTexto.className = "sr-only";
+    soloTexto.textContent = "Acciones";
+    th.appendChild(soloTexto);
+    headRow.appendChild(th);
+  }
   thead.appendChild(headRow);
 
   const tbody = document.createElement("tbody");
@@ -5110,7 +5947,7 @@ function renderTable(database, rows, { readOnly = false } = {}) {
     td.colSpan =
       database.schema_def.length + (muestraTitulo ? 1 : 0) + (readOnly ? 0 : 1);
     td.className = "search-empty";
-    td.textContent = "Sin filas todavía.";
+    td.textContent = vacio || "Sin filas todavía.";
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
