@@ -1246,10 +1246,16 @@
   }
   #note-body .cm-content:has(.cm-mdm-last-line)::after,
   #row-page-body .cm-content:has(.cm-mdm-last-line)::after { display: none; }
-  #note-body .cm-content::after:hover,
-  #row-page-body .cm-content::after:hover {
+  /* Al pasar el ratón por el cuerpo aparece el mismo punto, allí donde se
+     seguiría escribiendo -- el mismo criterio que las asas de bloque, que
+     también se enseñan al pasar por encima. Es `:hover` del .cm-content y no
+     del `::after` a propósito: un pseudo-elemento no recibe el ratón (la
+     regla `::after:hover` no casa nunca, y el `elementFromPoint` de esa banda
+     devuelve el .cm-content). */
+  #note-body .cm-content:hover::after,
+  #row-page-body .cm-content:hover::after {
     background-image: radial-gradient(circle at 6px 50%, var(--ink-muted) 0 2px, transparent 2.5px);
-    opacity: 0.35;
+    opacity: 0.3;
   }
 
   /* ---------- separación entre bloques (al estilo Notion) ----------
