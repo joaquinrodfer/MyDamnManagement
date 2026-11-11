@@ -174,6 +174,47 @@ def title_key(title: str) -> str:
 # propiedad llamada `id`. Ver HALLAZGOS §9.3.
 RESERVED_ROW_KEYS = frozenset({"title", "id", "icon", "description", "created", "updated", "type"})
 
+# Tipo de propiedad cuyas celdas apuntan a filas de otra base (`target_database`
+# en su `schema`). El valor es el **`id`** de la fila, nunca su título: los
+# títulos cambian y una relación guardada por título se rompe al renombrar.
+#   simple:    contacto: 7f3a91c2-...
+#   múltiple:  contacto: [7f3a91c2-..., 91be02dd-...]
+RELATION = "relation"
+
+
+def relation_multiple(prop: dict) -> bool:
+    """¿La relación enlaza varias filas?
+
+    `multiple` es un booleano en la API, pero el `.md` es YAML **sin tipos**:
+    `multiple: false` vuelve del parser como el texto `"false"`, que en Python
+    (y en JS) es *verdadero*. Por eso no vale `bool(prop.get("multiple"))`.
+    """
+    if not isinstance(prop, dict):
+        return False
+    raw = prop.get("multiple")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes", "on", "si", "sí")
+
+
+def relation_id(raw) -> str | None:
+    """El id de fila que hay en `raw`, o `None` si no es un id.
+
+    El `.md` es del usuario: una propiedad `relation` pudo guardar texto libre
+    antes de que el tipo validara, y eso se lee como «sin valor» (el fichero no
+    se toca). Devuelve el id en su forma canónica (minúsculas), que es la que
+    usa el índice.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (str, uuid.UUID)):
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except (TypeError, ValueError):
+        return None
+
 
 def name_in_nfc(rel_path: str) -> bool:
     """¿El nombre de fichero (sin .md) ya está en NFC?
@@ -189,10 +230,31 @@ def name_in_nfc(rel_path: str) -> bool:
 # lectura
 # --------------------------------------------------------------------------
 
+def _relation_value(prop: dict, raw):
+    """El id (o los ids) que hay en la celda, o `None` si no hay ninguno.
+
+    Una relación **simple** guarda un id; una **múltiple**, una lista. Lo que
+    no es un id se descarta: una lista con un elemento ilegible conserva los
+    legibles, y una relación simple con una lista de más de un id no se puede
+    representar (se lee como sin valor). Nunca se lanza: leer un `.md` con
+    basura no puede tumbar el reindexado ni cambiar el fichero.
+    """
+    if relation_multiple(prop):
+        items = raw if isinstance(raw, list) else [raw]
+        ids = [relation_id(item) for item in items]
+        validos = [one for one in ids if one]
+        return validos or None
+    if isinstance(raw, list):
+        return relation_id(raw[0]) if len(raw) == 1 else None
+    return relation_id(raw)
+
+
 def _coerce(prop: dict, raw):
     ptype = prop.get("type")
     if raw is None or raw == "":
         return None
+    if ptype == RELATION:
+        return _relation_value(prop, raw)
     if ptype == "number":
         try:
             return float(raw)
@@ -353,12 +415,39 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
                 "descripción, fechas o el título, que es el nombre del "
                 "fichero): se ignora en el índice y al guardar")
             continue
+        if isinstance(prop, dict):
+            prop = relation_property(prop)
         effective.append(prop)
         if not isinstance(prop, dict) or "key" not in prop:
             warnings.append(f"propiedad de schema inválida en {path}: {prop!r}")
         elif prop.get("type") not in TYPES:
             warnings.append(f"tipo desconocido {prop.get('type')!r} en {path}:{prop.get('key')}")
     return effective
+
+
+def relation_property(prop: dict) -> dict:
+    """La propiedad tal y como la entiende la app, si es una `relation`.
+
+    `target_database` sale canónico (minúsculas, con guiones) y `multiple` como
+    `True` o **ausente**: el `.md` no tiene tipos, así que `multiple: false`
+    vuelve del parser como el texto `"false"` —verdadero— y una relación simple
+    se leería como múltiple. Dejar la clave fuera cuando es falsa mantiene el
+    modelo (y la respuesta de la API) igual de escueto que el resto.
+
+    No valida nada: si la propiedad apunta a una base que no está (o a nada),
+    se devuelve como está y quien serializa la base avisa (`warning`).
+    """
+    if prop.get("type") != RELATION:
+        return prop
+    out = dict(prop)
+    target = relation_id(out.get("target_database"))
+    if target:
+        out["target_database"] = target
+    if relation_multiple(out):
+        out["multiple"] = True
+    else:
+        out.pop("multiple", None)
+    return out
 
 
 def database_title_name(page: Page) -> str | None:

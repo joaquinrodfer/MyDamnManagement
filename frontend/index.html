@@ -931,23 +931,34 @@
      una sección aparte (estilo Notion) -- incluso ocupa todo el ancho de
      #main, igual que el título. */
   #note-body .cm-editor { outline: none; background: transparent; }
-  #note-body .cm-content {
+  #row-page-body .cm-editor { outline: none; background: transparent; }
+  #note-body .cm-content,
+  #row-page-body .cm-content {
     padding: 4px 4px 220px 64px; /* la izquierda aloja las dos asas de bloque de 28x28 (28+2+28 = 58px) + 2px de aire; el hueco de
        abajo es a propósito -- clicar ahí (como en Notion) coloca el cursor al final del documento */
     font-family: var(--font-body); /* prosa con pinta de Notion; el código se fuerza aparte a --font-mono */
     font-size: 15px;
     line-height: 1.6;
+    /* Altura de una línea del cuerpo (15 x 1.6): la usan las líneas en blanco
+       (que ocupan una entera), el aire que descuentan los cm-mdm-space-* por
+       cada línea en blanco y la línea del final. Si cambia el font-size o el
+       line-height de aquí, cambia este número (y el del móvil, más abajo). */
+    --mdm-line: 24px;
     color: var(--ink);
     caret-color: var(--ink);
   }
   #note-body .cm-cursor { border-left-color: var(--ink); }
+  #row-page-body .cm-cursor { border-left-color: var(--ink); }
   #note-body .cm-selectionBackground { background: var(--accent-soft) !important; }
+  #row-page-body .cm-selectionBackground { background: var(--accent-soft) !important; }
   #note-body .cm-activeLine { background: transparent; }
+  #row-page-body .cm-activeLine { background: transparent; }
   /* El handle de bloque es un widget dentro de la línea, no un gutter (ver
      el porqué en frontend/editor-src/entry.js) -- por eso la línea necesita
      position:relative, para que el handle se posicione contra ELLA y no
      contra todo el editor. */
   #note-body .cm-line { position: relative; }
+  #row-page-body .cm-line { position: relative; }
 
   /* marcadores de sintaxis (#, **, *): visibles pero discretos. El propio
      parser de Markdown etiqueta "HeaderMark"/"EmphasisMark" con el mismo
@@ -1053,7 +1064,8 @@
      solo el aspecto, con el mismo lenguaje que el resto de menús flotantes.
      La lista la llena entry.js: una opción por página, «Crear «…»» delante
      cuando no hay coincidencia exacta. */
-  #note-body .cm-tooltip-autocomplete {
+  #note-body .cm-tooltip-autocomplete,
+  #row-page-body .cm-tooltip-autocomplete {
     background: var(--surface-elevated);
     border: 1px solid var(--panel-border);
     border-radius: 8px;
@@ -1061,7 +1073,8 @@
     overflow: hidden;
     z-index: 40;
   }
-  #note-body .cm-tooltip-autocomplete > ul {
+  #note-body .cm-tooltip-autocomplete > ul,
+  #row-page-body .cm-tooltip-autocomplete > ul {
     max-height: 240px;
     min-width: 220px;
     padding: 4px;
@@ -1070,7 +1083,8 @@
     font-family: var(--font-body);
     font-size: var(--text-md);
   }
-  #note-body .cm-tooltip-autocomplete > ul > li {
+  #note-body .cm-tooltip-autocomplete > ul > li,
+  #row-page-body .cm-tooltip-autocomplete > ul > li {
     display: flex;
     gap: 12px;
     align-items: baseline;
@@ -1083,18 +1097,22 @@
   }
   /* aria-selected es la opción activa (la que se lleva Enter). El ratón
      también la marca: el paquete escucha mousemove sobre la lista. */
-  #note-body .cm-tooltip-autocomplete > ul > li[aria-selected] {
+  #note-body .cm-tooltip-autocomplete > ul > li[aria-selected],
+  #row-page-body .cm-tooltip-autocomplete > ul > li[aria-selected] {
     background: var(--accent-soft);
     color: var(--ink);
   }
   #note-body .cm-tooltip-autocomplete .cm-completionLabel { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-  #note-body .cm-tooltip-autocomplete .cm-completionMatchedText {
+  #row-page-body .cm-tooltip-autocomplete .cm-completionLabel { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+  #note-body .cm-tooltip-autocomplete .cm-completionMatchedText,
+  #row-page-body .cm-tooltip-autocomplete .cm-completionMatchedText {
     color: var(--accent-ink);
     text-decoration: none;
     font-weight: 600;
   }
   /* El tipo de destino ("nota" / "base de datos") o "nota nueva" en «Crear». */
-  #note-body .cm-tooltip-autocomplete .cm-completionDetail {
+  #note-body .cm-tooltip-autocomplete .cm-completionDetail,
+  #row-page-body .cm-tooltip-autocomplete .cm-completionDetail {
     color: var(--ink-muted);
     font-size: var(--text-sm);
     font-style: normal;
@@ -1102,8 +1120,10 @@
   }
   /* «Crear «…»» (la primera opción cuando no hay coincidencia exacta). */
   #note-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-create .cm-completionLabel { color: var(--accent-ink); }
+  #row-page-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-create .cm-completionLabel { color: var(--accent-ink); }
   /* Sin notas / sin coincidencias: un aviso, no una fila que parezca elegible. */
   #note-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-empty { color: var(--ink-muted); cursor: default; }
+  #row-page-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-empty { color: var(--ink-muted); cursor: default; }
 
   /* ---------- sugerencias de agentes (P10c) ----------
      El parche se ve en su sitio: el texto viejo tachado y, justo detrás, el
@@ -1154,7 +1174,9 @@
      --font-mono aquí -- .cm-content ya no es monoespaciada (ver más arriba),
      así que sin esto el código se vería con la misma fuente que la prosa. */
   #note-body .cm-mdm-line-code { background: var(--code-bg); font-family: var(--font-mono); }
+  #row-page-body .cm-mdm-line-code { background: var(--code-bg); font-family: var(--font-mono); }
   #note-body .cm-mdm-line-list { padding-left: 4px; }
+  #row-page-body .cm-mdm-line-list { padding-left: 4px; }
 
   /* ---------- citas ("> texto", anidables con "> > texto") ----------
      Fondo gris clarito (el mismo --code-bg que el código) con bordes
@@ -1167,17 +1189,74 @@
      patrón cursor-aware que el resto: en edición se ve el Markdown crudo,
      con el ">" tenue). */
   #note-body .cm-mdm-line-quote { background: var(--code-bg); padding: 3px 12px; }
+  #row-page-body .cm-mdm-line-quote { background: var(--code-bg); padding: 3px 12px; }
   #note-body .cm-mdm-line-quote-first { border-radius: 8px 8px 0 0; padding-top: 8px; }
+  #row-page-body .cm-mdm-line-quote-first { border-radius: 8px 8px 0 0; padding-top: 8px; }
   #note-body .cm-mdm-line-quote-last { border-radius: 0 0 8px 8px; padding-bottom: 8px; }
+  #row-page-body .cm-mdm-line-quote-last { border-radius: 0 0 8px 8px; padding-bottom: 8px; }
   .cm-mdm-quote-bars { display: inline-flex; gap: 4px; margin-right: 10px; vertical-align: middle; }
   .cm-mdm-quote-bar { display: inline-block; width: 3px; height: 1.1em; border-radius: 2px; background: var(--accent); vertical-align: middle; }
 
-  /* Líneas en blanco usadas solo para separar bloques en Markdown: se
-     colapsan casi a 0 mientras no se está escribiendo ahí (cursor-aware,
-     ver blankLineDecorations en entry.js) -- el espacio real entre bloques
-     ya no sale de aquí, sino de cm-mdm-space-* (ver más abajo); esto solo
-     evita que el salto de línea que exige Markdown se vea como un hueco. */
-  #note-body .cm-mdm-blank-collapsed { font-size: 1px; line-height: 3px; }
+  /* Líneas en blanco: ocupan su altura de línea, como cualquier otra (ver
+     blankLineDecorations en entry.js). Antes se colapsaban a 3 px y una línea
+     en blanco entre dos párrafos no se distinguía del margen entre bloques;
+     ahora el hueco delata cuántas hay -- una deja una línea de aire y dos el
+     doble. La clase no cambia la altura (una .cm-line vacía ya mide lo que
+     mide una línea del cuerpo): es el gancho del indicador y del descuento de
+     aire que hacen los cm-mdm-space-*.
+
+     El indicador de la línea vacía donde está el cursor es un PUNTO tenue en
+     el margen, no un «escribe…»: el cursor ya dice dónde se escribe (una
+     barra repetiría el caret) y un texto de relleno parecería un formulario;
+     además mentiría en la línea en blanco que solo separa dos párrafos, donde
+     escribir parte el párrafo en vez de crear un bloque. Sin cursor no hay
+     nada; como mucho, el punto al pasar el ratón por encima. */
+  #note-body .cm-mdm-blank::after,
+  #row-page-body .cm-mdm-blank::after {
+    content: "";
+    position: absolute;
+    left: -14px;
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 50%;
+    background: var(--ink-muted);
+    opacity: 0;
+    pointer-events: none;
+  }
+  #note-body .cm-mdm-blank-active::after,
+  #row-page-body .cm-mdm-blank-active::after { opacity: 0.45; }
+  #note-body .cm-mdm-blank:hover::after,
+  #row-page-body .cm-mdm-blank:hover::after { opacity: 0.22; }
+
+  /* La línea vacía del final: SIEMPRE hay una debajo del último bloque, con su
+     altura, para seguir escribiendo sin buscar el hueco. Es un `::after` de
+     .cm-content, o sea puro CSS: el `.md` no gana ni un carácter (el cuerpo
+     guardado no acaba en salto, ver canonicalBody en body.js). Clicar ahí ya
+     crea el bloque nuevo -- ver el `mousedown` de blockHandleEventHandlers,
+     que intercepta los clics por debajo de la última línea. Si la última línea
+     del documento ya está vacía, se esconde: esa ES la línea del final. */
+  #note-body .cm-content::after,
+  #row-page-body .cm-content::after {
+    content: "";
+    display: block;
+    height: var(--mdm-line, 24px);
+    cursor: text;
+  }
+  #note-body .cm-content:has(.cm-mdm-last-line)::after,
+  #row-page-body .cm-content:has(.cm-mdm-last-line)::after { display: none; }
+  /* Al pasar el ratón por el cuerpo aparece el mismo punto, allí donde se
+     seguiría escribiendo -- el mismo criterio que las asas de bloque, que
+     también se enseñan al pasar por encima. Es `:hover` del .cm-content y no
+     del `::after` a propósito: un pseudo-elemento no recibe el ratón (la
+     regla `::after:hover` no casa nunca, y el `elementFromPoint` de esa banda
+     devuelve el .cm-content). */
+  #note-body .cm-content:hover::after,
+  #row-page-body .cm-content:hover::after {
+    background-image: radial-gradient(circle at 6px 50%, var(--ink-muted) 0 2px, transparent 2.5px);
+    opacity: 0.3;
+  }
 
   /* ---------- separación entre bloques (al estilo Notion) ----------
      Padding-top en la PRIMERA línea de cada bloque, según su tipo -- ver
@@ -1192,13 +1271,27 @@
      (el hueco se comía el bloque anterior) ni 6 px (que lo pegaba al de
      arriba). Los H1/H2 llevan además 4/3 px por debajo para que no se
      apoyen en el párrafo siguiente. El asa de bloque de más abajo repite el
-     padding-top de cada nivel: si cambia uno, cambia el otro. */
-  #note-body .cm-mdm-space-normal { padding-top: 6px; }
-  #note-body .cm-mdm-space-h1 { padding-top: 28px; padding-bottom: 4px; }
-  #note-body .cm-mdm-space-h2 { padding-top: 22px; padding-bottom: 3px; }
-  #note-body .cm-mdm-space-h3 { padding-top: 18px; }
-  #note-body .cm-mdm-space-h4 { padding-top: 14px; }
-  #note-body .cm-mdm-space-h5 { padding-top: 12px; }
+     padding-top de cada nivel: si cambia uno, cambia el otro.
+
+     Las líneas en blanco que el autor puso delante del bloque también son
+     aire, y NO se suman: `--mdm-blank` (lo pone blockSpacingDecorations
+     contando líneas) resta `--mdm-line` por cada una sin bajar de 0, así que
+     el hueco es max(espacio del tipo, líneas en blanco x línea). Una línea en
+     blanco entre dos párrafos deja exactamente una línea (24 px), dos dejan el
+     doble, y un H1 con una línea en blanco delante conserva sus 28 px
+     (28 - 24 = 4 de padding + los 24 de la línea). */
+  #note-body .cm-mdm-space-normal { padding-top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-normal { padding-top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h1 { padding-top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 4px; }
+  #row-page-body .cm-mdm-space-h1 { padding-top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 4px; }
+  #note-body .cm-mdm-space-h2 { padding-top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 3px; }
+  #row-page-body .cm-mdm-space-h2 { padding-top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); padding-bottom: 3px; }
+  #note-body .cm-mdm-space-h3 { padding-top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h3 { padding-top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h4 { padding-top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h4 { padding-top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h5 { padding-top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h5 { padding-top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
 
   /* ---------- handle de bloque (seleccionar/convertir/borrar) + botón "+" ----------
      Widget dentro de la línea (no gutter), posicionado en el hueco que deja
@@ -1226,17 +1319,25 @@
   /* Al recibir foco por teclado (:focus-within) el contenedor entero pasa a
      opacity: 1, para que el anillo :focus-visible de 2px se pinte al 100 %. */
   #note-body .cm-line:hover .cm-mdm-block-handle-wrap,
+  #row-page-body .cm-line:hover .cm-mdm-block-handle-wrap,
   #note-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
+  #row-page-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
   .cm-mdm-block-handle-wrap:focus-within,
   .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) {
     opacity: 1;
   }
-  #note-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: 28px; }
-  #note-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: 22px; }
-  #note-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: 18px; }
-  #note-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: 14px; }
-  #note-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: 12px; }
-  #note-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: 6px; }
+  #note-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h1 > .cm-mdm-block-handle-wrap { top: max(0px, calc(28px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h2 > .cm-mdm-block-handle-wrap { top: max(0px, calc(22px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h3 > .cm-mdm-block-handle-wrap { top: max(0px, calc(18px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h4 > .cm-mdm-block-handle-wrap { top: max(0px, calc(14px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-h5 > .cm-mdm-block-handle-wrap { top: max(0px, calc(12px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #note-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
+  #row-page-body .cm-mdm-space-normal > .cm-mdm-block-handle-wrap { top: max(0px, calc(6px - var(--mdm-blank, 0) * var(--mdm-line, 24px))); }
   .cm-mdm-block-add,
   .cm-mdm-block-handle {
     width: 28px;
@@ -1571,6 +1672,123 @@
      estado mudo). */
   .db-view-note { margin: -8px 0 16px; font-size: var(--text-sm); color: var(--ink-muted); }
 
+  /* ---------- filtros y orden de una vista ---------- */
+  /* La barra vive entre las pestañas y el cuerpo de la vista: los botones y el
+     recuento arriba, los chips de las condiciones activas debajo (encima de la
+     tabla, como se pide). */
+  .db-tools { display: flex; flex-direction: column; gap: 8px; margin: -6px 0 12px; }
+  .db-tools-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .db-tools .btn.is-active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  .db-count { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .db-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .db-chips:empty { display: none; }
+  .db-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 2px 3px 2px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 12px;
+  }
+  .db-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .db-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    border: none;
+    border-radius: 999px;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+  }
+  .db-chip-remove .svg-icon { width: 12px; height: 12px; }
+  .db-chip-remove:hover { background: var(--surface-elevated); }
+  .db-chip-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .db-sort-summary { font-size: 12px; color: var(--ink-muted); }
+  .btn-link {
+    padding: 2px 4px;
+    border: none;
+    background: none;
+    color: var(--accent-ink);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .btn-link:hover { color: var(--ink); }
+  .btn-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+
+  /* Cabecera que ordena: es un botón, pero se lee como la cabecera de antes. */
+  .th-sort {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .th-sort:hover { color: var(--accent-ink); }
+  .th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .th-sort.is-sorted { color: var(--accent-ink); }
+  .sort-arrow { font-size: 11px; }
+  .sort-priority { font-size: 10px; color: var(--ink-muted); }
+
+  /* Paneles de filtro y orden: una fila por condición o clave. */
+  .filter-rows { display: flex; flex-direction: column; gap: 8px; }
+  .filter-empty { margin: 0; font-size: var(--text-sm); color: var(--ink-muted); line-height: 1.5; }
+  .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .filter-row select,
+  .filter-row input {
+    min-width: 0;
+    min-height: var(--control-size);
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-input);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+  }
+  .filter-row .filter-prop { flex: 0 1 150px; }
+  .filter-row .filter-op { flex: 0 1 122px; }
+  .filter-row .filter-value { display: flex; flex: 1 1 130px; min-width: 0; }
+  .filter-row .filter-value > * { width: 100%; }
+  .filter-remove,
+  .filter-move {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .filter-remove .svg-icon { width: 14px; height: 14px; }
+  .filter-remove:hover,
+  .filter-move:hover:not([disabled]) { border-color: var(--panel-border); color: var(--ink); background: var(--code-bg); }
+  .filter-remove:focus-visible,
+  .filter-move:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filter-move[disabled] { opacity: 0.35; cursor: default; }
+  .filter-add { align-self: flex-start; margin-top: 10px; }
+  .field-note { margin: 10px 0 0; font-size: 12px; color: var(--ink-muted); line-height: 1.5; }
+  .dialog-status { margin: 8px 0 0; font-size: 12.5px; color: var(--warn); }
+  .dialog-status:empty { display: none; }
+
   /* «+ Nueva fila» de una vista: tabla incrustada en una nota, lista y agenda
      del calendario. El botón se cambia por el campo del nombre (form) y la
      fila se crea con Enter; el aviso de «el filtro no la enseña» va debajo. */
@@ -1633,8 +1851,42 @@
     color: var(--ink-muted);
     font-weight: 600;
   }
-  /* Primera columna = títulos de fila: es la jerarquía de la tabla. */
-  .rows-table td:first-child { font-weight: 600; color: var(--ink); }
+  /* La columna del título es la jerarquía de la tabla. Va por clase y no por
+     `:first-child`: desde la vista de fila la primera columna es la de abrir
+     (`renderTable`), y con el título oculto (`title_hidden`) no hay ninguna
+     que destacar. */
+  .rows-table td.cell-title { font-weight: 600; color: var(--ink); }
+  /* Columna de abrir la fila como página: estrecha, y el botón discreto hasta
+     que se pasa por encima (en táctil se ve siempre, al 65 %). */
+  .rows-table th.row-open-head { width: 34px; }
+  .rows-table td.row-open-cell {
+    width: 34px;
+    max-width: none;
+    padding: 2px 4px;
+    text-align: center;
+  }
+  .row-open {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+    opacity: 0.65;
+    transition: background-color var(--dur-fast) var(--ease-std),
+                opacity var(--dur-fast) var(--ease-std);
+  }
+  .row-open:hover, .row-open:focus-visible {
+    opacity: 1;
+    color: var(--ink);
+    background: var(--accent-soft);
+  }
+  .row-open .svg-icon { width: 15px; height: 15px; }
   .rows-table tr:hover td { background: var(--code-bg); }
   .rows-table td:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
   /* Scroll horizontal propio y SIEMPRE visible: a 1024 px la tabla mide
@@ -1657,6 +1909,19 @@
   .table-wrap::-webkit-scrollbar-track { background: var(--bg); border-top: 1px solid var(--panel-border); }
   .table-wrap::-webkit-scrollbar-thumb { background: var(--border-input); border-radius: 5px; border: 2px solid var(--bg); }
   .table-wrap table { margin: 0; }
+  /* El editor de una celda (`editCell`) vive DENTRO del td, y el td lleva
+     `max-width: 240px` + `overflow: hidden`: sin esto, un `input[type=date]`
+     (que trae ancho intrínseco propio) desbordaba la celda a 375 px y el
+     editor se salía de la tabla. `font: inherit` para que el control se lea
+     como el valor que sustituye, no como un campo de formulario ajeno. */
+  .rows-table td input,
+  .rows-table td select {
+    max-width: 100%;
+    min-width: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+  }
 
   .board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; }
   /* Cada carril es un contenedor visual propio (--bg sobre el --panel del
@@ -1928,6 +2193,110 @@
   .inline-form > .field { margin-bottom: 0; }
   .inline-form > .btn-primary { height: var(--control-size); align-self: end; justify-self: start; }
 
+  /* ---------- fila abierta como página ---------- */
+  /* Abrir una fila la pinta ENCIMA de lo que estabas mirando (ver
+     `openRowPage` en app.js): la vista de debajo no se rehace, así que cerrar
+     devuelve al mismo sitio con el foco donde estaba. No es un <dialog> porque
+     sus menús flotantes —el `/`, el del asa, el contextual— cuelgan de <body>:
+     dentro del top layer quedarían debajo. El z-index va por debajo del suyo
+     (1000) y por encima del resto del panel. */
+  body.row-page-open { overflow: hidden; }
+  /* #main es el que desplaza la página (no el documento): mientras la fila
+     está encima no puede quedarse su barra a la vista junto a la del panel. */
+  body.row-page-open #main { overflow: hidden; }
+  .row-page { position: fixed; inset: 0; z-index: 850; display: flex; justify-content: center; }
+  .row-page-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); }
+  .row-page-panel {
+    position: relative;
+    margin: 4vh auto;
+    width: min(880px, 94vw);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-float);
+    overflow: hidden;
+  }
+  .row-page-panel:focus { outline: none; }
+  .row-page-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 6px 18px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--surface-elevated);
+  }
+  .row-page-crumbs {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-xs);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .row-page-savestatus { font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
+  .row-page-savestatus.is-error { color: var(--down); }
+  .row-page-scroll { overflow-y: auto; padding: 24px 40px 48px; }
+  .row-page-title {
+    width: 100%;
+    font-family: var(--font-body);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.011em;
+    line-height: 1.25;
+    border: none;
+    background: none;
+    color: var(--ink);
+    padding: 2px 0;
+    margin-bottom: 6px;
+    resize: none;
+    overflow: hidden;
+    display: block;
+  }
+  /* Propiedades: la misma rejilla compacta que el alta, con la etiqueta
+     encima del control (se lee mejor que «Nombre (tipo)» en una fila). */
+  .row-page-props {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 10px 18px;
+    padding: 14px 0;
+    margin-bottom: 10px;
+    border-top: 1px solid var(--panel-border);
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .row-page-prop { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .row-page-prop label {
+    font-family: var(--font-body);
+    font-size: var(--text-xs);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .row-page-prop input,
+  .row-page-prop select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 8px;
+    min-height: var(--control-size);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-input);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .row-page-prop input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    min-height: 0;
+    padding: 0;
+  }
+  .row-page-prop-empty { font-size: 12.5px; color: var(--ink-muted); margin: 0; grid-column: 1 / -1; }
+  .row-page-body { min-height: 40vh; }
+
   /* ---------- dialogs ---------- */
   /* 520 px (antes 440): con menos ancho la columna del nombre de la
      propiedad se truncaba. */
@@ -1983,7 +2352,7 @@
   /* Las listas de propiedades de los diálogos hacen su propio scroll: con
      muchas filas el diálogo crecía más que la ventana y los botones de
      acción se quedaban fuera de la pantalla. */
-  #prop-rows, #row-props { max-height: 55vh; overflow-y: auto; padding-right: 2px; }
+  #prop-rows { max-height: 55vh; overflow-y: auto; padding-right: 2px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
   /* Diálogos de cuenta (P11b): lista de usuarios y avisos en línea. */
@@ -2276,11 +2645,19 @@
        es el del asa de bloque de 44 + 4 de aire, y deja el cuerpo alineado con
        el título (que empieza a 64: 16 de margen + 44 del icono + 4). */
     #note-body .cm-editor { min-height: 55dvh; }
-    #note-body .cm-content {
+    #row-page-body .cm-editor { min-height: 55dvh; }
+    #note-body .cm-content,
+    #row-page-body .cm-content {
       padding: 4px 2px 40vh 92px;
       font-size: 16px;
       line-height: 1.65;
+      --mdm-line: calc(16px * 1.65); /* la misma cuenta que font-size x line-height */
     }
+    /* El punto de la línea vacía no cabe a la izquierda: ahí van las dos asas
+       de 44 px (de -92 a -4). Va pegado al principio del texto, y solo se ve
+       mientras la línea está vacía y con el cursor dentro. */
+    #note-body .cm-mdm-blank::after,
+    #row-page-body .cm-mdm-blank::after { left: 2px; }
     /* Asas de bloque en el móvil: «+» y «⋮⋮» seguidos, 44×44 cada uno, y el
        hueco de la izquierda crece a 92 px (44 + 44 + 4 de aire) para que los
        dos quepan sin tapar el texto. Antes el «+» se ocultaba y el asa no se
@@ -2346,7 +2723,7 @@
     .db-add-row-input { min-height: 44px; font-size: 16px; }
     .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
     .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed { font-size: 16px; min-height: 44px; }
-    #prop-rows, #row-props { max-height: 50dvh; }
+    #prop-rows { max-height: 50dvh; }
 
     /* --- panel de sugerencias: hoja inferior a todo el ancho --- */
     .note-suggestions-panel {
@@ -2420,6 +2797,22 @@
       transition: none !important;
       scroll-behavior: auto !important;
     }
+  }
+
+  @media (max-width: 768px) {
+    /* La fila abierta ocupa la pantalla: es una página, no un panel al lado. */
+    .row-page-panel {
+      width: 100vw;
+      max-width: none;
+      height: 100dvh;
+      max-height: 100dvh;
+      margin: 0;
+      border: none;
+      border-radius: 0;
+    }
+    .row-page-scroll { padding: 16px 16px 40px; }
+    .row-page-title { font-size: 24px; }
+    .row-page-props { grid-template-columns: 1fr; }
   }
 </style>
 <link rel="stylesheet" href="/graph.css" />
@@ -2593,21 +2986,38 @@
     </div>
   </dialog>
 
-  <!-- Editar la fila de una tarjeta del tablero: los mismos controles por tipo
-       que la tabla, en un diálogo (una tarjeta no da sitio para editarla). -->
-  <dialog id="dialog-row">
-    <h3>Editar fila</h3>
-    <div class="field">
-      <label for="row-title">Título</label>
-      <input type="text" id="row-title" />
-    </div>
-    <div id="row-props"></div>
+  <!-- Filtrar una vista: condiciones sobre sus propiedades, unidas con Y, que
+       se guardan en ESA vista (su `config` del .md), no en la base. -->
+  <dialog id="dialog-filter">
+    <h3>Filtrar «<span id="filter-view-name"></span>»</h3>
+    <div id="filter-rows" class="filter-rows"></div>
+    <button type="button" class="btn filter-add" id="btn-add-filter"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Condición</button>
+    <p class="field-note">Se enseñan las filas que cumplen <strong>todas</strong> las condiciones (Y). El filtro es de esta vista: las demás pestañas no lo heredan.</p>
+    <p class="dialog-status" id="filter-status" role="status"></p>
     <div class="dialog-actions">
-      <button class="btn" id="btn-cancel-row">Cancelar</button>
-      <button class="btn btn-primary" id="btn-save-row">Guardar</button>
+      <button class="btn" id="btn-clear-filter">Quitar filtro</button>
+      <button class="btn" id="btn-cancel-filter">Cancelar</button>
+      <button class="btn btn-primary" id="btn-apply-filter">Aplicar</button>
     </div>
   </dialog>
 
+  <!-- Ordenar una vista: varias claves en orden de prioridad, también en su
+       `config`. -->
+  <dialog id="dialog-sort">
+    <h3>Ordenar «<span id="sort-view-name"></span>»</h3>
+    <div id="sort-rows" class="filter-rows"></div>
+    <button type="button" class="btn filter-add" id="btn-add-sort"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Clave</button>
+    <p class="field-note">Manda la primera clave; las siguientes desempatan. Las filas sin valor van al final en las dos direcciones.</p>
+    <p class="dialog-status" id="sort-status" role="status"></p>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-clear-sort">Quitar orden</button>
+      <button class="btn" id="btn-cancel-sort">Cancelar</button>
+      <button class="btn btn-primary" id="btn-apply-sort">Aplicar</button>
+    </div>
+  </dialog>
+
+  <!-- Editar la fila de una tarjeta del tablero: los mismos controles por tipo
+       que la tabla, en un diálogo (una tarjeta no da sitio para editarla). -->
   <!-- Procesar una captura (P13): elegir la carpeta a la que va —una página
        existente hace de carpeta— o crear una nueva. El botón hace el PATCH de
        `parent_id` de siempre y después abre la nota. -->

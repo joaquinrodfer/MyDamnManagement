@@ -21,7 +21,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from app import index as index_mod
 from app.config import settings
@@ -57,6 +57,14 @@ def _uuid(value: Optional[str]) -> Optional[uuid.UUID]:
 
 def _load(value: Optional[str], default: Any) -> Any:
     return json.loads(value) if value else default
+
+
+# Cuántos ids caben en una consulta de resolución de relaciones. SQLite admite
+# miles de parámetros, pero el tope es del motor (32766 en las versiones que la
+# app soporta) y no queremos depender de él. Trocear sigue sin depender del
+# número de filas de la respuesta: una tabla de 20 filas resuelve sus títulos
+# con una sola consulta.
+_REFS_CHUNK = 900
 
 
 @dataclass(frozen=True)
@@ -943,13 +951,32 @@ class Repository:
                     config["filters"] = kept
                 else:
                     config.pop("filters", None)
+            # El orden admite las dos formas: una sola clave (`{key, dir}`,
+            # la de las vistas antiguas) o varias en prioridad (`[{key, dir}]`,
+            # la de la interfaz). Se traduce cada clave y se conserva la forma
+            # que tenía el fichero: renombrar una propiedad no es motivo para
+            # reescribir la vista con otro formato.
             sort = config.get("sort")
-            if isinstance(sort, dict) and isinstance(sort.get("key"), str):
-                new = mapped(sort["key"])
-                if new is None:
-                    config.pop("sort")
-                else:
-                    config["sort"] = {**sort, "key": new}
+            if isinstance(sort, dict):
+                claves_orden = [sort]
+            elif isinstance(sort, list):
+                claves_orden = sort
+            else:
+                claves_orden = []
+            traducidas: list[Any] = []
+            for item in claves_orden:
+                if isinstance(item, dict) and isinstance(item.get("key"), str):
+                    new = mapped(item["key"])
+                    if new is None:
+                        continue  # el orden hablaba de una propiedad borrada
+                    item = {**item, "key": new}
+                traducidas.append(item)
+            if not traducidas:
+                config.pop("sort", None)
+            elif isinstance(sort, dict):
+                config["sort"] = traducidas[0]
+            else:
+                config["sort"] = traducidas
             visible = config.get("visible_properties")
             if isinstance(visible, list):
                 config["visible_properties"] = [
@@ -972,6 +999,45 @@ class Repository:
             (str(database_id),),
         ).fetchall()
         return [_page(r) for r in rows]
+
+    def database_ids(self) -> set[str]:
+        """Los ids de todas las bases del índice, de una vez.
+
+        Lo usa la serialización de una base para saber si la `target_database`
+        de una propiedad `relation` sigue existiendo. Es una consulta, no una
+        por propiedad: la tabla tiene una fila por base del vault.
+        """
+        return {row["id"] for row in self.conn.execute("SELECT id FROM databases")}
+
+    def row_refs(self, ids: Iterable[str]) -> dict[str, tuple[str, str]]:
+        """`id -> (título, id de su base)` de las filas que existan.
+
+        **Una consulta por respuesta**, no una por celda ni una por fila: es lo
+        que evita el N+1 al devolver una tabla con relaciones (veinte filas con
+        relación resuelven sus veinte títulos en un solo `IN (...)`). Los ids que
+        ya no existen simplemente no aparecen en el mapa, y quien serializa los
+        pinta con `title: null` (fila borrada).
+
+        Se piden a `rows` (y no a `pages`) a propósito: solo una fila de una base
+        puede ser el destino de una relación, y así una página suelta con el
+        mismo id no se colaría como si fuera una fila.
+        """
+        wanted = [str(one) for one in ids]
+        if not wanted:
+            return {}
+        refs: dict[str, tuple[str, str]] = {}
+        for start in range(0, len(wanted), _REFS_CHUNK):
+            chunk = wanted[start:start + _REFS_CHUNK]
+            marks = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                "SELECT p.id AS id, p.title AS title, r.database_id AS database_id"
+                " FROM rows r JOIN pages p ON p.id = r.id"
+                f" WHERE r.id IN ({marks})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                refs[row["id"]] = (row["title"], row["database_id"])
+        return refs
 
     def get_row(self, database_id: uuid.UUID, row_id: uuid.UUID) -> Optional[Page]:
         row = self.conn.execute(
@@ -1001,7 +1067,15 @@ class Repository:
         title: Optional[str] = None,
         icon: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
+        body_markdown: Any = UNSET,
     ) -> Optional[Page]:
+        """Escribe la fila (frontmatter y/o cuerpo) y reindexa el MISMO `.md`.
+
+        `body_markdown` es `UNSET` cuando el PATCH no manda cuerpo: guardar una
+        celda no puede borrar lo que el usuario tenga escrito en la fila. `""`
+        sí vacía el cuerpo. La ruta no cambia (el fichero se llama por el `id`
+        de la fila), así que renombrar tampoco mueve nada.
+        """
         current = self.get_row(database_id, row_id)
         if current is None:
             return None
@@ -1017,13 +1091,14 @@ class Repository:
             # que sustituye la línea de esa clave y deja el resto byte a byte.
             # `None` sigue significando «borra esa clave», como antes.
             merged = dict(properties)
-        if merged is None and title is None and icon is None:
+        if merged is None and title is None and icon is None and body_markdown is UNSET:
             return current
         self.vault.save_row(
             row_id,
             title=UNSET if title is None else title,
             icon=UNSET if icon is None else icon,
             properties=UNSET if merged is None else merged,
+            body=body_markdown,
         )
         return self.get_row(database_id, row_id)
 

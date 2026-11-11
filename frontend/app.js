@@ -240,6 +240,10 @@ function pageIconProps(type, icon) {
  * memoria) aunque su DOM ya no exista, porque quitarle el nodo padre no lo
  * destruye por sí solo. */
 function clearMain() {
+  // La fila abierta como página cuelga de <body>, no de #main: si se navega
+  // (un wikilink, atrás, borrar la página abierta) hay que cerrarla, o se
+  // quedaría encima de otra página con el editor de la fila viejo dentro.
+  cerrarRowPage({ devolverFoco: false });
   // El selector de bases (/base) escribe su filtro DENTRO del documento
   // mientras está abierto. Al dejar la nota su ViewPlugin se destruye y nadie
   // borraba ese tramo: el filtro se quedaba de párrafo suelto y el
@@ -2147,6 +2151,150 @@ function closeSuggestionsPanel() {
   }
 }
 
+/** El menú contextual de un bloque (el asa): convertir, insertar, duplicar,
+ * mover y eliminar. Es el MISMO en una nota y en una fila abierta como
+ * página; lo único que cambia es qué hay que hacer después de editar el
+ * documento, y eso llega en `alEditar` (guardar la nota, guardar la fila). */
+function mostrarMenuDeBloque(payload, alEditar) {
+  const n = payload.count;
+  const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
+  const mover = [];
+  // Mover es de UN bloque: con varios marcados no se ofrece (no está claro a
+  // dónde va el grupo). En móvil es la vía del reordenado -- el arrastre con el
+  // asa es cosa del ratón.
+  if (n === 1) {
+    if (payload.canMoveUp) {
+      mover.push({
+        label: "Mover arriba",
+        onClick: () => {
+          payload.moveUp();
+          alEditar();
+        },
+      });
+    }
+    if (payload.canMoveDown) {
+      mover.push({
+        label: "Mover abajo",
+        onClick: () => {
+          payload.moveDown();
+          alEditar();
+        },
+      });
+    }
+  }
+  showContextMenu(payload.x, payload.y, [
+    { label: header, items: [] },
+    {
+      label: "Convertir a",
+      items: payload.types.map((t) => ({
+        label: t.label,
+        onClick: () => {
+          payload.convertTo(t.type);
+          alEditar();
+        },
+      })),
+    },
+    {
+      items: [
+        {
+          label: "Insertar bloque arriba",
+          onClick: () => {
+            payload.insertAbove();
+            alEditar();
+          },
+        },
+        {
+          label: `Duplicar ${n > 1 ? "bloques" : "bloque"}`,
+          onClick: () => {
+            payload.duplicateBlocks();
+            alEditar();
+          },
+        },
+        ...mover,
+      ],
+    },
+    {
+      items: [
+        {
+          label: `Eliminar ${n > 1 ? "bloques" : "bloque"}`,
+          danger: true,
+          onClick: () => {
+            payload.deleteBlocks();
+            alEditar();
+          },
+        },
+      ],
+    },
+  ]);
+}
+
+/** Crea una nota HERMANA de la que se está mirando (mismo `parent_id`, o la
+ * raíz si no tiene): es lo que pide un `[[Título nuevo]]` escrito en el
+ * cuerpo. Compartida por la nota y la fila abierta como página -- la fila no
+ * puede ser carpeta de nada, así que la nueva nota no cuelga de ella. */
+async function crearNotaHermana(parentId, title) {
+  try {
+    const created = await api("/pages", {
+      method: "POST",
+      body: JSON.stringify({ title, parent_id: parentId ?? null, body_markdown: "" }),
+    });
+    await loadTree();
+    return { id: created.id, title: created.title };
+  } catch (e) {
+    if (e?.status === 401) return null; // ya se está yendo al login
+    reportError(`No se pudo crear la nota «${title}»`, e);
+    return null; // el editor no inserta nada si no hay título
+  }
+}
+
+/** Renombra una nota del vault desde el selector de `/page` del editor: el
+ * nombre tiene que estar libre entre sus hermanas (el servidor desambigua en
+ * silencio con un «(2)», y ese duplicado es justo lo que no se quiere).
+ * Devuelve `{id, title}` con el nombre que quedó, o `null`.
+ *
+ * Lo comparten la nota (que además refresca su cabecera si se ha renombrado a
+ * sí misma) y la fila abierta como página. */
+async function renombrarPaginaDelVault(pageId, title) {
+  const nombre = String(title || "").trim();
+  const node = state.pagesById.get(pageId);
+  if (!nombre || !node) return null;
+  // Se compara la carpeta tal cual -- `""` y `null` son la raíz --, no con
+  // childTitleTaken: esa compara `String(null)` y con la raíz nunca encontraba
+  // nada.
+  const carpeta = (n) => String(n.parent_id ?? "");
+  for (const otra of state.pagesById.values()) {
+    if (String(otra.id) === String(pageId)) continue;
+    if (carpeta(otra) !== carpeta(node)) continue;
+    if (!sameTitle(otra.title, nombre)) continue;
+    showError(`Ya hay una página llamada «${otra.title}» en esa carpeta. Elige otro nombre.`);
+    return null;
+  }
+  let updated;
+  try {
+    updated = await api(`/pages/${pageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title: nombre }),
+    });
+  } catch (e) {
+    if (e?.status === 401) return null;
+    reportError(`No se pudo renombrar «${node.title}»`, e);
+    return null;
+  }
+  await loadTree();
+  // El vigilante verá el `.md` renombrado y lo contará por /events como una
+  // edición de FUERA; es nuestra, así que se apunta para no enseñar el aviso
+  // «esta nota cambió en disco» (que además bloquearía el guardado pendiente
+  // del nombre que el editor acaba de quitar del cuerpo).
+  state.ownRemoteEvents.set(String(pageId), Date.now());
+  if (!sameTitle(updated.title, nombre)) {
+    showError(
+      `La página se llama ahora «${updated.title}»: «${nombre}» no estaba libre ` +
+        "o no vale como nombre de fichero.",
+    );
+  }
+  return { id: pageId, title: updated.title };
+}
+
 function renderNote(page, backlinks) {
   const main = clearMain();
 
@@ -2844,52 +2992,17 @@ function renderNote(page, backlinks) {
   // duplicado es justo lo que no se quiere). Devuelve cómo ha quedado para que
   // el editor escriba el enlace con el título real.
   async function renamePageFromSlash(pageId, title) {
-    const nombre = String(title || "").trim();
-    const node = state.pagesById.get(pageId);
-    if (!nombre || !node) return null;
-    // El nombre nuevo tiene que estar libre entre sus hermanas. Se compara la
-    // carpeta tal cual -- `""` y `null` son la raíz --, no con childTitleTaken:
-    // esa compara `String(null)` y con la raíz nunca encontraba nada.
-    const carpeta = (n) => String(n.parent_id ?? "");
-    for (const otra of state.pagesById.values()) {
-      if (String(otra.id) === String(pageId)) continue;
-      if (carpeta(otra) !== carpeta(node)) continue;
-      if (!sameTitle(otra.title, nombre)) continue;
-      showError(`Ya hay una página llamada «${otra.title}» en esa carpeta. Elige otro nombre.`);
-      return null;
-    }
-    let updated;
-    try {
-      updated = await api(`/pages/${pageId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ title: nombre }),
-      });
-    } catch (e) {
-      if (e?.status === 401) return null;
-      reportError(`No se pudo renombrar «${node.title}»`, e);
-      return null;
-    }
-    await loadTree();
-    // El vigilante verá el `.md` renombrado y lo contará por /events como una
-    // edición de FUERA; es nuestra, así que se apunta para no enseñar el aviso
-    // «esta nota cambió en disco» (que además bloquearía el guardado pendiente
-    // del nombre que el editor acaba de quitar del cuerpo).
-    state.ownRemoteEvents.set(String(pageId), Date.now());
+    const resultado = await renombrarPaginaDelVault(pageId, title);
+    if (!resultado) return null;
     // Si se renombra la nota que está abierta, su cabecera tiene que enseñar
     // el nombre nuevo: el PATCH va por el editor, no por el campo del título.
     if (String(page.id) === String(pageId)) {
-      page.title = updated.title;
-      titleInput.value = updated.title;
+      page.title = resultado.title;
+      titleInput.value = resultado.title;
       autoResizeTitle();
       markActive(pageId);
     }
-    if (!sameTitle(updated.title, nombre)) {
-      showError(
-        `La página se llama ahora «${updated.title}»: «${nombre}» no estaba libre ` +
-          "o no vale como nombre de fichero.",
-      );
-    }
-    return { id: pageId, title: updated.title };
+    return resultado;
   }
 
   // Comando "Crear «…»" del autocompletado de "[[" (entry.js): la nota nueva
@@ -2902,18 +3015,7 @@ function renderNote(page, backlinks) {
   // con el título que haya quedado DE VERDAD en el servidor: el nombre se
   // normaliza al crearlo y "Lo que sea" puede acabar siendo otra cosa.
   async function createLinkedPage(title) {
-    try {
-      const created = await api("/pages", {
-        method: "POST",
-        body: JSON.stringify({ title, parent_id: page.parent_id ?? null, body_markdown: "" }),
-      });
-      await loadTree();
-      return { id: created.id, title: created.title };
-    } catch (e) {
-      if (e?.status === 401) return null; // ya se está yendo al login
-      reportError(`No se pudo crear la nota «${title}»`, e);
-      return null; // el editor no inserta nada si no hay título
-    }
+    return crearNotaHermana(page.parent_id, title);
   }
 
   // Comando "/base" (P17.3): crear la base aquí, colgando de ESTA nota -- el
@@ -2980,78 +3082,12 @@ function renderNote(page, backlinks) {
     onListPages: listPageEntries,
     currentPageId: page.id,
     onCreateLink: createLinkedPage,
-    onBlockContextMenu: (payload) => {
-      const n = payload.count;
-      const header = payload.currentTypeLabel || `${n} bloques seleccionados`;
-      const mover = [];
-      // Mover es de UN bloque: con varios marcados no se ofrece (no está claro
-      // a dónde va el grupo). En móvil es la vía del reordenado -- el arrastre
-      // con el asa es cosa del ratón.
-      if (n === 1) {
-        if (payload.canMoveUp) {
-          mover.push({
-            label: "Mover arriba",
-            onClick: () => {
-              payload.moveUp();
-              scheduleSave();
-            },
-          });
-        }
-        if (payload.canMoveDown) {
-          mover.push({
-            label: "Mover abajo",
-            onClick: () => {
-              payload.moveDown();
-              scheduleSave();
-            },
-          });
-        }
-      }
-      showContextMenu(payload.x, payload.y, [
-        { label: header, items: [] },
-        {
-          label: "Convertir a",
-          items: payload.types.map((t) => ({
-            label: t.label,
-            onClick: () => {
-              payload.convertTo(t.type);
-              scheduleSave();
-            },
-          })),
-        },
-        {
-          items: [
-            {
-              label: "Insertar bloque arriba",
-              onClick: () => {
-                payload.insertAbove();
-                scheduleSave();
-              },
-            },
-            {
-              label: `Duplicar ${n > 1 ? "bloques" : "bloque"}`,
-              onClick: () => {
-                payload.duplicateBlocks();
-                scheduleSave();
-              },
-            },
-            ...mover,
-          ],
-        },
-        {
-          items: [
-            {
-              label: `Eliminar ${n > 1 ? "bloques" : "bloque"}`,
-              danger: true,
-              onClick: () => {
-                payload.deleteBlocks();
-                scheduleSave();
-              },
-            },
-          ],
-        },
-      ]);
-    },
+    onBlockContextMenu: (payload) =>
+      mostrarMenuDeBloque(payload, () => {
+        noteBodyFallback = bodyText();
+        scheduleSave();
+        renderOutline();
+      }),
     onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
@@ -3723,14 +3759,15 @@ function handleDatabaseEvent(data) {
   if (!session) return;
   // El id va dentro de la valla; si no está en esta nota, el aviso no es suyo.
   if (!state.editor?.getValue?.().includes(data.database_id)) return;
-  // Eco de una fila que se acaba de añadir desde el propio bloque: su tabla ya
-  // se repintó con lo que devolvió la API (y el aviso y el foco están
-  // puestos), así que volver a pintarla desde cero solo los perdería. El
-  // cambio hecho en otra ventana no pasa por aquí y sí repinta.
+  // Eco de una fila que se acaba de añadir o de editar desde el propio bloque:
+  // su tabla ya está repintada con lo que devolvió la API (y el aviso, el foco
+  // y la celda en edición están puestos), así que volver a pintarla desde cero
+  // solo los perdería. El cambio hecho en otra ventana no pasa por aquí y sí
+  // repinta.
   if (
     data.action === "rows" &&
-    String(data.database_id) === ultimaFilaPropia.databaseId &&
-    Date.now() - ultimaFilaPropia.ts < 3000
+    String(data.database_id) === ultimoCambioPropio.databaseId &&
+    Date.now() - ultimoCambioPropio.ts < 3000
   ) {
     return;
   }
@@ -4578,16 +4615,79 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     main.insertBefore(nota, content);
   }
 
-  const rows = await api(`/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""));
+  // El filtro y el orden son de la vista y los aplica el servidor (`?view=`),
+  // que es el mismo `apply_view` que exporta el `.md`: no hay dos versiones de
+  // la regla. M no sale de la lista filtrada: cuando hay filtro se pide
+  // también la base entera, porque «3 de 10» es lo que hace honesto el recuento.
+  const filtros = filtrosDeVista(activeView);
+  const clavesOrden = clavesDeOrden(activeView?.config);
+  let rows;
+  let total = null;
+  if (!activeView) {
+    rows = await api(`/databases/${database.id}/rows`);
+  } else if (filtros.length) {
+    const [deLaVista, todas] = await Promise.all([
+      api(`/databases/${database.id}/rows?view=${activeView.id}`),
+      api(`/databases/${database.id}/rows`),
+    ]);
+    rows = deLaVista;
+    total = todas.length;
+  } else {
+    rows = await api(`/databases/${database.id}/rows?view=${activeView.id}`);
+  }
 
-  if (activeView && activeView.type === "board" && activeView.config?.group_by) {
+  // Guardar el filtro o el orden es un PATCH a la vista y un repintado con lo
+  // que el servidor acaba de escribir: la pantalla no guarda su propia copia.
+  const aplicarConfig = async (cambios) => {
+    try {
+      await guardarConfigDeVista(database, activeView, cambios);
+    } catch (e) {
+      reportError("No se pudo guardar el filtro ni el orden de la vista", e);
+      return;
+    }
+    await recargarVistas();
+  };
+
+  if (activeView) {
+    main.insertBefore(
+      renderViewTools({
+        database,
+        view: activeView,
+        visibles: rows.length,
+        total,
+        onCambio: aplicarConfig,
+      }),
+      content,
+    );
+  } else if (views.length) {
+    // «Todas» es la base entera y no tiene vista donde guardar un filtro: se
+    // dice, en vez de enseñar unos botones que no podrían recordar nada.
+    const notaTodas = document.createElement("p");
+    notaTodas.className = "db-view-note";
+    notaTodas.textContent =
+      "«Todas» es la base entera: el filtro y el orden son de una vista. Elige una pestaña para filtrar.";
+    main.insertBefore(notaTodas, content);
+  }
+
+  // Vacío honesto: no una tabla en blanco, sino el motivo escrito y la salida.
+  if (filtros.length && rows.length === 0) {
+    content.appendChild(avisoDeFiltroVacio(() => aplicarConfig({ filters: [] })));
+  } else if (activeView && activeView.type === "board" && activeView.config?.group_by) {
     content.appendChild(renderBoard(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "calendar") {
     content.appendChild(renderCalendar(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "list") {
     content.appendChild(renderList(database, rows, activeView, refresh));
   } else {
-    content.appendChild(renderTable(database, rows));
+    content.appendChild(
+      renderTable(database, rows, {
+        sort: clavesOrden,
+        onToggleSort: activeView
+          ? (key) => aplicarConfig({ sort: alternarOrden(clavesOrden, key) })
+          : null,
+        vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+      }),
+    );
   }
 
   const addRowForm = renderAddRowForm(database);
@@ -4606,17 +4706,769 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   }
 }
 
+// ------------------------------------------------ filtros y orden de una vista
+// El filtro y el orden son de LA VISTA, no de la base: viven en su `config`
+// --el frontmatter de `Bases/<slug>.md`-- y los aplica el servidor sobre
+// `GET /databases/{id}/rows?view=`. Aquí solo se editan y se enseñan; si se
+// filtrara otra vez en el navegador habría dos versiones de la regla y la
+// pantalla y el `.md` exportado podrían discrepar sin que nada lo dijera.
+//
+// Las condiciones se combinan con Y (una fila se enseña si las cumple todas).
+// El O entre grupos no existe todavía.
+
+const OPERADORES_TEXTO = [
+  ["eq", "es"],
+  ["neq", "no es"],
+  ["contains", "contiene"],
+  ["is_empty", "está vacío"],
+  ["is_not_empty", "no está vacío"],
+];
+
+/** Los operadores que ofrece cada tipo de propiedad, en el orden en que se
+ * leen. Los nombres son los que guarda el `.md` (`app/views.py`): cambiarlos
+ * aquí sin cambiarlos allí rompería los filtros ya escritos. */
+const OPERADORES_FILTRO = {
+  text: OPERADORES_TEXTO,
+  url: OPERADORES_TEXTO,
+  number: [
+    ["eq", "="],
+    ["neq", "≠"],
+    ["gt", ">"],
+    ["lt", "<"],
+    ["gte", "≥"],
+    ["lte", "≤"],
+    ["is_empty", "está vacío"],
+    ["is_not_empty", "no está vacío"],
+  ],
+  date: [
+    ["eq", "es"],
+    ["before", "antes de"],
+    ["after", "después de"],
+    ["is_empty", "está vacío"],
+  ],
+  select: [
+    ["eq", "es"],
+    ["neq", "no es"],
+  ],
+  multiselect: [
+    ["contains", "contiene"],
+    ["is_empty", "está vacío"],
+    ["is_not_empty", "no está vacío"],
+  ],
+  checkbox: [
+    ["checked", "marcado"],
+    ["unchecked", "desmarcado"],
+  ],
+  relation: [
+    ["includes", "incluye"],
+    ["is_empty", "está vacío"],
+    ["is_not_empty", "no está vacío"],
+  ],
+};
+
+/** Los operadores que no llevan valor: el estado lo dice el propio operador. */
+const OPS_SIN_VALOR = new Set(["is_empty", "is_not_empty", "checked", "unchecked"]);
+
+// Los títulos de las filas de las bases destino de una relación, para que el
+// valor de «incluye» sea un nombre y no un id. Se cachea por clave de
+// propiedad; si la base destino no se puede leer, el control pide el id.
+const titulosDeRelacion = new Map();
+
+function operadoresDe(prop) {
+  return OPERADORES_FILTRO[prop?.type] || OPERADORES_TEXTO;
+}
+
+function etiquetaDeOperador(prop, op) {
+  const par = operadoresDe(prop).find(([valor]) => valor === op);
+  return par ? par[1] : op;
+}
+
+function operadorPorDefecto(prop) {
+  return operadoresDe(prop)[0][0];
+}
+
+/** Los filtros de una vista, normalizados (una vista vieja puede no tener). */
+function filtrosDeVista(view) {
+  const filtros = view?.config?.filters;
+  if (!Array.isArray(filtros)) return [];
+  return filtros.filter((f) => f && typeof f === "object" && f.key && f.op);
+}
+
+/** Las claves de orden, aceptando la forma antigua de una sola clave
+ * (`sort: {key, dir}`), que las versiones anteriores escribían. */
+function clavesDeOrden(config) {
+  const bruto = config?.sort;
+  const lista = Array.isArray(bruto) ? bruto : bruto ? [bruto] : [];
+  return lista
+    .filter((clave) => clave && typeof clave === "object" && clave.key)
+    .map((clave) => ({ key: clave.key, dir: clave.dir === "desc" ? "desc" : "asc" }));
+}
+
+/** «3 filas» o «3 de 10 filas»: el recuento nunca cuenta solo una parte sin
+ * decir de qué es parte. `total` nulo es «no hay filtro». */
+function textoDeRecuento(visibles, total) {
+  const plural = (n) => (n === 1 ? "fila" : "filas");
+  if (total === null || total === undefined) return `${visibles} ${plural(visibles)}`;
+  return `${visibles} de ${total} ${plural(total)}`;
+}
+
+async function guardarConfigDeVista(database, view, cambios) {
+  const config = { ...(view.config || {}) };
+  for (const [clave, valor] of Object.entries(cambios)) {
+    // Lista vacía = no hay filtro ni orden: se quita la clave en vez de
+    // escribir `filters: []`, que el `.md` no necesita.
+    if (
+      valor === undefined ||
+      valor === null ||
+      (Array.isArray(valor) && valor.length === 0)
+    ) {
+      delete config[clave];
+    } else {
+      config[clave] = valor;
+    }
+  }
+  const guardada = await api(`/databases/${database.id}/views/${view.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ config }),
+  });
+  view.config = guardada?.config || config;
+  return guardada;
+}
+
+function nombreDePropiedad(database, key) {
+  return database.schema_def.find((p) => p.key === key)?.name || key;
+}
+
+/** Una condición en palabras, para el chip: «Fase es «lead»». */
+function textoDeCondicion(cond, database) {
+  const prop = database.schema_def.find((p) => p.key === cond.key);
+  if (!prop) return `${cond.key} ${cond.op}`;
+  const operador = etiquetaDeOperador(prop, cond.op);
+  if (OPS_SIN_VALOR.has(cond.op)) return `${prop.name} ${operador}`;
+  const valor =
+    prop.type === "relation"
+      ? titulosDeRelacion.get(prop.key)?.get(cond.value) || String(cond.value ?? "")
+      : String(cond.value ?? "");
+  return `${prop.name} ${operador} «${valor}»`;
+}
+
+/** Pinta UNA vez las condiciones como chips (con su aspa) y el resumen del
+ * orden. Se llama otra vez cuando llegan los títulos de las relaciones. */
+function pintarChipsDeVista(chips, database, filtros, claves, onCambio) {
+  chips.textContent = "";
+  filtros.forEach((cond, indice) => {
+    const chip = document.createElement("span");
+    chip.className = "db-chip";
+    const texto = document.createElement("span");
+    texto.textContent = textoDeCondicion(cond, database);
+    const quitar = document.createElement("button");
+    quitar.type = "button";
+    quitar.className = "db-chip-remove";
+    quitar.innerHTML = svgIcon("i-x");
+    quitar.title = "Quitar esta condición";
+    quitar.setAttribute("aria-label", `Quitar el filtro «${texto.textContent}»`);
+    quitar.addEventListener("click", () =>
+      onCambio({ filters: filtros.filter((_, i) => i !== indice) }),
+    );
+    chip.append(texto, quitar);
+    chips.appendChild(chip);
+  });
+  if (filtros.length > 1) {
+    const limpiar = document.createElement("button");
+    limpiar.type = "button";
+    limpiar.className = "btn-link";
+    limpiar.textContent = "Limpiar filtro";
+    limpiar.addEventListener("click", () => onCambio({ filters: [] }));
+    chips.appendChild(limpiar);
+  }
+  if (claves.length) {
+    const resumen = document.createElement("span");
+    resumen.className = "db-sort-summary";
+    const orden = claves
+      .map((clave) => `${nombreDePropiedad(database, clave.key)} ${clave.dir === "desc" ? "↓" : "↑"}`)
+      .join(" · ");
+    resumen.textContent = `Orden: ${orden}`;
+    const quitarOrden = document.createElement("button");
+    quitarOrden.type = "button";
+    quitarOrden.className = "btn-link";
+    quitarOrden.textContent = "Quitar orden";
+    quitarOrden.addEventListener("click", () => onCambio({ sort: [] }));
+    chips.append(resumen, quitarOrden);
+  }
+}
+
+/** La barra de la vista: «Filtrar», «Ordenar», el recuento honesto y los
+ * chips de las condiciones activas (encima de la tabla, como se pide). */
+function renderViewTools({ database, view, visibles, total, onCambio }) {
+  const filtros = filtrosDeVista(view);
+  const claves = clavesDeOrden(view.config);
+
+  const tools = document.createElement("div");
+  tools.className = "db-tools";
+
+  const cabeza = document.createElement("div");
+  cabeza.className = "db-tools-head";
+
+  const filtrar = document.createElement("button");
+  filtrar.type = "button";
+  filtrar.className = "btn" + (filtros.length ? " is-active" : "");
+  filtrar.textContent = filtros.length ? `Filtrar (${filtros.length})` : "Filtrar";
+  filtrar.setAttribute("aria-haspopup", "dialog");
+  if (database.schema_def.length === 0) {
+    // Sin propiedades no hay nada que filtrar: se dice, no se abre un panel
+    // vacío.
+    filtrar.disabled = true;
+    filtrar.title = "La base no tiene propiedades: no hay nada que filtrar.";
+  } else {
+    filtrar.addEventListener("click", () => openFilterDialog(database, view, onCambio));
+  }
+
+  const ordenar = document.createElement("button");
+  ordenar.type = "button";
+  ordenar.className = "btn" + (claves.length ? " is-active" : "");
+  ordenar.textContent = claves.length ? `Ordenar (${claves.length})` : "Ordenar";
+  ordenar.setAttribute("aria-haspopup", "dialog");
+  if (database.schema_def.length === 0) {
+    ordenar.disabled = true;
+    ordenar.title = "La base no tiene propiedades: no hay nada por lo que ordenar.";
+  } else {
+    ordenar.addEventListener("click", () => openSortDialog(database, view, onCambio));
+  }
+
+  const cuenta = document.createElement("span");
+  cuenta.className = "db-count";
+  cuenta.textContent = textoDeRecuento(visibles, filtros.length ? total : null);
+
+  cabeza.append(filtrar, ordenar, cuenta);
+  tools.appendChild(cabeza);
+
+  const chips = document.createElement("div");
+  chips.className = "db-chips";
+  if (filtros.length || claves.length) tools.appendChild(chips);
+  pintarChipsDeVista(chips, database, filtros, claves, onCambio);
+
+  // Un filtro sobre una relación enseña un id hasta que se conoce el título de
+  // la fila: con la lista de la base destino, el chip dice el nombre.
+  if (filtros.some((f) => database.schema_def.find((p) => p.key === f.key)?.type === "relation")) {
+    cargarTitulosDeRelacion(database).then(() => {
+      if (!chips.isConnected) return;
+      pintarChipsDeVista(chips, database, filtros, claves, onCambio);
+    });
+  }
+
+  return tools;
+}
+
+/** Reescribe el recuento de la barra SIN repintar la vista.
+ *
+ * El alta en línea de la lista y del calendario repinta solo su cuerpo, y el
+ * «N de M filas» vive en la barra que pinta `renderViewTools`: sin esto el
+ * contador se quedaba con el número de antes del alta (un contador que miente
+ * es peor que no tenerlo). `total` nulo es «la vista no filtra».
+ *
+ * `desde` es el cuerpo de la vista (dentro de `.db-view`); la barra es el
+ * hermano que va justo antes.
+ */
+function refrescarRecuentoDeVista(desde, visibles, total) {
+  const cuerpo = desde.closest(".db-view");
+  const barra = cuerpo ? cuerpo.previousElementSibling : null;
+  const cuenta = barra ? barra.querySelector(".db-count") : null;
+  if (!cuenta) return;
+  cuenta.textContent = textoDeRecuento(visibles, total);
+}
+
+/** La cabecera de una columna: un botón que ordena, con su flecha y, si hay
+ * varias claves, el número de prioridad. */
+function celdaDeCabecera(prop, claves, onToggleSort) {
+  const th = document.createElement("th");
+  th.scope = "col";
+  if (!onToggleSort) {
+    th.textContent = prop.name;
+    return th;
+  }
+  const indice = claves.findIndex((clave) => clave.key === prop.key);
+  const activa = indice !== -1;
+  th.setAttribute(
+    "aria-sort",
+    activa ? (claves[indice].dir === "desc" ? "descending" : "ascending") : "none",
+  );
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "th-sort" + (activa ? " is-sorted" : "");
+  boton.title = activa
+    ? `Ordenado por ${prop.name}: pulsa para invertir`
+    : `Ordenar por ${prop.name}`;
+  boton.append(document.createTextNode(prop.name));
+  if (activa) {
+    const flecha = document.createElement("span");
+    flecha.className = "sort-arrow";
+    flecha.textContent = claves[indice].dir === "desc" ? "↓" : "↑";
+    flecha.setAttribute("aria-hidden", "true");
+    boton.appendChild(flecha);
+    if (claves.length > 1) {
+      const prioridad = document.createElement("span");
+      prioridad.className = "sort-priority";
+      prioridad.textContent = String(indice + 1);
+      prioridad.title = `Clave ${indice + 1} de ${claves.length}`;
+      boton.appendChild(prioridad);
+    }
+  }
+  boton.addEventListener("click", () => onToggleSort(prop.key));
+  th.appendChild(boton);
+  return th;
+}
+
+/** Clic en la cabecera: si esa columna manda, invierte el sentido; si no,
+ * pasa a mandar (ascendente) sin perder las demás, que quedan de desempate. */
+function alternarOrden(claves, key) {
+  const indice = claves.findIndex((clave) => clave.key === key);
+  if (indice === -1) return [{ key, dir: "asc" }, ...claves];
+  return claves.map((clave, i) =>
+    i === indice ? { key, dir: clave.dir === "asc" ? "desc" : "asc" } : clave,
+  );
+}
+
+/** El vacío con motivo: la vista no pinta una tabla en blanco, dice que el
+ * filtro no deja pasar nada y ofrece quitarlo. */
+function avisoDeFiltroVacio(onQuitar) {
+  const box = avisoDeVista(
+    "Ninguna fila cumple el filtro.",
+    "Las filas siguen en la base: es el filtro de esta vista el que no deja pasar ninguna.",
+  );
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "btn";
+  quitar.textContent = "Quitar el filtro";
+  quitar.addEventListener("click", onQuitar);
+  box.appendChild(quitar);
+  return box;
+}
+
+async function cargarTitulosDeRelacion(database) {
+  const props = database.schema_def.filter((p) => p.type === "relation" && p.target_database);
+  await Promise.all(
+    props.map(async (prop) => {
+      if (titulosDeRelacion.has(prop.key)) return;
+      try {
+        const filas = await api(`/databases/${prop.target_database}/rows`);
+        titulosDeRelacion.set(
+          prop.key,
+          new Map(filas.map((fila) => [fila.id, fila.title || "Sin título"])),
+        );
+      } catch (_) {
+        // La base destino no está (o no se puede leer): el id a mano sigue
+        // valiendo, así que el control no se queda sin nada.
+      }
+    }),
+  );
+}
+
+// --------------------------------------------------- panel de filtro (dialog)
+const filterDialog = document.getElementById("dialog-filter");
+const filterRowsEl = document.getElementById("filter-rows");
+const filterStatusEl = document.getElementById("filter-status");
+const sortDialog = document.getElementById("dialog-sort");
+const sortRowsEl = document.getElementById("sort-rows");
+const sortStatusEl = document.getElementById("sort-status");
+
+let filterDialogCtx = null; // { database, view, condiciones, onCambio }
+let sortDialogCtx = null; // { database, view, claves, onCambio }
+
+function openFilterDialog(database, view, onCambio) {
+  filterStatusEl.textContent = "";
+  document.getElementById("filter-view-name").textContent = view.name;
+  filterDialogCtx = {
+    database,
+    view,
+    onCambio,
+    condiciones: filtrosDeVista(view).map((filtro) => ({
+      key: filtro.key,
+      op: filtro.op,
+      value: filtro.value === undefined || filtro.value === null ? "" : String(filtro.value),
+    })),
+  };
+  pintarFilasDeFiltro();
+  filterDialog.showModal();
+  cargarTitulosDeRelacion(database).then(() => {
+    if (filterDialog.open) pintarFilasDeFiltro();
+  });
+}
+
+function pintarFilasDeFiltro() {
+  const ctx = filterDialogCtx;
+  if (!ctx) return;
+  filterRowsEl.textContent = "";
+  ctx.condiciones.forEach((cond, indice) => {
+    filterRowsEl.appendChild(filaDeCondicion(ctx.database, cond, indice));
+  });
+  if (ctx.condiciones.length === 0) {
+    const vacio = document.createElement("p");
+    vacio.className = "filter-empty";
+    vacio.textContent =
+      "Sin condiciones: la vista enseña todas las filas. Añade una para filtrar.";
+    filterRowsEl.appendChild(vacio);
+  }
+  const anadir = document.getElementById("btn-add-filter");
+  anadir.disabled = ctx.database.schema_def.length === 0;
+}
+
+function filaDeCondicion(database, cond, indice) {
+  const fila = document.createElement("div");
+  fila.className = "filter-row";
+
+  const propSelect = document.createElement("select");
+  propSelect.className = "filter-prop";
+  propSelect.setAttribute("aria-label", `Propiedad de la condición ${indice + 1}`);
+
+  // La propiedad de la condición. Si ya no existe (un `.md` editado a mano),
+  // se enseña su clave para poder quitarla: convertirla en una condición sobre
+  // la primera propiedad de la base cambiaría el filtro sin decirlo.
+  const prop = database.schema_def.find((p) => p.key === cond.key) || null;
+  const opciones = [...database.schema_def];
+  if (!prop) opciones.unshift({ key: cond.key, name: `${cond.key} (ya no existe)` });
+  opciones.forEach((p) => {
+    const opcion = document.createElement("option");
+    opcion.value = p.key;
+    opcion.textContent = p.name;
+    propSelect.appendChild(opcion);
+  });
+  const propParaElControl = prop || { key: cond.key, name: cond.key, type: "text" };
+  propSelect.value = propParaElControl.key;
+  propSelect.addEventListener("change", () => {
+    const nueva = database.schema_def.find((p) => p.key === propSelect.value);
+    if (!nueva) return;
+    cond.key = nueva.key;
+    cond.op = operadorPorDefecto(nueva);
+    cond.value = "";
+    pintarFilasDeFiltro();
+  });
+
+  const opSelect = document.createElement("select");
+  opSelect.className = "filter-op";
+  opSelect.setAttribute("aria-label", `Operador de la condición ${indice + 1}`);
+  operadoresDe(propParaElControl).forEach(([valor, etiqueta]) => {
+    const opcion = document.createElement("option");
+    opcion.value = valor;
+    opcion.textContent = etiqueta;
+    opSelect.appendChild(opcion);
+  });
+  if (!operadoresDe(propParaElControl).some(([valor]) => valor === cond.op)) {
+    cond.op = operadorPorDefecto(propParaElControl);
+  }
+  opSelect.value = cond.op;
+  opSelect.addEventListener("change", () => {
+    cond.op = opSelect.value;
+    // El operador decide si hay valor que pedir: el control se rehace.
+    pintarFilasDeFiltro();
+  });
+
+  const valor = controlDeValor(propParaElControl, cond, indice);
+
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "filter-remove";
+  quitar.innerHTML = svgIcon("i-x");
+  quitar.title = "Quitar esta condición";
+  quitar.setAttribute("aria-label", `Quitar la condición ${indice + 1}`);
+  quitar.addEventListener("click", () => {
+    filterDialogCtx.condiciones.splice(indice, 1);
+    pintarFilasDeFiltro();
+  });
+
+  fila.append(propSelect, opSelect, valor, quitar);
+  return fila;
+}
+
+function controlDeValor(prop, cond, indice) {
+  const caja = document.createElement("span");
+  caja.className = "filter-value";
+  if (OPS_SIN_VALOR.has(cond.op)) return caja; // el operador ya lo dice todo
+
+  let control;
+  if (prop.type === "select") {
+    control = document.createElement("select");
+    const vacio = document.createElement("option");
+    vacio.value = "";
+    vacio.textContent = "—";
+    control.appendChild(vacio);
+    const opciones = [...(prop.options || [])];
+    if (cond.value && !opciones.includes(cond.value)) opciones.push(cond.value);
+    opciones.forEach((valor) => {
+      const opcion = document.createElement("option");
+      opcion.value = valor;
+      opcion.textContent = valor;
+      control.appendChild(opcion);
+    });
+    control.value = cond.value || "";
+  } else if (prop.type === "relation") {
+    control = controlDeRelacion(prop, cond);
+  } else if (prop.type === "date") {
+    control = document.createElement("input");
+    control.type = "date";
+    control.value = cond.value || "";
+  } else if (prop.type === "number") {
+    control = document.createElement("input");
+    control.type = "number";
+    control.step = "any";
+    control.value = cond.value ?? "";
+  } else {
+    control = document.createElement("input");
+    control.type = "text";
+    control.placeholder = "valor";
+    control.value = cond.value ?? "";
+  }
+
+  control.classList.add("filter-value-input");
+  control.setAttribute("aria-label", `Valor de la condición ${indice + 1}`);
+  const leer = () => {
+    cond.value = control.value;
+  };
+  control.addEventListener("input", leer);
+  control.addEventListener("change", leer);
+  caja.appendChild(control);
+  return caja;
+}
+
+function controlDeRelacion(prop, cond) {
+  const titulos = titulosDeRelacion.get(prop.key);
+  if (!titulos) {
+    // Sin la lista del destino: se escribe el id, que es lo que guarda la
+    // celda. El desplegable llega cuando carga `cargarTitulosDeRelacion`.
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "id de la fila";
+    input.value = cond.value ?? "";
+    return input;
+  }
+  const select = document.createElement("select");
+  const vacio = document.createElement("option");
+  vacio.value = "";
+  vacio.textContent = "—";
+  select.appendChild(vacio);
+  titulos.forEach((titulo, id) => {
+    const opcion = document.createElement("option");
+    opcion.value = id;
+    opcion.textContent = titulo;
+    select.appendChild(opcion);
+  });
+  if (cond.value && !titulos.has(cond.value)) {
+    const huerfana = document.createElement("option");
+    huerfana.value = cond.value;
+    huerfana.textContent = cond.value;
+    select.appendChild(huerfana);
+  }
+  select.value = cond.value || "";
+  return select;
+}
+
+document.getElementById("btn-add-filter").addEventListener("click", () => {
+  const ctx = filterDialogCtx;
+  const prop = ctx?.database.schema_def[0];
+  if (!ctx || !prop) return;
+  ctx.condiciones.push({ key: prop.key, op: operadorPorDefecto(prop), value: "" });
+  filterStatusEl.textContent = "";
+  pintarFilasDeFiltro();
+});
+
+document.getElementById("btn-cancel-filter").addEventListener("click", () => {
+  filterDialog.close();
+});
+
+document.getElementById("btn-clear-filter").addEventListener("click", async () => {
+  const ctx = filterDialogCtx;
+  if (!ctx) return;
+  filterDialog.close();
+  await ctx.onCambio({ filters: [] });
+});
+
+document.getElementById("btn-apply-filter").addEventListener("click", async () => {
+  const ctx = filterDialogCtx;
+  if (!ctx) return;
+  const filtros = [];
+  const sinValor = [];
+  ctx.condiciones.forEach((cond, indice) => {
+    if (!cond.key) return;
+    if (OPS_SIN_VALOR.has(cond.op)) {
+      filtros.push({ key: cond.key, op: cond.op });
+      return;
+    }
+    const valor = cond.value === null || cond.value === undefined ? "" : String(cond.value);
+    if (valor.trim() === "") {
+      sinValor.push(indice + 1);
+      return;
+    }
+    filtros.push({ key: cond.key, op: cond.op, value: valor.trim() });
+  });
+  if (sinValor.length) {
+    // A medias no: una condición sin valor filtraría por «vacío», que no es lo
+    // que se está pidiendo.
+    filterStatusEl.textContent = `Falta el valor de ${
+      sinValor.length === 1 ? "la condición" : "las condiciones"
+    } ${sinValor.join(", ")}.`;
+    return;
+  }
+  filterDialog.close();
+  await ctx.onCambio({ filters: filtros });
+});
+
+// ---------------------------------------------------- panel de orden (dialog)
+function openSortDialog(database, view, onCambio) {
+  sortStatusEl.textContent = "";
+  document.getElementById("sort-view-name").textContent = view.name;
+  sortDialogCtx = { database, view, onCambio, claves: clavesDeOrden(view.config) };
+  pintarFilasDeOrden();
+  sortDialog.showModal();
+}
+
+function pintarFilasDeOrden() {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  sortRowsEl.textContent = "";
+  ctx.claves.forEach((clave, indice) => {
+    sortRowsEl.appendChild(filaDeOrden(ctx.database, ctx.claves, clave, indice));
+  });
+  if (ctx.claves.length === 0) {
+    const vacio = document.createElement("p");
+    vacio.className = "filter-empty";
+    vacio.textContent = "Sin claves: las filas salen en el orden de la base.";
+    sortRowsEl.appendChild(vacio);
+  }
+  document.getElementById("btn-add-sort").disabled = ctx.database.schema_def.length === 0;
+}
+
+function filaDeOrden(database, claves, clave, indice) {
+  const fila = document.createElement("div");
+  fila.className = "filter-row";
+
+  const propSelect = document.createElement("select");
+  propSelect.className = "filter-prop";
+  propSelect.setAttribute("aria-label", `Propiedad de la clave ${indice + 1}`);
+  const usadas = new Set(claves.filter((_, i) => i !== indice).map((otra) => otra.key));
+  database.schema_def.forEach((prop) => {
+    if (usadas.has(prop.key)) return; // una propiedad, una clave
+    const opcion = document.createElement("option");
+    opcion.value = prop.key;
+    opcion.textContent = prop.name;
+    propSelect.appendChild(opcion);
+  });
+  if (![...propSelect.options].some((o) => o.value === clave.key)) {
+    const opcion = document.createElement("option");
+    opcion.value = clave.key;
+    opcion.textContent = nombreDePropiedad(database, clave.key);
+    propSelect.appendChild(opcion);
+  }
+  propSelect.value = clave.key;
+  propSelect.addEventListener("change", () => {
+    clave.key = propSelect.value;
+  });
+
+  const dirSelect = document.createElement("select");
+  dirSelect.className = "filter-op";
+  dirSelect.setAttribute("aria-label", `Dirección de la clave ${indice + 1}`);
+  [
+    ["asc", "ascendente ↑"],
+    ["desc", "descendente ↓"],
+  ].forEach(([valor, etiqueta]) => {
+    const opcion = document.createElement("option");
+    opcion.value = valor;
+    opcion.textContent = etiqueta;
+    dirSelect.appendChild(opcion);
+  });
+  dirSelect.value = clave.dir;
+  dirSelect.addEventListener("change", () => {
+    clave.dir = dirSelect.value === "desc" ? "desc" : "asc";
+  });
+
+  const mover = (texto, etiqueta, desplazamiento, desactivado) => {
+    const boton = document.createElement("button");
+    boton.type = "button";
+    boton.className = "filter-move";
+    boton.textContent = texto;
+    boton.title = etiqueta;
+    boton.setAttribute("aria-label", etiqueta);
+    boton.disabled = desactivado;
+    boton.addEventListener("click", () => {
+      const destino = indice + desplazamiento;
+      [claves[indice], claves[destino]] = [claves[destino], claves[indice]];
+      pintarFilasDeOrden();
+    });
+    return boton;
+  };
+
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "filter-remove";
+  quitar.innerHTML = svgIcon("i-x");
+  quitar.title = "Quitar esta clave";
+  quitar.setAttribute("aria-label", `Quitar la clave ${indice + 1}`);
+  quitar.addEventListener("click", () => {
+    claves.splice(indice, 1);
+    pintarFilasDeOrden();
+  });
+
+  fila.append(
+    propSelect,
+    dirSelect,
+    mover("↑", "Subir la clave", -1, indice === 0),
+    mover("↓", "Bajar la clave", 1, indice === claves.length - 1),
+    quitar,
+  );
+  return fila;
+}
+
+document.getElementById("btn-add-sort").addEventListener("click", () => {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  const usadas = new Set(ctx.claves.map((clave) => clave.key));
+  const libre = ctx.database.schema_def.find((prop) => !usadas.has(prop.key));
+  if (!libre) {
+    sortStatusEl.textContent = "Ya están todas las propiedades en el orden.";
+    return;
+  }
+  sortStatusEl.textContent = "";
+  ctx.claves.push({ key: libre.key, dir: "asc" });
+  pintarFilasDeOrden();
+});
+
+document.getElementById("btn-cancel-sort").addEventListener("click", () => {
+  sortDialog.close();
+});
+
+document.getElementById("btn-clear-sort").addEventListener("click", async () => {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  sortDialog.close();
+  await ctx.onCambio({ sort: [] });
+});
+
+document.getElementById("btn-apply-sort").addEventListener("click", async () => {
+  const ctx = sortDialogCtx;
+  if (!ctx) return;
+  sortDialog.close();
+  await ctx.onCambio({
+    sort: ctx.claves.map((clave) => ({ key: clave.key, dir: clave.dir })),
+  });
+});
+
 // ------------------------------------- bases dentro de una nota (P17.2)
 /** Pinta, dentro de la nota, la base de un bloque ```mdm-database.
  *
- * Solo lectura para las CELDAS: la tabla es la MISMA de la base (`renderTable`
- * con `readOnly`), sin celdas editables ni borrado; el encabezado (un botón)
- * lleva a la base entera, que es donde se editan los valores. Lo único que se
- * escribe desde aquí es una fila nueva con su nombre: el «+ Nueva fila» del
- * final, que es lo que faltaba en el sitio donde trabaja el dueño.
+ * La tabla es exactamente la de la base (`renderTable`), celdas editables
+ * incluidas: un clic abre el control del tipo de esa celda y lo que se escribe
+ * va al `.md` de ESA fila, nunca al de la nota (el bloque guarda la referencia,
+ * no los datos). También el título de la fila se edita aquí: es lo que más se
+ * toca, y renombrar es lo mismo que renombrar desde la base (cambia el `title`
+ * del frontmatter y el fichero `<id8>.md` no se mueve).
+ *
+ * Lo que NO se hace desde aquí: borrar filas ni tocar el esquema. La tabla va
+ * sin columna de acciones (`deletable: false`) porque borrar desde dentro de
+ * una nota es demasiado fácil de hacer sin querer; el encabezado (un botón)
+ * lleva a la base entera, que es donde viven las dos cosas.
  *
  * Pintar no toca el documento: la valla, el cursor y el autoguardado siguen
- * donde estaban. Al añadir una fila se repintan solo el contador y la tabla.
+ * donde estaban. Al añadir una fila o al guardar una celda se repintan solo el
+ * contador y la tabla de este bloque; los demás bloques de la misma base piden
+ * sus filas al servidor (`refrescarOtrosEmbeds`).
  *
  * Si la base ya no está, se avisa con `notFound` para que el editor pinte
  * «Base no encontrada: <title|id>»; cualquier otro fallo se propaga con su
@@ -4641,11 +5493,26 @@ async function renderDatabaseEmbed(block, container) {
   // primera -- el mismo criterio que selectDatabase.
   const activeView = views.find((v) => view && v.name === view) || views[0] || null;
 
+  // La tabla incrustada usa la vista con la que está configurada, y eso
+  // incluye su filtro y su orden: los aplica el mismo `apply_view` del
+  // servidor, así que no hay una segunda versión de la regla en el navegador.
+  const filtros = filtrosDeVista(activeView);
+  const clavesOrden = clavesDeOrden(activeView?.config);
   let rows;
+  let total = null;
   try {
-    rows = await api(
-      `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
-    );
+    if (filtros.length) {
+      const [deLaVista, todas] = await Promise.all([
+        api(`/databases/${database.id}/rows?view=${activeView.id}`),
+        api(`/databases/${database.id}/rows`),
+      ]);
+      rows = deLaVista;
+      total = todas.length;
+    } else {
+      rows = await api(
+        `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
+      );
+    }
   } catch (e) {
     throw new Error(describeError(e));
   }
@@ -4672,14 +5539,49 @@ async function renderDatabaseEmbed(block, container) {
   // ya viene filtrada y ordenada por `?view=`.
   const body = document.createElement("div");
   body.className = "db-embed-body";
-  const pintar = (filas) => {
-    meta.textContent = `${activeView ? activeView.name : "Todas"} · ${filas.length} ${
-      filas.length === 1 ? "fila" : "filas"
-    }`;
-    body.textContent = "";
-    body.append(renderTable(database, filas, { readOnly: true }));
+  // Comportamiento propio de la copia incrustada (ver `renderTable`): el
+  // marcador que deja pasar el clic a través del widget del editor y los dos
+  // avisos del guardado.
+  const hooks = {
+    embed: true,
+    // ANTES del PATCH: el servidor publica `rows` en /events antes de
+    // responder, así que el aviso llega a esta pestaña antes que el guardado.
+    // Se apunta que el cambio es de aquí para descartar el eco: si no, el
+    // editor repintaría el bloque desde cero y se llevaría por delante la
+    // celda que se está editando (y su input, con el foco dentro).
+    onBeforeSave: () => {
+      ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+    },
+    // Guardado de verdad: los DEMÁS bloques de esta misma base piden sus filas
+    // al servidor. Sin esto se quedan con lo de antes, porque el eco del SSE se
+    // descarta arriba. Este bloque no entra: su celda ya está repintada con lo
+    // que devolvió el PATCH.
+    onSaved: () => refrescarOtrosEmbeds(database.id, container),
   };
-  pintar(rows);
+
+  const pintar = (filas, totalBase = null) => {
+    // Si en ESTE bloque hay una celda abierta, el repintado no puede llevársela
+    // por delante: un guardado en OTRO bloque de la misma base pide aquí filas
+    // nuevas (`refrescarOtrosEmbeds`) y vaciar `body` destruiría el `<input>`
+    // --y el foco-- de lo que el usuario está escribiendo. Se aparta fila,
+    // columna y valor tecleado, y se vuelve a abrir después de pintar.
+    const enEdicion = celdaEnEdicion(body);
+    meta.textContent = `${activeView ? activeView.name : "Todas"} · ${textoDeRecuento(
+      filas.length,
+      totalBase,
+    )}`;
+    body.textContent = "";
+    body.append(
+      renderTable(database, filas, {
+        deletable: false,
+        hooks,
+        sort: clavesOrden,
+        vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+      }),
+    );
+    if (enEdicion) reabrirCeldaEnEdicion(body, database, filas, enEdicion, hooks);
+  };
+  pintar(rows, total);
 
   // El bloque se apunta para que otro bloque de la MISMA base pueda pedirle
   // que se repinte con lo que diga el servidor, sin rehacer el widget: así se
@@ -4692,10 +5594,15 @@ async function renderDatabaseEmbed(block, container) {
       const filas = await api(
         `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
       );
+      let totalBase = null;
+      if (filtros.length) {
+        const todas = await api(`/databases/${database.id}/rows`);
+        totalBase = todas.length;
+      }
       // El bloque pudo irse mientras llegaba la respuesta (el editor rehace
       // los widgets con cada aviso de base): pintar en el hueco que ya no está
       // no rompe nada, pero es trabajo tirado.
-      if (container.isConnected) pintar(filas);
+      if (container.isConnected) pintar(filas, totalBase);
     },
   });
 
@@ -4709,7 +5616,9 @@ async function renderDatabaseEmbed(block, container) {
       vista: activeView,
       onCreate: (titulo) => crearFilaEnVista(database, activeView, titulo),
       onDone: (res) => {
-        pintar(res.filas);
+        // Con el total de la base: si la vista filtra, el contador sigue
+        // diciendo «N de M» en vez de perder el «de M» al crear la fila.
+        pintar(res.filas, res.total);
         if (res.visible) enfocarFila(body, res.fila.id);
         // Y los DEMÁS bloques de esta misma base, con los datos del servidor:
         // el eco de este POST se descarta entero (ver `handleDatabaseEvent`),
@@ -4722,15 +5631,93 @@ async function renderDatabaseEmbed(block, container) {
   );
 }
 
+/** La celda que se está editando dentro de un bloque incrustado, si hay
+ * alguna: `{rowId, columna, valor, enfocada}`. `columna` es el índice entre las
+ * celdas editables de la fila (0 es el título cuando la tabla lo enseña).
+ *
+ * La usa `pintar()` para no perder lo que se está escribiendo cuando llega un
+ * repintado de fuera: un guardado en otro bloque de la misma base repinta este
+ * entero (ver `refrescarOtrosEmbeds`), y sin esto el `<input>` de la celda
+ * abierta se va con el `body`. */
+function celdaEnEdicion(container) {
+  const control = container.querySelector(
+    'td[data-editable="1"] input, td[data-editable="1"] select, td[data-editable="1"] textarea',
+  );
+  if (!control) return null;
+  // El repintado va a vaciar `body` y a destruir este control: su `blur` no
+  // puede guardar nada. `filas` se pidió al servidor ANTES del repintado, así
+  // que un PATCH disparado por ese blur dejaría la fila obsoleta --la celda
+  // reabierta se sembraría con el valor viejo mientras el `.md` ya tiene el
+  // nuevo-- y Esc ya no podría cancelar lo tecleado. `commit()` sale si el
+  // control está marcado: lo tecleado vive solo en la celda que se reabre.
+  control.__descartado = true;
+  const td = control.closest("td");
+  const tr = td?.parentElement;
+  if (!tr || !tr.dataset.rowId) return null;
+  return {
+    rowId: String(tr.dataset.rowId),
+    columna: celdasEditables(tr).indexOf(td),
+    valor: control.value,
+    enfocada: td.contains(document.activeElement),
+  };
+}
+
+/** Vuelve a abrir, en la tabla recién pintada, la celda que estaba en edición
+ * (`estado` de `celdaEnEdicion`) con el valor tecleado dentro.
+ *
+ * La fila se busca por `data-row-id` y la columna por índice: la vista puede
+ * venir reordenada o filtrada, pero la fila y sus columnas son las mismas. Si
+ * la fila ya no está en la vista no hay nada que reabrir y se descarta.
+ *
+ * Es un reabrir, no un guardar: `editCell` siembra el control con lo que hay en
+ * el servidor y aquí se sustituye por lo tecleado, así que su `seeded` sigue
+ * siendo el valor del `.md` y el próximo commit (Enter, Tab o blur) guarda lo
+ * que el usuario escribió. El foco solo se recupera si lo tenía: si el
+ * repintado lo provocó algo que ya se lo llevó a otro sitio, robarlo sería
+ * perder lo que estaba haciendo. */
+function reabrirCeldaEnEdicion(container, database, filas, estado, hooks) {
+  const fila = filas.find((r) => String(r.id) === estado.rowId);
+  if (!fila) return false;
+  const tr = container.querySelector(`tr[data-row-id="${CSS.escape(estado.rowId)}"]`);
+  const td = tr ? celdasEditables(tr)[estado.columna] : null;
+  if (!td) return false;
+  // La columna 0 es el título cuando la tabla lo enseña (`renderTable`).
+  const muestraTitulo = !database.title_hidden;
+  const prop = muestraTitulo
+    ? database.schema_def[estado.columna - 1] || null
+    : database.schema_def[estado.columna] || null;
+  editCell(td, database, fila, prop, hooks);
+  const control = td.querySelector("input, select, textarea");
+  if (!control) return false;
+  control.value = estado.valor;
+  if (estado.enfocada) {
+    // El foco va DIRECTO al control, no a la celda: `td.focus()` dispara el
+    // `blur` del input que acaba de crear `editCell`, y ese blur guarda y
+    // repinta la celda -- se llevaría por delante la edición recién reabierta.
+    // Solo se mueve el testigo del roving tabindex.
+    setRovingCell(td);
+    control.focus?.();
+    // El cursor, al final de lo tecleado. `number`/`date` no saben de rangos.
+    try {
+      control.setSelectionRange?.(estado.valor.length, estado.valor.length);
+    } catch {
+      /* control sin selección de texto */
+    }
+  }
+  return true;
+}
+
 // ---------------------------------------- añadir filas desde una vista
 // Una vista (tabla incrustada, lista, agenda) se puede tocar sin abrir la base
 // entera: «+ Nueva fila» al final crea la fila por el mismo POST que el alta de
 // la base y repinta lo justo para que aparezca donde le toque, sin recargar.
 
-/** Última fila escrita desde esta pestaña: `{databaseId, ts}`. Sirve para no
- * repintar el bloque incrustado con el eco de nuestro propio POST (ver
- * `handleDatabaseEvent`). */
-let ultimaFilaPropia = { databaseId: null, ts: 0 };
+/** Último cambio escrito desde esta pestaña: `{databaseId, ts}`. Sirve para no
+ * repintar el bloque incrustado con el eco de nuestro propio POST o PATCH (ver
+ * `handleDatabaseEvent`): crear una fila y editar una celda publican el mismo
+ * evento `rows`, y repintar el bloque desde cero se llevaría por delante la
+ * celda que se está editando. */
+let ultimoCambioPropio = { databaseId: null, ts: 0 };
 
 /** Crea una fila por el camino de siempre y vuelve a pedir la lista DE LA
  * VISTA ACTIVA.
@@ -4738,7 +5725,9 @@ let ultimaFilaPropia = { databaseId: null, ts: 0 };
  * El filtro y el orden los aplica el servidor (`apply_view`), así que la única
  * verdad de «¿la enseña esta vista?» es esa segunda lectura: duplicar el filtro
  * en el navegador acabaría diciendo algo distinto de lo que enseña la tabla.
- * Devuelve `{fila, filas, visible}`; `filas` ya viene filtrada y ordenada.
+ * Devuelve `{fila, filas, total, visible}`; `filas` ya viene filtrada y
+ * ordenada, y `total` (nulo si la vista no filtra) es el tamaño de la base,
+ * que es lo que hace honesto el recuento «N de M» tras un alta.
  */
 async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   // ANTES del POST: el servidor publica `rows` en /events (M2) antes de
@@ -4746,7 +5735,7 @@ async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   // apunta que el cambio es de aquí para ignorar el eco (si no, el editor
   // repinta el bloque desde cero y se lleva por delante el aviso y el foco que
   // se ponen al volver). El cambio de OTRA ventana no pasa por aquí.
-  ultimaFilaPropia = { databaseId: String(database.id), ts: Date.now() };
+  ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
   const fila = await api(`/databases/${database.id}/rows`, {
     method: "POST",
     body: JSON.stringify({ title: titulo, properties: extra }),
@@ -4754,7 +5743,15 @@ async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   const filas = await api(
     `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
   );
-  return { fila, filas, visible: filas.some((r) => r.id === fila.id) };
+  // El total de la base, para el recuento: una vista con filtro tiene que poder
+  // seguir diciendo «N de M» después de un alta, y `filas` solo trae las que
+  // pasan el filtro. Sin filtro, `filas` ya es la base entera y no se pide nada.
+  let total = null;
+  if (filtrosDeVista(activeView).length) {
+    const todas = await api(`/databases/${database.id}/rows`);
+    total = todas.length;
+  }
+  return { fila, filas, total, visible: filas.some((r) => r.id === fila.id) };
 }
 
 /** Los bloques de base pintados en la nota y cómo volver a pintarlos con lo
@@ -4808,13 +5805,14 @@ function enfocarFila(container, rowId) {
   const el = container.querySelector(`[data-row-id="${rowId}"]`);
   if (!el) return false;
   if (el.tagName === "TR") {
-    // La tabla no tiene filas enfocables: el nombre es la primera celda. En la
-    // incrustada esa celda no es editable (la tabla de una nota es de solo
-    // lectura), así que se enfoca para que el lector anuncie el título y el
-    // siguiente Tab siga desde la fila nueva.
-    const celda = el.querySelector("td");
+    // La tabla no tiene filas enfocables: el nombre es la primera celda, que ya
+    // es editable (también en la incrustada). Si por lo que sea no lo es, la
+    // celda se enfoca igual: así el lector anuncia el título y el siguiente Tab
+    // sigue desde la fila nueva.
+    const celda = el.querySelector('td[data-editable="1"]') || el.querySelector("td");
     if (!celda) return false;
-    celda.tabIndex = -1;
+    if (celda.dataset.editable === "1") setRovingCell(celda);
+    else celda.tabIndex = -1;
     celda.focus();
     return true;
   }
@@ -5068,22 +6066,49 @@ function sameValue(a, b) {
 /** Único camino de guardado de una fila: un PATCH y el estado local al día
  * con lo que el servidor acaba de escribir en el `.md`. Si lanza, quien llama
  * avisa con reportError() y repinta el valor viejo: nada se da por guardado
- * sin haberse guardado. */
-async function saveRow(database, row, changes) {
+ * sin haberse guardado.
+ *
+ * `hooks` es opcional y solo lo usan las celdas de la tabla incrustada en una
+ * nota (ver `renderTable`): `onBeforeSave()` justo antes del PATCH y
+ * `onSaved(guardada)` solo si el servidor lo aceptó. */
+async function saveRow(database, row, changes, hooks = null) {
+  hooks?.onBeforeSave?.();
   const saved = await api(`/databases/${database.id}/rows/${row.id}`, {
     method: "PATCH",
     body: JSON.stringify(changes),
   });
   Object.assign(row, saved);
+  hooks?.onSaved?.(saved);
   return saved;
 }
 
-/** La tabla de una base. `readOnly` es la variante que se incrusta en una
- * nota (P17.2, bloque ```mdm-database): mismos valores y mismas clases, pero
- * sin celdas editables, sin columna de borrado y sin alta -- ahí solo se lee,
- * y para cambiar algo se abre la base. Es la MISMA tabla a propósito: dos
- * renders distintos acabarían enseñando cosas distintas. */
-function renderTable(database, rows, { readOnly = false } = {}) {
+/** La tabla de una base. Es la MISMA en la página de la base y dentro de una
+ * nota (bloque ```mdm-database, P17.2): mismos valores, mismas clases y las
+ * mismas celdas editables -- dos renders distintos acabarían enseñando cosas
+ * distintas. La única diferencia es `deletable: false`, que quita la columna de
+ * acciones (en una nota no se borran filas) y el `colSpan` correspondiente.
+ *
+ * `hooks` es el comportamiento extra de la copia incrustada y se pasa de mano
+ * en mano hasta `saveRow` (`paintCell` -> `editCell` -> `saveRow`); una celda
+ * repintada lo vuelve a recibir (`repaintCell`), así que no se pierde:
+ *   - `embed`: marca las celdas con `data-db-action` para que el widget del
+ *     editor no se trague el clic y para que las teclas que consumimos no
+ *     lleguen al keymap de CodeMirror (ver `DatabaseBlockWidget` en entry.js).
+ *     También es lo que habilita el recorrido con Tab celda a celda: en la
+ *     página de la base el Tab es el del navegador, que pasa por los botones de
+ *     borrar de cada fila (aquí no hay columna de acciones).
+ *   - `onBeforeSave()` / `onSaved()`: ver `renderDatabaseEmbed`.
+ *
+ * La primera columna es la puerta a la fila como página: un botón de abrir
+ * explícito, porque el clic en una celda —que es lo que edita— no puede
+ * comerse la apertura. También se abre con Ctrl/Cmd+Enter desde cualquier
+ * celda de la fila (ver el listener del tbody al final).
+ */
+function renderTable(
+  database,
+  rows,
+  { deletable = true, hooks = null, sort = [], onToggleSort = null, vacio = null } = {},
+) {
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
 
@@ -5097,20 +6122,51 @@ function renderTable(database, rows, { readOnly = false } = {}) {
   // enseñarla; la fila se sigue llamando por su `id`, que es su fichero.
   const muestraTitulo = !database.title_hidden;
   const rotuloTitulo = database.title_name || "Título";
-  headRow.innerHTML =
-    (muestraTitulo ? `<th scope="col">${escapeHtml(rotuloTitulo)}</th>` : "") +
-    database.schema_def.map((p) => `<th scope="col">${escapeHtml(p.name)}</th>`).join("") +
-    (readOnly ? "" : '<th scope="col"><span class="sr-only">Acciones</span></th>');
+  // 1) La columna de abrir la fila, en su sitio y con su texto para lectores
+  //    de pantalla (ver el bucle de filas).
+  const abrirHead = document.createElement("th");
+  abrirHead.scope = "col";
+  abrirHead.className = "row-open-head";
+  const abrirSolo = document.createElement("span");
+  abrirSolo.className = "sr-only";
+  abrirSolo.textContent = "Abrir";
+  abrirHead.appendChild(abrirSolo);
+  headRow.appendChild(abrirHead);
+  if (muestraTitulo) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = rotuloTitulo;
+    headRow.appendChild(th);
+  }
+  // Cada propiedad es una cabecera que ordena, cuando hay dónde guardar ese
+  // orden (la pestaña «Todas» no tiene vista en la que escribirlo, y la tabla
+  // incrustada es de solo lectura). El título no: el servidor no ordena por
+  // él, y una flecha que no hace nada sería mentir.
+  database.schema_def.forEach((p) =>
+    headRow.appendChild(celdaDeCabecera(p, sort, onToggleSort)),
+  );
+  if (deletable) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    const soloTexto = document.createElement("span");
+    soloTexto.className = "sr-only";
+    soloTexto.textContent = "Acciones";
+    th.appendChild(soloTexto);
+    headRow.appendChild(th);
+  }
   thead.appendChild(headRow);
 
   const tbody = document.createElement("tbody");
+  // Cómo repintar cada fila cuando la vista de fila guarda algo (se rellena
+  // en el bucle): lo usa también la puerta de teclado del final.
+  const refrescadores = new Map();
   if (rows.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     td.colSpan =
-      database.schema_def.length + (muestraTitulo ? 1 : 0) + (readOnly ? 0 : 1);
+      database.schema_def.length + (muestraTitulo ? 1 : 0) + 1 + (deletable ? 1 : 0);
     td.className = "search-empty";
-    td.textContent = "Sin filas todavía.";
+    td.textContent = vacio || "Sin filas todavía.";
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
@@ -5121,25 +6177,87 @@ function renderTable(database, rows, { readOnly = false } = {}) {
     // la fila que acaba de crear (ver `enfocarFila`).
     tr.dataset.rowId = row.id;
 
-    // Título y celdas editables en el sitio: lo que se ve es el valor del
-    // `.md`, y un clic abre el control del tipo de esa propiedad. En la tabla
-    // incrustada (readOnly) las celdas son solo texto: no hay nada que abrir.
+    // 1) Abrir la fila como página. En su propia columna para que funcione
+    // también con el título oculto (`title_hidden`), y fuera de la celda del
+    // título: ahí el clic edita, y editar no puede tragarse la apertura.
+    const openTd = document.createElement("td");
+    openTd.className = "row-open-cell";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "row-open";
+    openBtn.innerHTML = svgIcon("i-expand");
+    // El teclado abre con Ctrl/Cmd+Enter desde la celda: así la tabla sigue
+    // teniendo UNA sola parada de Tab (el recorrido de celdas es de cuadrícula)
+    // en vez de una más por fila. Vale igual dentro de una nota: allí las
+    // celdas también se editan, así que el recorrido es el mismo.
+    openBtn.tabIndex = -1;
+    // Dentro de una nota, el widget del editor se lleva el `mousedown` del
+    // bloque; `data-db-action` es el permiso que deja pasar el clic (ver
+    // DatabaseBlockWidget en entry.js). Fuera de una nota no molesta a nadie.
+    openBtn.dataset.dbAction = "abrir-fila";
+    const etiquetar = () => {
+      const nombre = `Abrir «${row.title || "Sin título"}» como página (Ctrl+Enter)`;
+      openBtn.title = nombre;
+      openBtn.setAttribute("aria-label", nombre);
+    };
+    etiquetar();
+    openTd.appendChild(openBtn);
+    tr.appendChild(openTd);
+
+    // 2) Título y propiedades editables en el sitio: lo que se ve es el valor
+    // del `.md`, y un clic abre el control del tipo de esa propiedad. Dentro de
+    // una nota es lo mismo: se edita ahí y se guarda en el `.md` de la fila.
+    const celdas = new Map(); // clave de la propiedad (null = título) -> <td>
+
     if (muestraTitulo) {
       const titleTd = document.createElement("td");
-      if (readOnly) paintReadOnlyCell(titleTd, row, null);
-      else paintCell(titleTd, database, row, null);
+      paintCell(titleTd, database, row, null, hooks);
+      celdas.set(null, titleTd);
       tr.appendChild(titleTd);
     }
 
     database.schema_def.forEach((p) => {
       const td = document.createElement("td");
-      if (readOnly) paintReadOnlyCell(td, row, p);
-      else paintCell(td, database, row, p);
+      paintCell(td, database, row, p, hooks);
+      celdas.set(p.key, td);
       tr.appendChild(td);
     });
 
-    if (readOnly) {
-      tbody.appendChild(tr); // sin columna de acciones: no hay nada que borrar
+    const propDe = (clave) =>
+      clave === null ? null : database.schema_def.find((p) => p.key === clave) || null;
+
+    /** El servidor acaba de aceptar un PATCH de esta fila desde la vista de
+     * fila: se repinta la fila con `row`, que queda al día con el `.md`. Sin
+     * repintar la tabla entera: eso perdería el foco y el testigo del recorrido
+     * con teclado. */
+    const refrescar = () => {
+      etiquetar();
+      const testigo = tr.querySelector('td[data-editable="1"][tabindex="0"]');
+      for (const [clave, td] of celdas) {
+        paintCell(td, database, row, propDe(clave), hooks);
+      }
+      if (testigo) setRovingCell(testigo);
+    };
+
+    refrescadores.set(String(row.id), refrescar);
+
+    const abrir = () =>
+      openRowPage(database, row, {
+        origin: openBtn,
+        rows,
+        index: rows.indexOf(row),
+        onSaved: refrescar,
+      });
+
+    // El clic del botón no puede llegar a la celda (abriría el editor).
+    openBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      abrir();
+    });
+
+    if (!deletable) {
+      // Sin columna de acciones: la fila se borra desde la página de la base.
+      tbody.appendChild(tr);
       return;
     }
 
@@ -5159,6 +6277,29 @@ function renderTable(database, rows, { readOnly = false } = {}) {
 
     tbody.appendChild(tr);
   });
+
+  // Ctrl/Cmd+Enter en cualquier celda de la fila abre la fila como página. En
+  // captura: el `keydown` de la celda (Enter edita) no llega a ver la
+  // combinación, que si no abriría el editor y la página a la vez.
+  tbody.addEventListener(
+    "keydown",
+    (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return;
+      const tr = e.target.closest?.("tr[data-row-id]");
+      if (!tr) return;
+      const fila = rows.find((r) => String(r.id) === tr.dataset.rowId);
+      if (!fila) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openRowPage(database, fila, {
+        origin: e.target.closest("td") || tr,
+        rows,
+        index: rows.indexOf(fila),
+        onSaved: refrescadores.get(String(fila.id)) || null,
+      });
+    },
+    true,
+  );
 
   table.append(thead, tbody);
   // Una sola parada de Tab en toda la tabla: la primera celda editable. Las
@@ -5194,11 +6335,11 @@ function setRovingCell(td) {
  * ha ido a otro control y robarle el foco es perder lo que estaba haciendo).
  * Sin valor decide por el estado: lo recupera si el foco era de la propia
  * celda o se quedó huérfano en <body>. */
-function repaintCell(td, database, row, prop, focus) {
+function repaintCell(td, database, row, prop, focus, hooks = null) {
   // Antes de repintar: el input de editCell() se destruye al reemplazar el
   // innerHTML, así que "el foco era de la celda" hay que mirarlo ahora.
   const ownedFocus = td.contains(document.activeElement);
-  paintCell(td, database, row, prop);
+  paintCell(td, database, row, prop, hooks);
   if (!td.isConnected) return;
   setRovingCell(td);
   const shouldFocus = focus === undefined ? ownedFocus || document.activeElement === document.body : focus;
@@ -5207,21 +6348,48 @@ function repaintCell(td, database, row, prop, focus) {
 
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
  * `prop === null` es la celda del título. */
-function paintCell(td, database, row, prop) {
+function paintCell(td, database, row, prop, hooks = null) {
   td.innerHTML = prop
     ? formatPropValueHtml(row.properties?.[prop.key], prop)
     : escapeHtml(row.title || "Sin título");
+  // La columna del título se lee como jerarquía (la regla CSS va por clase:
+  // la primera columna de la tabla es la de abrir la fila).
+  td.classList.toggle("cell-title", !prop);
   td.title = "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
+  // Dentro de una nota, el widget del editor se lleva el `mousedown` del bloque
+  // (previene el default, mete el cursor en la valla y la tabla desaparece)
+  // salvo en lo que lleve `data-db-action` -- ver DatabaseBlockWidget en
+  // entry.js. Mismo marcador que el encabezado y el «+ Nueva fila».
+  if (hooks?.embed) td.dataset.dbAction = "editar";
   // Roving tabindex: las celdas no son 72 paradas de Tab, solo la que está en
   // curso (renderTable deja tabIndex=0 en la primera). Enter/Espacio abren la
-  // edición, igual que el clic; las flechas mueven el foco como en una hoja.
+  // edición, igual que el clic; las flechas y Tab mueven el foco como en una
+  // hoja.
   td.tabIndex = -1;
   td.onkeydown = (e) => {
     if (e.target !== td) return; // el <input>/<select> de editCell() manda
+    // Dentro de una nota todo lo que no consumamos se lo quedaría el keymap de
+    // CodeMirror (su Enter inserta un salto de línea en el `.md`): se corta en
+    // la celda. En la página de la base no hay nada encima que lo quiera.
+    const parar = () => e.stopPropagation();
+    if (e.key === "Tab" && hooks?.embed) {
+      // Tab / Shift+Tab van celda a celda y de fila en fila, pero SOLO en el
+      // bloque incrustado. En la página de la base el recorrido es el del
+      // navegador, que pasa por los botones «Borrar fila» de cada fila: aquí no
+      // hay columna de acciones y saltárselos era una regresión. En los
+      // extremos de la tabla no se consume, para poder salir con Tab.
+      const destino = celdaVecina(td, e.shiftKey ? -1 : 1);
+      if (!destino) return;
+      e.preventDefault();
+      parar();
+      enfocarCelda(destino);
+      return;
+    }
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
+      parar();
       td.click();
       return;
     }
@@ -5230,10 +6398,9 @@ function paintCell(td, database, row, prop) {
     const tbody = tr.parentElement;
     const allRows = [...tbody.querySelectorAll("tr")];
     const rIdx = allRows.indexOf(tr);
-    const cells = [...tr.querySelectorAll('td[data-editable="1"]')];
+    const cells = celdasEditables(tr);
     const cIdx = cells.indexOf(td);
-    const editableIn = (rowIdx) =>
-      allRows[rowIdx] ? [...allRows[rowIdx].querySelectorAll('td[data-editable="1"]')] : [];
+    const editableIn = (rowIdx) => celdasEditables(allRows[rowIdx]);
     let target = null;
     if (e.key === "ArrowRight") target = cells[cIdx + 1] || editableIn(rIdx + 1)[0] || null;
     else if (e.key === "ArrowLeft") {
@@ -5241,41 +6408,84 @@ function paintCell(td, database, row, prop) {
       target = cells[cIdx - 1] || prev[prev.length - 1] || null;
     } else if (e.key === "ArrowDown") target = editableIn(rIdx + 1)[cIdx] || null;
     else if (e.key === "ArrowUp") target = editableIn(rIdx - 1)[cIdx] || null;
-    if (!target) return; // sin destino, la flecha sigue haciendo lo de siempre
+    if (!target) {
+      if (hooks?.embed) parar(); // sin destino, la flecha no debe mover el cursor de la nota
+      return;
+    }
     e.preventDefault();
-    setRovingCell(target);
-    target.focus();
+    parar();
+    enfocarCelda(target);
   };
   td.onclick =
     prop && prop.type === "checkbox"
-      ? () => toggleCheckbox(td, database, row, prop)
-      : () => editCell(td, database, row, prop);
+      ? () => toggleCheckbox(td, database, row, prop, hooks)
+      : () => editCell(td, database, row, prop, hooks);
 }
 
-/** El valor de una celda, sin nada que editar: desde la tabla incrustada en una
- * nota no se guarda nada (un clic no puede abrir un control ni un PATCH). Sin
- * `data-editable` tampoco entra en el recorrido de teclado de la tabla. */
-function paintReadOnlyCell(td, row, prop) {
-  td.innerHTML = prop
-    ? formatPropValueHtml(row.properties?.[prop.key], prop)
-    : escapeHtml(row.title || "Sin título");
+/** Las celdas editables de una fila, en orden. */
+function celdasEditables(tr) {
+  return tr ? [...tr.querySelectorAll('td[data-editable="1"]')] : [];
+}
+
+/** La celda que toca al pasar de una celda a otra con Tab (`paso` = +1 / -1),
+ * en orden de lectura: al final de una fila, la primera de la siguiente.
+ * `null` en los extremos, donde Tab sigue su camino de siempre (salir de la
+ * tabla). */
+function celdaVecina(td, paso) {
+  const table = td.closest("table");
+  if (!table) return null;
+  const celdas = [...table.querySelectorAll('tbody td[data-editable="1"]')];
+  const i = celdas.indexOf(td);
+  return i === -1 ? null : celdas[i + paso] || null;
+}
+
+/** La celda de la misma columna en la fila siguiente: Enter guarda y baja, como
+ * en una hoja de cálculo. Salta las filas sin celdas editables (la del «Sin
+ * filas todavía»). */
+function celdaDeAbajo(td) {
+  const tr = td.parentElement;
+  const tbody = tr?.parentElement;
+  if (!tbody) return null;
+  const filas = [...tbody.querySelectorAll("tr")];
+  const col = celdasEditables(tr).indexOf(td);
+  for (let i = filas.indexOf(tr) + 1; i < filas.length; i += 1) {
+    const abajo = celdasEditables(filas[i])[col];
+    if (abajo) return abajo;
+  }
+  return null;
+}
+
+/** Mueve el foco a otra celda de la tabla, con el testigo del roving tabindex
+ * (una sola parada de Tab en la tabla, la de la celda en curso). */
+function enfocarCelda(td) {
+  if (!td) return false;
+  setRovingCell(td);
+  td.focus();
+  return true;
 }
 
 /** Un booleano no tiene "modo edición": el clic lo cambia y se guarda. */
-async function toggleCheckbox(td, database, row, prop) {
+async function toggleCheckbox(td, database, row, prop, hooks = null) {
   const next = !row.properties?.[prop.key];
   try {
-    await saveRow(database, row, { properties: { [prop.key]: next } });
+    await saveRow(database, row, { properties: { [prop.key]: next } }, hooks);
   } catch (e) {
     reportError("No se pudo guardar el cambio", e);
   }
-  repaintCell(td, database, row, prop); // si falló, este es el valor del servidor
+  // Si falló, lo que se repinta es el valor del servidor.
+  repaintCell(td, database, row, prop, undefined, hooks);
 }
 
-/** Edita una celda con el input de su tipo. Guarda al confirmar (Enter o salir
- * del campo) y, si el PATCH falla, repinta el valor viejo: la tabla nunca
- * enseña un valor que el `.md` no tiene. */
-function editCell(td, database, row, prop) {
+/** Edita una celda con el input de su tipo. Guarda al confirmar (Enter, Tab o
+ * salir del campo) y, si el PATCH falla, repinta el valor viejo: la tabla nunca
+ * enseña un valor que el `.md` no tiene.
+ *
+ * Teclado: Enter guarda y baja a la celda de la misma columna en la fila
+ * siguiente; Tab / Shift+Tab guardan y pasan a la celda siguiente / anterior
+ * (de la fila, o al final de la fila a la primera de la siguiente); Esc cancela
+ * y deja la celda como estaba. Así se recorre una fila entera sin ratón.
+ */
+function editCell(td, database, row, prop, hooks = null) {
   if (td.querySelector("input, select, textarea")) return;
   const isTitle = !prop;
   const def = isTitle ? { key: "title", name: "Título", type: "text" } : prop;
@@ -5293,15 +6503,31 @@ function editCell(td, database, row, prop) {
   // solo si el repintado lo provoca el propio control (Enter, cambio, Escape);
   // al salir con blur el foco es del control al que el usuario se ha ido.
   function repaint(focus) {
-    repaintCell(td, database, row, prop, focus);
+    repaintCell(td, database, row, prop, focus, hooks);
   }
 
-  async function commit(focus) {
+  /** Repinta la celda y deja el foco donde toca: en `destino` si la tecla pide
+   * moverse (Tab/Enter), en la propia celda si el guardado lo provocó el
+   * usuario y no hay a dónde ir, y en ningún sitio si el foco se fue a otro
+   * control (blur: robarlo es perder lo que estaba haciendo). El repintado se
+   * hace sin foco propio y lo pone `enfocarCelda`/`td.focus` al final: así hay
+   * una sola parada de Tab, la de la celda que se queda. */
+  function terminar(focus, destino) {
+    repaint(false);
+    if (destino) enfocarCelda(destino);
+    else if (focus) td.focus();
+  }
+
+  async function commit(focus, destino = null) {
     if (finished) return;
     finished = true;
+    // Control apartado por un repintado (ver `celdaEnEdicion`): se está
+    // destruyendo, no se guarda. Ni PATCH ni repintado -- la celda la vuelve a
+    // abrir `reabrirCeldaEnEdicion`, y la fila de `filas` sigue siendo verdad.
+    if (input.__descartado) return;
     if (input.value === seeded) {
       // Sin tocar el control no hay PATCH: el `.md` se queda como está.
-      repaint(focus);
+      terminar(focus, destino);
       return;
     }
     let changes = null;
@@ -5315,22 +6541,39 @@ function editCell(td, database, row, prop) {
     if (changes) {
       try {
         // El título vive en el frontmatter: el `.md` no se mueve; saveRow trae el nuevo.
-        await saveRow(database, row, changes);
+        await saveRow(database, row, changes, hooks);
       } catch (e) {
         reportError("No se pudo guardar el cambio", e);
       }
     }
-    repaint(focus);
+    terminar(focus, destino);
   }
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      commit(true); // el foco vuelve a la celda: la tabla sigue siendo navegable
-    } else if (e.key === "Escape") {
-      finished = true;
-      repaint(true); // se sale sin guardar
+      // Enter guarda y baja: la tabla sigue siendo navegable sin ratón.
+      commit(true, celdaDeAbajo(td));
+      return;
     }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      finished = true; // se sale sin guardar: la celda queda como estaba
+      repaint(true);
+      return;
+    }
+    // Tab / Shift+Tab guardan y pasan a la celda siguiente/anterior, solo en el
+    // bloque incrustado (mismo motivo que en `paintCell`: en la página de la
+    // base el Tab del navegador conserva su recorrido, que incluye «Borrar
+    // fila»). En los extremos de la tabla no se consume: Tab sale y el blur
+    // guarda lo escrito.
+    if (e.key !== "Tab" || !hooks?.embed) return;
+    const destino = celdaVecina(td, e.shiftKey ? -1 : 1);
+    if (!destino) return;
+    e.preventDefault();
+    e.stopPropagation();
+    commit(true, destino);
   });
   input.addEventListener("blur", () => commit(false));
   if (input.tagName === "SELECT") input.addEventListener("change", () => commit(true));
@@ -5462,9 +6705,12 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
         document.querySelectorAll(".board-col.is-dragover").forEach((c) => c.classList.remove("is-dragover"));
       });
     }
-    // La tarjeta abre su fila: las propiedades se editan en el diálogo, con
-    // los mismos controles por tipo que la tabla.
-    card.addEventListener("click", () => openRowDialog(database, row, refresh));
+    // La tarjeta abre su fila como página, con el cuerpo y las propiedades.
+    // El tablero no es una secuencia (no hay «fila siguiente»): se cierra y se
+    // repinta con lo que se haya guardado.
+    card.addEventListener("click", () =>
+      openRowPage(database, row, { origin: card, onClose: () => refresh?.() }),
+    );
     // Con teclado, Enter/Espacio abren la misma fila que el clic.
     makeKeyboardActivatable(card, "button", 0);
 
@@ -5704,7 +6950,9 @@ function renderCalendar(database, rows, view, refresh) {
     chip.textContent = row.title || "Sin título";
     chip.title = row.title || "Sin título";
     chip.dataset.rowId = row.id;
-    chip.addEventListener("click", () => openRowDialog(database, row, refresh));
+    chip.addEventListener("click", () =>
+      openRowPage(database, row, { origin: chip, onClose: () => refresh?.() }),
+    );
     return chip;
   };
 
@@ -5863,6 +7111,7 @@ function renderCalendar(database, rows, view, refresh) {
     onCreate: (titulo) =>
       crearFilaEnVista(database, view, titulo, { [dateProp.key]: claveDeHoy() }),
     onDone: (res) => {
+      refrescarRecuentoDeVista(grid, res.filas.length, res.total);
       if (!res.visible) return; // el aviso del control ya dice por qué no se ve
       rows.length = 0;
       rows.push(...res.filas);
@@ -5891,11 +7140,11 @@ function renderList(database, rows, view, refresh) {
   const wrap = document.createElement("div");
   wrap.className = "db-list";
 
-  const lineaDeFila = (row) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "list-row";
-    item.dataset.rowId = row.id;
+  // El contenido de una línea se pinta aparte para poder REPINTARLA en el
+  // sitio tras guardar en la vista de fila: el botón (que es el que tiene el
+  // foco al volver) no se reemplaza, solo lo de dentro.
+  const pintarLinea = (item, row) => {
+    item.textContent = "";
     const title = document.createElement("span");
     title.className = "list-row-title";
     title.textContent = row.title || "Sin título";
@@ -5908,7 +7157,27 @@ function renderList(database, rows, view, refresh) {
       span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p)}`;
       item.appendChild(span);
     });
-    item.addEventListener("click", () => openRowDialog(database, row, refresh));
+    const nombre = `Abrir «${row.title || "Sin título"}» como página`;
+    item.title = nombre;
+    item.setAttribute("aria-label", nombre);
+  };
+
+  const lineaDeFila = (row) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "list-row";
+    item.dataset.rowId = row.id;
+    pintarLinea(item, row);
+    // En la lista la fila ENTERA abre la página: no hay celdas que editar en
+    // el sitio, así que no hay dos gestos que separar.
+    item.addEventListener("click", () =>
+      openRowPage(database, row, {
+        origin: item,
+        rows,
+        index: rows.indexOf(row),
+        onSaved: () => pintarLinea(item, row),
+      }),
+    );
     return item;
   };
 
@@ -5928,6 +7197,7 @@ function renderList(database, rows, view, refresh) {
       for (const hijo of [...wrap.children]) if (hijo !== addRow) hijo.remove();
       if (res.filas.length === 0) wrap.insertBefore(avisoVacio(), addRow);
       res.filas.forEach((fila) => wrap.insertBefore(lineaDeFila(fila), addRow));
+      refrescarRecuentoDeVista(wrap, res.filas.length, res.total);
       if (res.visible) enfocarFila(wrap, res.fila.id);
     },
   });
@@ -5936,76 +7206,591 @@ function renderList(database, rows, view, refresh) {
   return wrap;
 }
 
-// -------------------------------------------------------- diálogo: editar fila
+// ------------------------------------------------ fila abierta como página
+// En Notion cada fila es una página. Aquí la fila YA es un `.md`
+// (`Bases/<slug>/<id8>.md`) con frontmatter y cuerpo: el cuerpo es el cuerpo
+// del fichero y las propiedades su frontmatter. Lo que faltaba era la puerta y
+// la vista.
+//
+// La vista se pinta ENCIMA de lo que estabas mirando (la tabla de la base, la
+// tabla incrustada en una nota, la lista) y deja la de debajo viva: cerrar
+// devuelve al mismo sitio, con el foco donde estaba, sin volver a pedir ni
+// repintar nada. Por eso no es una ruta más del historial (volver atrás no es
+// «cerrar la fila») ni un `<dialog>`: sus menús flotantes —el `/`, el del asa,
+// el contextual— cuelgan de `<body>` y se quedarían debajo del top layer.
+//
+// Se guarda en el MISMO `.md`, con el mismo PATCH que una celda: el título y
+// las propiedades al frontmatter, el cuerpo al cuerpo. El fichero no se mueve
+// (se llama por el id de la fila) y el índice se actualiza en la misma
+// operación.
+//
+// Lo que se edita es el MISMO editor de notas (`createNoteEditor`, el bundle
+// de `frontend/editor-src`): mismos bloques, mismos atajos y mismo menú `/`.
+// Lo único que no ofrece es crear páginas o bases colgando de la fila: una
+// fila no es carpeta (`_folder_for_parent` en el vault lo rechaza), así que el
+// nombre se queda escrito y se dice por qué.
 
-const rowDialog = document.getElementById("dialog-row");
-const rowPropsContainer = document.getElementById("row-props");
-let rowDialogContext = null; // { database, row, refresh, fields }
+const ROW_PAGE_DEBOUNCE_MS = 700;
 
-function openRowDialog(database, row, refresh) {
-  const fields = [];
-  rowPropsContainer.innerHTML = "";
-  document.getElementById("row-title").value = row.title || "";
-  database.schema_def.forEach((p, index) => {
-    const field = document.createElement("div");
-    field.className = "field";
-    const label = document.createElement("label");
-    label.textContent = `${p.name} (${tipoVisible(p.type)})`;
-    const { input, read } = buildPropertyInput(p, row.properties?.[p.key]);
-    // Mismo nombre accesible que en el alta inline: `for` + `id` (el prefijo
-    // `fila-dialogo` evita chocar con los del formulario, que vive a la vez).
-    const inputId = idDeCampo("fila-dialogo", index, p.key);
-    input.id = inputId;
-    label.htmlFor = inputId;
-    field.append(label, input);
-    rowPropsContainer.appendChild(field);
-    fields.push({ prop: p, read });
-  });
-  rowDialogContext = { database, row, refresh, fields };
-  rowDialog.showModal();
+let rowPage = null; // la fila abierta ahora mismo, o null
+
+/** Cierra la fila abierta. `devolverFoco` es lo normal (volver a la celda, al
+ * botón o a la línea desde la que se abrió); al navegar a otra página no, que
+ * el foco es de la página nueva.
+ *
+ * Lo que quede sin guardar se manda con `keepalive` ANTES de destruir el
+ * editor: cerrar por un repintado de la vista de debajo (o al ocultar la
+ * pestaña) no puede esperar a la respuesta. */
+function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
+  const ctx = rowPage;
+  if (!ctx) return;
+  rowPage = null;
+  ctx.cerrada = true;
+  clearTimeout(ctx.temporizador);
+  ctx.temporizador = null;
+  ctx.beacon?.();
+  try {
+    ctx.editor?.destroy();
+  } catch (_) {
+    // destruir dos veces no es un fallo que haya que contar
+  }
+  ctx.editor = null;
+  // Los flotantes del editor (el menú `/`, el contextual, la vista previa de
+  // un wikilink) cuelgan de <body>: cerrar la fila tiene que llevárselos.
+  closeSlashMenu();
+  closeContextMenu();
+  stopLinkPreview();
+  ctx.caja.remove();
+  for (const el of ctx.inertes) el.inert = false;
+  document.body.classList.remove("row-page-open");
+  // La tabla y la lista repintan su fila con `onSaved`; el tablero y el
+  // calendario no tienen una fila que repintar en el sitio y se rehacen aquí.
+  // Antes del foco: el repintado puede cambiar el DOM al que se vuelve.
+  if (avisar && ctx.guardadoAlgo) ctx.onClose?.();
+  if (devolverFoco) devolverElFoco(ctx);
 }
 
-document.getElementById("btn-cancel-row").addEventListener("click", () => {
-  rowDialogContext = null;
-  rowDialog.close();
-});
+/** ¿El evento viene del cuerpo editable de la fila? Ahí los atajos son los del
+ * editor (`Alt+↑/↓` mueve el bloque, `Escape` cierra sus menús): el cuerpo es
+ * el mismo editor de notas, no un campo de la vista de fila. */
+function esDelCuerpoDeLaFila(target) {
+  return target instanceof Element && Boolean(target.closest("#row-page-body"));
+}
 
-document.getElementById("btn-save-row").addEventListener("click", async () => {
-  const ctx = rowDialogContext;
-  if (!ctx) return;
-  const { database, row, refresh, fields } = ctx;
+/** Los reintentos de devolver el foco, en ms desde el cierre: el primero va
+ * inmediato (abajo) y estos son los que vienen detrás.
+ *
+ * Uno solo no basta cuando la vuelta es a un control que el editor rehace: el
+ * eco del guardado repinta la tabla incrustada en una nota, CodeMirror
+ * reemplaza el widget —el botón de abrir incluido— y la tabla nueva aparece
+ * cuando llegan sus filas. Mientras tanto el foco se cae a `<body>`; con un
+ * intento único se queda ahí. */
+const FOCO_ESPERAS_MS = [60, 150, 300, 600, 1200];
+const FOCO_PLAZO_MS = 1600;
 
-  const changes = {};
-  const title = document.getElementById("row-title").value.trim() || "Sin título";
-  if (!sameValue(title, row.title)) changes.title = title;
-  const properties = {};
-  fields.forEach(({ prop, read }) => {
-    const value = read();
-    const actual = row.properties?.[prop.key];
-    // Un checkbox que la fila no tenía y sigue sin marcar no se escribe: al
-    // `.md` solo va lo que ha cambiado.
-    if (prop.type === "checkbox" && actual === undefined && value === false) return;
-    if (!sameValue(value, actual)) properties[prop.key] = value;
+/** La restauración de foco en curso, si la hay (`{vivos, interrumpir}`). */
+let focoPendiente = null;
+
+/** Deja de insistir en devolver el foco: lo tomó el usuario, se abrió otra
+ * fila o se acabó el plazo. */
+function cancelarFocoPendiente() {
+  const pendiente = focoPendiente;
+  if (!pendiente) return;
+  focoPendiente = null;
+  for (const id of pendiente.vivos) clearTimeout(id);
+  document.removeEventListener("keydown", pendiente.interrumpir, true);
+  document.removeEventListener("pointerdown", pendiente.interrumpir, true);
+}
+
+/** ¿El foco se ha quedado sin dueño? Pasa al quitar la fila y cada vez que se
+ * va el nodo enfocado (el navegador lo deja en `<body>`). */
+function focoPerdido() {
+  const activo = document.activeElement;
+  return (
+    !activo || activo === document.body || activo === document.documentElement || !activo.isConnected
+  );
+}
+
+/** El bloque de base incrustada en el que vive un control de la fila, si vive
+ * en uno: su base y su posición entre los bloques de esa base. El editor
+ * rehace el widget entero al repintar la nota, así que para volver al MISMO
+ * bloque cuando la misma base está incrustada dos veces se recuerda cuál era. */
+function bloqueDeOrigen(origin) {
+  const bloque = origin?.closest?.(".cm-mdm-dblock-body");
+  const databaseId = bloque?.dataset?.databaseId;
+  if (!databaseId) return null;
+  const hermanos = [...document.querySelectorAll(".cm-mdm-dblock-body")].filter(
+    (c) => c.dataset.databaseId === databaseId,
+  );
+  const orden = hermanos.indexOf(bloque);
+  return orden < 0 ? null : { databaseId, orden };
+}
+
+/** El control al que hay que volver: el de la fila, dentro del bloque del que
+ * salió (si salió de uno) y, si ese bloque ya no está, en cualquier otro. */
+function controlDeVuelta(ctx) {
+  if (ctx.origin?.isConnected) return ctx.origin;
+  let raiz = document;
+  if (ctx.originEmbed) {
+    const bloques = [...document.querySelectorAll(".cm-mdm-dblock-body")].filter(
+      (c) => c.dataset.databaseId === ctx.originEmbed.databaseId,
+    );
+    raiz = bloques[ctx.originEmbed.orden] || document;
+  }
+  const fila = raiz.querySelector(`[data-row-id="${ctx.resumen.id}"]`);
+  if (!fila) return null;
+  return fila.matches("button") ? fila : fila.querySelector(".row-open");
+}
+
+/** Devuelve el foco a donde estaba: el control desde el que se abrió la fila
+ * (la celda, el botón de abrir, la línea de la lista).
+ *
+ * Si la vista de debajo se repintó mientras la fila estaba abierta —el eco del
+ * guardado repinta la tabla incrustada en una nota, por ejemplo—, ese control
+ * ya no está en el documento: se busca el de la MISMA fila en lo que hay
+ * ahora, que es el sitio equivalente.
+ *
+ * Y como el repintado puede llegar DESPUÉS de cerrar (el widget se rehace
+ * cuando el aviso de la base llega por `/events`), no se intenta una sola vez:
+ * se reintenta durante un margen corto, solo mientras el foco siga perdido y
+ * el usuario no haya tocado el teclado ni el ratón. */
+function devolverElFoco(ctx) {
+  cancelarFocoPendiente();
+  const pendiente = { vivos: [], interrumpir: () => cancelarFocoPendiente() };
+  focoPendiente = pendiente;
+  const intentar = () => {
+    if (focoPendiente !== pendiente || !focoPerdido()) return;
+    controlDeVuelta(ctx)?.focus();
+  };
+  intentar(); // el caso normal: el control sigue donde estaba
+  for (const espera of FOCO_ESPERAS_MS) pendiente.vivos.push(setTimeout(intentar, espera));
+  pendiente.vivos.push(setTimeout(cancelarFocoPendiente, FOCO_PLAZO_MS));
+  // El usuario manda: en cuanto toca el teclado o el ratón, la restauración se
+  // cancela (no le robamos el foco a lo que acaba de enfocar).
+  document.addEventListener("keydown", pendiente.interrumpir, true);
+  document.addEventListener("pointerdown", pendiente.interrumpir, true);
+}
+
+/** Abre una fila como página encima de la vista actual.
+ *
+ * `origin` es el control desde el que se abre (la celda, el botón de abrir, la
+ * línea de la lista): al cerrar, el foco vuelve ahí. `rows` —con `index`, la
+ * posición de esta fila— es la vista que se está mirando, para `Alt+↑/↓`.
+ * `onSaved(guardada, cambios)` se llama tras cada PATCH aceptado (la tabla y
+ * la lista repintan su fila en el sitio con eso) y `onClose()` al cerrar, solo
+ * si algo se guardó.
+ */
+async function openRowPage(
+  database,
+  resumen,
+  { origin = null, rows = null, index = -1, onSaved = null, onClose = null } = {},
+) {
+  if (rowPage) return; // una fila abierta a la vez: no hay filas dentro de filas
+  cancelarFocoPendiente(); // el foco de la fila anterior ya no es de nadie
+
+  // Lo de debajo se queda en el documento (para volver sin repintar) pero
+  // `inert`: no se puede tabular ni clicar dentro mientras la fila está
+  // abierta, y el foco no se escapa de la vista de fila.
+  const inertes = ["header", "#sidebar-aside", "#main"]
+    .map((sel) => document.querySelector(sel))
+    .filter(Boolean);
+
+  const caja = document.createElement("div");
+  caja.className = "row-page";
+
+  const fondo = document.createElement("div");
+  fondo.className = "row-page-backdrop";
+
+  const panel = document.createElement("div");
+  panel.className = "row-page-panel";
+  panel.tabIndex = -1;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-label", `Fila de ${database.title || "la base"}`);
+
+  const barra = document.createElement("div");
+  barra.className = "row-page-bar";
+  const ruta = document.createElement("span");
+  ruta.className = "row-page-crumbs";
+  ruta.textContent = database.title || "Base de datos";
+  const estado = document.createElement("span");
+  estado.className = "row-page-savestatus";
+  estado.setAttribute("role", "status");
+  const cerrar = document.createElement("button");
+  cerrar.type = "button";
+  cerrar.className = "icon-btn row-page-close";
+  cerrar.innerHTML = svgIcon("i-x");
+  cerrar.title = "Cerrar la fila";
+  cerrar.setAttribute("aria-label", "Cerrar la fila");
+  barra.append(ruta, estado, cerrar);
+
+  const scroll = document.createElement("div");
+  scroll.className = "row-page-scroll";
+  const titulo = document.createElement("textarea");
+  titulo.id = "row-page-title";
+  titulo.className = "row-page-title";
+  titulo.rows = 1;
+  titulo.setAttribute("aria-label", "Título de la fila");
+  const propsEl = document.createElement("div");
+  propsEl.className = "row-page-props";
+  const cuerpoEl = document.createElement("div");
+  cuerpoEl.id = "row-page-body";
+  cuerpoEl.className = "row-page-body";
+  scroll.append(titulo, propsEl, cuerpoEl);
+  panel.append(barra, scroll);
+  caja.append(fondo, panel);
+
+  const ctx = {
+    database,
+    resumen,
+    rows,
+    index,
+    origin,
+    originEmbed: bloqueDeOrigen(origin),
+    onSaved,
+    onClose,
+    caja,
+    titulo,
+    propsEl,
+    cuerpoEl,
+    estado,
+    inertes,
+    editor: null,
+    campos: [], // [{prop, input, read}]
+    cuerpo: "", // lo que hay escrito AHORA en el cuerpo
+    enviado: "", // lo último que el servidor aceptó
+    ultimoBeacon: "",
+    cola: Promise.resolve(), // un PATCH por turno, en cadena
+    temporizador: null,
+    guardadoAlgo: false,
+    montada: false,
+    cerrada: false,
+  };
+  rowPage = ctx;
+
+  document.body.appendChild(caja);
+  document.body.classList.add("row-page-open");
+  for (const el of inertes) el.inert = true;
+  panel.focus();
+
+  // ------------------------------------------------------------ guardar
+
+  function marcar(texto) {
+    estado.textContent =
+      texto === "saving"
+        ? "Guardando…"
+        : texto === "dirty"
+          ? "Cambios sin guardar…"
+          : texto === "error"
+            ? "Error al guardar"
+            : "Guardado";
+    estado.classList.toggle("is-error", texto === "error");
+  }
+
+  /** Lo que hay que mandar: solo lo que difiere de lo que el servidor ya tiene.
+   * El título va aparte del mapa de propiedades, como en la API. */
+  function cambios() {
+    const salida = {};
+    if (!ctx.montada) return salida;
+    const nombre = (titulo.value || "").trim() || "Sin título";
+    if (!sameValue(nombre, ctx.resumen.title)) salida.title = nombre;
+    const properties = {};
+    for (const { prop, read } of ctx.campos) {
+      const valor = read();
+      const actual = ctx.resumen.properties?.[prop.key];
+      // Un checkbox que la fila no tenía y sigue sin marcar no se escribe: al
+      // `.md` solo va lo que ha cambiado.
+      if (prop.type === "checkbox" && actual === undefined && valor === false) continue;
+      if (!sameValue(valor, actual)) properties[prop.key] = valor;
+    }
+    if (Object.keys(properties).length) salida.properties = properties;
+    if (ctx.cuerpo !== ctx.enviado) salida.body_markdown = ctx.cuerpo;
+    return salida;
+  }
+
+  /** Guardado de emergencia: la petición sigue viva aunque la pestaña se vaya
+   * (`keepalive`) y el contenido que ya iba de camino no se repite. Los
+   * cambios no se dan por guardados: si la pestaña sigue, el guardado normal
+   * los reenvía. */
+  function beacon() {
+    const cambiosAhora = cambios();
+    if (!Object.keys(cambiosAhora).length) return;
+    const cuerpo = JSON.stringify(cambiosAhora);
+    if (cuerpo === ctx.ultimoBeacon) return;
+    ctx.ultimoBeacon = cuerpo;
+    try {
+      fetch(`/databases/${ctx.database.id}/rows/${ctx.resumen.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: cuerpo,
+        keepalive: new TextEncoder().encode(cuerpo).length <= KEEPALIVE_MAX_BYTES,
+      }).catch(() => {});
+    } catch {
+      // sin red o página ya descargándose
+    }
+  }
+  ctx.beacon = beacon; // lo llaman cerrarRowPage y el guardado de emergencia
+
+  function programar() {
+    clearTimeout(ctx.temporizador);
+    ctx.temporizador = setTimeout(() => {
+      ctx.temporizador = null;
+      guardar();
+    }, ROW_PAGE_DEBOUNCE_MS);
+  }
+
+  /** Un PATCH por turno, en cadena: dos escrituras solapadas con contenidos
+   * distintos pueden aplicarse al revés y dejar en el servidor el texto viejo.
+   * Cada vuelta lee el estado de AHORA (título, campos, cuerpo), así que lo que
+   * se escribió mientras la anterior estaba en vuelo no se pierde.
+   * Devuelve `true` si al final no queda nada por guardar. */
+  function guardar() {
+    clearTimeout(ctx.temporizador);
+    ctx.temporizador = null;
+    ctx.cola = ctx.cola.then(async () => {
+      if (ctx.cerrada) return true;
+      const pendiente = cambios();
+      if (!Object.keys(pendiente).length) {
+        marcar("saved");
+        return true;
+      }
+      marcar("saving");
+      const cuerpoEnviado = "body_markdown" in pendiente ? pendiente.body_markdown : null;
+      try {
+        const guardada = await api(`/databases/${ctx.database.id}/rows/${ctx.resumen.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(pendiente),
+        });
+        Object.assign(ctx.resumen, guardada);
+        if (cuerpoEnviado !== null) ctx.enviado = cuerpoEnviado;
+        ctx.guardadoAlgo = true;
+        ctx.onSaved?.(guardada, pendiente);
+        marcar("saved");
+        return true;
+      } catch (e) {
+        // No se da por guardado: al cerrar se vuelve a intentar y, si no hay
+        // manera, la fila se queda abierta con el motivo a la vista.
+        marcar("error");
+        reportError("No se pudo guardar la fila", e);
+        return false;
+      }
+    });
+    return ctx.cola;
+  }
+
+  /** Cerrar guarda: cerrar sin guardar daría a entender que se escribió en el
+   * `.md`. Si el PATCH falla, la fila se queda abierta (el motivo ya se ha
+   * avisado) y se puede corregir el campo y reintentar. */
+  async function intentarCerrar() {
+    if (rowPage !== ctx) return;
+    const ok = await guardar();
+    if (!ok || rowPage !== ctx) return;
+    cerrarRowPage();
+  }
+
+  cerrar.addEventListener("click", () => intentarCerrar());
+  fondo.addEventListener("click", () => intentarCerrar());
+
+  // ------------------------------------------------------ montar la fila
+
+  function ajustarTitulo() {
+    titulo.style.height = "auto";
+    titulo.style.height = `${titulo.scrollHeight}px`;
+  }
+  titulo.addEventListener("input", ajustarTitulo);
+  // Enter guarda y sale del campo, como el título de una nota; Escape no
+  // cancela: el texto ya está en el campo y se guarda al cerrar.
+  titulo.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    titulo.blur();
   });
-  if (Object.keys(properties).length) changes.properties = properties;
+  titulo.addEventListener("change", () => guardar());
+  titulo.addEventListener("blur", () => guardar());
 
-  if (Object.keys(changes).length === 0) {
-    rowDialogContext = null;
-    rowDialog.close();
-    return;
+  function montarPropiedades(detalle) {
+    propsEl.textContent = "";
+    ctx.campos = [];
+    if (!database.schema_def.length) {
+      const vacio = document.createElement("p");
+      vacio.className = "row-page-prop-empty";
+      vacio.textContent = "Esta base no tiene propiedades.";
+      propsEl.appendChild(vacio);
+      return;
+    }
+    database.schema_def.forEach((prop, i) => {
+      const campo = document.createElement("div");
+      campo.className = "row-page-prop";
+      const label = document.createElement("label");
+      label.textContent = prop.name;
+      const { input, read } = buildPropertyInput(prop, detalle.properties?.[prop.key]);
+      const inputId = idDeCampo("fila-pagina", i, prop.key);
+      input.id = inputId;
+      label.htmlFor = inputId;
+      // El mismo criterio que una celda: se guarda al confirmar el control
+      // (`change`: Enter o salir del campo), no en cada tecla.
+      input.addEventListener("change", () => guardar());
+      if (input.tagName !== "SELECT" && input.type !== "checkbox") {
+        input.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          input.blur(); // el `change` del blur es el que guarda
+        });
+      }
+      campo.append(label, input);
+      propsEl.appendChild(campo);
+      ctx.campos.push({ prop, input, read });
+    });
   }
+
+  /** Irse a otra página desde dentro de la fila (un wikilink, el selector de
+   * `/page`): se guarda lo escrito antes de moverse, y no se navega si el
+   * guardado falló -- el texto es del usuario y no se tira por navegar. */
+  async function salirANavegar(pageId) {
+    if (!pageId) return;
+    const ok = await guardar();
+    if (!ok) return;
+    if (rowPage === ctx) cerrarRowPage({ devolverFoco: false });
+    await navigateToPage(pageId);
+  }
+
+  function montar(detalle) {
+    // El objeto de la tabla/lista es el mismo que se queda al día con cada
+    // PATCH (`ctx.resumen`): el repintado en el sitio lee de aquí.
+    Object.assign(ctx.resumen, detalle);
+    ctx.cuerpo = detalle.body_markdown || "";
+    ctx.enviado = ctx.cuerpo;
+    ctx.ultimoBeacon = "";
+
+    titulo.value = detalle.title || "";
+    ajustarTitulo();
+    montarPropiedades(detalle);
+
+    cuerpoEl.textContent = "";
+    try {
+      ctx.editor = createNoteEditor({
+        parent: cuerpoEl,
+        doc: ctx.cuerpo,
+        resolvePage: (nombre) => findPageByTitle(nombre),
+        onNavigate: (pageId) => salirANavegar(pageId),
+        onChange: () => {
+          ctx.cuerpo = ctx.editor?.getValue() ?? ctx.cuerpo;
+          marcar("dirty");
+          programar();
+        },
+        // Una fila no es carpeta de nada (`_folder_for_parent` lo rechaza en
+        // el vault): se dice en vez de dejar un comando que no hace nada.
+        onCreatePage: () => {
+          showError(
+            "Una fila no puede tener subpáginas: crea la nota desde la barra lateral.",
+          );
+          return null;
+        },
+        onCreateDatabase: () => {
+          showError(
+            "Una fila no puede tener una base colgando: crea la base desde una nota.",
+          );
+          return null;
+        },
+        onOpenPage: (pageId) => salirANavegar(pageId),
+        onRenamePage: renombrarPaginaDelVault,
+        onListPages: listPageEntries,
+        currentPageId: detalle.id,
+        onCreateLink: (nombre) => crearNotaHermana(null, nombre),
+        onBlockContextMenu: (payload) =>
+          mostrarMenuDeBloque(payload, () => {
+            ctx.cuerpo = ctx.editor?.getValue() ?? ctx.cuerpo;
+            marcar("dirty");
+            programar();
+          }),
+        onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
+        onWikilinkHoverEnd: () => stopLinkPreview(),
+        onSlashMenu: (menuState) => renderSlashMenu(menuState),
+        onListDatabases: listDatabaseEntries,
+        onPickDatabase: databaseBlockFor,
+        renderDatabaseBlock: renderDatabaseEmbed,
+      });
+    } catch (e) {
+      reportError("No se pudo abrir el editor de la fila", e);
+    }
+    ctx.editor?.setLinkTargets?.(linkTargets());
+    ctx.montada = true;
+    marcar("saved");
+    // El foco entra por el título (y el cursor al final): es lo que se toca
+    // primero al abrir una fila y lo que Notion deja listo para renombrar.
+    titulo.focus();
+    titulo.setSelectionRange(titulo.value.length, titulo.value.length);
+  }
+
+  // -------------------------------------------------- teclado de la vista
+
+  caja.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !e.defaultPrevented) {
+      // El editor consume el suyo cuando tiene un menú abierto (y lo deja
+      // `defaultPrevented`): ahí Escape cierra el menú, no la fila.
+      e.preventDefault();
+      e.stopPropagation();
+      intentarCerrar();
+      return;
+    }
+    if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      // Dentro del cuerpo el atajo es del editor: `moveBlockKeymap` usa
+      // `Alt+↑/↓` para mover el bloque, y el evento sube hasta aquí porque su
+      // keymap no lo detiene (`defaultPrevented` no basta como guarda). Si
+      // además se cambiara de fila, el bloque reordenado acabaría guardado en
+      // la fila que ya no estás mirando. La navegación es para el título y las
+      // propiedades; en el cuerpo, `Alt+↑/↓` mueve bloques.
+      if (e.defaultPrevented || esDelCuerpoDeLaFila(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      irAFilaVecina(e.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      e.stopPropagation();
+      guardar();
+    }
+  });
+
+  /** `Alt+↑/↓`: la fila anterior/siguiente de la vista que se está mirando,
+   * para revisar una lista seguida sin salir y volver a entrar. Solo cuando
+   * se abrió desde una vista con orden (tabla y lista); en el tablero y el
+   * calendario la vista no es una secuencia y no se ofrece. */
+  async function irAFilaVecina(paso) {
+    if (!ctx.rows || ctx.index < 0) return;
+    const destino = ctx.rows[ctx.index + paso];
+    if (!destino) return;
+    const ok = await guardar();
+    if (!ok) return;
+    const { origin, rows, onSaved, onClose } = ctx;
+    const indice = ctx.index + paso;
+    // Se cierra sin devolver el foco (lo va a tomar la fila nueva) y sin
+    // repintar lo de debajo: la tabla sigue ahí y su fila ya está al día.
+    cerrarRowPage({ devolverFoco: false, avisar: false });
+    await openRowPage(database, destino, {
+      origin,
+      rows,
+      index: indice,
+      onSaved,
+      onClose,
+    });
+  }
+
+  // ------------------------------------------------------------ abrir
+
+  let detalle;
   try {
-    // Un PATCH con título y propiedades: renombra el `.md` y escribe valores.
-    await saveRow(database, row, changes);
+    detalle = await api(`/databases/${database.id}/rows/${resumen.id}`);
   } catch (e) {
-    // El diálogo no se cierra: cerrarlo daría a entender que se guardó.
-    reportError("No se pudo guardar la fila", e);
+    cerrarRowPage({ devolverFoco: true });
+    // Sacarla del todo y pintar la vista de debajo: ya está intacta.
+    if (!(e && e.status === 401)) reportError("No se pudo abrir la fila", e);
     return;
   }
-  rowDialogContext = null;
-  rowDialog.close();
-  refresh?.();
-});
+  if (rowPage !== ctx) return; // se cerró mientras llegaba la respuesta
+  montar(detalle);
+}
 
 function renderAddRowForm(database) {
   const wrap = document.createElement("div");
@@ -6666,6 +8451,13 @@ function flushOnExit(alive) {
     state.flushSaveBeacon?.({ alive });
   } catch {
     // la pestaña se está yendo: ni aviso ni reintento posibles
+  }
+  try {
+    // La fila abierta como página se guarda por el mismo camino: su cuerpo es
+    // texto del usuario igual que el de una nota.
+    rowPage?.beacon?.();
+  } catch {
+    // ídem
   }
 }
 window.addEventListener("beforeunload", () => flushOnExit(false));

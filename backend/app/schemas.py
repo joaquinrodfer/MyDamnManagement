@@ -116,12 +116,21 @@ class PropertyDef(BaseModel):
     (`app.properties.slug_key`). Por eso al crear o editar puede llegar vacía
     (`""`); al leer, siempre viene con su valor, porque es la identidad de la
     propiedad en el fichero y en las filas.
+
+    Una propiedad `relation` declara además **a qué base apunta**
+    (`target_database`, el id de esa base) y si enlaza varias filas
+    (`multiple`). Los dos son opcionales porque solo existen en ese tipo: una
+    propiedad de texto no los lleva.
     """
 
     key: str = ""
     name: str
     type: PropertyType
     options: Optional[list[str]] = None  # para select / multiselect
+    # Solo en `relation`. `None` al editar = «no lo toco» (se conserva el que
+    # ya tenía la propiedad, ver `app.properties.plan_schema`); `""` = bórralo.
+    target_database: Optional[str] = None
+    multiple: Optional[bool] = None
 
     @field_validator("key")
     @classmethod
@@ -130,6 +139,19 @@ class PropertyDef(BaseModel):
         if v and not KEY_RE.match(v):
             raise ValueError("key debe ser snake_case (minúsculas, dígitos, _), empezando por letra")
         return v
+
+    @field_validator("multiple", mode="before")
+    @classmethod
+    def multiple_is_truthy(cls, v):
+        """`multiple` llega como booleano o como el texto que vuelve del `.md`.
+
+        El índice guarda lo que dijo el parser de YAML, que no infiere tipos:
+        `multiple: false` es la cadena `"false"` (verdadera en Python). Aquí se
+        normaliza a `True`/`False` de verdad, igual que en `reader`.
+        """
+        if v is None or isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in ("true", "1", "yes", "on", "si", "sí")
 
 
 class DatabaseCreate(BaseModel):
@@ -161,7 +183,13 @@ class DatabaseRead(BaseModel):
     page_id: uuid.UUID
     title: str
     icon: Optional[str] = None
-    schema_def: list[PropertyDef]
+    # El `schema` tal y como lo entiende la app: cada propiedad es lo que dice
+    # el `.md` (sin claves inventadas), más `target_database`/`multiple` en una
+    # `relation` y `warning` cuando la relación está rota. No es `PropertyDef`
+    # a propósito: una propiedad escrita a mano con un tipo que la app no
+    # conoce tiene que poder leerse (el `.md` manda), y así la respuesta no
+    # rellena con `null` lo que el fichero no dice.
+    schema_def: list[dict[str, Any]]
     # La columna del título: cómo se llama y si se enseña. Cualquier base de
     # antes de esta tarjeta no trae las claves en su `.md` y sale con los
     # valores por defecto («Título», visible).
@@ -181,6 +209,25 @@ class RowUpdate(BaseModel):
     title: Optional[str] = None
     icon: Optional[str] = None
     properties: Optional[dict[str, Any]] = None
+    # Cuerpo markdown de la fila. Ausente (o `null`) = no tocarlo; `""` = dejarlo
+    # vacío. El router distingue «no viene» de `""` con `model_fields_set`, así
+    # que guardar una celda no puede borrar el cuerpo sin querer.
+    body_markdown: Optional[str] = None
+
+
+class RelatedRow(BaseModel):
+    """Una fila a la que apunta una celda de relación, resuelta en el servidor.
+
+    `title: None` = el id guardado ya no resuelve a ninguna fila (la borraron).
+    El `.md` sigue apuntando a él y el id sigue en `properties`: una celda vacía
+    no explicaría nada, y el interfaz necesita saber que hay algo roto ahí para
+    enseñar «(borrada)». `base_id` es la base de la fila referenciada (o la que
+    declara la propiedad, si la fila ya no está).
+    """
+
+    id: str
+    title: Optional[str] = None
+    base_id: Optional[str] = None
 
 
 class RowRead(BaseModel):
@@ -189,8 +236,24 @@ class RowRead(BaseModel):
     title: str
     icon: Optional[str] = None
     properties: dict[str, Any]
+    # `{clave_de_la_propiedad: [fila, ...]}` de las propiedades `relation`, con
+    # el título ya resuelto por el servidor (una consulta por respuesta). Una
+    # fila sin relaciones devuelve `{}`.
+    related: dict[str, list[RelatedRow]] = {}
     created_at: datetime
     updated_at: datetime
+
+
+class RowPageRead(RowRead):
+    """Una fila leída para abrirla como página: lo de `RowRead` + su cuerpo.
+
+    El cuerpo va SOLO en la lectura de UNA fila
+    (`GET /databases/{id}/rows/{row}`) y en `PATCH` no vuelve: una tabla de
+    cien filas no tiene por qué arrastrar cien cuerpos que no se van a
+    enseñar, y el PATCH de una celda —que es el caso frecuente— tampoco.
+    """
+
+    body_markdown: str = ""
 
 
 class ViewCreate(BaseModel):
