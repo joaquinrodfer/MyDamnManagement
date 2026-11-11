@@ -2001,6 +2001,157 @@
     color: var(--ink-muted);
   }
   .db-col-menu-note:empty { display: none; }
+  /* Selector de filas de una celda de relación. Cuelga de <body> (la tabla
+     recorta lo que vive dentro: `.table-wrap` desplaza en horizontal) y lleva
+     su propia caja con scroll: a 375 px cabe en la ventana sin arrastrar la
+     página, y la lista se desplaza sola. */
+  .rel-picker {
+    position: fixed;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: min(320px, calc(100vw - 16px));
+    max-width: calc(100vw - 16px);
+    max-height: min(70vh, 520px);
+    padding: 8px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    color: var(--ink);
+    font-size: var(--text-sm);
+  }
+  .rel-picker-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 2px 4px;
+  }
+  .rel-picker-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rel-picker-mode {
+    flex: none;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .rel-picker-chosen { display: flex; flex-wrap: wrap; gap: 4px; }
+  .rel-picker-empty { padding: 0 4px; font-size: 12px; color: var(--ink-muted); }
+  .rel-picker-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 1px 4px 1px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    font-size: 12px;
+  }
+  .rel-picker-chip.rel-borrada {
+    background: var(--code-bg);
+    color: var(--ink-muted);
+    font-style: italic;
+  }
+  .rel-picker-chip-text {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rel-picker-chip-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+  }
+  .rel-picker-chip-x:hover,
+  .rel-picker-chip-x:focus-visible { background: var(--code-bg); color: var(--ink); }
+  .rel-picker-chip-x .svg-icon { width: 11px; height: 11px; }
+  .rel-picker-search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    min-height: var(--control-size);
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 12.5px;
+  }
+  /* Lo único que desplaza es la lista: el buscador y las filas elegidas se
+     quedan a la vista mientras se recorre. */
+  .rel-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+    max-height: min(46vh, 290px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .rel-picker-option {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .rel-picker-option:hover,
+  .rel-picker-option.is-active,
+  .rel-picker-option:focus-visible { background: var(--code-bg); }
+  .rel-picker-option.is-chosen { background: var(--accent-soft); }
+  .rel-picker-option-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rel-picker-option-base {
+    margin-left: auto;
+    flex: none;
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+  .rel-picker-check { flex: none; color: var(--accent); }
+  .rel-picker-note,
+  .rel-picker-more {
+    margin: 0;
+    padding: 4px 8px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink-muted);
+  }
+  .rel-picker-note:empty { display: none; }
+  /* En pantalla estrecha el selector ocupa el ancho útil y las opciones se
+     tocan con el dedo: 40 px de alto. */
+  @media (max-width: 640px) {
+    .rel-picker-option { min-height: 40px; align-items: center; }
+    .rel-picker-search { font-size: 16px; min-height: 44px; }
+    .prop-relation { gap: 8px 10px; }
+    .prop-relation-label select { font-size: 16px; min-height: 44px; flex: 1 1 auto; }
+    .prop-relation-multiple { min-height: 32px; }
+  }
   /* Barra de «N columnas ocultas en esta vista · Mostrar». Va dentro de
      `.table-wrap` (que desplaza en horizontal), pegada al borde izquierdo para
      que no se vaya con las columnas. */
@@ -2061,6 +2212,63 @@
      (`renderTable`), y con el título oculto (`title_hidden`) no hay ninguna
      que destacar. */
   .rows-table td.cell-title { font-weight: 600; color: var(--ink); }
+  /* Una celda de relación enseña los TÍTULOS de las filas enlazadas, y saltan
+     de línea dentro del ancho de la celda: un título largo no puede desbordar
+     la tabla (el `td` recorta y a 375 px se perdería la mitad). */
+  .rows-table td.cell-rel { white-space: normal; overflow-wrap: anywhere; }
+  .rel-cell {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+  }
+  .rel-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 1px 7px;
+    border: 1px solid var(--panel-border);
+    border-radius: 999px;
+    background: var(--code-bg);
+    color: var(--ink);
+    font: inherit;
+    line-height: 1.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  button.rel-chip { cursor: pointer; }
+  button.rel-chip:hover,
+  button.rel-chip:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+  /* Fila borrada: gris y sin promesa de enlace (el id va en el `title`). */
+  .rel-chip.rel-borrada {
+    color: var(--ink-muted);
+    font-style: italic;
+    border-style: dashed;
+    cursor: default;
+  }
+  /* El lápiz de la celda: abre el selector sin abrir ninguna fila (el clic en
+     un título lleva a su fila, así que no queda hueco que clicar). */
+  .rel-edit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin-left: 2px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+    vertical-align: middle;
+    opacity: 0.75;
+  }
+  .rel-edit:hover,
+  .rel-edit:focus-visible { background: var(--accent-soft); color: var(--ink); opacity: 1; }
+  .rel-edit .svg-icon { width: 13px; height: 13px; }
   /* Columna de abrir la fila como página: estrecha, y el botón discreto hasta
      que se pasa por encima (en táctil se ve siempre, al 65 %). */
   .rows-table th.row-open-head { width: 34px; }
@@ -2699,6 +2907,58 @@
      acción se quedaban fuera de la pantalla. */
   #prop-rows { max-height: 55vh; overflow-y: auto; padding-right: 2px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  /* Relación: la base destino y «permite varias filas», en una línea propia
+     bajo el nombre y el tipo. El `[hidden]` explícito hace falta: con
+     `display: flex` el atributo `hidden` del navegador se queda en nada. */
+  .prop-relation {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin-top: 6px;
+    padding-left: 2px;
+  }
+  .prop-relation[hidden] { display: none; }
+  .prop-relation-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--ink-muted);
+  }
+  .prop-relation-label select {
+    padding: 5px 8px;
+    min-width: 0;
+    max-width: 100%;
+    min-height: var(--control-size);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-input);
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 12.5px;
+  }
+  .prop-relation-multiple {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+  .prop-relation-multiple input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent);
+  }
+  /* Por qué «Guardar» está apagado: una línea, no un párrafo. */
+  .db-save-hint {
+    margin: 10px 0 0;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--down);
+  }
+  .db-save-hint[hidden] { display: none; }
 
   /* Diálogos de cuenta (P11b): lista de usuarios y avisos en línea. */
   .users-list {
@@ -3200,6 +3460,7 @@
       <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
       <symbol id="i-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
       <!-- Bandeja de capturas (P13). -->
       <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
       <symbol id="i-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol>
@@ -3316,6 +3577,9 @@
       <div id="prop-rows"></div>
       <button type="button" class="btn" id="btn-add-prop" style="align-self: flex-start; margin-top: 4px;"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Propiedad</button>
     </div>
+    <!-- Por qué el botón de guardar está apagado (una relación sin base
+         destino). Una línea, la escribe actualizarGuardadoDelDialogo(). -->
+    <p id="db-save-hint" class="db-save-hint" role="status" hidden></p>
     <div class="dialog-actions">
       <button class="btn" id="btn-cancel-database">Cancelar</button>
       <button class="btn btn-primary" id="btn-save-database">Crear</button>
