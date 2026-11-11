@@ -1657,6 +1657,22 @@ const BLOCK_SPACING_CLASS = {
   h5: "cm-mdm-space-h5",
 };
 
+/** Líneas en blanco entre el bloque anterior y la primera línea de `block`:
+ * el aire que el autor ya escribió. Se cuentan hacia arriba desde la línea del
+ * bloque y se para en la primera con contenido o al entrar en el bloque de
+ * arriba (una línea vacía DENTRO de una valla de código es de ese bloque, no
+ * del hueco). */
+export function blankLinesBefore(doc, block, prev) {
+  let blanks = 0;
+  for (let number = doc.lineAt(block.from).number - 1; number >= 1; number--) {
+    const line = doc.line(number);
+    if (line.length !== 0) break;
+    if (line.from < prev.to) break;
+    blanks++;
+  }
+  return blanks;
+}
+
 function blockSpacingDecorations(state) {
   const { blocks } = state.field(blockField);
   const ranges = [];
@@ -1665,7 +1681,18 @@ function blockSpacingDecorations(state) {
     const prev = blocks[i - 1];
     if (LIST_BLOCK_TYPES.has(b.type) && LIST_BLOCK_TYPES.has(prev.type)) return;
     const cls = BLOCK_SPACING_CLASS[b.type] || "cm-mdm-space-normal";
-    ranges.push(Decoration.line({ class: cls }).range(b.from));
+    // El aire de arriba es el MAYOR entre el que le toca por su tipo y el que
+    // ya ocupan sus líneas en blanco, no la suma: una línea en blanco entre dos
+    // párrafos deja exactamente una línea de aire (24 px) y no 24 + los 6 del
+    // párrafo, y dos dejan el doble. El número de líneas viaja a CSS en
+    // `--mdm-blank` y cada `cm-mdm-space-*` resta `--mdm-line` por línea sin
+    // bajar de 0 (ver index.html), así un H1 con una línea en blanco delante
+    // conserva sus 28 px y su asa sigue a la altura del texto.
+    const blanks = blankLinesBefore(state.doc, b, prev);
+    const line = blanks
+      ? Decoration.line({ class: cls, attributes: { style: `--mdm-blank: ${blanks}` } })
+      : Decoration.line({ class: cls });
+    ranges.push(line.range(b.from));
   });
   return Decoration.set(ranges, true);
 }
@@ -1815,17 +1842,26 @@ function underlinePlugin() {
   );
 }
 
-// Un párrafo necesita una línea en blanco detrás para separarse del
-// siguiente en Markdown -- pero verla como un hueco real (una fila entera
-// vacía) hace que los bloques parezcan tener aire de más entre ellos, cosa
-// que no pasa en un editor de bloques al estilo Notion. Se colapsa su
-// altura a casi nada mientras el cursor no esté ahí (mismo patrón
-// cursor-aware que wikilinks/flechas/línea horizontal); en cuanto el
-// cursor entra -- tras Mayús+Enter, o al clicar ahí -- vuelve a su altura
-// normal para poder escribir con comodidad. Dentro de un bloque de código
-// no se toca: ahí una línea en blanco es contenido de verdad, no un
-// separador. Nota: es una decoración de línea (Decoration.line), no de
-// bloque -- a diferencia de hrField, esas sí puede darlas un ViewPlugin.
+// Una línea en blanco es una línea del editor como cualquier otra: ocupa su
+// altura, y así el hueco entre dos bloques delata cuántas hay -- una deja el
+// aire de UNA línea, dos el doble (pedido del dueño: «que los bloques vacíos
+// dejen espacio, aunque estén vacíos»). Antes se colapsaba a 3 px para que no
+// pareciera aire de más, y el resultado era justo lo que no se podía leer: un
+// hueco indistinguible del margen entre bloques, sin forma de saber si había
+// una línea en blanco ahí o solo separación.
+//
+// Esto solo MARCA líneas: no cambia el documento, ni su texto, ni su longitud.
+//
+// - `cm-mdm-blank` en toda línea vacía fuera de un bloque de código (ahí una
+//   línea en blanco es contenido de verdad, no un separador). Por sí sola no
+//   cambia la altura -- una .cm-line vacía ya mide lo que mide una línea del
+//   cuerpo --: es el gancho del indicador y de `blockSpacingDecorations`, que
+//   cuenta estas líneas para no sumar su aire al del bloque de abajo.
+// - `cm-mdm-blank-active` si el cursor está en esa línea: ahí se pinta el
+//   punto tenue que dice «aquí se escribe» (ver index.html).
+// - `cm-mdm-last-line` si es la última del documento, para que la línea
+//   clicable del final (el `::after` de .cm-content) no pinte una de más
+//   cuando la del final ya es una línea vacía de verdad.
 function blankLineDecorations(view) {
   const ranges = [];
   const { state } = view;
@@ -1837,9 +1873,11 @@ function blankLineDecorations(view) {
     for (let n = firstLine; n <= lastLine; n++) {
       const line = doc.line(n);
       if (line.length !== 0) continue;
-      if (selectionIntersects(state, line.from, line.to)) continue;
       if (isInsideCode(code, line.from)) continue;
-      ranges.push(Decoration.line({ class: "cm-mdm-blank-collapsed" }).range(line.from));
+      const classes = ["cm-mdm-blank"];
+      if (selectionIntersects(state, line.from, line.to)) classes.push("cm-mdm-blank-active");
+      if (n === doc.lines) classes.push("cm-mdm-last-line");
+      ranges.push(Decoration.line({ class: classes.join(" ") }).range(line.from));
     }
   }
   return Decoration.set(ranges, true);
