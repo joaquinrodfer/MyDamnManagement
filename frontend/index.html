@@ -1352,24 +1352,41 @@
   .cm-mdm-block-handle:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
 
   /* ---------- el punto del bloque (escribir un bloque debajo) ----------
-     Widget EN LÍNEA con ancho 0 (ver blockDotPlugin en entry.js): ocupa sitio
-     en el flujo lo justo para heredar la altura del texto de su primera línea
-     (`vertical-align: middle`, así un H1 de 24 px no necesita una regla
-     aparte) y se saca al margen con `left` negativo -- el mismo margen que
-     alojan el «+» y el asa. Existe SOLO mientras hay un bloque con el ratón
-     encima (o, en táctil, el del cursor): no hay puntos en las líneas en
-     blanco ni sueltos debajo del último bloque de una nota vacía. */
+     Widget EN LÍNEA con ancho 0 (ver blockDotPlugin en entry.js): se saca al
+     margen con `left` negativo -- el mismo margen que alojan el «+» y el asa --
+     y se coloca a la altura del TEXTO de su primera línea, no a la del cuerpo
+     de la línea. Existe SOLO mientras hay un bloque con el ratón encima (o, en
+     táctil, el del cursor): no hay puntos en las líneas en blanco ni sueltos
+     debajo del último bloque de una nota vacía.
+
+     Cómo se centra: `vertical-align: baseline` con caja de alto 0 deja el
+     borde inferior del envoltorio en la LÍNEA BASE del texto, y el punto se
+     sube 1/3 del cuerpo de letra, que es donde cae el centro de la caja del
+     texto (medido en la app: H1 de 24 px, 8 px sobre la línea base; H2 de 20,
+     6,5; cuerpo de 15, 5). El cuerpo del texto lo pone `--mdm-dot-text`, que
+     las clases cm-mdm-dot-h1..h5 enlazan con el MISMO token de la escala
+     (--text-hN) que usa el encabezado; lo que no es encabezado (párrafo,
+     lista, código, cita) se queda con el `1em` del respaldo, que es el cuerpo
+     de la línea. Antes el envoltorio iba con `vertical-align: middle`, que se
+     calcula con la x-height de la LÍNEA (15 px, el cuerpo) y no con la del
+     texto del encabezado: el punto salía 3,5 px por debajo del centro de un H1
+     y 2,5 de un H2 (0,5 en párrafo y lista). */
   .cm-mdm-block-dot-wrap {
     display: inline-block;
     width: 0;
     height: 0;
     position: relative;
-    vertical-align: middle;
+    vertical-align: baseline;
   }
+  .cm-mdm-block-dot-wrap.cm-mdm-dot-h1 { --mdm-dot-text: var(--text-h1); }
+  .cm-mdm-block-dot-wrap.cm-mdm-dot-h2 { --mdm-dot-text: var(--text-h2); }
+  .cm-mdm-block-dot-wrap.cm-mdm-dot-h3 { --mdm-dot-text: var(--text-h3); }
+  .cm-mdm-block-dot-wrap.cm-mdm-dot-h4 { --mdm-dot-text: var(--text-h4); }
+  .cm-mdm-block-dot-wrap.cm-mdm-dot-h5 { --mdm-dot-text: var(--text-h5); }
   .cm-mdm-block-dot {
     position: absolute;
     left: calc(-1 * (var(--mdm-gutter, 78px) + 6px)); /* 6 = el padding-left de la .cm-line */
-    top: -12px;
+    top: calc(-12px - var(--mdm-dot-text, 1em) / 3); /* 12 = medio punto; 1/3 = centro del texto sobre la línea base */
     width: 12px;
     height: 24px;
     cursor: pointer;

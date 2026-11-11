@@ -996,14 +996,15 @@ function blockHandleEventHandlers(onBlockContextMenu) {
     mousedown(event, view) {
       const target = event.target;
       if (target instanceof HTMLElement) {
-        const dot = target.closest(".cm-mdm-block-dot");
-        if (dot) {
-          event.preventDefault();
-          event.stopPropagation();
+        const dotIndex = pressBlockDot(target, (index) => {
           // Sin esto el punto seguiría puesto en el bloque de antes y el
           // usuario acabaría con dos bloques nuevos si vuelve a pulsar.
           view.dispatch({ effects: setDotBlock.of(-1) });
-          insertBlockAfter(view, Number(dot.dataset.blockIndex));
+          insertBlockAfter(view, index);
+        });
+        if (dotIndex >= 0) {
+          event.preventDefault();
+          event.stopPropagation();
           return true;
         }
 
@@ -2035,11 +2036,15 @@ function blankLinePlugin() {
 // para escribir: al final de la nota, es la forma de seguir escribiendo sin
 // buscar el hueco.
 //
-// Va como widget EN LÍNEA con ancho 0 (`vertical-align: middle`), no como
-// decoración de línea con `::after`: así queda a la altura del texto de su
-// primera línea sin una regla por tipo de bloque (un H1 no mide lo mismo que un
-// párrafo, y su línea lleva padding-top propio). El desplazamiento al margen lo
-// hace `left` negativo en CSS (index.html).
+// Va como widget EN LÍNEA con ancho 0, no como decoración de línea con
+// `::after`: apoyado en la LÍNEA BASE de su primera línea (vertical-align:
+// baseline + caja de alto 0) y subido 1/3 del cuerpo de letra del texto, que es
+// donde está el centro de su caja. El cuerpo lo pone una clase por familia de
+// encabezado (ver DOT_TEXT_SIZE_CLASS y --mdm-dot-text en index.html): con
+// `vertical-align: middle` -- lo que había antes -- el desplazamiento se
+// calculaba con la x-height de la LÍNEA (15 px de cuerpo), no con la del texto,
+// y el punto salía 3,5 px por debajo del centro de un H1 y 2,5 de un H2. El
+// desplazamiento al margen lo hace `left` negativo en CSS (index.html).
 const setDotBlock = StateEffect.define();
 
 const dotField = StateField.define({
@@ -2053,17 +2058,31 @@ const dotField = StateField.define({
   },
 });
 
-class BlockDotWidget extends WidgetType {
-  constructor(index) {
+/** Cuerpo de letra del texto del bloque, para poner el punto a SU altura: solo
+ * los encabezados se separan del cuerpo de la línea. La clase lleva en CSS a
+ * `--text-hN`, el mismo token que usa el encabezado, así que si cambia la
+ * escala tipográfica el punto la sigue sin tocar píxeles a mano. */
+const DOT_TEXT_SIZE_CLASS = {
+  h1: "cm-mdm-dot-h1",
+  h2: "cm-mdm-dot-h2",
+  h3: "cm-mdm-dot-h3",
+  h4: "cm-mdm-dot-h4",
+  h5: "cm-mdm-dot-h5",
+};
+
+export class BlockDotWidget extends WidgetType {
+  constructor(index, type) {
     super();
     this.index = index;
+    this.type = type;
   }
   eq(other) {
-    return other.index === this.index;
+    return other.index === this.index && other.type === this.type;
   }
   toDOM() {
     const wrap = document.createElement("span");
-    wrap.className = "cm-mdm-block-dot-wrap";
+    const size = DOT_TEXT_SIZE_CLASS[this.type];
+    wrap.className = size ? `cm-mdm-block-dot-wrap ${size}` : "cm-mdm-block-dot-wrap";
     const dot = document.createElement("span");
     dot.className = "cm-mdm-block-dot";
     dot.dataset.blockIndex = String(this.index);
@@ -2082,33 +2101,46 @@ function coarsePointer() {
   return typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches;
 }
 
-/** Índice del bloque al que pertenece `pos`, o -1 si cae en un hueco (una línea
- * en blanco entre dos bloques no es de nadie: ahí no hay punto). */
-function blockIndexAtPos(state, pos) {
+/**
+ * Índice del bloque al que pertenece `pos`, o -1 si cae en un hueco (una línea
+ * en blanco entre dos bloques no es de nadie: ahí no hay punto).
+ *
+ * Pregunta por BLOQUES y no por el `state` para poder probarlo sin una vista
+ * (ver test/block-dot.test.js). El rango es cerrado por los dos lados a
+ * propósito: el `to` que da el parser es la posición del salto de línea que
+ * cierra el bloque (en un encabezado, en un párrafo y en un ítem de lista), así
+ * que la ÚLTIMA posición del bloque es esa y no la de la línea en blanco que
+ * pueda venir detrás -- ese es el primer hueco de verdad. En el borde de
+ * arriba, `from` es la primera posición del bloque.
+ */
+export function blockIndexAtPos(blocks, pos) {
   if (pos == null) return -1;
-  const { blocks } = state.field(blockField);
   return blocks.findIndex((b) => pos >= b.from && pos <= b.to);
 }
 
-/** ¿El puntero está DENTRO del bloque (4 px de gracia arriba y abajo)? Hace
+/**
+ * ¿El puntero está DENTRO del bloque (4 px de gracia arriba y abajo)? Hace
  * falta porque `posAtCoords` pega el hueco de debajo del último bloque al final
  * del texto: sin esto, el punto aparecía también con el ratón en la banda
- * vacía del final, que es justo el «punto suelto donde no hay bloque». */
-function pointerInsideBlock(view, index, y) {
-  const b = view.state.field(blockField).blocks[index];
-  if (!b) return false;
-  const top = view.coordsAtPos(b.from, -1);
-  const bottom = view.coordsAtPos(b.to, 1) || top;
+ * vacía del final, que es justo el «punto suelto donde no hay bloque».
+ *
+ * `coordsAt` es `view.coordsAtPos` (se pasa como función, con la misma firma,
+ * para poder probar la cuenta sin una vista: ver test/block-dot.test.js).
+ */
+export function pointerInsideBlock(block, y, coordsAt) {
+  if (!block) return false;
+  const top = coordsAt(block.from, -1);
+  const bottom = coordsAt(block.to, 1) || top;
   if (!top || !bottom) return false;
   return y >= top.top - 4 && y <= bottom.bottom + 4;
 }
 
 function dotDecorations(state) {
-  const index = coarsePointer() ? blockIndexAtPos(state, state.selection.main.head) : state.field(dotField);
-  if (index < 0) return Decoration.none;
-  const b = state.field(blockField).blocks[index];
-  if (!b) return Decoration.none;
-  return Decoration.set([Decoration.widget({ widget: new BlockDotWidget(index), side: -1 }).range(b.from)], true);
+  const { blocks } = state.field(blockField);
+  const index = coarsePointer() ? blockIndexAtPos(blocks, state.selection.main.head) : state.field(dotField);
+  const b = blocks[index];
+  if (index < 0 || !b) return Decoration.none;
+  return Decoration.set([Decoration.widget({ widget: new BlockDotWidget(index, b.type), side: -1 }).range(b.from)], true);
 }
 
 function blockDotPlugin() {
@@ -2132,14 +2164,41 @@ function blockDotPlugin() {
   );
 }
 
+/**
+ * Índice del bloque del punto que se ha pulsado -- el `data-block-index` que
+ * pinta BlockDotWidget --, o -1 si el clic no es en un punto. Se lee del DOM y
+ * no de la posición del cursor: el widget puede ser de un bloque distinto al
+ * que tiene el caret (el punto sigue al ratón, no a la selección).
+ */
+export function dotBlockIndex(target) {
+  const dot = target?.closest?.(".cm-mdm-block-dot");
+  if (!dot) return -1;
+  const index = Number(dot.dataset?.blockIndex);
+  return Number.isInteger(index) && index >= 0 ? index : -1;
+}
+
+/**
+ * El clic en el punto: saca el índice del widget pulsado y se lo pasa a
+ * `insertAfter`. Devuelve ese mismo índice, o -1 si el clic no era en un punto
+ * (y entonces no se inserta nada). Se separa del manejador para que el test
+ * pueda comprobar SIN una vista que el `data-block-index` que se pulsa es
+ * exactamente el que llega a insertBlockAfter.
+ */
+export function pressBlockDot(target, insertAfter) {
+  const index = dotBlockIndex(target);
+  if (index >= 0) insertAfter(index);
+  return index;
+}
+
 function blockDotEventHandlers() {
   return EditorView.domEventHandlers({
     mousemove(event, view) {
       let index = -1;
       if (!coarsePointer()) {
+        const blocks = view.state.field(blockField).blocks;
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-        index = blockIndexAtPos(view.state, pos);
-        if (index >= 0 && !pointerInsideBlock(view, index, event.clientY)) index = -1;
+        index = blockIndexAtPos(blocks, pos);
+        if (index >= 0 && !pointerInsideBlock(blocks[index], event.clientY, (p, side) => view.coordsAtPos(p, side))) index = -1;
       }
       if (index !== view.state.field(dotField)) view.dispatch({ effects: setDotBlock.of(index) });
       return false;
