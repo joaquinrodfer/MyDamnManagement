@@ -54,9 +54,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Las etiquetas de la imagen salen del nombre del tag: `v2.2.0` produce
-      # `v2.2.0`, `2.2` y `2`. La de `latest` NO se publica a propósito: con
-      # ella, el `.env` de un servidor que dice `MDM_TAG=latest` cambia de
-      # versión sin que nadie lo pida.
+      # `v2.2.0`, `2.2`, `2` y el sha corto. Ademas `docker/metadata-action`
+      # pone `latest` en el tag mas reciente (comportamiento por defecto de
+      # `type=semver`): se queda, porque «lo ultimo publicado» es informacion
+      # legitima, pero **el servidor no debe usarla nunca** (`MDM_TAG=latest`
+      # cambia de version con cada `pull`, sin que nadie lo haya decidido).
       - name: Etiquetas y metadatos
         id: meta
         uses: docker/metadata-action@v5
