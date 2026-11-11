@@ -1895,6 +1895,12 @@
      el ancho por su cuenta y repartía el hueco entre las columnas que no se
      estaban arrastrando. */
   table.rows-table.has-col-widths { table-layout: fixed; }
+  /* Mientras dura la medida de «ajustar al contenido» el tope de 240 px de las
+     celdas no cuenta: es el recorte de la pintura, no el contenido, y cortaba
+     la medida en 240 px (cualquier texto más largo se quedaba igual y con
+     puntos suspensivos). El tope real lo pone `acotarAncho` (64-560). */
+  table.rows-table.is-measuring th,
+  table.rows-table.is-measuring td { max-width: none; }
   /* La cabecera que se está arrastrando y la línea que dice dónde cae. */
   .rows-table th.is-col-dragging { opacity: 0.45; }
   .table-wrap.is-col-dragging { cursor: grabbing; }

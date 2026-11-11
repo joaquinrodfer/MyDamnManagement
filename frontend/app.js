@@ -4639,6 +4639,13 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // Guardar el filtro o el orden es un PATCH a la vista y un repintado con lo
   // que el servidor acaba de escribir: la pantalla no guarda su propia copia.
   const aplicarConfig = async (cambios) => {
+    // El ancho y el orden de las columnas repintan la base entera (el `.md`
+    // manda, la pantalla no guarda su propia copia): se apunta dónde estaba
+    // mirando el usuario para devolverlo después. Sin esto, soltar el asa con
+    // la tabla desplazada la mandaba a la primera columna, y el foco del
+    // teclado se quedaba en `<body>` entre dos reordenaciones seguidas.
+    const sonColumnas = "widths" in cambios || "order" in cambios;
+    const antes = sonColumnas ? estadoDeColumnas() : null;
     try {
       await guardarConfigDeVista(database, activeView, cambios);
     } catch (e) {
@@ -4646,6 +4653,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       return;
     }
     await recargarVistas();
+    if (antes) restaurarColumnas(antes);
   };
 
   if (activeView) {
@@ -6113,11 +6121,66 @@ async function saveRow(database, row, changes, hooks = null) {
 // que sigue con el orden del schema y el reparto del navegador: prometer un
 // ancho que se pierde al recargar sería peor que no ofrecerlo.
 
+/** Lo que hay que devolver a su sitio cuando el repintado de una columna rehace
+ * la base entera: el desplazamiento horizontal de la tabla y el foco.
+ *
+ * El ancho y el orden viven en la vista, así que guardar cualquiera de los dos
+ * vuelve a pedir la base y a pintar la tabla de cero. Con anchos guardados la
+ * tabla se sale del panel: sin devolver el `scrollLeft`, soltar el asa con la
+ * tabla desplazada la mandaba a la primera columna. Y sin el foco, `Alt+flecha`
+ * (mover una columna con el teclado) lo dejaba en `<body>`: dos reordenaciones
+ * seguidas exigían volver a enfocar la cabecera.
+ *
+ * Se busca la tabla en el documento y no en una referencia guardada: el
+ * repintado crea un `#main` nuevo. */
+function estadoDeColumnas() {
+  const wrap = document.querySelector("#main .table-wrap");
+  if (!wrap) return null;
+  const activo = document.activeElement;
+  let foco = null;
+  if (activo && wrap.contains(activo)) {
+    const th = activo.closest?.("th[data-col-key]");
+    if (th) foco = { clave: th.dataset.colKey, asa: Boolean(activo.closest(".col-resizer")) };
+  }
+  return { scrollLeft: wrap.scrollLeft, foco };
+}
+
+/** Devuelve el desplazamiento y el foco que apuntó `estadoDeColumnas`, sobre la
+ * tabla recién pintada. Si la columna ya no está (o la vista cambió de tipo) no
+ * se toca nada: el foco se queda donde lo haya dejado el navegador. */
+function restaurarColumnas({ scrollLeft, foco }) {
+  const wrap = document.querySelector("#main .table-wrap");
+  if (!wrap) return;
+  if (scrollLeft) wrap.scrollLeft = scrollLeft;
+  if (!foco) return;
+  const th = wrap.querySelector(`th[data-col-key="${CSS.escape(foco.clave)}"]`);
+  if (!th) return;
+  // El asa (`separator`) o el botón de ordenar, que es lo que tiene el foco
+  // cuando se reordena con el teclado.
+  const destino = foco.asa ? th.querySelector(".col-resizer") : th.querySelector(".th-sort");
+  destino?.focus({ preventScroll: true });
+}
+
 const ANCHO_MINIMO = 64;   // por debajo no cabe ni el nombre de la columna
 const ANCHO_MAXIMO = 560;  // más que esto y la columna se come la tabla
 
 function acotarAncho(px) {
   return Math.min(ANCHO_MAXIMO, Math.max(ANCHO_MINIMO, Math.round(px)));
+}
+
+/** Las columnas que no son del schema: la de abrir la fila, la del título y la
+ * de acciones. En el DOM llevan `@` delante para no chocar con una propiedad
+ * con esa clave (`open`, `title`, `actions`), pero solo la del título tiene
+ * ancho guardado, y bajo la clave `title`. */
+const CLAVES_DE_SERVICIO = new Set(["@open", "@title", "@actions"]);
+
+/** La clave con la que se guarda el ancho de una columna en `views[].widths`:
+ * la de la propiedad, o `title` para la columna del título. Las de servicio
+ * (abrir la fila y acciones) no tienen: su ancho es parte del dibujo de la
+ * tabla, no un dato de la vista, y por eso no llevan asa. */
+function claveDeAncho(domKey) {
+  if (domKey === "@title") return "title";
+  return CLAVES_DE_SERVICIO.has(domKey) ? null : domKey;
 }
 
 /** Los anchos guardados de una vista: clave de propiedad (o `title` para la
@@ -6222,7 +6285,8 @@ function congelarAnchos(table, cols, anchos) {
   }
   table.classList.add("has-col-widths");
   for (const [clave, col] of cols) {
-    const ancho = anchos.get(clave) || medidos.get(clave);
+    const anchoMd = claveDeAncho(clave);
+    const ancho = (anchoMd && anchos.get(anchoMd)) || medidos.get(clave);
     if (ancho) col.style.width = `${ancho}px`;
   }
   fijarAnchoDeTabla(table, cols);
@@ -6231,17 +6295,25 @@ function congelarAnchos(table, cols, anchos) {
 /** El ancho que ocupa el contenido de una columna, medido con el reparto
  * automático y con la tabla a su ancho natural (`max-content`): es lo que hace
  * un doble clic en el asa, como en una hoja de cálculo. Deja la tabla
- * congelada con las demás columnas como estaban y devuelve el ancho acotado. */
-function ajustarAlContenido(table, cols, clave, anchos) {
+ * congelada con las demás columnas como estaban y devuelve el ancho acotado.
+ *
+ * La medida se toma SIN el `max-width: 240px` de las celdas (`is-measuring`):
+ * ese tope es el recorte de la pintura, no el contenido, y cortaba la medida en
+ * 240 px, así que cualquier texto más largo se quedaba en 240 y con puntos
+ * suspensivos —justo el caso en el que se usa el doble clic—. El tope de
+ * verdad lo pone `acotarAncho` (64-560). */
+function ajustarAlContenido(table, cols, domKey, anchos) {
   const previos = new Map([...cols].map(([k, col]) => [k, col.style.width]));
   const eraFija = table.classList.contains("has-col-widths");
   const anchoTabla = table.style.width;
   table.classList.remove("has-col-widths");
+  table.classList.add("is-measuring");
   table.style.width = "max-content";
   for (const col of cols.values()) col.style.width = "";
-  const celda = table.querySelector(`th[data-col-key="${CSS.escape(clave)}"]`);
+  const celda = table.querySelector(`th[data-col-key="${CSS.escape(domKey)}"]`);
   const medido = Math.ceil(celda ? celda.getBoundingClientRect().width : 0);
   table.style.width = anchoTabla;
+  table.classList.remove("is-measuring");
   for (const [k, ancho] of previos) {
     const col = cols.get(k);
     if (col) col.style.width = ancho;
@@ -6250,7 +6322,7 @@ function ajustarAlContenido(table, cols, clave, anchos) {
   if (!medido) return null;
   congelarAnchos(table, cols, anchos);
   const px = acotarAncho(medido);
-  const col = cols.get(clave);
+  const col = cols.get(domKey);
   if (col) col.style.width = `${px}px`;
   fijarAnchoDeTabla(table, cols);
   return px;
@@ -6265,10 +6337,15 @@ function ajustarAlContenido(table, cols, clave, anchos) {
  * como una línea de 1 px, y lleva `touch-action: none` para que el dedo ajuste
  * el ancho en vez de desplazar la tabla.
  *
+ * `clave` es la clave con la que se guarda el ancho en la vista y `domKey` la
+ * de la columna en la tabla: desde que las columnas de servicio llevan `@`
+ * delante (`@title`) no son la misma, y una propiedad llamada «Open» no puede
+ * quedarse con el ancho de la columna del botón de abrir.
+ *
  * El `.md` se escribe UNA vez, al soltar: mientras se arrastra solo cambia el
  * `<col>` de esa columna, así que la pantalla responde en cada píxel sin
  * mandar un PATCH por movimiento. */
-function asaDeAncho({ clave, nombre, table, cols, anchos, onCambio }) {
+function asaDeAncho({ clave, domKey, nombre, table, cols, anchos, onCambio }) {
   const asa = document.createElement("div");
   asa.className = "col-resizer";
   asa.dataset.colResizer = clave;
@@ -6278,13 +6355,14 @@ function asaDeAncho({ clave, nombre, table, cols, anchos, onCambio }) {
   asa.title = `Arrastra para cambiar el ancho de «${nombre}» · doble clic: ajustar al contenido`;
   asa.tabIndex = 0;
 
+  const celdaDe = () => table.querySelector(`th[data-col-key="${CSS.escape(domKey)}"]`);
   const guardar = (px) => {
     if (px === null) return;
     anchos.set(clave, px);
     onCambio({ widths: Object.fromEntries(anchos) });
   };
   const anchoActual = () => {
-    const celda = table.querySelector(`th[data-col-key="${CSS.escape(clave)}"]`);
+    const celda = celdaDe();
     return Math.ceil(celda ? celda.getBoundingClientRect().width : 0);
   };
 
@@ -6305,7 +6383,7 @@ function asaDeAncho({ clave, nombre, table, cols, anchos, onCambio }) {
     if (!arrastre) return;
     const px = acotarAncho(arrastre.inicio + (e.clientX - arrastre.x));
     arrastre.ultimo = px;
-    const col = cols.get(clave);
+    const col = cols.get(domKey);
     if (col) col.style.width = `${px}px`;
     fijarAnchoDeTabla(table, cols);
   });
@@ -6324,7 +6402,7 @@ function asaDeAncho({ clave, nombre, table, cols, anchos, onCambio }) {
   asa.addEventListener("dblclick", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    guardar(ajustarAlContenido(table, cols, clave, anchos));
+    guardar(ajustarAlContenido(table, cols, domKey, anchos));
   });
 
   asa.addEventListener("keydown", (e) => {
@@ -6334,7 +6412,7 @@ function asaDeAncho({ clave, nombre, table, cols, anchos, onCambio }) {
     const paso = (e.key === "ArrowLeft" ? -8 : 8) * (e.shiftKey ? 4 : 1);
     congelarAnchos(table, cols, anchos);
     const px = acotarAncho(anchoActual() + paso);
-    const col = cols.get(clave);
+    const col = cols.get(domKey);
     if (col) col.style.width = `${px}px`;
     fijarAnchoDeTabla(table, cols);
     // Las flechas se repiten: se guarda cuando dejas de pulsar, no una vez por
@@ -6351,6 +6429,13 @@ function asaDeAncho({ clave, nombre, table, cols, anchos, onCambio }) {
  * no existe en táctil, no deja pintar una línea de inserción propia y su
  * `dataTransfer` no aporta nada aquí. Empieza tras 5 px de movimiento para que
  * un clic siga siendo un clic (la cabecera ordena) y el arrastre sea otra cosa.
+ *
+ * El ciclo de vida va en `document` y el puntero se captura en cuanto el
+ * arrastre empieza de verdad. Colgado de `pointerup` en la cabecera, soltar
+ * sobre las filas (el gesto más normal: arrastras y sueltas un poco más abajo)
+ * no disparaba nada: la línea de inserción y la cabecera al 45 % se quedaban
+ * puestas y el siguiente `pointerup` suelto —sin pulsar— ejecutaba el
+ * `reordenar` pendiente y reescribía `views[].order` solo.
  *
  * Solo con ratón: en el móvil arrastrar sobre la cabecera es el scroll
  * horizontal de la tabla, y quedarse ese gesto dejaría la tabla sin
@@ -6375,6 +6460,10 @@ function instalarArrastreDeColumnas({ wrap, headRow, columnas, todas, onCambio }
     wrap.classList.remove("is-col-dragging");
     cabeceras().forEach((th) => th.classList.remove("is-col-dragging"));
     arrastre = null;
+    document.removeEventListener("pointermove", mover);
+    document.removeEventListener("pointerup", soltar);
+    document.removeEventListener("pointercancel", terminar);
+    headRow.removeEventListener("lostpointercapture", terminar);
   };
 
   /** El orden nuevo, sobre TODAS las columnas: las ocultas se quedan en su
@@ -6395,15 +6484,18 @@ function instalarArrastreDeColumnas({ wrap, headRow, columnas, todas, onCambio }
     return true;
   };
 
-  headRow.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || e.pointerType !== "mouse") return;
-    if (e.target.closest(".col-resizer")) return; // en el borde manda el asa
-    const th = e.target.closest("th[data-col-key]");
-    if (!th || !claves.includes(th.dataset.colKey)) return;
-    arrastre = { th, clave: th.dataset.colKey, x: e.clientX, activo: false, destino: null };
-  });
+  /** Se suelta el botón: se cierra el arrastre SIEMPRE (haya o no arrastre de
+   * verdad, esté el puntero sobre la cabecera o sobre una fila) y solo se
+   * reordena si de verdad se ha arrastrado. */
+  const soltar = () => {
+    const estado = arrastre;
+    terminar();
+    if (!estado || !estado.activo) return;
+    ultimoArrastre = Date.now();
+    reordenar(estado.clave, estado.destino);
+  };
 
-  headRow.addEventListener("pointermove", (e) => {
+  const mover = (e) => {
     if (!arrastre) return;
     if (!arrastre.activo) {
       if (Math.abs(e.clientX - arrastre.x) < 5) return;
@@ -6413,6 +6505,14 @@ function instalarArrastreDeColumnas({ wrap, headRow, columnas, todas, onCambio }
       linea = document.createElement("div");
       linea.className = "col-drop-line";
       wrap.appendChild(linea);
+      // La captura se pide aquí y no en el `pointerdown`: capturar antes se
+      // comería el clic que ordena la columna. Con la captura puesta,
+      // `pointerup` llega aunque se suelte fuera de la ventana.
+      try {
+        headRow.setPointerCapture(e.pointerId);
+      } catch {
+        // Sin captura basta con los oyentes del documento.
+      }
     }
     const cajas = cabeceras();
     // La mitad de cada cabecera es el punto de cambio: a la izquierda de su
@@ -6432,17 +6532,20 @@ function instalarArrastreDeColumnas({ wrap, headRow, columnas, todas, onCambio }
     linea.style.left = `${x - marco.left + wrap.scrollLeft - 1}px`;
     linea.style.top = `${fila.top - marco.top}px`;
     linea.style.height = `${fila.height}px`;
-  });
+  };
 
-  headRow.addEventListener("pointerup", () => {
-    if (!arrastre) return;
-    const { activo, clave, destino } = arrastre;
-    terminar();
-    if (!activo) return;
-    ultimoArrastre = Date.now();
-    reordenar(clave, destino);
+  headRow.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.pointerType !== "mouse") return;
+    if (e.target.closest(".col-resizer")) return; // en el borde manda el asa
+    const th = e.target.closest("th[data-col-key]");
+    if (!th || !claves.includes(th.dataset.colKey)) return;
+    terminar(); // un arrastre anterior a medias no se hereda
+    arrastre = { th, clave: th.dataset.colKey, x: e.clientX, activo: false, destino: null };
+    document.addEventListener("pointermove", mover);
+    document.addEventListener("pointerup", soltar);
+    document.addEventListener("pointercancel", terminar);
+    headRow.addEventListener("lostpointercapture", terminar);
   });
-  headRow.addEventListener("pointercancel", terminar);
 
   // El clic que cierra el arrastre no puede ordenar la columna: soltar una
   // cabecera encima de otra posición no es «ordena por esta».
@@ -6542,7 +6645,14 @@ function renderTable(
   const abrirHead = document.createElement("th");
   abrirHead.scope = "col";
   abrirHead.className = "row-open-head";
-  abrirHead.dataset.colKey = "open";
+  // `@` delante: las columnas de servicio no pueden chocar con una propiedad
+  // del schema. Con una propiedad llamada «Open» (clave `open`), las dos
+  // columnas compartían `data-col-key` y su `<col>`, así que el ancho de una se
+  // pintaba en la otra, la propiedad se quedaba sin asa y la suma de la tabla
+  // no cuadraba. `claveDeAncho` traduce la clave del DOM a la del `.md`
+  // (`@title` -> `title`); las de servicio no tienen y por eso no se
+  // redimensionan.
+  abrirHead.dataset.colKey = "@open";
   const abrirSolo = document.createElement("span");
   abrirSolo.className = "sr-only";
   abrirSolo.textContent = "Abrir";
@@ -6552,7 +6662,7 @@ function renderTable(
     const th = document.createElement("th");
     th.scope = "col";
     th.textContent = rotuloTitulo;
-    th.dataset.colKey = "title";
+    th.dataset.colKey = "@title";
     headRow.appendChild(th);
   }
   // Cada propiedad es una cabecera que ordena, cuando hay dónde guardar ese
@@ -6571,7 +6681,7 @@ function renderTable(
     soloTexto.className = "sr-only";
     soloTexto.textContent = "Acciones";
     th.appendChild(soloTexto);
-    th.dataset.colKey = "actions";
+    th.dataset.colKey = "@actions";
     headRow.appendChild(th);
   }
   // El ancho y el orden viven en la vista del `.md`: sin vista activa no hay
@@ -6581,21 +6691,26 @@ function renderTable(
     const clave = th.dataset.colKey;
     const col = document.createElement("col");
     col.dataset.colKey = clave;
-    const ancho = anchos.get(clave);
+    // Solo las columnas del schema (y el título) tienen ancho guardado: un
+    // `widths` con una clave que no es de ninguna columna —o una de servicio—
+    // no pinta nada.
+    const anchoMd = claveDeAncho(clave);
+    const ancho = anchoMd ? anchos.get(anchoMd) : null;
     if (ancho) col.style.width = `${ancho}px`;
     cols.set(clave, col);
     colgroup.appendChild(col);
   });
   if (onCambioColumnas) {
     headRow.querySelectorAll("th[data-col-key]").forEach((th) => {
-      const clave = th.dataset.colKey;
+      const clave = claveDeAncho(th.dataset.colKey);
       // Las de servicio (abrir fila y acciones) no se redimensionan: su ancho
       // es parte del dibujo de la tabla, no un dato de la vista.
-      if (clave === "open" || clave === "actions") return;
+      if (!clave) return;
       const prop = columnas.find((p) => p.key === clave);
       th.appendChild(
         asaDeAncho({
           clave,
+          domKey: th.dataset.colKey,
           nombre: prop ? prop.name : rotuloTitulo,
           table,
           cols,
@@ -6633,7 +6748,7 @@ function renderTable(
     // título: ahí el clic edita, y editar no puede tragarse la apertura.
     const openTd = document.createElement("td");
     openTd.className = "row-open-cell";
-    openTd.dataset.colKey = "open";
+    openTd.dataset.colKey = "@open";
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "row-open";
@@ -6663,7 +6778,7 @@ function renderTable(
 
     if (muestraTitulo) {
       const titleTd = document.createElement("td");
-      titleTd.dataset.colKey = "title";
+      titleTd.dataset.colKey = "@title";
       paintCell(titleTd, database, row, null, hooks);
       celdas.set(null, titleTd);
       tr.appendChild(titleTd);
@@ -6716,7 +6831,7 @@ function renderTable(
     }
 
     const delTd = document.createElement("td");
-    delTd.dataset.colKey = "actions";
+    delTd.dataset.colKey = "@actions";
     const delBtn = document.createElement("button");
     delBtn.className = "row-del";
     delBtn.innerHTML = svgIcon("i-trash");
