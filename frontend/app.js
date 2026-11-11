@@ -4958,6 +4958,24 @@ function renderViewTools({ database, view, visibles, total, onCambio }) {
   return tools;
 }
 
+/** Reescribe el recuento de la barra SIN repintar la vista.
+ *
+ * El alta en línea de la lista y del calendario repinta solo su cuerpo, y el
+ * «N de M filas» vive en la barra que pinta `renderViewTools`: sin esto el
+ * contador se quedaba con el número de antes del alta (un contador que miente
+ * es peor que no tenerlo). `total` nulo es «la vista no filtra».
+ *
+ * `desde` es el cuerpo de la vista (dentro de `.db-view`); la barra es el
+ * hermano que va justo antes.
+ */
+function refrescarRecuentoDeVista(desde, visibles, total) {
+  const cuerpo = desde.closest(".db-view");
+  const barra = cuerpo ? cuerpo.previousElementSibling : null;
+  const cuenta = barra ? barra.querySelector(".db-count") : null;
+  if (!cuenta) return;
+  cuenta.textContent = textoDeRecuento(visibles, total);
+}
+
 /** La cabecera de una columna: un botón que ordena, con su flecha y, si hay
  * varias claves, el número de prioridad. */
 function celdaDeCabecera(prop, claves, onToggleSort) {
@@ -5561,7 +5579,9 @@ async function renderDatabaseEmbed(block, container) {
       vista: activeView,
       onCreate: (titulo) => crearFilaEnVista(database, activeView, titulo),
       onDone: (res) => {
-        pintar(res.filas);
+        // Con el total de la base: si la vista filtra, el contador sigue
+        // diciendo «N de M» en vez de perder el «de M» al crear la fila.
+        pintar(res.filas, res.total);
         if (res.visible) enfocarFila(body, res.fila.id);
         // Y los DEMÁS bloques de esta misma base, con los datos del servidor:
         // el eco de este POST se descarta entero (ver `handleDatabaseEvent`),
@@ -5590,7 +5610,9 @@ let ultimaFilaPropia = { databaseId: null, ts: 0 };
  * El filtro y el orden los aplica el servidor (`apply_view`), así que la única
  * verdad de «¿la enseña esta vista?» es esa segunda lectura: duplicar el filtro
  * en el navegador acabaría diciendo algo distinto de lo que enseña la tabla.
- * Devuelve `{fila, filas, visible}`; `filas` ya viene filtrada y ordenada.
+ * Devuelve `{fila, filas, total, visible}`; `filas` ya viene filtrada y
+ * ordenada, y `total` (nulo si la vista no filtra) es el tamaño de la base,
+ * que es lo que hace honesto el recuento «N de M» tras un alta.
  */
 async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   // ANTES del POST: el servidor publica `rows` en /events (M2) antes de
@@ -5606,7 +5628,15 @@ async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   const filas = await api(
     `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
   );
-  return { fila, filas, visible: filas.some((r) => r.id === fila.id) };
+  // El total de la base, para el recuento: una vista con filtro tiene que poder
+  // seguir diciendo «N de M» después de un alta, y `filas` solo trae las que
+  // pasan el filtro. Sin filtro, `filas` ya es la base entera y no se pide nada.
+  let total = null;
+  if (filtrosDeVista(activeView).length) {
+    const todas = await api(`/databases/${database.id}/rows`);
+    total = todas.length;
+  }
+  return { fila, filas, total, visible: filas.some((r) => r.id === fila.id) };
 }
 
 /** Los bloques de base pintados en la nota y cómo volver a pintarlos con lo
@@ -6852,6 +6882,7 @@ function renderCalendar(database, rows, view, refresh) {
     onCreate: (titulo) =>
       crearFilaEnVista(database, view, titulo, { [dateProp.key]: claveDeHoy() }),
     onDone: (res) => {
+      refrescarRecuentoDeVista(grid, res.filas.length, res.total);
       if (!res.visible) return; // el aviso del control ya dice por qué no se ve
       rows.length = 0;
       rows.push(...res.filas);
@@ -6937,6 +6968,7 @@ function renderList(database, rows, view, refresh) {
       for (const hijo of [...wrap.children]) if (hijo !== addRow) hijo.remove();
       if (res.filas.length === 0) wrap.insertBefore(avisoVacio(), addRow);
       res.filas.forEach((fila) => wrap.insertBefore(lineaDeFila(fila), addRow));
+      refrescarRecuentoDeVista(wrap, res.filas.length, res.total);
       if (res.visible) enfocarFila(wrap, res.fila.id);
     },
   });
