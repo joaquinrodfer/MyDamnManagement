@@ -19,7 +19,7 @@ from app.properties import (
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app.templates import TEMPLATES
-from app.vault.store import VaultError
+from app.vault.store import UNSET, VaultError
 from app.views import apply_view
 
 router = APIRouter(prefix="/databases", tags=["databases"])
@@ -109,6 +109,18 @@ def _serialize_row(
     repo: Repository, db_def: Database, row: Page
 ) -> schemas.RowRead:
     return _serialize_rows(repo, db_def, [row])[0]
+
+
+def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schemas.RowPageRead:
+    """La fila con su cuerpo, para abrirla como página.
+
+    Se compone de `_serialize_row` (relaciones resueltas en una consulta, como
+    en la tabla) y no al revés: la lectura de una fila suelta no necesita otro
+    camino de serialización. `body_markdown` sale del índice, que lo tiene
+    porque lo leyó del `.md` al indexar: reindexar el vault devuelve lo mismo.
+    """
+    base = _serialize_row(repo, db_def, row)
+    return schemas.RowPageRead(**base.model_dump(), body_markdown=row.body_markdown or "")
 
 
 def _serialize_view(view: View) -> schemas.ViewRead:
@@ -260,12 +272,17 @@ def list_rows(
     return _serialize_rows(repo, db_def, rows)
 
 
-@router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowRead)
+@router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowPageRead)
 def get_row(
     database_id: uuid.UUID, row_id: uuid.UUID, repo: Repository = Depends(get_repo)
 ):
+    """Una fila con su cuerpo: la lectura que abre la fila como página.
+
+    La lista (`GET .../rows`) sigue devolviendo `RowRead` sin cuerpo: cien
+    filas no tienen por qué traer cien cuerpos que la tabla no enseña.
+    """
     db_def = _get_database_or_404(repo, database_id)
-    return _serialize_row(repo, db_def, _get_row_or_404(repo, database_id, row_id))
+    return _serialize_row_page(repo, db_def, _get_row_or_404(repo, database_id, row_id))
 
 
 @router.patch("/{database_id}/rows/{row_id}", response_model=schemas.RowRead)
@@ -284,6 +301,13 @@ def update_row(
             db_def.schema_def, payload.properties, refs=repo.row_refs
         )
 
+    # El cuerpo es del `.md` de la fila, como el de una nota: `""` lo vacía,
+    # ausente (o `null`) no lo toca. Sin `model_fields_set`, un PATCH de una
+    # celda —que no manda la clave— borraría el cuerpo de la fila.
+    body = UNSET
+    if "body_markdown" in payload.model_fields_set and payload.body_markdown is not None:
+        body = payload.body_markdown
+
     with _vault_errors():
         row = repo.update_row(
             database_id,
@@ -291,6 +315,7 @@ def update_row(
             title=payload.title,
             icon=payload.icon,
             properties=cleaned,
+            body_markdown=body,
         )
     if row is None:
         raise HTTPException(404, "Fila no encontrada")

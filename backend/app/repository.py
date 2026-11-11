@@ -1067,7 +1067,15 @@ class Repository:
         title: Optional[str] = None,
         icon: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
+        body_markdown: Any = UNSET,
     ) -> Optional[Page]:
+        """Escribe la fila (frontmatter y/o cuerpo) y reindexa el MISMO `.md`.
+
+        `body_markdown` es `UNSET` cuando el PATCH no manda cuerpo: guardar una
+        celda no puede borrar lo que el usuario tenga escrito en la fila. `""`
+        sí vacía el cuerpo. La ruta no cambia (el fichero se llama por el `id`
+        de la fila), así que renombrar tampoco mueve nada.
+        """
         current = self.get_row(database_id, row_id)
         if current is None:
             return None
@@ -1083,13 +1091,14 @@ class Repository:
             # que sustituye la línea de esa clave y deja el resto byte a byte.
             # `None` sigue significando «borra esa clave», como antes.
             merged = dict(properties)
-        if merged is None and title is None and icon is None:
+        if merged is None and title is None and icon is None and body_markdown is UNSET:
             return current
         self.vault.save_row(
             row_id,
             title=UNSET if title is None else title,
             icon=UNSET if icon is None else icon,
             properties=UNSET if merged is None else merged,
+            body=body_markdown,
         )
         return self.get_row(database_id, row_id)
 
