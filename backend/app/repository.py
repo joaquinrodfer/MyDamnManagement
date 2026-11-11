@@ -951,13 +951,32 @@ class Repository:
                     config["filters"] = kept
                 else:
                     config.pop("filters", None)
+            # El orden admite las dos formas: una sola clave (`{key, dir}`,
+            # la de las vistas antiguas) o varias en prioridad (`[{key, dir}]`,
+            # la de la interfaz). Se traduce cada clave y se conserva la forma
+            # que tenía el fichero: renombrar una propiedad no es motivo para
+            # reescribir la vista con otro formato.
             sort = config.get("sort")
-            if isinstance(sort, dict) and isinstance(sort.get("key"), str):
-                new = mapped(sort["key"])
-                if new is None:
-                    config.pop("sort")
-                else:
-                    config["sort"] = {**sort, "key": new}
+            if isinstance(sort, dict):
+                claves_orden = [sort]
+            elif isinstance(sort, list):
+                claves_orden = sort
+            else:
+                claves_orden = []
+            traducidas: list[Any] = []
+            for item in claves_orden:
+                if isinstance(item, dict) and isinstance(item.get("key"), str):
+                    new = mapped(item["key"])
+                    if new is None:
+                        continue  # el orden hablaba de una propiedad borrada
+                    item = {**item, "key": new}
+                traducidas.append(item)
+            if not traducidas:
+                config.pop("sort", None)
+            elif isinstance(sort, dict):
+                config["sort"] = traducidas[0]
+            else:
+                config["sort"] = traducidas
             visible = config.get("visible_properties")
             if isinstance(visible, list):
                 config["visible_properties"] = [
