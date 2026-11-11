@@ -95,6 +95,14 @@
     --sidebar-width-compact: 220px;
     --note-max-width: 780px;
 
+    /* Márgenes de #main (el área de contenido). En variables porque la fila
+       abierta como página se pinta dentro de #main y tiene que medir y
+       empezar donde una nota: `--main-pad-bottom` es además el alto que la
+       página de la fila le sobra por abajo para tapar lo que hay debajo. */
+    --main-pad-y: 28px;
+    --main-pad-x: 32px;
+    --main-pad-bottom: 60px;
+
     /* --- Sombras --- */
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     --shadow-float: 0 16px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.07);
@@ -351,7 +359,7 @@
     flex: 1;
     min-width: 0;
     overflow-y: auto;
-    padding: 28px 32px 60px;
+    padding: var(--main-pad-y) var(--main-pad-x) var(--main-pad-bottom);
   }
 
   /* ---------- sidebar ---------- */
@@ -2747,54 +2755,87 @@
   .inline-form > .btn-primary { height: var(--control-size); align-self: end; justify-self: start; }
 
   /* ---------- fila abierta como página ---------- */
-  /* Abrir una fila la pinta ENCIMA de lo que estabas mirando (ver
-     `openRowPage` en app.js): la vista de debajo no se rehace, así que cerrar
-     devuelve al mismo sitio con el foco donde estaba. No es un <dialog> porque
-     sus menús flotantes —el `/`, el del asa, el contextual— cuelgan de <body>:
-     dentro del top layer quedarían debajo. El z-index va por debajo del suyo
-     (1000) y por encima del resto del panel. */
+  /* Abrir una fila la pinta como una PÁGINA dentro de #main (ver
+     `openRowPage` en app.js): el mismo contenedor y los mismos márgenes que
+     una nota, sin capa ni caja. Lo de debajo se queda en el documento —con su
+     scroll, que es lo que hace que volver sea volver— pero fuera de la vista y
+     `inert`. No es un <dialog> porque sus menús flotantes —el `/`, el del asa,
+     el contextual— cuelgan de <body>: dentro del top layer quedarían debajo. */
   body.row-page-open { overflow: hidden; }
-  /* #main es el que desplaza la página (no el documento): mientras la fila
-     está encima no puede quedarse su barra a la vista junto a la del panel. */
+  /* #main deja de desplazar: la página de la fila trae su propio scroll, con
+     «Volver» y la miga de pan siempre a la vista arriba. */
   body.row-page-open #main { overflow: hidden; }
-  .row-page { position: fixed; inset: 0; z-index: 850; display: flex; justify-content: center; }
-  .row-page-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); }
-  .row-page-panel {
-    position: relative;
-    margin: 4vh auto;
-    width: min(880px, 94vw);
-    max-height: 92vh;
+  .row-page-view {
+    /* Alto: el área de contenido entera. `100%` es la caja de contenido de
+       #main (que en este layout tiene alto definido) y el `+ padding-bottom`
+       la lleva hasta el borde de abajo, que es justo donde empieza lo de
+       debajo: se queda fuera de la vista sin tocar el DOM.
+       El margen derecho negativo saca su barra de desplazamiento al borde de
+       #main, donde la tiene una nota, y el texto vuelve a entrar con el mismo
+       `padding-right` que ella (ver .row-page-scroll): el cuerpo mide lo mismo
+       en los dos (los 15 px de la barra caen en el mismo sitio). */
+    height: calc(100% + var(--main-pad-bottom));
+    margin-right: calc(-1 * var(--main-pad-x));
     display: flex;
     flex-direction: column;
     background: var(--panel);
-    border: 1px solid var(--border-input);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-float);
-    overflow: hidden;
   }
-  .row-page-panel:focus { outline: none; }
+  .row-page-view:focus { outline: none; }
   .row-page-bar {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 6px 8px 6px 18px;
-    border-bottom: 1px solid var(--panel-border);
-    background: var(--surface-elevated);
+    flex-wrap: wrap;
+    padding: 0 var(--main-pad-x) 10px 0;
   }
+  /* «Volver», con su palabra: la × de la capa no decía a dónde se volvía y en
+     una página entera no hay dónde adivinarlo. */
+  .row-page-back { padding: 4px 10px; font-size: 12.5px; }
+  /* Miga de pan: en una página entera ya no se ve la cabecera de la base, y
+     sin ella no se sabe de qué base es la fila ni cómo volver a su tabla. El
+     primer trozo es un botón; el último es esta fila, y se lee como el sitio
+     actual. */
   .row-page-crumbs {
-    flex: 1 1 auto;
+    flex: 1 1 160px;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-body);
     font-size: var(--text-xs);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--ink-muted);
   }
-  .row-page-savestatus { font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
+  .row-page-crumb {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  button.row-page-crumb {
+    padding: 2px 0;
+    border: 0;
+    background: none;
+    color: var(--accent-ink);
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    cursor: pointer;
+  }
+  button.row-page-crumb:hover { text-decoration: underline; }
+  .row-page-crumb-current { color: var(--ink); font-weight: 600; }
+  .row-page-crumb-sep { flex: 0 0 auto; color: var(--ink-muted); }
+  .row-page-savestatus { flex: 0 0 auto; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
   .row-page-savestatus.is-error { color: var(--down); }
-  .row-page-scroll { overflow-y: auto; padding: 24px 40px 48px; }
+  .row-page-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 var(--main-pad-x) 48px 0;
+  }
   .row-page-title {
     width: 100%;
     font-family: var(--font-body);
@@ -3214,7 +3255,12 @@
     .template-btn { min-height: 36px; padding: 6px 10px; }
 
     /* --- lienzo y nota --- */
-    main { padding: 14px 16px 40px; }
+    main {
+      --main-pad-y: 14px;
+      --main-pad-x: 16px;
+      --main-pad-bottom: 40px;
+      padding: var(--main-pad-y) var(--main-pad-x) var(--main-pad-bottom);
+    }
     .note-topbar { flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
     .note-topbar-right { flex-wrap: wrap; gap: 6px; }
     /* El icono se alinea con la PRIMERA línea del título, no con el centro de
@@ -3427,17 +3473,13 @@
   }
 
   @media (max-width: 768px) {
-    /* La fila abierta ocupa la pantalla: es una página, no un panel al lado. */
-    .row-page-panel {
-      width: 100vw;
-      max-width: none;
-      height: 100dvh;
-      max-height: 100dvh;
-      margin: 0;
-      border: none;
-      border-radius: 0;
-    }
-    .row-page-scroll { padding: 16px 16px 40px; }
+    /* La fila abierta sigue siendo una página: el ancho y los márgenes ya son
+       los de una nota (los de #main, arriba); aquí solo se aprieta lo que a
+       375 px no cabe en una línea. */
+    .row-page-bar { gap: 8px; }
+    /* «Volver» y el estado de guardado, sin competir con la miga: los dos se
+       quedan con su ancho y la miga se lleva lo que sobra (y recorta). */
+    .row-page-crumbs { flex: 1 1 100%; order: 3; }
     .row-page-title { font-size: 24px; }
     .row-page-props { grid-template-columns: 1fr; }
   }
