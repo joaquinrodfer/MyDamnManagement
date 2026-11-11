@@ -6456,11 +6456,6 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
     // Dentro de una nota, lo que no se consuma aquí acaba en el keymap de
     // CodeMirror (su Enter insertaría un salto en el `.md` de la nota).
     e.stopPropagation();
-    if (e.key === "Escape") {
-      e.preventDefault();
-      cerrarSelectorDeRelacion({ foco: true });
-      return;
-    }
     if (e.key === "Enter") {
       e.preventDefault();
       const opcion = estado.opciones[Math.max(estado.activo, 0)];
@@ -6484,6 +6479,16 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
     if (panel.contains(e.target) || td.contains(e.target)) return;
     cerrarSelectorDeRelacion();
   };
+  // Escape se escucha en el documento y no en el buscador: cuando la relación
+  // no tiene base destino el panel no lleva buscador, así que no habría ningún
+  // control enfocado que recibiera la tecla, y un panel que solo se cierra con
+  // el ratón deja tirado a quien va con el teclado.
+  const teclas = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    cerrarSelectorDeRelacion({ foco: true });
+  };
   const recolocar = () => {
     if (!td.isConnected) {
       cerrarSelectorDeRelacion();
@@ -6492,6 +6497,7 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
     colocarPanelFlotante(panel, td);
   };
   document.addEventListener("mousedown", fuera, true);
+  document.addEventListener("keydown", teclas, true);
   window.addEventListener("scroll", recolocar, true);
   window.addEventListener("resize", recolocar);
   // El panel crece al llegar las filas (ya están) o al escribir: se recoloca
@@ -6505,13 +6511,19 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
     limpiar: () => {
       observador?.disconnect();
       document.removeEventListener("mousedown", fuera, true);
+      document.removeEventListener("keydown", teclas, true);
       window.removeEventListener("scroll", recolocar, true);
       window.removeEventListener("resize", recolocar);
     },
   };
   pintarElegidas();
   pintarOpciones();
-  if (!error) buscar.focus({ preventScroll: true });
+  if (error) {
+    panel.tabIndex = -1;
+    panel.focus({ preventScroll: true });
+  } else {
+    buscar.focus({ preventScroll: true });
+  }
 }
 
 function formatPropValue(value, prop) {
