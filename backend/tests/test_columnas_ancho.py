@@ -268,7 +268,7 @@ def test_una_vista_sin_widths_ni_order_no_estrena_claves(client, vault_path):
     assert "widths" not in guardada
     assert "order" not in guardada
     # Y quitar la configuración de una vista que la tenía la borra del `.md`
-    # (no se queda un `widths:` vacío, que el parser leería como opaco).
+    # (no se queda un `widths: {}` vacío, que no diría nada).
     vista = vista_en_api(client, base["id"])
     respuesta = client.patch(
         f"/databases/{base['id']}/views/{vista['id']}",
