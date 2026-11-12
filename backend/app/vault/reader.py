@@ -368,6 +368,7 @@ def views_from_frontmatter(
             config = {**nested, **config}
         elif nested not in (None, ""):
             warnings.append(f"{path}: 'config' de la vista {name!r} no es un mapa: se ignora")
+        config = _columnas_de_vista(config, name, path, warnings)
         vid, derived = view_id(item.get("id"), database_page_id, position, name)
         if derived:
             warnings.append(
@@ -376,6 +377,66 @@ def views_from_frontmatter(
             )
         views.append({"id": vid, "name": name or "Vista", "type": vtype, "config": config})
     return views
+
+
+def _columnas_de_vista(config: dict, name: str, path: str, warnings: list[str]) -> dict:
+    """`widths` y `order`: el ancho y el orden de las columnas, POR VISTA.
+
+    El parser del frontmatter no infiere tipos (una clave vale lo que está
+    escrito), así que `widths: {empresa: 180}` llega aquí como el texto `"180"`
+    y el índice se queda con eso si no se convierte. El ancho se guarda como
+    entero: es un número de píxeles, no texto, y el frontend lo resta y lo
+    compara. Lo que no sea un ancho positivo se descarta con un aviso en vez de
+    propagarse — un valor raro en el `.md` no puede romper la tabla.
+
+    `order` es la lista de claves de propiedad en el orden en que se enseñan.
+    No se filtra contra el schema a propósito: una propiedad puede renombrarse
+    o borrarse y la vista tiene que seguir abriendo (el frontend ignora las
+    claves que no existen y añade al final las que no están en la lista).
+    """
+    widths = config.get("widths")
+    if widths not in (None, ""):
+        if not isinstance(widths, dict):
+            warnings.append(f"{path}: 'widths' de la vista {name!r} no es un mapa; se ignora")
+            config.pop("widths", None)
+        else:
+            limpios: dict[str, int] = {}
+            for key, value in widths.items():
+                ancho = 0
+                if isinstance(value, (int, str)):
+                    try:
+                        ancho = int(str(value).strip())
+                    except ValueError:
+                        ancho = 0
+                if ancho > 0:
+                    limpios[str(key)] = ancho
+                else:
+                    warnings.append(
+                        f"{path}: ancho no válido {value!r} para {key!r} en la vista "
+                        f"{name!r}; se ignora"
+                    )
+            if limpios:
+                config["widths"] = limpios
+            else:
+                config.pop("widths", None)
+    elif "widths" in config:
+        config.pop("widths", None)
+
+    order = config.get("order")
+    if order is not None:
+        if isinstance(order, list):
+            claves = [
+                clave.strip() for clave in order
+                if isinstance(clave, str) and clave.strip()
+            ]
+            if claves:
+                config["order"] = claves
+            else:
+                config.pop("order", None)
+        else:
+            warnings.append(f"{path}: 'order' de la vista {name!r} no es una lista; se ignora")
+            config.pop("order", None)
+    return config
 
 
 def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
@@ -476,6 +537,40 @@ def database_title_hidden(page: Page) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes", "si", "sí")
 
 
+def _avisar_views_opacas(
+    parsed: fm.Frontmatter, data: dict, warnings: list[str]
+) -> None:
+    """Avisa si el bloque `views` de una base quedó `opaque` al leerlo.
+
+    Una entrada `opaque` no llega a `data` (`fm.parse` la omite a propósito),
+    así que `views_from_frontmatter` recibe `None` y el índice se queda como si
+    la base no tuviera vistas: las pestañas desaparecen todas. El dato no se
+    pierde —el `.md` no se reescribe—, pero hasta ahora eso pasaba **en
+    silencio**: un `widths` escrito en flow map se llevaba por delante las
+    vistas de la base sin una sola línea en `/reindex`. Con el fichero y la
+    línea, el dueño sabe qué corregir.
+
+    La línea es la del fallo cuando el parser la conoce (`entry.error_line`) y
+    la de la clave cuando no (un `views: {…}` en el primer nivel, que se marca
+    `opaque` sin ni siquiera intentar leerlo). El texto va sin la ruta porque
+    `load` ya la antepone a los avisos de cada fichero; `store` y `writer` los
+    muestran tal cual, y la línea basta para encontrar el sitio.
+    """
+    if str(data.get("type") or "") != "database":
+        return
+    for entry in parsed.entries:
+        if entry.key == "views" and entry.opaque:
+            # La línea del fallo (la construcción que no se entiende), no la de
+            # la clave: `widths: |` dentro de una vista está veinte líneas por
+            # debajo de `views:` y es la que hay que ir a corregir.
+            linea = entry.error_line if entry.error_line >= 0 else entry.start
+            warnings.append(
+                f"'views' no se ha podido leer (línea {linea + 2}: "
+                f"{entry.error or 'construcción YAML no soportada'}); la base se "
+                "queda sin vistas en el índice, el .md no se toca"
+            )
+
+
 def read_file(abs_path: str, rel_path: str, st=None) -> Page:
     st = st if st is not None else os.stat(abs_path)
     warnings: list[str] = []
@@ -504,7 +599,10 @@ def read_file(abs_path: str, rel_path: str, st=None) -> Page:
         # Frontmatter abierto y sin cerrar: el fichero es del usuario, manda él.
         warnings.append(f"frontmatter roto ({exc}): se lee como nota sin frontmatter")
         raw, body = None, text
-    data = fm.parse(raw).data if raw is not None else {}
+    parsed = fm.parse(raw) if raw is not None else None
+    data = parsed.data if parsed is not None else {}
+    if parsed is not None:
+        _avisar_views_opacas(parsed, data, warnings)
     # El título se deriva del NOMBRE DEL FICHERO, y se normaliza a NFC al leer.
     # Normalizar sólo al escribir (names.sanitize) no basta: un fichero con el
     # nombre en NFD creado por fuera (macOS, unzip, rsync) convivía con su

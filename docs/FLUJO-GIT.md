@@ -66,6 +66,21 @@ Y ahí, en este orden:
 5. la release se fusiona **también en `develop`** (para no perder los arreglos
    hechos durante la estabilización) y se borra.
 
+**El paso 5 no es opcional ni «para luego».** Si se olvida, `develop` y `main`
+quedan con historias divergentes: el PR de la release siguiente sale
+`mergeable: false` / `mergeable_state: dirty`, y el conflicto aparece en el
+`CHANGELOG.md` porque las dos ramas renombraron la sección de arriba y
+describen cosas distintas. Parece un conflicto tonto; es la señal de que falta
+la re-fusión. Remedio:
+
+```bash
+git switch develop && git pull --ff-only
+git merge --no-ff origin/main        # resuelve el CHANGELOG separando por versión
+git push origin develop
+git branch -f release/2.5 develop    # local, y luego:
+git push --force origin release/2.5  # seguro: la release es tuya y no está en main
+```
+
 Si durante la estabilización aparece un defecto: se arregla **en la release**
 (commit pequeño, con su prueba), no en `develop`, para que `main` reciba
 exactamente lo revisado.
