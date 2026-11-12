@@ -14,8 +14,15 @@ Diseño:
   sustituye SOLO el rango de las claves que gestiona la app y deja el resto
   byte a byte igual: claves desconocidas, comentarios, orden y estilo sobreviven.
 - Las construcciones que este subconjunto no entiende (block scalars `|`/`>`,
-  anchors `&`/`*`, flow maps `{}`) no se rompen: la clave se marca `opaque` y se
+  anchors `&`/`*`, tags `!`) no se rompen: la clave se marca `opaque` y se
   preserva tal cual. Si es una clave gestionada, se avisa (no se reescribe).
+  Los flow maps `{ clave: valor }` de escalares sí se leen donde los usa un
+  `.md` escrito a mano: dentro de un bloque (los `widths` de una vista) y en
+  una lista de mapas (`schema: [{key: …, type: …}]`). En el primer nivel un
+  `clave: {…}` sigue siendo una propiedad suelta que el índice no representa,
+  y se preserva sin interpretar. Dentro de un flow, un trozo que no abre
+  `{}`/`[]` es texto (`etiquetas: [*importante, otro]`): no hay alias que
+  resolver y una etiqueta no puede vaciar la clave de `data`.
 """
 
 from __future__ import annotations
@@ -25,7 +32,16 @@ import re
 from dataclasses import dataclass, field
 
 KEY_RE = re.compile(r"""^([A-Za-z0-9_.\-]+|"[^"]*"|'[^']*'):(.*)$""")
+# Primer carácter de un valor de PRIMER nivel que no se interpreta: la entrada
+# se marca `opaque` y se preserva tal cual. Un `{` aquí es un mapa en una clave
+# suelta —una propiedad de la fila—, que el índice no tiene dónde poner; dentro
+# de un bloque sí se leen los flow maps (ver `_parse_inline`), que es donde
+# viven los `widths`/`filters` de una vista.
 OPAQUE_START = set("|>&*!{")
+# Dentro de un bloque (el valor de una clave anidada o un item de una lista) el
+# flow map sí se lee: solo siguen siendo opacas las construcciones de YAML que
+# este subconjunto no sabe representar.
+OPAQUE_INLINE = set("|>&*!")
 
 # Escalares que, sin comillas, YAML interpretaría como algo que no es el texto
 # literal. Se citan al escribir para que un round-trip no cambie el significado.
@@ -37,7 +53,16 @@ _SAFE_SCALAR = re.compile(r"^[A-Za-z0-9_./@+$%\-][A-Za-z0-9_:./@+$%\-]*$")
 
 
 class FrontmatterError(ValueError):
-    pass
+    """Lo que el subconjunto no sabe leer.
+
+    `linea` es el índice (0-based) dentro del frontmatter donde está la
+    construcción que falló, cuando se conoce: es lo que convierte «esta clave
+    no se ha podido leer» en algo que el dueño puede ir a corregir.
+    """
+
+    def __init__(self, mensaje: str, linea: int | None = None):
+        super().__init__(mensaje)
+        self.linea = linea
 
 
 @dataclass
@@ -49,6 +74,8 @@ class Entry:
     value_raw: str = ""
     opaque: bool = False
     value: object = None
+    error: str = ""       # por qué quedó `opaque`, si fue al interpretarla
+    error_line: int = -1  # línea (índice en el raw) donde falló, si se sabe
 
 
 @dataclass
@@ -138,49 +165,143 @@ def _scalar(tok: str) -> str:
     return tok
 
 
-def _flow_list(tok: str) -> list[str]:
-    inner = tok.strip()[1:-1].strip()
-    if not inner:
-        return []
-    out, buf, quote = [], [], None
+def _flow_split(inner: str) -> list[str]:
+    """Parte el interior de un flow (`a, b`) por comas de **primer nivel**.
+
+    Las comas de dentro de unas comillas o de un `[]`/`{}` anidado no parten:
+    `[{a: 1}, {b: 2}]` son dos mapas, no cuatro trozos.
+    """
+    partes: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    depth = 0
     for ch in inner:
         if quote:
-            buf.append(ch)
             if ch == quote:
                 quote = None
         elif ch in "\"'":
             quote = ch
-            buf.append(ch)
-        elif ch == ",":
-            out.append(_scalar("".join(buf)))
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            partes.append("".join(buf))
             buf = []
-        else:
-            buf.append(ch)
-    out.append(_scalar("".join(buf)))
+            continue
+        buf.append(ch)
+    partes.append("".join(buf))
+    return partes
+
+
+def _flow_item(trozo: str):
+    """Un valor dentro de un flow (`[a, b]`, `{a: b}`) leído como lo que es.
+
+    Solo `{`/`[` abren una colección —lo único que este subconjunto
+    representa—; todo lo demás es un escalar. Una lista en flow se parte por
+    comas, así que un trozo como `*importante`, `!urgente` o `{borrador}` es
+    **texto**: en el bloque de un `.md` escrito a mano eso son etiquetas, y
+    pasar cada trozo por `_parse_inline` lo hacía reventar, con lo que la
+    entrada entera quedaba `opaque` y la clave desaparecía de `data` sin
+    aviso (`etiquetas: [*importante, otro]` se leía como texto en la lista de
+    siempre). Si el trozo abre `{`/`[` pero no es una colección válida, también
+    cae a texto: no se pierde nada del índice por no entender un trozo.
+    """
+    trozo = trozo.strip()
+    if trozo.startswith(("{", "[")):
+        try:
+            return _parse_inline(trozo)
+        except FrontmatterError:
+            pass
+    return _scalar(trozo)
+
+
+def _flow_list(tok: str) -> list:
+    inner = tok.strip()[1:-1].strip()
+    if not inner:
+        return []
+    out = [_flow_item(parte) for parte in _flow_split(inner)]
     return [v for v in out if v != ""]
 
 
-def _content_lines(lines: list[str]) -> list[tuple[int, str]]:
+def _flow_map(tok: str) -> dict:
+    """`{ clave: valor, … }`: el mapa de escalares de una línea.
+
+    Es la forma en la que un `.md` escrito a mano escribe los `widths` de una
+    vista (`widths: { fase: 220, valor: 150 }`), el mismo dato que la app baja
+    en bloque. Se lee en vez de marcar la entrada `opaque` —si se marca, la
+    clave desaparece de `data` y la base se queda sin vistas sin un aviso—.
+
+    Los valores pasan por `_flow_item`, así que un anidado (`{a: {b: 1}}`) o
+    una lista (`{a: [1, 2]}`) también se leen y un valor que no es colección
+    (`{nota: *importante}`) se queda como texto. Solo revienta con
+    `FrontmatterError` lo que rompe la estructura del mapa —sin `}`, o una
+    parte sin `clave:`—, y entonces la entrada queda `opaque` como cualquier
+    otra construcción no soportada.
+    """
+    raw = tok.strip()
+    if not raw.endswith("}"):
+        # `widths: { fase: 220 }  # el ancho de la app no es parte del mapa: se
+        # quita el comentario de cola antes de exigir el cierre. Solo se parte
+        # cuando el valor no acaba ya en `}`, así que un `#` entre comillas
+        # (`{ "a": "x #y" }`) no se toca.
+        sin_comentario, comentario = _split_comment(raw)
+        if comentario is None or not sin_comentario.strip().endswith("}"):
+            raise FrontmatterError(f"flow map sin cerrar: {raw[:24]!r}")
+        raw = sin_comentario.strip()
+    inner = raw[1:-1].strip()
+    if not inner:
+        return {}
+    out: dict = {}
+    for parte in _flow_split(inner):
+        trozo = parte.strip()
+        if not trozo:
+            continue
+        m = KEY_RE.match(trozo)
+        if not m:
+            raise FrontmatterError(f"flow map sin clave: {trozo!r}")
+        out[_scalar(m.group(1))] = _flow_item(m.group(2))
+    return out
+
+
+def _content_lines(lines: list[str], first: int = 0) -> list[tuple[int, str, int]]:
+    """`(sangría, texto, línea)` de cada línea con contenido.
+
+    `first` es el índice de `lines[0]` dentro del frontmatter: el tercer valor
+    es la línea real (del raw), la que se cita cuando una construcción no se
+    entiende.
+    """
     out = []
-    for line in lines:
+    for offset, line in enumerate(lines):
         if not line.strip():
             continue
         if line.lstrip().startswith("#"):
             continue
-        out.append((_indent(line), line.strip()))
+        out.append((_indent(line), line.strip(), first + offset))
     return out
 
 
-def _parse_node(items: list[tuple[int, str]], i: int, indent: int):
+def _inline_en(linea: int, raw: str):
+    """`_parse_inline` que apunta en qué línea del frontmatter falló."""
+    try:
+        return _parse_inline(raw)
+    except FrontmatterError as exc:
+        if exc.linea is None:
+            raise FrontmatterError(str(exc), linea) from None
+        raise
+
+
+def _parse_node(items: list[tuple[int, str, int]], i: int, indent: int):
     """Parsea un nodo (mapa o secuencia) que empieza en items[i] con `indent`."""
     if i < len(items) and items[i][1].startswith("- "):
         seq = []
         while i < len(items) and items[i][0] == indent and items[i][1].startswith("- "):
             body = items[i][1][2:].strip()
+            linea = items[i][2]
             i += 1
             m = KEY_RE.match(body)
             if m:
-                item = {_scalar(m.group(1)): _parse_inline(m.group(2))}
+                item = {_scalar(m.group(1)): _inline_en(linea, m.group(2))}
                 # claves hermanas del mismo item, más indentadas
                 while i < len(items) and items[i][0] > indent:
                     sub_indent = items[i][0]
@@ -190,7 +311,7 @@ def _parse_node(items: list[tuple[int, str]], i: int, indent: int):
                     else:  # lista anidada dentro de un item: no soportada
                         raise FrontmatterError("lista anidada en item de secuencia")
             else:
-                item = _parse_inline(body)
+                item = _inline_en(linea, body)
             seq.append(item)
         return seq, i
 
@@ -201,9 +322,10 @@ def _parse_node(items: list[tuple[int, str]], i: int, indent: int):
             raise FrontmatterError(f"línea no reconocida: {items[i][1]!r}")
         key = _scalar(m.group(1))
         raw_val = m.group(2).strip()
+        linea = items[i][2]
         i += 1
         if raw_val:
-            mapping[key] = _parse_inline(raw_val)
+            mapping[key] = _inline_en(linea, raw_val)
             # una clave con valor inline no puede tener hijos
             while i < len(items) and items[i][0] > indent:
                 i += 1
@@ -221,8 +343,10 @@ def _parse_inline(raw: str):
     raw = raw.strip()
     if not raw:
         return ""
-    if raw[0] in OPAQUE_START:
+    if raw[0] in OPAQUE_INLINE:
         raise FrontmatterError(f"construcción YAML no soportada: {raw[:24]!r}")
+    if raw.startswith("{"):
+        return _flow_map(raw)
     if raw.startswith("[") and raw.endswith("]"):
         return _flow_list(raw)
     return _scalar(raw)
@@ -262,12 +386,14 @@ def parse(raw: str) -> Frontmatter:
                 if entry.value_raw:
                     entry.value = _parse_inline(entry.value_raw)
                 else:
-                    block = _content_lines(lines[start + 1:i])
+                    block = _content_lines(lines[start + 1:i], start + 1)
                     entry.value = _parse_node(block, 0, block[0][0])[0] if block else ""
             except (FrontmatterError, IndexError) as exc:
                 entry.opaque = True
                 entry.value = None
-                entry.error = str(exc)  # type: ignore[attr-defined]
+                entry.error = str(exc)
+                linea = getattr(exc, "linea", None)
+                entry.error_line = -1 if linea is None else linea
         entries.append(entry)
         if not entry.opaque:
             data[key] = entry.value
@@ -357,10 +483,11 @@ def dump_value(key: str, value, indent: int = 0) -> list[str]:
         return out
     if isinstance(value, dict):
         if not value:
-            # `{}` es un flow map y el parser lo marca opaco (`{` abre una
-            # construcción no soportada), así que la clave se perdería al
-            # releer. Quien escribe ya omite los mapas vacíos (una vista de
-            # tabla sin `config` no tiene nada que guardar).
+            # Un mapa vacío solo se puede escribir en flow (`{}`): en bloque
+            # no hay nada que poner. Dentro de un bloque el parser lo vuelve a
+            # leer como `{}`; en el primer nivel se preservaría sin interpretar
+            # (es una propiedad suelta), así que quien escribe ya omite los
+            # mapas vacíos: una vista sin `config` no tiene nada que guardar.
             return [f"{pad}{key}: {{}}"]
         out = [f"{pad}{key}:"]
         for k, v in value.items():
