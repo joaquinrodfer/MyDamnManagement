@@ -237,6 +237,40 @@ def test_un_widths_a_mano_en_flow_map_no_deja_la_base_sin_vistas(
     assert fichero.read_text(encoding="utf-8") == texto
 
 
+def test_guardar_una_vista_tras_un_flow_map_vuelve_a_bajar_el_bloque(
+    client, vault_path
+):
+    """La clave sigue siendo gestionada: el flow map no la vuelve intocable.
+
+    Mientras `views` estaba `opaque`, el escritor la preservaba sin tocar y
+    guardar un ancho desde la app no podía hacer nada (con aviso). Ahora la
+    entrada se interpreta y el `.md` se reescribe con el formato de siempre.
+    """
+    base, _vistas = base_con_dos_vistas(client)
+    fichero = vault_path / "Bases" / "Proyectos.md"
+    pasar_widths_a_flow_map(
+        fichero, {"fase": 220, "valor": 150}, "{ fase: 220, valor: 150 }"
+    )
+    assert client.post("/reindex").status_code == 200
+    vista = vistas_de(client, base["id"])["Otra"]
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}/views/{vista['id']}",
+        json={"config": {"widths": {"fase": 240}, "order": ["valor", "fase"]}},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+
+    texto = fichero.read_text(encoding="utf-8")
+    assert "widths: { fase: 220" not in texto, texto
+    assert re.search(r"(?m)^ {4}widths:$", texto), texto
+    assert re.search(r"(?m)^ {6}fase: 240$", texto), texto
+
+    despues = vistas_de(client, base["id"])
+    assert set(despues) == {"Tabla", "Otra"}, despues
+    assert despues["Otra"]["config"]["widths"] == {"fase": 240}
+    assert despues["Tabla"]["config"]["widths"] == {"fase": 144}
+
+
 def test_si_el_bloque_de_vistas_no_se_entiende_reindex_avisa_con_la_linea(
     client, vault_path
 ):
