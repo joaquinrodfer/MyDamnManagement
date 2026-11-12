@@ -23,6 +23,22 @@ Diseño:
   y se preserva sin interpretar. Dentro de un flow, un trozo que no abre
   `{}`/`[]` es texto (`etiquetas: [*importante, otro]`): no hay alias que
   resolver y una etiqueta no puede vaciar la clave de `data`.
+- Las colecciones en flow tienen **tope de anidamiento** (`MAX_FLOW_DEPTH`) y
+  las claves de bloque también (`MAX_BLOCK_DEPTH`). El subconjunto se lee con
+  recursión, así que sin tope la profundidad de un `.md` fabricado es la de la
+  pila: `RecursionError` no lo capturaba nadie (`parse` atrapa
+  `FrontmatterError`/`IndexError`), `POST /reindex` devolvía 500 y el índice de
+  arranque no se construía (`/health` en `error` y la base sin vistas hasta
+  editar el fichero a mano). Al pasarse el tope, la entrada queda `opaque` con
+  `FrontmatterError` —el `.md` no se toca y `views` lo cuenta con fichero y
+  línea—, igual que con un `widths: |`.
+- Una comilla solo abre escalar donde YAML la admitiría: al principio de un
+  trozo o justo detrás del `:` de la clave. Si no, es texto: un apóstrofo
+  dentro de un valor sin comillas no puede desactivar la partición por comas
+  (`{texto: O'Brien, fase: lead}`) ni juntar los elementos de una lista
+  (`[it's, fine]`). Una comilla que abre y no cierra es un `FrontmatterError`
+  —el flujo no se puede partir con seguridad— en vez de devolver el resto del
+  mapa como si fuera un valor.
 """
 
 from __future__ import annotations
@@ -42,6 +58,23 @@ OPAQUE_START = set("|>&*!{")
 # flow map sí se lee: solo siguen siendo opacas las construcciones de YAML que
 # este subconjunto no sabe representar.
 OPAQUE_INLINE = set("|>&*!")
+
+# Tope de anidamiento de las colecciones en flow (`{a: {b: [c]}}`). Un `.md`
+# real no pasa de dos o tres niveles; sin tope, la profundidad era la de la
+# pila y un fichero fabricado tumbaba el índice entero (ver el docstring del
+# módulo). Es un tope de *lectura*, no de formato: al pasarse, la entrada queda
+# `opaque` con aviso y el `.md` no se toca.
+MAX_FLOW_DEPTH = 8
+# Lo mismo para las claves de bloque encadenadas (`a:` → `b:` → `c:`…). Nadie
+# escribe eso en un `.md`, pero `_parse_node` también es recursivo y con 2.000
+# niveles agotaba la pila igual que un flow: el tope es holgado porque solo
+# evita la pila, no describe el formato.
+MAX_BLOCK_DEPTH = 64
+
+# Caracteres tras los que una comilla puede abrir un escalar entrecomillado:
+# principio del trozo (vacío), el `:` de la clave y la apertura/coma de un flow
+# anidado. Detrás de cualquier otra cosa —`O'Brien`— la comilla es texto.
+_ABRE_ESCALAR = ":[{,"
 
 # Escalares que, sin comillas, YAML interpretaría como algo que no es el texto
 # literal. Se citan al escribir para que un round-trip no cambie el significado.
@@ -63,6 +96,18 @@ class FrontmatterError(ValueError):
     def __init__(self, mensaje: str, linea: int | None = None):
         super().__init__(mensaje)
         self.linea = linea
+
+
+class _FlowTooDeep(FrontmatterError):
+    """El flow anida más de `MAX_FLOW_DEPTH` niveles: no se sigue leyendo.
+
+    Es un `FrontmatterError` con nombre propio porque `_flow_item` cae a texto
+    ante cualquier fallo del trozo —así una etiqueta rara (`*importante`) no se
+    lleva la clave de `data`—, pero esto no es un trozo raro: es una
+    construcción que no se va a leer, y callarla dejaría el mapa a medias sin
+    aviso. Se relanza para que la entrada quede `opaque` y `views` lo cuente
+    con el fichero y la línea.
+    """
 
 
 @dataclass
@@ -165,21 +210,47 @@ def _scalar(tok: str) -> str:
     return tok
 
 
+def _abre_escalar(buf: list[str]) -> bool:
+    """¿Una comilla aquí puede abrir un escalar entrecomillado?
+
+    Solo al principio del trozo o justo detrás de lo que abre un valor: el `:`
+    de la clave, o el `[`/`{`/`,` de un flow anidado. Cualquier otra comilla
+    está dentro de un texto sin comillas (`O'Brien`) y es un carácter más.
+    """
+    previo = "".join(buf).strip()
+    return not previo or previo[-1] in _ABRE_ESCALAR
+
+
 def _flow_split(inner: str) -> list[str]:
     """Parte el interior de un flow (`a, b`) por comas de **primer nivel**.
 
     Las comas de dentro de unas comillas o de un `[]`/`{}` anidado no parten:
     `[{a: 1}, {b: 2}]` son dos mapas, no cuatro trozos.
+
+    Una comilla solo abre escalar donde la admitiría YAML (`_abre_escalar`).
+    Antes bastaba con que apareciera, así que un apóstrofo dentro de un valor
+    sin comillas desactivaba la partición por comas y se comía el resto del
+    mapa **sin aviso**: `{texto: O'Brien, fase: lead}` se leía como un solo
+    par (`fase` desaparecía de la vista) y en una lista `[it's, fine]` era un
+    único elemento. Un escalar que abre comilla y no la cierra tampoco se
+    calla: sin saber dónde acaba el valor, el resto del mapa se devolvería como
+    si fuera parte de él, así que se avisa con `FrontmatterError`.
     """
     partes: list[str] = []
     buf: list[str] = []
     quote: str | None = None
     depth = 0
-    for ch in inner:
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
         if quote:
             if ch == quote:
+                if quote == "'" and inner[i + 1:i + 2] == "'":
+                    buf.append("''")          # `''` escapa la comilla simple
+                    i += 2
+                    continue
                 quote = None
-        elif ch in "\"'":
+        elif ch in "\"'" and _abre_escalar(buf):
             quote = ch
         elif ch in "[{":
             depth += 1
@@ -188,13 +259,19 @@ def _flow_split(inner: str) -> list[str]:
         elif ch == "," and depth == 0:
             partes.append("".join(buf))
             buf = []
+            i += 1
             continue
         buf.append(ch)
+        i += 1
+    if quote:
+        raise FrontmatterError(
+            f"comilla {quote} sin cerrar en un flow: {''.join(buf)[:24]!r}"
+        )
     partes.append("".join(buf))
     return partes
 
 
-def _flow_item(trozo: str):
+def _flow_item(trozo: str, depth: int = 0):
     """Un valor dentro de un flow (`[a, b]`, `{a: b}`) leído como lo que es.
 
     Solo `{`/`[` abren una colección —lo único que este subconjunto
@@ -210,21 +287,30 @@ def _flow_item(trozo: str):
     trozo = trozo.strip()
     if trozo.startswith(("{", "[")):
         try:
-            return _parse_inline(trozo)
+            return _parse_inline(trozo, depth)
+        except _FlowTooDeep:
+            # Un trozo que no se entiende es texto, pero un anidamiento fuera
+            # de tope no: callarlo dejaría el mapa medio leído y sin aviso.
+            raise
         except FrontmatterError:
             pass
     return _scalar(trozo)
 
 
-def _flow_list(tok: str) -> list:
+def _flow_list(tok: str, depth: int = 0) -> list:
+    if depth >= MAX_FLOW_DEPTH:
+        raise _FlowTooDeep(
+            f"flow anidado a más de {MAX_FLOW_DEPTH} niveles: "
+            f"{tok.strip()[:24]!r}"
+        )
     inner = tok.strip()[1:-1].strip()
     if not inner:
         return []
-    out = [_flow_item(parte) for parte in _flow_split(inner)]
+    out = [_flow_item(parte, depth + 1) for parte in _flow_split(inner)]
     return [v for v in out if v != ""]
 
 
-def _flow_map(tok: str) -> dict:
+def _flow_map(tok: str, depth: int = 0) -> dict:
     """`{ clave: valor, … }`: el mapa de escalares de una línea.
 
     Es la forma en la que un `.md` escrito a mano escribe los `widths` de una
@@ -239,6 +325,11 @@ def _flow_map(tok: str) -> dict:
     parte sin `clave:`—, y entonces la entrada queda `opaque` como cualquier
     otra construcción no soportada.
     """
+    if depth >= MAX_FLOW_DEPTH:
+        raise _FlowTooDeep(
+            f"flow anidado a más de {MAX_FLOW_DEPTH} niveles: "
+            f"{tok.strip()[:24]!r}"
+        )
     raw = tok.strip()
     if not raw.endswith("}"):
         # `widths: { fase: 220 }  # el ancho de la app no es parte del mapa: se
@@ -260,7 +351,7 @@ def _flow_map(tok: str) -> dict:
         m = KEY_RE.match(trozo)
         if not m:
             raise FrontmatterError(f"flow map sin clave: {trozo!r}")
-        out[_scalar(m.group(1))] = _flow_item(m.group(2))
+        out[_scalar(m.group(1))] = _flow_item(m.group(2), depth + 1)
     return out
 
 
@@ -291,8 +382,20 @@ def _inline_en(linea: int, raw: str):
         raise
 
 
-def _parse_node(items: list[tuple[int, str, int]], i: int, indent: int):
-    """Parsea un nodo (mapa o secuencia) que empieza en items[i] con `indent`."""
+def _parse_node(
+    items: list[tuple[int, str, int]], i: int, indent: int, depth: int = 0
+):
+    """Parsea un nodo (mapa o secuencia) que empieza en items[i] con `indent`.
+
+    `depth` es el nivel de anidamiento por indentación: con 2.000 claves
+    encadenadas (`a:` → `b:` → `c:`…) la recursión agotaba la pila igual que
+    un flow, así que se corta en `MAX_BLOCK_DEPTH` con aviso.
+    """
+    if depth > MAX_BLOCK_DEPTH:
+        donde = items[i][1][:24] if i < len(items) else ""
+        raise FrontmatterError(
+            f"claves encadenadas a más de {MAX_BLOCK_DEPTH} niveles: {donde!r}"
+        )
     if i < len(items) and items[i][1].startswith("- "):
         seq = []
         while i < len(items) and items[i][0] == indent and items[i][1].startswith("- "):
@@ -305,7 +408,7 @@ def _parse_node(items: list[tuple[int, str, int]], i: int, indent: int):
                 # claves hermanas del mismo item, más indentadas
                 while i < len(items) and items[i][0] > indent:
                     sub_indent = items[i][0]
-                    sub, i = _parse_node(items, i, sub_indent)
+                    sub, i = _parse_node(items, i, sub_indent, depth + 1)
                     if isinstance(sub, dict):
                         item.update(sub)
                     else:  # lista anidada dentro de un item: no soportada
@@ -332,23 +435,23 @@ def _parse_node(items: list[tuple[int, str, int]], i: int, indent: int):
         else:
             if i < len(items) and items[i][0] > indent:
                 child_indent = items[i][0]
-                value, i = _parse_node(items, i, child_indent)
+                value, i = _parse_node(items, i, child_indent, depth + 1)
                 mapping[key] = value
             else:
                 mapping[key] = ""
     return mapping, i
 
 
-def _parse_inline(raw: str):
+def _parse_inline(raw: str, depth: int = 0):
     raw = raw.strip()
     if not raw:
         return ""
     if raw[0] in OPAQUE_INLINE:
         raise FrontmatterError(f"construcción YAML no soportada: {raw[:24]!r}")
     if raw.startswith("{"):
-        return _flow_map(raw)
+        return _flow_map(raw, depth)
     if raw.startswith("[") and raw.endswith("]"):
-        return _flow_list(raw)
+        return _flow_list(raw, depth)
     return _scalar(raw)
 
 
