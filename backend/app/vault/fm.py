@@ -33,12 +33,13 @@ Diseño:
   `FrontmatterError` —el `.md` no se toca y `views` lo cuenta con fichero y
   línea—, igual que con un `widths: |`.
 - Una comilla solo abre escalar donde YAML la admitiría: al principio de un
-  trozo o justo detrás del `:` de la clave. Si no, es texto: un apóstrofo
-  dentro de un valor sin comillas no puede desactivar la partición por comas
-  (`{texto: O'Brien, fase: lead}`) ni juntar los elementos de una lista
-  (`[it's, fine]`). Una comilla que abre y no cierra es un `FrontmatterError`
-  —el flujo no se puede partir con seguridad— en vez de devolver el resto del
-  mapa como si fuera un valor.
+  trozo o justo detrás de lo que abre un valor (el `:` de la clave, o el
+  `[`/`{`/`,` de un flow anidado, o sea `_ABRE_ESCALAR`). Si no, es texto: un
+  apóstrofo dentro de un valor sin comillas no puede desactivar la partición
+  por comas (`{texto: O'Brien, fase: lead}`) ni juntar los elementos de una
+  lista (`[it's, fine]`). Una comilla que abre y no cierra es un
+  `FrontmatterError` —el flujo no se puede partir con seguridad— en vez de
+  devolver el resto del mapa como si fuera un valor.
 """
 
 from __future__ import annotations
@@ -210,15 +211,23 @@ def _scalar(tok: str) -> str:
     return tok
 
 
-def _abre_escalar(buf: list[str]) -> bool:
+def _abre_escalar(previo: str | None) -> bool:
     """¿Una comilla aquí puede abrir un escalar entrecomillado?
 
-    Solo al principio del trozo o justo detrás de lo que abre un valor: el `:`
-    de la clave, o el `[`/`{`/`,` de un flow anidado. Cualquier otra comilla
-    está dentro de un texto sin comillas (`O'Brien`) y es un carácter más.
+    `previo` es el último carácter **no-espacio** del trozo que se está
+    partiendo (`None` si aún no hay ninguno con contenido). Solo al principio
+    del trozo o justo detrás de lo que abre un valor: el `:` de la clave, o el
+    `[`/`{`/`,` de un flow anidado. Cualquier otra comilla está dentro de un
+    texto sin comillas (`O'Brien`) y es un carácter más.
+
+    Antes recibía el `buf` del trozo y hacía `"".join(buf).strip()` por cada
+    comilla: el trozo entero se reconstruía una vez por comilla, así que una
+    línea con N comillas costaba O(N × longitud del trozo). Un `widths` de
+    78 KB con 40.000 comillas tardaba ~9 s y se llevaba el reindex por delante.
+    Ahora el último carácter no-espacio lo lleva quien recorre el trozo y
+    consultarlo es O(1).
     """
-    previo = "".join(buf).strip()
-    return not previo or previo[-1] in _ABRE_ESCALAR
+    return previo is None or previo in _ABRE_ESCALAR
 
 
 def _flow_split(inner: str) -> list[str]:
@@ -240,6 +249,11 @@ def _flow_split(inner: str) -> list[str]:
     buf: list[str] = []
     quote: str | None = None
     depth = 0
+    # Último carácter no-espacio del trozo en curso (`None` = todavía ninguno).
+    # Se lleva al vuelo porque es lo único que `_abre_escalar` necesita, y
+    # reconstruirlo desde `buf` en cada comilla era lo que hacía el coste
+    # cuadrático (ver `_abre_escalar`).
+    previo: str | None = None
     i = 0
     while i < len(inner):
         ch = inner[i]
@@ -247,10 +261,11 @@ def _flow_split(inner: str) -> list[str]:
             if ch == quote:
                 if quote == "'" and inner[i + 1:i + 2] == "'":
                     buf.append("''")          # `''` escapa la comilla simple
+                    previo = "'"
                     i += 2
                     continue
                 quote = None
-        elif ch in "\"'" and _abre_escalar(buf):
+        elif ch in "\"'" and _abre_escalar(previo):
             quote = ch
         elif ch in "[{":
             depth += 1
@@ -259,9 +274,12 @@ def _flow_split(inner: str) -> list[str]:
         elif ch == "," and depth == 0:
             partes.append("".join(buf))
             buf = []
+            previo = None
             i += 1
             continue
         buf.append(ch)
+        if not ch.isspace():
+            previo = ch
         i += 1
     if quote:
         raise FrontmatterError(
