@@ -1365,9 +1365,12 @@
      texto (medido en la app: H1 de 24 px, 8 px sobre la línea base; H2 de 20,
      6,5; cuerpo de 15, 5). El cuerpo del texto lo pone `--mdm-dot-text`, que
      las clases cm-mdm-dot-h1..h5 enlazan con el MISMO token de la escala
-     (--text-hN) que usa el encabezado; lo que no es encabezado (párrafo,
-     lista, código, cita) se queda con el `1em` del respaldo, que es el cuerpo
-     de la línea. Antes el envoltorio iba con `vertical-align: middle`, que se
+     (--text-hN) que usa el encabezado, y las pone el TEXTO de la primera
+     línea del bloque (ver dotTextFamily en entry.js), no su tipo: un `#` dentro
+     de una cita o de un ítem, y un encabezado setext, también se pintan con el
+     cuerpo del encabezado. Lo que no empieza por encabezado (párrafo, lista,
+     código, cita) se queda con el `1em` del respaldo, que es el cuerpo de la
+     línea. Antes el envoltorio iba con `vertical-align: middle`, que se
      calcula con la x-height de la LÍNEA (15 px, el cuerpo) y no con la del
      texto del encabezado: el punto salía 3,5 px por debajo del centro de un H1
      y 2,5 de un H2 (0,5 en párrafo y lista). */

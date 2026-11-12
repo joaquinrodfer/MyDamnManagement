@@ -2070,18 +2070,85 @@ const DOT_TEXT_SIZE_CLASS = {
   h5: "cm-mdm-dot-h5",
 };
 
+/** Nivel del encabezado según el nombre que le da el parser (ATX y setext). */
+const HEADING_NODE_LEVEL = {
+  ATXHeading1: 1,
+  ATXHeading2: 2,
+  ATXHeading3: 3,
+  ATXHeading4: 4,
+  ATXHeading5: 5,
+  ATXHeading6: 6,
+  SetextHeading1: 1,
+  SetextHeading2: 2,
+};
+
+/**
+ * Nivel (1-6) del encabezado que EMPIEZA en la primera línea del bloque, o 0 si
+ * esa línea no es un encabezado.
+ *
+ * Mira el TEXTO de la primera línea en el árbol de sintaxis, no el `type` del
+ * bloque: `> # Titulo` (quote), `- # Titulo` (bullet_list_item) y un encabezado
+ * setext (`Titulo` + `====`, tipo `other`) se pintan con el cuerpo de un H1, y
+ * el punto tiene que subir con el texto. Decidirlo por el `type` los dejaba 3 px
+ * por debajo (el 1em de la línea, 15 px, en vez de los 24 del encabezado). Un
+ * encabezado en una línea de MÁS ABAJO no cuenta: el punto va en la primera.
+ *
+ * `tree` es un árbol de @lezer (el de `syntaxTree(state)`, o el del parser en
+ * los tests) y `firstLineEnd` la posición del salto que cierra esa primera
+ * línea (se usa como cota del recorrido; da igual que un setext acabe más
+ * abajo, porque lo que se mira es dónde EMPIEZA).
+ */
+export function headingLevelAtLineStart(tree, from, firstLineEnd) {
+  let level = 0;
+  tree.iterate({
+    from,
+    to: Math.max(from, firstLineEnd),
+    enter(node) {
+      if (level) return false; // ya hay uno: no hace falta seguir
+      const found = HEADING_NODE_LEVEL[node.name];
+      if (found && node.from >= from && node.from <= firstLineEnd) {
+        level = found;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return level;
+}
+
+/**
+ * Familia del cuerpo de letra con el que se centra el punto: "h1".."h5" si la
+ * primera línea del bloque es un encabezado (el 6 usa la escala del 5, igual
+ * que `blocksFromTree`), y "" si es texto normal -- y entonces manda el `1em`
+ * de la línea. Es una función pura sobre el árbol para poder probarla con el
+ * parser de verdad y sin una EditorView (ver test/block-dot.test.js).
+ */
+export function dotTextFamily(tree, block, firstLineEnd) {
+  const level = headingLevelAtLineStart(tree, block.from, firstLineEnd);
+  return level ? `h${Math.min(level, 5)}` : "";
+}
+
+/** El widget del punto de un bloque, con el cuerpo de letra de SU primera
+ * línea. Se separa de `dotDecorations` para que el test compruebe el cableado
+ * (bloque de verdad -> índice + clase) sin una EditorView. */
+export function blockDotWidget(tree, blocks, index, firstLineEnd) {
+  const block = blocks[index];
+  if (!block) return null;
+  return new BlockDotWidget(index, dotTextFamily(tree, block, firstLineEnd));
+}
+
 export class BlockDotWidget extends WidgetType {
-  constructor(index, type) {
+  constructor(index, textFamily = "") {
     super();
     this.index = index;
-    this.type = type;
+    this.textFamily = textFamily;
   }
   eq(other) {
-    return other.index === this.index && other.type === this.type;
+    return other.index === this.index && other.textFamily === this.textFamily;
   }
   toDOM() {
     const wrap = document.createElement("span");
-    const size = DOT_TEXT_SIZE_CLASS[this.type];
+    const size = DOT_TEXT_SIZE_CLASS[this.textFamily];
     wrap.className = size ? `cm-mdm-block-dot-wrap ${size}` : "cm-mdm-block-dot-wrap";
     const dot = document.createElement("span");
     dot.className = "cm-mdm-block-dot";
@@ -2140,7 +2207,11 @@ function dotDecorations(state) {
   const index = coarsePointer() ? blockIndexAtPos(blocks, state.selection.main.head) : state.field(dotField);
   const b = blocks[index];
   if (index < 0 || !b) return Decoration.none;
-  return Decoration.set([Decoration.widget({ widget: new BlockDotWidget(index, b.type), side: -1 }).range(b.from)], true);
+  // El cuerpo del punto sale del TEXTO de la primera línea del bloque, no de su
+  // `type`: un encabezado dentro de una cita o de un ítem de lista (y un setext)
+  // se pinta como encabezado y el punto tiene que centrarse con él.
+  const widget = blockDotWidget(syntaxTree(state), blocks, index, state.doc.lineAt(b.from).to);
+  return Decoration.set([Decoration.widget({ widget, side: -1 }).range(b.from)], true);
 }
 
 function blockDotPlugin() {

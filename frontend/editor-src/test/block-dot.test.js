@@ -17,8 +17,11 @@ import { markdownLanguage } from "@codemirror/lang-markdown";
 
 import {
   BlockDotWidget,
+  blockDotWidget,
   blockIndexAtPos,
   dotBlockIndex,
+  dotTextFamily,
+  headingLevelAtLineStart,
   pointerInsideBlock,
   pressBlockDot,
 } from "../entry.js";
@@ -178,21 +181,131 @@ test("el widget pinta el índice del bloque que le toca", () => {
 });
 
 test("el punto de un encabezado lleva el cuerpo del encabezado; el del texto, no", () => {
-  const cls = (type) => withoutDocument(() => new BlockDotWidget(0, type).toDOM()).className;
+  const cls = (family) => withoutDocument(() => new BlockDotWidget(0, family).toDOM()).className;
   for (const level of ["h1", "h2", "h3", "h4", "h5"]) {
     assert.equal(cls(level), `cm-mdm-block-dot-wrap cm-mdm-dot-${level}`);
   }
-  // Párrafo, ítem, código, cita y el resto: sin clase, el CSS usa el 1em de la
-  // línea, que es el cuerpo del texto.
-  for (const type of ["paragraph", "bullet_list_item", "ordered_list_item", "code", "quote", "hr", "other"]) {
-    assert.equal(cls(type), "cm-mdm-block-dot-wrap");
+  // Sin familia (texto normal: párrafo, ítem, código, cita) no hay clase y el
+  // CSS usa el 1em de la línea, que es el cuerpo del texto.
+  for (const family of ["", undefined, null]) {
+    assert.equal(cls(family), "cm-mdm-block-dot-wrap");
   }
 });
 
-test("dos puntos del mismo bloque y tipo son el mismo widget (no se repinta)", () => {
+test("dos puntos del mismo bloque y familia son el mismo widget (no se repinta)", () => {
   assert.ok(new BlockDotWidget(2, "h1").eq(new BlockDotWidget(2, "h1")));
   assert.ok(!new BlockDotWidget(2, "h1").eq(new BlockDotWidget(3, "h1")));
-  assert.ok(!new BlockDotWidget(2, "h1").eq(new BlockDotWidget(2, "paragraph")));
+  // Cambia el cuerpo del texto (un párrafo se convierte en encabezado): el
+  // widget NO es el mismo, o el DOM se quedaría con la clase vieja.
+  assert.ok(!new BlockDotWidget(2, "h1").eq(new BlockDotWidget(2, "")));
+});
+
+// ------------------- el cuerpo del punto sale del TEXTO de la primera línea
+// El `type` del bloque no basta: `> # Titulo` es un `quote`, `- # Titulo` es un
+// `bullet_list_item` y un setext es `other`, y los tres se pintan con el cuerpo
+// de un H1. Decidirlo por el tipo dejaba el punto 3 px por debajo del texto.
+
+/** Clase que le pone el punto al bloque `index` de `text` (con el parser y los
+ * bloques de verdad, y el mismo cableado que `dotDecorations`: `blockDotWidget`). */
+function dotClassOf(text, index = 0) {
+  const tree = markdownLanguage.parser.parse(text);
+  const blocks = blocksFromTree(tree.topNode, text);
+  assert.ok(blocks[index], `no hay bloque ${index} en ${JSON.stringify(text)}`);
+  const newline = text.indexOf("\n", blocks[index].from);
+  const firstLineEnd = newline < 0 ? text.length : newline;
+  const widget = blockDotWidget(tree, blocks, index, firstLineEnd);
+  return withoutDocument(() => widget.toDOM()).className;
+}
+
+test("un encabezado dentro de una cita o de un ítem de lista se lleva su cuerpo", () => {
+  // Los tres casos que la revisión encontró desalineados (3,0 px por debajo).
+  const quote = "> # Titulo en cita";
+  assert.equal(blocksOf(quote)[0].type, "quote");
+  assert.equal(dotClassOf(quote), "cm-mdm-block-dot-wrap cm-mdm-dot-h1");
+
+  const item = "- # Titulo en lista";
+  assert.equal(blocksOf(item)[0].type, "bullet_list_item");
+  assert.equal(dotClassOf(item), "cm-mdm-block-dot-wrap cm-mdm-dot-h1");
+
+  const setext = "Titulo setext\n============";
+  assert.equal(blocksOf(setext)[0].type, "other"); // blocksFromTree no tiene case para SetextHeading
+  assert.equal(dotClassOf(setext), "cm-mdm-block-dot-wrap cm-mdm-dot-h1");
+  // El setext de nivel 2 (`---`) también.
+  const setext2 = "Titulo setext\n------------";
+  assert.equal(blocksOf(setext2)[0].type, "other");
+  assert.equal(dotClassOf(setext2), "cm-mdm-block-dot-wrap cm-mdm-dot-h2");
+});
+
+test("el nivel sale del encabezado que abre el bloque (ATX o setext)", () => {
+  for (const [text, cls] of [
+    ["## H2", "h2"],
+    ["### H3", "h3"],
+    ["#### H4", "h4"],
+    ["##### H5", "h5"],
+    ["###### H6", "h5"], // el 6 se pinta con la escala del 5, como en blocksFromTree
+    ["   # H1 con sangría", "h1"], // la sangría es del bloque, el encabezado empieza después
+    ["- ### dentro de un ítem", "h3"],
+    ["1. ## dentro de una lista numerada", "h2"],
+    ["> ## dentro de una cita", "h2"],
+    ["> - #### cita y lista a la vez", "h4"],
+  ]) {
+    assert.equal(dotClassOf(text), `cm-mdm-block-dot-wrap cm-mdm-dot-${cls}`, text);
+  }
+});
+
+test("el texto normal sigue sin clase (párrafo, ítem, cita, código)", () => {
+  for (const text of [
+    "parrafo normal",
+    "alfa\nbeta", // párrafo de dos líneas
+    "- item normal",
+    "1. item normal",
+    "> cita normal",
+    "> una cita\n> de dos lineas",
+    "```\ncodigo\n```",
+    "    codigo indentado",
+    "---",
+    "#no-es-encabezado", // sin espacio detrás de la almohadilla: no hay encabezado
+    "texto con # dentro",
+  ]) {
+    assert.equal(dotClassOf(text), "cm-mdm-block-dot-wrap", text);
+  }
+});
+
+test("un encabezado en una línea de MÁS ABAJO no cambia el cuerpo del punto", () => {
+  // El punto va en la primera línea del bloque; si el encabezado está en la
+  // segunda, el texto de arriba es normal.
+  for (const text of ["> texto\n> # Titulo", "- texto\n  ### Titulo", "alfa\n# no puede interrumpir? no: dos bloques"]) {
+    const tree = markdownLanguage.parser.parse(text);
+    const blocks = blocksFromTree(tree.topNode, text);
+    assert.equal(dotTextFamily(tree, blocks[0], text.indexOf("\n")), "", text);
+  }
+});
+
+test("la familia se decide por bloque, con su índice (cableado de dotDecorations)", () => {
+  const text = ["# H1", "parrafo", "> # en cita", "- normal", "Titulo\n===="].join("\n\n");
+  const tree = markdownLanguage.parser.parse(text);
+  const blocks = blocksFromTree(tree.topNode, text);
+  assert.equal(blocks.map((b) => b.type).join(","), "h1,paragraph,quote,bullet_list_item,other");
+  const families = blocks.map((b, i) => {
+    const newline = text.indexOf("\n", b.from);
+    const family = dotTextFamily(tree, b, newline < 0 ? text.length : newline);
+    assert.equal(blockDotWidget(tree, blocks, i, newline < 0 ? text.length : newline).index, i);
+    return family;
+  });
+  assert.deepEqual(families, ["h1", "", "h1", "", "h1"]);
+});
+
+test("headingLevelAtLineStart no se inventa encabezados donde no los hay", () => {
+  const text = "parrafo\n\n# si";
+  const tree = markdownLanguage.parser.parse(text);
+  const heading = text.indexOf("# si");
+  assert.equal(headingLevelAtLineStart(tree, 0, text.indexOf("\n")), 0);
+  assert.equal(headingLevelAtLineStart(tree, heading, text.length), 1);
+  // Una posición DESPUÉS del encabezado no lo encuentra: solo cuenta que empiece
+  // en la primera línea del bloque que se le pasa.
+  assert.equal(headingLevelAtLineStart(tree, heading + 1, text.length), 0);
+  // Sin bloque (index fuera de rango) el widget no se construye.
+  assert.equal(blockDotWidget(tree, [], 0, 7), null);
 });
 
 // ---------------------------------------------------- el clic del punto
