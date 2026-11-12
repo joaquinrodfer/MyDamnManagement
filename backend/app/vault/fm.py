@@ -20,7 +20,9 @@ Diseño:
   `.md` escrito a mano: dentro de un bloque (los `widths` de una vista) y en
   una lista de mapas (`schema: [{key: …, type: …}]`). En el primer nivel un
   `clave: {…}` sigue siendo una propiedad suelta que el índice no representa,
-  y se preserva sin interpretar.
+  y se preserva sin interpretar. Dentro de un flow, un trozo que no abre
+  `{}`/`[]` es texto (`etiquetas: [*importante, otro]`): no hay alias que
+  resolver y una etiqueta no puede vaciar la clave de `data`.
 """
 
 from __future__ import annotations
@@ -192,11 +194,33 @@ def _flow_split(inner: str) -> list[str]:
     return partes
 
 
+def _flow_item(trozo: str):
+    """Un valor dentro de un flow (`[a, b]`, `{a: b}`) leído como lo que es.
+
+    Solo `{`/`[` abren una colección —lo único que este subconjunto
+    representa—; todo lo demás es un escalar. Una lista en flow se parte por
+    comas, así que un trozo como `*importante`, `!urgente` o `{borrador}` es
+    **texto**: en el bloque de un `.md` escrito a mano eso son etiquetas, y
+    pasar cada trozo por `_parse_inline` lo hacía reventar, con lo que la
+    entrada entera quedaba `opaque` y la clave desaparecía de `data` sin
+    aviso (`etiquetas: [*importante, otro]` se leía como texto en la lista de
+    siempre). Si el trozo abre `{`/`[` pero no es una colección válida, también
+    cae a texto: no se pierde nada del índice por no entender un trozo.
+    """
+    trozo = trozo.strip()
+    if trozo.startswith(("{", "[")):
+        try:
+            return _parse_inline(trozo)
+        except FrontmatterError:
+            pass
+    return _scalar(trozo)
+
+
 def _flow_list(tok: str) -> list:
     inner = tok.strip()[1:-1].strip()
     if not inner:
         return []
-    out = [_parse_inline(parte) for parte in _flow_split(inner)]
+    out = [_flow_item(parte) for parte in _flow_split(inner)]
     return [v for v in out if v != ""]
 
 
@@ -208,10 +232,12 @@ def _flow_map(tok: str) -> dict:
     en bloque. Se lee en vez de marcar la entrada `opaque` —si se marca, la
     clave desaparece de `data` y la base se queda sin vistas sin un aviso—.
 
-    Los valores pasan por `_parse_inline`, así que un anidado (`{a: {b: 1}}`) o
-    una lista (`{a: [1, 2]}`) también se leen. Lo que el subconjunto no
-    entiende revienta aquí con `FrontmatterError` y la entrada queda `opaque`
-    como cualquier otra construcción no soportada.
+    Los valores pasan por `_flow_item`, así que un anidado (`{a: {b: 1}}`) o
+    una lista (`{a: [1, 2]}`) también se leen y un valor que no es colección
+    (`{nota: *importante}`) se queda como texto. Solo revienta con
+    `FrontmatterError` lo que rompe la estructura del mapa —sin `}`, o una
+    parte sin `clave:`—, y entonces la entrada queda `opaque` como cualquier
+    otra construcción no soportada.
     """
     raw = tok.strip()
     if not raw.endswith("}"):
@@ -234,7 +260,7 @@ def _flow_map(tok: str) -> dict:
         m = KEY_RE.match(trozo)
         if not m:
             raise FrontmatterError(f"flow map sin clave: {trozo!r}")
-        out[_scalar(m.group(1))] = _parse_inline(m.group(2))
+        out[_scalar(m.group(1))] = _flow_item(m.group(2))
     return out
 
 
@@ -366,7 +392,8 @@ def parse(raw: str) -> Frontmatter:
                 entry.opaque = True
                 entry.value = None
                 entry.error = str(exc)
-                entry.error_line = getattr(exc, "linea", None) or -1
+                linea = getattr(exc, "linea", None)
+                entry.error_line = -1 if linea is None else linea
         entries.append(entry)
         if not entry.opaque:
             data[key] = entry.value

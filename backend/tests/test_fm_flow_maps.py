@@ -17,12 +17,17 @@ Aquí se fija lo que tiene que pasar:
    propiedad suelta de una fila y el índice no tiene dónde representarla (el
    guard de B2 se apoya en eso, ver `test_b2_filas_sin_perder.py`);
 3. si el bloque `views` sigue sin poder interpretarse (un block scalar dentro),
-   `/reindex` lo dice con el fichero y la línea en vez de callarse.
+   `/reindex` lo dice con el fichero y la línea en vez de callarse;
+4. dentro de un flow, un trozo que no abre `{}`/`[]` es **texto**: una etiqueta
+   escrita a mano (`etiquetas: [*importante, otro]`) no puede llevarse la clave
+   de `data` —ni la propiedad del índice— sin aviso.
 """
 
 from __future__ import annotations
 
 import re
+
+import pytest
 
 from app.vault import fm
 
@@ -162,6 +167,43 @@ def test_una_lista_de_flow_maps_no_se_parte_por_las_comas_de_dentro():
     ]
 
 
+@pytest.mark.parametrize(
+    "linea, esperado",
+    [
+        ("etiquetas: [*importante, otro]", ["*importante", "otro"]),
+        ("etiquetas: [!urgente]", ["!urgente"]),
+        ("etiquetas: [>cita]", [">cita"]),
+        ("etiquetas: [&ancla]", ["&ancla"]),
+        ("etiquetas: [{borrador}]", ["{borrador}"]),
+        ("etiquetas: [rojo, verde]", ["rojo", "verde"]),
+    ],
+)
+def test_un_texto_con_caracter_especial_en_una_lista_flow_se_lee_como_texto(
+    linea, esperado
+):
+    """`[*importante, otro]` son etiquetas, no un ancla: la clave no se cae.
+
+    Cada item de una lista en flow pasaba por `_parse_inline`, así que un texto
+    que empieza por `| > & * !` —o por un `{}` que no es un mapa, como
+    `[{borrador}]`— lanzaba `FrontmatterError` y dejaba **la entrada entera**
+    `opaque`: la clave salía de `data`, la propiedad desaparecía del índice y no
+    había ni un aviso. Antes de que existieran los flow maps eso se leía como
+    texto (`_scalar` del trozo), que es lo que fija este test.
+    """
+    datos = fm.parse(linea)
+    assert datos.data["etiquetas"] == esperado
+    entrada = next(e for e in datos.entries if e.key == "etiquetas")
+    assert entrada.opaque is False and entrada.error == ""
+
+
+def test_un_valor_que_no_es_coleccion_dentro_de_un_flow_map_se_queda_como_texto():
+    """`{ nota: *importante }`: un valor raro no se lleva el mapa ni la clave."""
+    vista = fm.parse(
+        "views:\n  - name: Otra\n    widths: { fase: 220, nota: *importante }\n"
+    ).data["views"][0]
+    assert vista["widths"] == {"fase": "220", "nota": "*importante"}
+
+
 def test_en_el_primer_nivel_un_flow_map_sigue_siendo_opaco():
     """Una propiedad de fila no puede ser un mapa: se preserva sin interpretar.
 
@@ -199,6 +241,40 @@ def test_el_mapa_vacio_que_baja_el_escritor_dentro_de_una_vista_se_relee():
     assert avisos == []
     assert re.search(r"(?m)^    config: \{\}$", nuevo), nuevo
     assert fm.parse(nuevo).data["views"][0]["config"] == {}
+
+
+def test_una_propiedad_de_texto_con_asterisco_a_mano_sigue_en_el_indice(
+    client, vault_path
+):
+    """El mismo fallo en una clave de fila: `[*importante, otro]` no se cae.
+
+    La lista se escribe a mano en el `.md` de una fila; el índice tiene que
+    seguir viendo la etiqueta, no perder la propiedad en silencio.
+    """
+    base = crear_database(
+        client,
+        title="Contactos",
+        schema_def=[{"key": "etiquetas", "name": "Etiquetas", "type": "text"}],
+    )
+    respuesta = client.post(
+        f"/databases/{base['id']}/rows",
+        json={"title": "Acme", "properties": {"etiquetas": "rojo, verde"}},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    fila = respuesta.json()
+    fichero = vault_path / "Bases" / "Contactos" / f"{fila['id'][:8]}.md"
+    texto = fichero.read_text(encoding="utf-8")
+    nuevo = re.sub(r"(?m)^etiquetas: .*$", "etiquetas: [*importante, otro]", texto, count=1)
+    assert nuevo != texto and "etiquetas: [*importante, otro]" in nuevo
+    fichero.write_text(nuevo, encoding="utf-8")
+
+    cuerpo = client.post("/reindex").json()
+    assert cuerpo["warnings"] == 0, cuerpo.get("warning_sample")
+    despues = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert despues["properties"].get("etiquetas") == "*importante, otro", despues
+
+    # Y el fichero no se toca al reindexar.
+    assert fichero.read_text(encoding="utf-8") == nuevo
 
 
 # --------------------------------------------------------------------------
