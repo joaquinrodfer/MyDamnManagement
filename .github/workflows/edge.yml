@@ -1,0 +1,94 @@
+# Publica una imagen `edge` en cada push a `develop`.
+#
+# Para qué: mientras el proyecto se desarrolla, el servidor del dueño puede
+# seguir `develop` sin que nadie haga `pull` a mano. `release.yml` sigue igual
+# —una etiqueta, una imagen que no se mueve—; esto es otra cosa y se llama
+# distinto a propósito:
+#
+#   edge         siempre la última `develop` construida (mutable)
+#   edge-<sha7>  el commit exacto, para volver atrás sin adivinar
+#
+# `edge` es la única etiqueta mutable de este repositorio y NO es para
+# producción: un `pull` puede cambiar de versión sin que nadie lo haya decidido
+# (justo lo que `release.yml` evita). Cuando haya versión estable, el servidor
+# vuelve a `MDM_TAG=vX.Y.Z` y este workflow puede quedarse como está: mientras
+# nadie lo siga, no molesta.
+#
+# Solo se construye si cambia algo que vaya dentro de la imagen: un cambio de
+# `docs/`, del `CHANGELOG` o de los tests no construye nada (minutos de Actions
+# gastados para una imagen idéntica).
+name: imagen-edge
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "docker-compose.prod.yml"
+      - "README.md"
+      - ".github/workflows/edge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # Un push detrás de otro: se cancela el build viejo si todavía no ha subido la
+  # imagen. Dos builds de `develop` a la vez solo compiten por la misma etiqueta.
+  group: imagen-edge
+  cancel-in-progress: true
+
+jobs:
+  publicar:
+    name: construir y publicar edge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Código
+        uses: actions/checkout@v4
+
+      - name: Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Entrar en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Etiquetas y metadatos
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=edge
+            type=sha,prefix=edge-,format=short
+
+      - name: Construir y publicar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resumen
+        run: |
+          {
+            echo "### Imagen edge publicada"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "En el servidor que sigue el desarrollo: \`MDM_TAG=edge\`."
+            echo "Para volver a este commit exacto, usa la etiqueta \`edge-<sha>\` de arriba."
+          } >> "$GITHUB_STEP_SUMMARY"

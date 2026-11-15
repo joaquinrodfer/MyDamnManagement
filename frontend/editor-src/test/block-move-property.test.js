@@ -99,6 +99,12 @@ const KINDS = {
   h: (k) => `# titulo ${k}`,
   item: (k) => `- item ${k}`,
   code: (k) => `\`\`\`\ncodigo ${k}\n\`\`\``,
+  // Valla de BASE incrustada (```mdm-database): para el árbol es una valla más
+  // (`FencedCode` -> «code»), pero es la que el dueño no podía mover porque el
+  // widget que pinta la tabla tapaba su primera línea (t_45697398). El motor
+  // tiene que moverla entera, con su `id` y su `view` dentro, y no fusionarla
+  // con el párrafo ni con otra base de al lado.
+  db: (k) => `\`\`\`mdm-database\nid: 0000000${k}-0000-4000-8000-000000000000\nview: Tabla\ntitle: Base ${k}\n\`\`\``,
   // Código INDENTADO (4 espacios, sin valla): el bloque empieza en su LÍNEA y
   // la sangría es suya, no del hueco entre bloques (t_9d3b6d3b). Con la sangría
   // fuera del rango, mover el bloque lo dejaba en `codigo ${k}` -- ya no era
@@ -120,6 +126,9 @@ const VARIANTS = [
   ["p", "h", "item", "quote", "p", "code"],
   ["p", "quote", "quote", "html", "item", "p"],
   ["p", "icode", "p", "icode", "h", "p"],
+  // Dos bases en la misma nota, con párrafos y una cabecera alrededor: el
+  // reordenado que pidió el dueño (t_45697398).
+  ["p", "db", "p", "db", "p", "h"],
 ];
 
 /** Todos los repartos de {1, 2, 4} saltos en `n - 1` fronteras. */
@@ -271,6 +280,8 @@ const PAIR_SAMPLES = {
   // subrayado es la última, no la segunda (con la segunda se tomaba por tabla
   // y se le daba el mínimo de una tabla).
   "setext de dos lineas": "titulo uno\ntitulo dos\n---",
+  // La valla de una base incrustada, escrita como la escribe la app.
+  "valla de base": "\`\`\`mdm-database\nid: 33333333-3333-4333-8333-333333333333\nview: Tabla\ntitle: Contactos\n\`\`\`",
 };
 
 test("el mínimo del motor es el que mide el parser, pareja por pareja y por los dos lados", (t) => {

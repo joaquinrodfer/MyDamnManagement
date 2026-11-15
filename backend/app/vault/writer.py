@@ -184,8 +184,8 @@ def _sin_vacios(mapping: dict) -> dict:
 
     El contrato dice que en el `.md` va lo que hay: una propiedad sin valor no
     se escribe `a: null` (el parser de `fm` no infiere tipos y la leería como la
-    cadena `"null"`), y un `config: {}` de una vista de tabla no se escribe (un
-    flow map vacío es opaco para el parser y la clave se perdería al releer).
+    cadena `"null"`), y un `config: {}` de una vista de tabla no se escribe: un
+    mapa vacío no dice nada y en el `.md` solo cabe como flow (`{}`).
 
     Al **guardar** no se usa para las propiedades: ahí un `None` es «bórrame
     esta clave» y `fm.update` ya lo entiende así.
