@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
 from app.properties import DEFAULT_TITLE_NAME, plan_schema
+from app.vault.reader import PERSON
 from app.vault import suggestions
 from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultError, VaultStore
 from app.vault.suggestions import (
@@ -57,6 +59,11 @@ def _uuid(value: Optional[str]) -> Optional[uuid.UUID]:
 
 def _load(value: Optional[str], default: Any) -> Any:
     return json.loads(value) if value else default
+
+
+def _plegar(value: Any) -> str:
+    """Nombre de usuario comparable: NFC, sin espacios de sobra, casefold."""
+    return unicodedata.normalize("NFC", str(value)).strip().casefold()
 
 
 # Cuántos ids caben en una consulta de resolución de relaciones. SQLite admite
@@ -225,6 +232,44 @@ class Repository:
             "SELECT display_name, color FROM users WHERE color IS NOT NULL"
         ).fetchall()
         return {row["display_name"]: row["color"] for row in rows}
+
+    def user_refs(
+        self, ids: Iterable[str]
+    ) -> dict[str, tuple[str, str, Optional[str]]]:
+        """`id -> (display_name, username, color)` de los usuarios que existan.
+
+        **Una consulta por respuesta**, como `row_refs`: una tabla con veinte
+        responsables resuelve sus veinte nombres de una vez. Un id que ya no
+        está en `users` simplemente no aparece en el mapa, y quien serializa la
+        celda lo pinta como «ya no está»: el `.md` conserva el id y no se toca.
+        """
+        wanted = [str(one).strip() for one in ids if str(one).strip()]
+        if not wanted:
+            return {}
+        refs: dict[str, tuple[str, str, Optional[str]]] = {}
+        for start in range(0, len(wanted), _REFS_CHUNK):
+            chunk = wanted[start:start + _REFS_CHUNK]
+            marks = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                "SELECT id, display_name, username, color FROM users"
+                f" WHERE id IN ({marks})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                refs[row["id"]] = (row["display_name"], row["username"], row["color"])
+        return refs
+
+    def all_users(self) -> list[dict[str, Any]]:
+        """Los usuarios de la app por nombre visible: las personas asignables.
+
+        Es la lista del selector de una celda `person` (`GET /people`). No lleva
+        hash ni salt: sale de `users` sin las columnas de credenciales.
+        """
+        rows = self.conn.execute(
+            "SELECT id, username, display_name, color FROM users"
+            " ORDER BY display_name COLLATE NOCASE, username"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def reindex(
         self, force: bool = False, empty_hint: str | None = None, progress=None
@@ -846,8 +891,10 @@ class Repository:
         renames: dict[str, str] = {}
         deleted: list[str] = []
         final_schema: Optional[list[dict[str, Any]]] = None
+        conversiones: dict[str, str] = {}
         if schema_def is not None:
             final_schema, renames, deleted = plan_schema(current.schema_def, schema_def)
+            conversiones = self._person_conversions(current.schema_def, schema_def)
 
         if renames:
             # Las filas primero: si una no se puede migrar, el `.md` de la base
@@ -882,6 +929,13 @@ class Repository:
                 ]
             renames = ajustados
 
+        if conversiones:
+            # El `.md` de cada fila pasa a guardar el id del usuario **antes**
+            # de que el schema diga `person`: si una fila no casa con ningún
+            # usuario, `_convert_to_person` lanza y no se escribe nada (ni el
+            # schema ni la fila).
+            self._convert_to_person(database_id, conversiones)
+
         views: Optional[list[dict[str, Any]]] = None
         if renames or deleted:
             views = self._views_with_keys(
@@ -907,9 +961,85 @@ class Repository:
             # recupera así los valores que ya estaban en el fichero.
             antes = {p.get("key") for p in current.schema_def if isinstance(p, dict)}
             despues = {p["key"] for p in final_schema or []}
-            if antes != despues:
+            if antes != despues or conversiones:
                 self.vault.reindex_rows(database_id)
         return self.get_database(database_id)
+
+    def _person_conversions(
+        self, current: list[dict[str, Any]], requested: list[dict[str, Any]]
+    ) -> dict[str, str]:
+        """Claves que pasan de `text` a `person` en esta petición.
+
+        Devuelve `{clave: nombre visible}` (el nombre, para los mensajes: el
+        usuario no ve claves). Solo se admite desde `text`: convertir una
+        selección, una fecha o una relación a persona no es lo que pide la
+        tarjeta y no hay valores que casar. Los valores se comprueban en
+        `_convert_to_person`, contra los `.md`.
+        """
+        actuales = {
+            str(prop.get("key")): prop
+            for prop in current
+            if isinstance(prop, dict) and prop.get("key")
+        }
+        conversiones: dict[str, str] = {}
+        for item in requested:
+            if not isinstance(item, dict) or item.get("type") != PERSON:
+                # `type` llega como `PropertyType` (un `str`-Enum): se compara
+                # con el valor, no con `str(...)`, que daría «PropertyType.person».
+                continue
+            key = str(item.get("key") or "")
+            origen = actuales.get(key)
+            if origen is None or origen.get("type") == PERSON:
+                continue
+            nombre = str(item.get("name") or origen.get("name") or key)
+            if origen.get("type") != "text":
+                raise VaultError(
+                    f"«{nombre}»: solo se puede convertir a Persona una propiedad de "
+                    "texto. Cambia antes su tipo a Texto, o créala nueva."
+                )
+            conversiones[key] = nombre
+        return conversiones
+
+    def _convert_to_person(
+        self, database_id: uuid.UUID, conversiones: dict[str, str]
+    ) -> None:
+        """Deja en las filas el **id** del usuario que corresponde a cada texto.
+
+        Un valor casa con un usuario por su `display_name` o por su `username`,
+        sin mayúsculas (el nombre visible lo escribe una persona; el @usuario,
+        no). Si **algún** valor de **alguna** fila no casa, se lanza
+        `VaultError` con el nombre visible de la propiedad y los valores que
+        sobran: no se convierte nada y el `.md` se queda como estaba.
+        """
+        usuarios = self.all_users()
+        por_nombre: dict[str, str] = {}
+        for usuario in usuarios:
+            for nombre in (usuario.get("display_name"), usuario.get("username")):
+                if nombre:
+                    por_nombre.setdefault(_plegar(nombre), str(usuario["id"]))
+
+        crudos = self.vault.row_property_values(database_id, conversiones)
+        sustituciones: dict[str, dict[str, str]] = {}
+        for key, nombre in conversiones.items():
+            mapa: dict[str, str] = {}
+            desconocidos: list[str] = []
+            for valor in crudos.get(key, []):
+                user_id = por_nombre.get(_plegar(valor))
+                if user_id is None:
+                    desconocidos.append(valor)
+                else:
+                    mapa[_plegar(valor)] = user_id
+            if desconocidos:
+                lista = ", ".join(f"«{valor}»" for valor in desconocidos[:5])
+                if len(desconocidos) > 5:
+                    lista += f" y {len(desconocidos) - 5} más"
+                raise VaultError(
+                    f"«{nombre}»: {lista} no casa con ningún usuario de la app, así "
+                    "que no se convierte en Persona (no se ha tocado ninguna fila). "
+                    "Crea esos usuarios o corrige los valores, y vuelve a intentarlo."
+                )
+            sustituciones[key] = mapa
+        self.vault.rewrite_property_values(database_id, sustituciones)
 
     def _views_with_keys(
         self, database_id: uuid.UUID, mapping: dict[str, Optional[str]]

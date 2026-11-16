@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from fastapi import HTTPException
 
 from app.vault.reader import (
+    PERSON,
     RELATION,
     RESERVED_ROW_KEYS,
     relation_id,
@@ -35,6 +36,10 @@ from app.vault.reader import (
 # Lo resuelve el repositorio en **una** consulta por respuesta: ni una por
 # celda ni una por fila (N+1).
 RowRefs = Callable[[Iterable[str]], Mapping[str, tuple[str, str]]]
+
+# `users(ids)` devuelve `{id: (display_name, username, color)}` de los usuarios
+# que existan. Una consulta por respuesta, igual que `refs`.
+UserRefs = Callable[[Iterable[str]], Mapping[str, tuple[str, Optional[str], Optional[str]]]]
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -285,6 +290,7 @@ def validate_properties(
     properties: dict[str, Any],
     *,
     refs: Optional[RowRefs] = None,
+    users: Optional[UserRefs] = None,
 ) -> dict[str, Any]:
     """Coacciona y valida las propiedades que llegan en una fila.
 
@@ -292,16 +298,25 @@ def validate_properties(
     hace falta si la base tiene propiedades `relation`; sin él, una relación no
     se puede validar (el id podría ser de cualquier base) y se rechaza con un
     500 explícito en vez de guardar algo que no apunta a nada.
+
+    `users` hace lo mismo con los ids de usuario de una propiedad `person`: el
+    router siempre lo pasa (una consulta por respuesta); sin él la celda se
+    rechaza con un 500 explícito en vez de guardar un id que no existe.
     """
     allowed = {p["key"]: p for p in schema_def}
     unknown = set(properties) - set(allowed)
     if unknown:
         raise HTTPException(400, f"Propiedades no definidas en el schema: {', '.join(sorted(unknown))}")
 
-    return {key: _coerce(allowed[key], value, refs) for key, value in properties.items()}
+    return {key: _coerce(allowed[key], value, refs, users) for key, value in properties.items()}
 
 
-def _coerce(prop: dict, value: Any, refs: Optional[RowRefs] = None) -> Any:
+def _coerce(
+    prop: dict,
+    value: Any,
+    refs: Optional[RowRefs] = None,
+    users: Optional[UserRefs] = None,
+) -> Any:
     if value is None:
         return None
 
@@ -309,6 +324,9 @@ def _coerce(prop: dict, value: Any, refs: Optional[RowRefs] = None) -> Any:
 
     if ptype == RELATION:
         return _coerce_relation(prop, value, refs)
+
+    if ptype == PERSON:
+        return _coerce_person(prop, value, users)
 
     if ptype == "number":
         try:
@@ -338,6 +356,89 @@ def _coerce(prop: dict, value: Any, refs: Optional[RowRefs] = None) -> Any:
         return value
 
     return value  # text, date, url: sin validar formato en v1
+
+
+def _coerce_person(prop: dict, value: Any, users: Optional[UserRefs]) -> Any:
+    """Valida una celda `person`: el id de un usuario que exista.
+
+    El mensaje de error nombra el **nombre visible** de la propiedad
+    (`«Responsable»`), como en `relation`: es lo único que el usuario ve en la
+    tabla. Una celda vacía es «sin asignar» (`None`, la clave se va del `.md`),
+    que es lo que hace que `is_empty` del filtro ya sirva sin un valor especial.
+    """
+    nombre = f"«{prop.get('name') or prop.get('key')}»"
+    if isinstance(value, (list, dict)):
+        raise HTTPException(
+            400, f"{nombre} guarda una persona: manda el id de un usuario, no una lista"
+        )
+    user_id = str(value).strip()
+    if not user_id:
+        return None
+    if users is None:           # pragma: no cover - el router siempre lo pasa
+        raise HTTPException(
+            500, f"{nombre}: no se puede comprobar el usuario sin acceso a la tabla de usuarios"
+        )
+    if user_id not in users([user_id]):
+        raise HTTPException(400, f"{nombre}: el usuario {user_id} no existe")
+    return user_id
+
+
+def person_properties(schema_def: list[dict]) -> list[dict]:
+    """Las propiedades `person` del schema, en su orden."""
+    return [
+        prop
+        for prop in schema_def
+        if isinstance(prop, dict) and prop.get("type") == PERSON and prop.get("key")
+    ]
+
+
+def person_keys(schema_def: list[dict]) -> frozenset[str]:
+    """Las claves de las propiedades `person` (para filtrar y ordenar)."""
+    return frozenset(prop["key"] for prop in person_properties(schema_def))
+
+
+def person_ids(schema_def: list[dict], properties: Iterable[dict]) -> list[str]:
+    """Los ids de usuario que referencian las celdas `person`, sin repetir.
+
+    Misma idea que `relation_ids`: la lista se resuelve de una vez al
+    serializar, no una consulta por celda.
+    """
+    ids: dict[str, None] = {}
+    props = person_properties(schema_def)
+    for row in properties:
+        for prop in props:
+            value = (row or {}).get(prop["key"])
+            if isinstance(value, str) and value.strip():
+                ids.setdefault(value.strip(), None)
+    return list(ids)
+
+
+def people_of(
+    schema_def: list[dict],
+    properties: dict[str, Any],
+    users: Mapping[str, tuple[str, Optional[str], Optional[str]]],
+) -> dict[str, dict[str, Any]]:
+    """`people` de una fila: `{clave: {id, display_name, username, color}}`.
+
+    El id se queda en `properties` aunque el usuario ya no exista, y aquí sale
+    con `display_name: null`: la celda «apunta a alguien que ya no está», que
+    es lo que el interfaz necesita para decirlo en vez de enseñar un hueco que
+    no explica nada.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for prop in person_properties(schema_def):
+        value = (properties or {}).get(prop["key"])
+        user_id = value.strip() if isinstance(value, str) else ""
+        if not user_id:
+            continue
+        usuario = users.get(user_id)
+        out[prop["key"]] = {
+            "id": user_id,
+            "display_name": usuario[0] if usuario else None,
+            "username": usuario[1] if usuario else None,
+            "color": usuario[2] if usuario else None,
+        }
+    return out
 
 
 def _coerce_relation(

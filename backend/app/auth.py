@@ -307,6 +307,38 @@ def set_password(conn: sqlite3.Connection, user_id: str, password: str) -> None:
     )
 
 
+def update_user(
+    conn: sqlite3.Connection,
+    user_id: str,
+    *,
+    display_name: Optional[str] = None,
+    color: Optional[str] = None,
+) -> Optional[User]:
+    """Cambia el nombre visible y/o el color de un usuario. `None` si no está.
+
+    Ni el `username` ni el `id` se tocan: el `username` es la llave con la que
+    se entra y el `id` es a lo que apuntan las celdas `person` de las bases.
+    Renombrar a alguien cambia lo que se lee en esas celdas y **no** a quién
+    apuntan.
+    """
+    current = get_user(conn, user_id)
+    if current is None:
+        return None
+    changes: dict[str, str] = {}
+    if display_name is not None:
+        changes["display_name"] = validate_display_name(display_name)
+    if color is not None:
+        changes["color"] = validate_color(color) or default_color(current.username)
+    if not changes:
+        return current
+    assignments = ", ".join(f"{column} = ?" for column in changes)
+    conn.execute(
+        f"UPDATE users SET {assignments} WHERE id = ?",
+        (*changes.values(), user_id),
+    )
+    return get_user(conn, user_id)
+
+
 def authenticate(conn: sqlite3.Connection, username: str, password: str) -> Optional[User]:
     """Usuario si la contraseña es suya, `None` en cualquier otro caso.
 

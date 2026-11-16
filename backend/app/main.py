@@ -23,6 +23,7 @@ from app.routers import (
     files,
     graph,
     pages,
+    people,
     search,
     status,
     suggestions,
@@ -51,6 +52,10 @@ app.include_router(pages.router)
 # personal de captura solo vale para `POST /capture` (ver el middleware).
 app.include_router(capture.router)
 app.include_router(databases.router)
+# `/people`: el directorio de usuarios para las celdas de tipo `person`
+# («Responsable»). Cualquier sesión puede leerlo: es con lo que se elige a quién
+# se asigna una fila, no la lista de administración de `/auth/users`.
+app.include_router(people.router)
 app.include_router(status.router)
 app.include_router(trash.router)
 app.include_router(search.router)

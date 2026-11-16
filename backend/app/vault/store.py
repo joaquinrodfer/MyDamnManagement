@@ -49,6 +49,7 @@ import os
 import re
 import sqlite3
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -198,6 +199,16 @@ def _linea_del_fichero(front: fm.Frontmatter, entry: fm.Entry) -> str:
     if lineas and lineas[0].strip():
         return lineas[0].strip()
     return entry.key or ""
+
+
+def _plegar_valor(valor: Any) -> str:
+    """Texto de un valor del `.md` para compararlo: NFC, sin espacios, casefold.
+
+    Es el criterio con el que se casa un nombre visible escrito a mano en una
+    propiedad de texto con el `display_name` de un usuario. Sin tildes no: dos
+    personas pueden llamarse «Jose» y «José», y son dos usuarios distintos.
+    """
+    return unicodedata.normalize("NFC", str(valor)).strip().casefold()
 
 
 def _tipo_del_schema(schema: list[dict], key: str) -> Optional[str]:
@@ -1800,6 +1811,126 @@ class VaultStore:
         with self._tx():
             cur = self.conn.execute("DELETE FROM pages WHERE id = ?", (row["id"],))
         return cur.rowcount > 0
+
+    def row_property_values(
+        self, database_id: Any, keys: dict[str, str]
+    ) -> dict[str, list[str]]:
+        """Valores crudos (texto) de esas claves en los `.md` de las filas.
+
+        `keys` va de clave de propiedad a **nombre visible** (para los mensajes,
+        que el usuario no ve claves). Se leen los ficheros y no el índice: la
+        conversión de una propiedad de texto a `person` tiene que decidir sobre
+        lo que el dueño escribió, y un valor que el índice no supo leer no puede
+        quedarse fuera de la comprobación para perderse después. Los valores
+        vacíos no cuentan; los repetidos, una vez.
+        """
+        salida: dict[str, list[str]] = {key: [] for key in keys}
+        for rel, data in self._rows_frontmatter(database_id, keys):
+            for key in keys:
+                valor = data.get(key)
+                if valor is None:
+                    continue
+                if isinstance(valor, (list, dict)):
+                    raise VaultError(
+                        f"no se puede convertir «{keys[key]}»: una fila guarda ese "
+                        "valor como lista o mapa, y una persona es un solo usuario. "
+                        "Corrige esa fila a mano y vuelve a intentarlo."
+                    )
+                texto = str(valor).strip()
+                if texto and texto not in salida[key]:
+                    salida[key].append(texto)
+        return salida
+
+    def _rows_frontmatter(
+        self, database_id: Any, keys: dict[str, str]
+    ) -> list[tuple[str, dict]]:
+        """`(ruta, frontmatter)` de cada fila de la base, ya leído del disco."""
+        rows = self.conn.execute(
+            "SELECT p.id AS id, r.path AS path FROM rows r JOIN pages p ON p.id = r.id"
+            " WHERE r.database_id = ? ORDER BY p.created_at, p.rowid",
+            (str(database_id),),
+        ).fetchall()
+        leidas: list[tuple[str, dict]] = []
+        for row in rows:
+            rel = row["path"]
+            if not rel or not os.path.exists(self._abs(rel)):
+                raise VaultError(
+                    "falta el fichero de una de las filas en el vault; lanza "
+                    "POST /reindex para reconciliar el índice con el disco"
+                )
+            text, _warnings = _read_text(self._abs(rel))
+            try:
+                raw, _body = fm.split_document(text)
+                data = fm.parse(raw).data if raw is not None else {}
+            except fm.FrontmatterError as exc:
+                nombre = "«" + next(iter(keys.values())) + "»" if keys else "la propiedad"
+                raise VaultError(
+                    f"no se puede convertir {nombre}: una fila tiene el frontmatter "
+                    f"ilegible ({exc})"
+                ) from exc
+            leidas.append((rel, data))
+        return leidas
+
+    def rewrite_property_values(
+        self, database_id: Any, replacements: dict[str, dict[str, str]]
+    ) -> int:
+        """Sustituye el VALOR de una propiedad en todas las filas de la base.
+
+        `replacements` va de clave de propiedad a `{valor_actual: valor_nuevo}`,
+        con el valor actual plegado como en `_plegar_valor`. Se escribe sobre el
+        texto del `.md` (el fichero es del usuario) y se reindexa cada fila, igual
+        que `rename_row_properties`. Primero se prepara todo y solo después se
+        escribe: un valor a medias entre dos filas es peor que no convertir.
+
+        Devuelve cuántas filas se han reescrito.
+        """
+        if not replacements:
+            return 0
+        preparadas: list[tuple[str, str]] = []
+        rows = self.conn.execute(
+            "SELECT p.id AS id, r.path AS path FROM rows r JOIN pages p ON p.id = r.id"
+            " WHERE r.database_id = ? ORDER BY p.created_at, p.rowid",
+            (str(database_id),),
+        ).fetchall()
+        for row in rows:
+            rel = row["path"]
+            if not rel or not os.path.exists(self._abs(rel)):
+                raise VaultError(
+                    "falta el fichero de una de las filas en el vault; lanza "
+                    "POST /reindex para reconciliar el índice con el disco"
+                )
+            text, _warnings = _read_text(self._abs(rel))
+            try:
+                raw, _body = fm.split_document(text)
+                data = fm.parse(raw).data if raw is not None else {}
+            except fm.FrontmatterError as exc:
+                raise VaultError(
+                    f"no se puede convertir una propiedad: una fila tiene el "
+                    f"frontmatter ilegible ({exc})"
+                ) from exc
+            updates: dict[str, Any] = {}
+            for key, mapa in replacements.items():
+                if key not in data or data[key] is None:
+                    continue
+                valor = data[key]
+                if isinstance(valor, (list, dict)):
+                    raise VaultError(
+                        "no se puede convertir una propiedad: una fila guarda ese "
+                        "valor como lista o mapa y se perdería al reescribirla"
+                    )
+                nuevo = mapa.get(_plegar_valor(valor))
+                if nuevo is None or str(nuevo) == str(valor):
+                    continue
+                updates[key] = nuevo
+            if not updates:
+                continue
+            new_text, _notes = fm.rewrite(text, updates)
+            preparadas.append((rel, new_text))
+
+        for rel, new_text in preparadas:
+            vaultfs.atomic_write(self._abs(rel), new_text)
+            self._index_file(rel, None, database_id=str(database_id))
+        return len(preparadas)
 
     # ------------------------------------------------------------ reindexar
 
