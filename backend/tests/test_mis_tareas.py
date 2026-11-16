@@ -395,6 +395,66 @@ def test_la_lista_de_cerradas_viaja_con_la_respuesta(client):
     assert datos["tasks"] == [] and datos["count"] == 0
 
 
+# ------------------------------------------- la regla `done` de la base manda
+
+def test_el_marcador_done_manda_sobre_la_lista_de_respaldo(client, escenario):
+    """Si la base dice qué es «cerrada», se usa eso y no la lista de siempre.
+
+    «En curso» está marcado como cerrada y «Hecho» no: la vista tiene que
+    hacerle caso a la base en los dos sentidos, o el marcador no serviría
+    para nada.
+    """
+    marcada = crear_base(
+        client,
+        "Con marcador",
+        [
+            {"key": "responsable", "name": "Responsable", "type": "person"},
+            {
+                "key": "estado",
+                "name": "Estado",
+                "type": "select",
+                "options": ["Abierto", "En curso", "Hecho"],
+                "done": ["En curso"],
+            },
+        ],
+    )
+    crear_fila(
+        client, marcada["id"], "Cuenta como cerrada", {"responsable": escenario["yo"], "estado": "En curso"}
+    )
+    crear_fila(
+        client, marcada["id"], "Cuenta como abierta", {"responsable": escenario["yo"], "estado": "Hecho"}
+    )
+
+    assert [t["title"] for t in mis_tareas(client)["tasks"]] == ["Cuenta como abierta"]
+
+
+def test_un_marcador_de_casilla_cierra_la_fila_aunque_su_estado_diga_otra_cosa(client, escenario):
+    """El marcador puede estar en una casilla, no en la propiedad de estado."""
+    casilla = crear_base(
+        client,
+        "Con casilla",
+        [
+            {"key": "responsable", "name": "Responsable", "type": "person"},
+            {"key": "estado", "name": "Estado", "type": "select", "options": ["Abierto", "Hecho"]},
+            {"key": "terminada", "name": "Terminada", "type": "checkbox", "done": True},
+        ],
+    )
+    crear_fila(
+        client,
+        casilla["id"],
+        "Terminada de verdad",
+        {"responsable": escenario["yo"], "estado": "Abierto", "terminada": True},
+    )
+    crear_fila(
+        client,
+        casilla["id"],
+        "Sin terminar",
+        {"responsable": escenario["yo"], "estado": "Hecho", "terminada": False},
+    )
+
+    assert [t["title"] for t in mis_tareas(client)["tasks"]] == ["Sin terminar"]
+
+
 # --------------------------------------------------------------------------
 # 6. orden
 # --------------------------------------------------------------------------

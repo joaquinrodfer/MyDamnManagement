@@ -209,15 +209,34 @@ Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]
 | `/databases/templates` | GET | Lista las plantillas disponibles (`crm`, `tasks`) |
 | `/databases/from-template` | POST | Crea una `database` desde una plantilla: schema + vistas por defecto en una llamada |
 
-Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": [{"key":"valor","dir":"desc"}], "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend (`app/views.py`) sobre las filas de la vista, y son **de esa vista**: dos pestañas de la misma base pueden filtrar distinto y la base sin vista no filtra. `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
+Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": [{"key":"valor","dir":"desc"}], "group_by": "fase", "visible_properties": ["fase","valor"], "parent_level": "roots"}`. `filters` y `sort` los aplica el backend (`app/views.py`) sobre las filas de la vista, y son **de esa vista**: dos pestañas de la misma base pueden filtrar distinto y la base sin vista no filtra. `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
 
 `filters` es una lista de condiciones que se cumplen **todas** (Y). `op` es uno de `eq`, `neq`, `contains` (texto), `gt`, `gte`, `lt`, `lte` (número o fecha), `before`, `after` (fecha), `checked`, `unchecked` (casilla), `includes` (relación) e `is_empty`, `is_not_empty`; `value` no se escribe en los operadores que no lo necesitan. `sort` es una lista de claves en orden de prioridad (`dir`: `asc` o `desc`), y las filas sin valor en la clave van al final en las dos direcciones. La forma antigua de una sola clave (`"sort": {"key":"valor","dir":"desc"}`) se sigue leyendo; no se reescribe al editarla.
+
+**Subtareas.** Una fila puede ser hija de otra fila **de su misma base**: se
+declara con una propiedad de tipo `parent_row` (una sola por base) y su celda
+guarda el `id` de la fila madre en el frontmatter de la hija:
+`paso_de: 7a1b4c5d-…` (el id, nunca el título). La madre lleva el contador de sus
+hijas directas —«1 de 3», cerradas— y ese «cerrada» lo define el schema con
+`done` en la propiedad del estado: `done: true` en una casilla o
+`done: [Hecho, Cancelado]` en una selección. Se marca en el diálogo de
+**Propiedades** de la base («esta propiedad dice si la fila está cerrada»), que
+lo guarda en el `.md`; sin ninguna propiedad marcada, ninguna hija cuenta como
+cerrada. La vista elige si enseña solo las madres
+(`parent_level: roots`, el defecto en tabla y tablero: una hija ya se ve bajo su
+madre) o todas (`all`, con las hijas detrás de su madre; el defecto en lista y
+calendario); «Todas (sin vista)» las enseña todas. La fila abierta como página
+trae sus `subtasks` (título, estado y fecha) y crea una nueva ya enlazada. Un
+ciclo —una fila colgando de sí misma o de una descendiente suya— es un **400**
+con la ruta del círculo, y una madre de otra base también. El vínculo no se
+escribe en `links`: el grafo lo pinta como arista `kind: "subtask"`. Decisiones
+en [`docs/ADR-0006-subtareas.md`](docs/ADR-0006-subtareas.md).
 
 ### Mis tareas (`GET /my-tasks`)
 
 Una llamada, no cuarenta: el servidor lee los `schema_def` de todas las bases en una consulta, se queda con las que tienen alguna propiedad `person` y pide las filas de esas bases en otra; el filtro por persona se hace en memoria sobre el JSON de la fila. Devuelve, por cada fila cuyo responsable eres tú, **de qué base viene** (`database_title`), el título, el estado y la fecha límite. La propiedad de estado es la de **selección** llamada «Estado» o con la clave `estado` (por clave primero: renombrarla no la pierde); la fecha es la **primera** propiedad `date` de la base. Si la base no tiene una u otra, ese campo viene `null` y la interfaz no enseña hueco. El panel agrupa por fecha (vencidas / hoy / esta semana / resto) con el reloj del navegador y abre cada fila como página.
 
-Solo salen las **abiertas**. Mientras no exista el estado «cerrado» con semántica, el criterio es una lista de valores que cuentan como hechos —`hecho, hecha, hechos, hechas, cerrado, cerrada, cerrados, cerradas, done, ganado, ganada, ganados, ganadas`, comparados sin acentos ni mayúsculas— y una base **sin** propiedad de estado entra entera (no hay nada que diga que sus filas están hechas). La lista viaja en la respuesta (`closed_values`) y la vista la escribe en una nota, así que el criterio se lee en pantalla y no se puede quedar viejo.
+Solo salen las **abiertas**. Manda la regla de cada base: si el schema marca una propiedad con `done` (lo que ya usa el contador de subtareas — `done: true` en una casilla, `done: [Hecho, Cancelado]` en una selección), una fila cerrada según esa regla no sale. Si la base no marca nada, se usa una lista de respaldo —`hecho, hecha, hechos, hechas, cerrado, cerrada, cerrados, cerradas, done, ganado, ganada, ganados, ganadas`, comparada sin acentos ni mayúsculas— sobre su propiedad de estado; y una base **sin** propiedad de estado y sin marcador entra entera (no hay nada que diga que sus filas están hechas). La lista de respaldo viaja en la respuesta (`closed_values`) y la vista la escribe en una nota, así que el criterio se lee en pantalla y no se puede quedar viejo.
 
 ### Agentes (`/agent/...`)
 

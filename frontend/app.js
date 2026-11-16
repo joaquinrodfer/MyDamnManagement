@@ -1677,10 +1677,11 @@ initInbox();
 // vacía. La vista agrupa por fecha (vencidas / hoy / esta semana / resto) y
 // cada fila se abre como página, que es el mecanismo que ya hay.
 //
-// Las filas **cerradas** no salen. Mientras no exista el estado «cerrado» con
-// semántica (función 5 de la investigación), el criterio es la lista de valores
-// que el servidor manda en `closed_values` (hecho, cerrada, done…) y la vista
-// lo dice en una nota: el criterio se lee, no se adivina.
+// Las filas **cerradas** no salen. Manda la regla de cada base (el marcador
+// `done` del schema, el mismo que cuenta las subtareas); si no marca ninguna,
+// el servidor aplica la lista de respaldo que manda en `closed_values` (hecho,
+// cerrada, done…). La vista lo dice en una nota: el criterio se lee, no se
+// adivina.
 
 const BLOQUES_DE_MIS_TAREAS = [
   { key: "vencidas", title: "Vencidas" },
@@ -1808,11 +1809,10 @@ function etiquetaDeFecha({ fecha, dias }) {
 /** La nota que explica el filtro, con la MISMA lista que aplicó el servidor. */
 function notaDeTareasAbiertas(closed) {
   const valores = (closed || []).filter(Boolean);
-  if (!valores.length) return "";
-  return (
-    "Solo tareas abiertas: no salen las que tienen el estado en " +
-    `${valores.join(", ")}. Una base sin propiedad de estado entra entera.`
-  );
+  const respaldo = valores.length
+    ? ` Si la base no marca ninguna, no salen las que tienen el estado en ${valores.join(", ")}.`
+    : "";
+  return `Solo tareas abiertas: manda la regla de cada base.${respaldo} Una base sin estado entra entera.`;
 }
 
 function itemDeMiTarea({ tarea, fecha, dias }, abrir) {
@@ -4688,11 +4688,89 @@ const TIPOS_VISIBLES = {
   checkbox: "Casilla",
   url: "Enlace",
   relation: "Relación",
+  parent_row: "Subtarea de",
   person: "Persona",
 };
 
 function tipoVisible(tipo) {
   return TIPOS_VISIBLES[tipo] || "Texto";
+}
+
+// --------------------------------------------------------------- subtareas
+// Una fila puede colgar de otra de su MISMA base (propiedad `parent_row`). El
+// servidor decide las reglas —madre válida, sin ciclos, qué cuenta como
+// cerrada— y manda la jerarquía resuelta en cada fila: `parent_id` y
+// `children {total, closed}`. Aquí solo se pinta: la indentación, el contador
+// de la tarjeta y la lista de subtareas de la fila abierta. Duplicar la regla
+// de «cerrada» en el cliente sería tener dos verdades que pueden discrepar.
+
+/** La clave de la celda que guarda la fila madre, o `null` si la base no tiene
+ * jerarquía. La propiedad se llama como el usuario quiera («Subtarea de»,
+ * «Paso de»): lo que la identifica es su tipo. */
+function claveDeJerarquia(database) {
+  const prop = (database?.schema_def || []).find(
+    (p) => p && p.key && p.type === "parent_row",
+  );
+  return prop ? String(prop.key) : null;
+}
+
+/** ¿La propiedad lleva el marcador `done` que dice qué cuenta como cerrada?
+ *
+ * Un `checkbox` con `done: true` (marcado) o un `select`/`multiselect` con
+ * `done: [valor, ...]`. La misma regla que `app.hierarchy.done_property`. */
+function tieneMarcadorDeCierre(prop) {
+  if (!prop || !prop.key) return false;
+  return Array.isArray(prop.done)
+    ? prop.done.length > 0
+    : prop.done === true || prop.done === "true";
+}
+
+/** La propiedad que dice si una fila está cerrada (el `done` del schema), o
+ * `null`. Solo sirve para enseñar el estado en la lista de subtareas: quien
+ * cuenta las cerradas es el servidor. */
+function propiedadDeCierre(database) {
+  return (database?.schema_def || []).find(tieneMarcadorDeCierre) || null;
+}
+
+/** El nivel de filas de una vista: `roots` (solo madres) o `all`.
+ *
+ * Misma regla que `app.hierarchy.level`: manda lo que diga el `config` de la
+ * vista (en el `.md`); sin la clave, tabla y tablero enseñan solo madres y la
+ * lista y el calendario, todas. Una base sin jerarquía no tiene nivel. */
+function nivelDeVista(view, database) {
+  if (!claveDeJerarquia(database)) return "all";
+  const guardado = String(view?.config?.parent_level || "").toLowerCase();
+  if (guardado === "roots" || guardado === "all") return guardado;
+  const tipo = String(view?.type || "");
+  return tipo === "table" || tipo === "board" ? "roots" : "all";
+}
+
+/** `{id: profundidad}` de las filas VISIBLES: 0 es una raíz, 1 una hija, 2 una
+ * nieta. Se calcula de una pasada por fila y se corta si un `.md` editado a
+ * mano trae un ciclo (el servidor no deja crearlo). */
+function mapaDeProfundidades(rows, clave) {
+  const mapa = new Map();
+  if (!clave || !Array.isArray(rows)) return mapa;
+  const porId = new Map(rows.map((r) => [String(r.id), r]));
+  rows.forEach((row) => {
+    let prof = 0;
+    const vistas = new Set([String(row.id)]);
+    let actual = row.parent_id ? porId.get(String(row.parent_id)) : null;
+    while (actual && !vistas.has(String(actual.id))) {
+      vistas.add(String(actual.id));
+      prof += 1;
+      actual = actual.parent_id ? porId.get(String(actual.parent_id)) : null;
+    }
+    mapa.set(String(row.id), prof);
+  });
+  return mapa;
+}
+
+/** El «1 de 3» de una fila con subtareas, o `null` si no tiene ninguna. */
+function contadorDeSubtareas(row) {
+  const total = row?.children?.total || 0;
+  if (!total) return null;
+  return `${row.children.closed || 0} de ${total}`;
 }
 
 async function renderDatabase(database, views, activeViewId, { focus = null } = {}) {
@@ -4942,9 +5020,15 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const clavesOrden = clavesDeOrden(activeView?.config);
   let rows;
   let total = null;
+  // «Solo madres» deja fuera las hijas: el «N de M» tiene que seguir contando
+  // la base entera, igual que con un filtro. Se pide también la lista completa.
+  const soloMadres =
+    Boolean(activeView) &&
+    Boolean(claveDeJerarquia(database)) &&
+    nivelDeVista(activeView, database) === "roots";
   if (!activeView) {
     rows = await api(`/databases/${database.id}/rows`);
-  } else if (filtros.length) {
+  } else if (filtros.length || soloMadres) {
     const [deLaVista, todas] = await Promise.all([
       api(`/databases/${database.id}/rows?view=${activeView.id}`),
       api(`/databases/${database.id}/rows`),
@@ -5295,11 +5379,42 @@ function renderViewTools({ database, view, visibles, total, onCambio }) {
     ordenar.addEventListener("click", () => openSortDialog(database, view, onCambio));
   }
 
+  // El nivel de filas es de la vista y solo existe si la base tiene jerarquía:
+  // una base sin subtareas no enseña un control que no haría nada. Se guarda en
+  // el `config` de la vista (el `.md`), como el filtro y el orden.
+  const nivel = nivelDeVista(view, database);
+  let nivelCtl = null;
+  if (claveDeJerarquia(database)) {
+    nivelCtl = document.createElement("label");
+    nivelCtl.className = "db-level";
+    const rotulo = document.createElement("span");
+    rotulo.className = "db-level-label";
+    rotulo.textContent = "Filas";
+    const select = document.createElement("select");
+    select.className = "db-level-select";
+    select.setAttribute("aria-label", "Qué filas enseña la vista");
+    [
+      ["roots", "Solo madres"],
+      ["all", "Todas las filas"],
+    ].forEach(([valor, etiqueta]) => {
+      const opcion = document.createElement("option");
+      opcion.value = valor;
+      opcion.textContent = etiqueta;
+      select.appendChild(opcion);
+    });
+    select.value = nivel;
+    select.addEventListener("change", () => onCambio({ parent_level: select.value }));
+    nivelCtl.append(rotulo, select);
+  }
+
   const cuenta = document.createElement("span");
   cuenta.className = "db-count";
-  cuenta.textContent = textoDeRecuento(visibles, filtros.length ? total : null);
+  // «Solo madres» deja fuera las hijas igual que un filtro: el recuento sigue
+  // diciendo cuántas hay en la base, o «1 fila» parecería que solo hay una.
+  const filtraAlgo = filtros.length > 0 || nivel === "roots";
+  cuenta.textContent = textoDeRecuento(visibles, filtraAlgo ? total : null);
 
-  cabeza.append(filtrar, ordenar, cuenta);
+  cabeza.append(filtrar, ordenar, ...(nivelCtl ? [nivelCtl] : []), cuenta);
   tools.appendChild(cabeza);
 
   const chips = document.createElement("div");
@@ -8185,7 +8300,12 @@ function anchosDeVista(view) {
  * se saltan sin más: el `.md` es del usuario y puede hablar de una columna que
  * la app ya no tiene. */
 function columnasEnOrden(database, view) {
-  const schema = database.schema_def || [];
+  // La celda de subtareas no es una columna: es el vínculo con la fila madre y
+  // su valor es un id, que no dice nada en una celda. La jerarquía se lee en la
+  // indentación y en el contador de la tarjeta.
+  const schema = (database.schema_def || []).filter(
+    (p) => p && p.type !== "parent_row",
+  );
   if (!view) return schema.slice();
   const porClave = new Map(schema.map((p) => [p.key, p]));
   const orden = Array.isArray(view.config?.order) ? view.config.order : [];
@@ -9715,7 +9835,10 @@ function renderTable(
   // Por qué una columna no está: con la lista de la vista en el `.md`, lo que
   // se ha ocultado tiene un camino de vuelta a la vista, no al diálogo.
   const ocultas = (database.schema_def || []).filter(
-    (p) => !propiedades.some((visible) => visible.key === p.key),
+    (p) =>
+      p &&
+      p.type !== "parent_row" &&
+      !propiedades.some((visible) => visible.key === p.key),
   );
   if (view && ocultas.length) wrap.appendChild(barraDeColumnasOcultas(contextoDeColumna, ocultas));
 
@@ -9736,6 +9859,15 @@ function renderTable(
     tbody.appendChild(tr);
   }
 
+  // La jerarquía, calculada una vez para toda la tabla: el servidor ya manda
+  // las hijas detrás de su madre, así que aquí solo falta cuánto indentar y el
+  // contador de cada madre.
+  const claveJerarquia = claveDeJerarquia(database);
+  const profundidades = mapaDeProfundidades(rows, claveJerarquia);
+  // Una vista agrupada pinta cada fila donde cae su grupo, no bajo su madre:
+  // ahí la sangría mentiría sobre dónde está la jerarquía. El contador sí se
+  // pinta igual (es un dato de la fila, no una posición).
+  const indenta = Boolean(claveJerarquia) && !view?.config?.group_by;
   rows.forEach((row) => {
     const tr = document.createElement("tr");
     // `data-row-id`: el «+ Nueva fila» de la vista deja el foco en el nombre de
@@ -9779,6 +9911,26 @@ function renderTable(
       const titleTd = document.createElement("td");
       titleTd.dataset.colKey = "@title";
       paintCell(titleTd, database, row, null, hooks);
+      if (indenta) {
+        const prof = profundidades.get(String(row.id)) || 0;
+        if (prof) {
+          // Hija: se sangra bajo su madre. La sangría es de la celda y no del
+          // `tr` para que la casilla de selección siga en su columna.
+          titleTd.classList.add("is-subtask");
+          titleTd.style.paddingLeft = `${10 + 20 * prof}px`;
+          tr.dataset.depth = String(prof);
+        }
+        const cuenta = contadorDeSubtareas(row);
+        if (cuenta) {
+          // El contador es un dato, no un control: no puede quitarle el clic a
+          // la celda (que edita el título). El `title` dice qué cuenta.
+          const badge = document.createElement("span");
+          badge.className = "cell-subtasks";
+          badge.textContent = cuenta;
+          badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
+          titleTd.appendChild(badge);
+        }
+      }
       celdas.set(null, titleTd);
       tr.appendChild(titleTd);
     }
@@ -10247,6 +10399,9 @@ function renderBoard(database, rows, view, refresh) {
 
   const board = document.createElement("div");
   board.className = "board";
+  // Las filas que se están pintando, por id: una tarjeta dice de qué fila es
+  // subtarea sin pedir nada al servidor (su madre puede estar en otra columna).
+  const porId = new Map(rows.map((r) => [String(r.id), r]));
 
   // Una relación agrupa por el TÍTULO de la fila destino: una columna por
   // título, no por id (un id no se lee). Solo vale con una relación simple;
@@ -10320,6 +10475,7 @@ function renderBoard(database, rows, view, refresh) {
         renderBoardColumn(database, etiquetas.get(id) || "(borrada)", filas, {
           groupKey,
           refresh,
+          porId,
           // El valor que se escribe al soltar una tarjeta es el ID (lo que
           // guarda el `.md`); lo que se lee en la columna es el título.
           value: id,
@@ -10328,7 +10484,7 @@ function renderBoard(database, rows, view, refresh) {
     );
     if (sueltas.length) {
       board.appendChild(
-        renderBoardColumn(database, "Sin valor", sueltas, { groupKey, refresh, value: null }),
+        renderBoardColumn(database, "Sin valor", sueltas, { groupKey, refresh, porId, value: null }),
       );
     }
     return board;
@@ -10344,7 +10500,7 @@ function renderBoard(database, rows, view, refresh) {
     else other.push(r);
   });
 
-  const options = { groupKey, refresh };
+  const options = { groupKey, refresh, porId };
   columns.forEach((col) =>
     board.appendChild(renderBoardColumn(database, col, grouped.get(col) || [], options))
   );
@@ -10366,7 +10522,12 @@ function uniqueValues(rows, key) {
   return seen;
 }
 
-function renderBoardColumn(database, label, rows, { groupKey, refresh, value = label }) {
+function renderBoardColumn(
+  database,
+  label,
+  rows,
+  { groupKey, refresh, value = label, porId = null },
+) {
   const col = document.createElement("div");
   col.className = "board-col";
 
@@ -10413,14 +10574,35 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
     t.textContent = row.title;
     card.appendChild(t);
 
+    // La tarjeta de una subtarea dice de quién es: en el tablero la columna es
+    // la agrupación de la vista, así que la madre puede estar en otra columna y
+    // sin esta línea la jerarquía no se leería.
+    const madre = row.parent_id ? porId?.get(String(row.parent_id)) : null;
+    if (madre) {
+      const sub = document.createElement("div");
+      sub.className = "board-card-parent";
+      sub.textContent = `↳ ${madre.title || "Sin título"}`;
+      card.appendChild(sub);
+    }
+
     Object.entries(row.properties || {}).forEach(([k, v]) => {
       const propDef = database.schema_def.find((p) => p.key === k);
-      if (!propDef || v === null || v === "" || v === undefined) return;
+      if (!propDef || propDef.type === "parent_row") return;
+      if (v === null || v === "" || v === undefined) return;
       const line = document.createElement("div");
       line.className = "board-card-prop";
       line.innerHTML = `${escapeHtml(propDef.name)}: ${formatPropValueHtml(v, propDef, row)}`;
       card.appendChild(line);
     });
+
+    const cuenta = contadorDeSubtareas(row);
+    if (cuenta) {
+      const badge = document.createElement("div");
+      badge.className = "board-card-subtasks";
+      badge.textContent = cuenta;
+      badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
+      card.appendChild(badge);
+    }
 
     if (groupKey) {
       card.draggable = true;
@@ -10898,8 +11080,20 @@ function renderList(database, rows, view, refresh) {
   // El contenido de una línea se pinta aparte para poder REPINTARLA en el
   // sitio tras guardar en la vista de fila: el botón (que es el que tiene el
   // foco al volver) no se reemplaza, solo lo de dentro.
+  // La jerarquía: el servidor ya manda las hijas detrás de su madre, así que
+  // aquí solo se sangra y se pone el contador de cada madre.
+  const claveJerarquia = claveDeJerarquia(database);
+  const profundidades = mapaDeProfundidades(rows, claveJerarquia);
   const pintarLinea = (item, row) => {
     item.textContent = "";
+    const prof = profundidades.get(String(row.id)) || 0;
+    if (prof) {
+      const hueco = document.createElement("span");
+      hueco.className = "list-row-indent";
+      hueco.style.width = `${14 * prof}px`;
+      hueco.setAttribute("aria-hidden", "true");
+      item.appendChild(hueco);
+    }
     const title = document.createElement("span");
     title.className = "list-row-title";
     title.textContent = row.title || "Sin título";
@@ -10913,6 +11107,14 @@ function renderList(database, rows, view, refresh) {
       span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p, row)}`;
       item.appendChild(span);
     });
+    const cuenta = contadorDeSubtareas(row);
+    if (cuenta) {
+      const badge = document.createElement("span");
+      badge.className = "list-row-count";
+      badge.textContent = cuenta;
+      badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
+      item.appendChild(badge);
+    }
     const nombre = `Abrir «${row.title || "Sin título"}» como página`;
     item.title = nombre;
     item.setAttribute("aria-label", nombre);
@@ -11280,10 +11482,16 @@ async function openRowPage(
   titulo.setAttribute("aria-label", "Título de la fila");
   const propsEl = document.createElement("div");
   propsEl.className = "row-page-props";
+  // Las subtareas van entre las propiedades y el cuerpo: es donde se trabaja
+  // un entregable (lo de arriba dice qué es, lo de abajo lo que se cuenta, y
+  // los pasos van en medio, a la vista).
+  const subtareasEl = document.createElement("section");
+  subtareasEl.className = "row-page-subtasks";
+  subtareasEl.setAttribute("aria-label", "Subtareas de la fila");
   const cuerpoEl = document.createElement("div");
   cuerpoEl.id = "row-page-body";
   cuerpoEl.className = "row-page-body";
-  scroll.append(titulo, propsEl, cuerpoEl);
+  scroll.append(titulo, propsEl, subtareasEl, cuerpoEl);
   caja.append(barra, scroll);
 
   const ctx = {
@@ -11300,6 +11508,7 @@ async function openRowPage(
     caja,
     titulo,
     propsEl,
+    subtareasEl,
     cuerpoEl,
     estado,
     debajo,
@@ -11481,14 +11690,20 @@ async function openRowPage(
   function montarPropiedades(detalle) {
     propsEl.textContent = "";
     ctx.campos = [];
-    if (!database.schema_def.length) {
+    // La celda de subtareas no es un campo de la fila: guarda el id de su
+    // madre, y lo que se enseña es la lista de abajo (y «Subtarea de», si es
+    // una hija). Un input con un uuid no se puede editar a mano.
+    const campos = (database.schema_def || []).filter(
+      (p) => p && p.type !== "parent_row",
+    );
+    if (!campos.length) {
       const vacio = document.createElement("p");
       vacio.className = "row-page-prop-empty";
       vacio.textContent = "Esta base no tiene propiedades.";
       propsEl.appendChild(vacio);
       return;
     }
-    database.schema_def.forEach((prop, i) => {
+    campos.forEach((prop, i) => {
       const campo = document.createElement("div");
       campo.className = "row-page-prop";
       const label = document.createElement("label");
@@ -11528,6 +11743,197 @@ async function openRowPage(
     await navigateToPage(pageId);
   }
 
+  // ------------------------------------------------ subtareas de la fila
+  // La fila es una página y lo que cuelga de ella es un plan: las hijas se
+  // trabajan aquí, no en la tabla (donde una hija es una línea más). La lista
+  // la trae el servidor en la lectura de la fila (`subtasks`), en orden de
+  // creación; el estado y la fecha salen de las propiedades de cada hija. Quién
+  // está cerrada lo dice el servidor (`closed`): la regla de `done` no se
+  // repite en el cliente.
+  const claveJerarquia = claveDeJerarquia(database);
+  const propEstado = propiedadDeCierre(database);
+  const propFecha =
+    (database.schema_def || []).find((p) => p && p.key && p.type === "date") || null;
+
+  /** La fecha de la mini-tabla: la de la primera propiedad de fecha de la
+   * base, o la de la última edición si la base no tiene ninguna. */
+  function fechaDeSubtarea(hija) {
+    const valor = propFecha ? hija.properties?.[propFecha.key] : null;
+    const texto = String(valor || hija.updated_at || "");
+    const partes = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return partes ? `${partes[3]}/${partes[2]}/${partes[1]}` : "";
+  }
+
+  function filaDeSubtarea(hija) {
+    const fila = document.createElement("div");
+    fila.className = "row-subtask";
+    fila.dataset.rowId = hija.id;
+
+    const abrir = document.createElement("button");
+    abrir.type = "button";
+    abrir.className = "row-subtask-title";
+    abrir.textContent = hija.title || "Sin título";
+    abrir.title = `Abrir «${hija.title || "sin título"}»`;
+    // Se abre como una fila más, apilada encima de esta: al cerrarla se vuelve
+    // aquí, con la lista al día.
+    abrir.addEventListener("click", () =>
+      openRowPage(database, hija, {
+        origin: abrir,
+        onSaved: () => recargarSubtareas(),
+        onClose: () => recargarSubtareas(),
+      }),
+    );
+    fila.appendChild(abrir);
+
+    const estado = document.createElement("span");
+    estado.className = "row-subtask-state" + (hija.closed ? " is-closed" : "");
+    estado.innerHTML = propEstado
+      ? formatPropValueHtml(hija.properties?.[propEstado.key], propEstado, hija)
+      : hija.closed
+        ? "Cerrada"
+        : "—";
+    fila.appendChild(estado);
+
+    const fecha = document.createElement("span");
+    fecha.className = "row-subtask-date";
+    fecha.textContent = fechaDeSubtarea(hija);
+    fila.appendChild(fecha);
+    return fila;
+  }
+
+  /** «+ Añadir subtarea»: crea la fila YA enlazada (el id de esta fila va en la
+   * celda de jerarquía) y recarga la lista. Se queda abierto para encadenar
+   * varios pasos, que es como se escribe un plan. */
+  function controlDeAlta() {
+    const caja = document.createElement("div");
+    caja.className = "row-subtasks-add";
+
+    const boton = document.createElement("button");
+    boton.type = "button";
+    boton.className = "btn row-subtasks-add-btn";
+    boton.textContent = "+ Añadir subtarea";
+
+    const form = document.createElement("form");
+    form.className = "row-subtasks-form";
+    form.hidden = true;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "row-subtasks-input";
+    input.placeholder = "Título de la subtarea";
+    input.setAttribute("aria-label", "Título de la subtarea nueva");
+    const guardar = document.createElement("button");
+    guardar.type = "submit";
+    guardar.className = "btn btn-primary";
+    guardar.textContent = "Añadir";
+    const cancelar = document.createElement("button");
+    cancelar.type = "button";
+    cancelar.className = "btn";
+    cancelar.textContent = "Cancelar";
+    form.append(input, guardar, cancelar);
+
+    boton.addEventListener("click", () => {
+      boton.hidden = true;
+      form.hidden = false;
+      input.value = "";
+      input.focus();
+    });
+    cancelar.addEventListener("click", () => {
+      form.hidden = true;
+      boton.hidden = false;
+      boton.focus();
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const nombre = input.value.trim();
+      if (!nombre) {
+        input.focus();
+        return;
+      }
+      guardar.disabled = true;
+      try {
+        await api(`/databases/${database.id}/rows`, {
+          method: "POST",
+          body: JSON.stringify({
+            title: nombre,
+            properties: { [claveJerarquia]: ctx.resumen.id },
+          }),
+        });
+        // La lista se relee del servidor (no se pinta a mano): así entra donde
+        // el servidor la haya dejado y el contador sale de la misma cuenta.
+        await recargarSubtareas();
+        ctx.subtareasEl.querySelector(".row-subtasks-add-btn")?.click();
+      } catch (err) {
+        reportError("No se pudo crear la subtarea", err);
+      } finally {
+        guardar.disabled = false;
+      }
+    });
+    caja.append(boton, form);
+    return caja;
+  }
+
+  async function recargarSubtareas() {
+    try {
+      const fresca = await api(`/databases/${database.id}/rows/${ctx.resumen.id}`);
+      ctx.resumen.children = fresca.children;
+      ctx.resumen.closed = fresca.closed;
+      montarSubtareas(fresca);
+    } catch (e) {
+      reportError("No se pudieron leer las subtareas", e);
+    }
+  }
+
+  function montarSubtareas(detalle) {
+    const seccion = ctx.subtareasEl;
+    seccion.textContent = "";
+    if (!claveJerarquia) return; // base sin jerarquía: ni rastro de la sección
+
+    const hijas = Array.isArray(detalle.subtasks) ? detalle.subtasks : [];
+    const cerradas = hijas.filter((h) => h.closed).length;
+
+    // Si esta fila es hija de otra, se dice de quién: sin eso, una subtarea
+    // abierta parece una fila suelta de la base.
+    if (detalle.parent_title) {
+      const deQuien = document.createElement("p");
+      deQuien.className = "row-subtasks-parent";
+      deQuien.textContent = `↳ Subtarea de «${detalle.parent_title}»`;
+      seccion.appendChild(deQuien);
+    }
+
+    const cabeza = document.createElement("div");
+    cabeza.className = "row-subtasks-head";
+    const rotulo = document.createElement("h2");
+    rotulo.className = "row-subtasks-title";
+    rotulo.textContent = "Subtareas";
+    cabeza.appendChild(rotulo);
+    if (hijas.length) {
+      const cuenta = document.createElement("span");
+      cuenta.className = "row-subtasks-count";
+      cuenta.textContent = `${cerradas} de ${hijas.length}`;
+      cuenta.title = `${cerradas} de ${hijas.length} subtareas cerradas`;
+      cabeza.appendChild(cuenta);
+    }
+    seccion.appendChild(cabeza);
+
+    if (hijas.length) {
+      const cabecera = document.createElement("div");
+      cabecera.className = "row-subtasks-row is-head";
+      ["Título", "Estado", "Fecha"].forEach((texto) => {
+        const celda = document.createElement("span");
+        celda.textContent = texto;
+        cabecera.appendChild(celda);
+      });
+      seccion.appendChild(cabecera);
+      hijas.forEach((hija) => seccion.appendChild(filaDeSubtarea(hija)));
+    } else {
+      const vacio = document.createElement("p");
+      vacio.className = "row-subtasks-empty";
+      vacio.textContent = "Todavía no tiene subtareas: los pasos de esta fila van aquí.";
+      seccion.appendChild(vacio);
+    }
+    seccion.appendChild(controlDeAlta());
+  }
+
   function montar(detalle) {
     // El objeto de la tabla/lista es el mismo que se queda al día con cada
     // PATCH (`ctx.resumen`): el repintado en el sitio lee de aquí.
@@ -11540,6 +11946,7 @@ async function openRowPage(
     ajustarTitulo();
     migaFila.textContent = detalle.title || "Sin título";
     montarPropiedades(detalle);
+    montarSubtareas(detalle);
 
     cuerpoEl.textContent = "";
     try {
@@ -11691,7 +12098,12 @@ function renderAddRowForm(database) {
   wrap.appendChild(titleField);
 
   const propInputs = [];
-  database.schema_def.forEach((p, index) => {
+  // La celda de subtareas no se pide en el alta: una fila nueva de la base es
+  // una raíz, y una hija se crea desde la página de su madre («+ Añadir
+  // subtarea»), donde el vínculo lo pone la app y no un id tecleado.
+  (database.schema_def || [])
+    .filter((p) => p && p.type !== "parent_row")
+    .forEach((p, index) => {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
@@ -11705,7 +12117,7 @@ function renderAddRowForm(database) {
     field.append(label, input);
     wrap.appendChild(field);
     propInputs.push({ prop: p, input, read });
-  });
+    });
 
   const submitBtn = document.createElement("button");
   submitBtn.className = "btn btn-primary";
@@ -11798,24 +12210,50 @@ function actualizarGuardadoDelDialogo() {
   const aviso = document.getElementById("db-save-hint");
   if (!guardar || !aviso) return;
   const sinDestino = [];
+  const sinValores = [];
   propRowsContainer.querySelectorAll(".prop-row-wrap:not(.prop-title-row)").forEach((wrap) => {
-    if (wrap.querySelector(".prop-type")?.value !== "relation") return;
-    if (wrap.querySelector(".prop-target")?.value) return;
-    sinDestino.push(wrap.querySelector(".prop-name")?.value.trim() || "una propiedad");
+    const tipo = wrap.querySelector(".prop-type")?.value;
+    const nombre = wrap.querySelector(".prop-name")?.value.trim() || "una propiedad";
+    if (tipo === "relation" && !wrap.querySelector(".prop-target")?.value) {
+      sinDestino.push(nombre);
+    }
+    // «Dice si está cerrada» en una selección necesita al menos un valor: sin
+    // él no hay nada que contar y el servidor rechazaría el guardado.
+    if (
+      ["select", "multiselect"].includes(tipo) &&
+      wrap.querySelector(".prop-done-check")?.checked &&
+      !(wrap.querySelector(".prop-done-values")?.value || "").trim()
+    ) {
+      sinValores.push(nombre);
+    }
   });
-  if (!sinDestino.length) {
+  const avisos = [];
+  if (sinDestino.length) {
+    avisos.push(
+      sinDestino.length === 1
+        ? `Elige la base destino de «${sinDestino[0]}» para poder guardar.`
+        : `Elige la base destino de ${sinDestino
+            .map((n) => `«${n}»`)
+            .join(", ")} para poder guardar.`,
+    );
+  }
+  if (sinValores.length) {
+    avisos.push(
+      sinValores.length === 1
+        ? `Escribe qué valores cuentan como cerrada en «${sinValores[0]}» (separados por coma).`
+        : `Escribe qué valores cuentan como cerrada en ${sinValores
+            .map((n) => `«${n}»`)
+            .join(", ")} (separados por coma).`,
+    );
+  }
+  if (!avisos.length) {
     guardar.disabled = false;
     aviso.textContent = "";
     aviso.hidden = true;
     return;
   }
   aviso.hidden = false;
-  aviso.textContent =
-    sinDestino.length === 1
-      ? `Elige la base destino de «${sinDestino[0]}» para poder guardar.`
-      : `Elige la base destino de ${sinDestino
-          .map((n) => `«${n}»`)
-          .join(", ")} para poder guardar.`;
+  aviso.textContent = avisos.join(" ");
   guardar.disabled = true;
 }
 
@@ -11948,6 +12386,32 @@ function addPropertyRow(prop = null) {
 
   relWrap.append(targetLabel, multipleLabel);
 
+  // Cierre: la propiedad que dice si una fila está cerrada (el `done` del
+  // schema). Es lo que cuenta el contador de subtareas de la madre: sin esta
+  // casilla, una base recién creada desde la interfaz no puede pasar de «0 de
+  // N». En una casilla basta con marcarla; en una selección hay que decir qué
+  // valores cierran (`done: [..]`), y se guardan en el `.md` de la base.
+  const doneWrap = document.createElement("div");
+  doneWrap.className = "prop-done";
+  doneWrap.hidden = true;
+
+  const doneLabel = document.createElement("label");
+  doneLabel.className = "prop-done-flag";
+  const doneBox = document.createElement("input");
+  doneBox.type = "checkbox";
+  doneBox.className = "prop-done-check";
+  const doneText = document.createElement("span");
+  doneText.className = "prop-done-text";
+  doneLabel.append(doneBox, doneText);
+
+  const doneValues = document.createElement("input");
+  doneValues.type = "text";
+  doneValues.className = "prop-done-values";
+  doneValues.placeholder = "valores que cuentan como cerrada, separados por coma (p. ej. Hecho)";
+  doneValues.setAttribute("aria-label", "Valores que cuentan como fila cerrada");
+
+  doneWrap.append(doneLabel, doneValues);
+
   let destinoPedido = false;
   /** Rellena el `<select>` la primera vez que hace falta: una base sin
    * relaciones no pide la lista de bases. */
@@ -11982,11 +12446,31 @@ function addPropertyRow(prop = null) {
   };
 
   const aplicarVisibilidad = () => {
-    const esRelacion = typeSelect.value === "relation";
+    const tipo = typeSelect.value;
+    const esRelacion = tipo === "relation";
     relWrap.hidden = !esRelacion;
-    optionsInput.hidden = !["select", "multiselect"].includes(typeSelect.value);
+    optionsInput.hidden = !["select", "multiselect"].includes(tipo);
+    // El cierre cabe donde hay algo que leer: una casilla (marcada) o una
+    // selección (uno de sus valores). En texto, fecha o número no hay estado.
+    doneWrap.hidden = !["checkbox", "select", "multiselect"].includes(tipo);
+    if (!doneWrap.hidden) {
+      const esCasilla = tipo === "checkbox";
+      doneText.textContent = esCasilla
+        ? "Marcada cuenta como cerrada"
+        : "Esta propiedad dice si la fila está cerrada";
+      doneValues.hidden = esCasilla;
+    }
     if (esRelacion) llenarDestino();
   };
+
+  // Lo que traía la propiedad. Si el usuario desmarca la casilla es que
+  // quiere quitar el marcador (`done: false`); si no la toca, el PATCH no
+  // manda la clave y el servidor conserva el `done` que ya tenía.
+  wrap.__doneAntes = tieneMarcadorDeCierre(prop);
+  if (wrap.__doneAntes) {
+    doneBox.checked = true;
+    if (Array.isArray(prop.done)) doneValues.value = prop.done.join(", ");
+  }
 
   if (prop) {
     nameInput.value = prop.name;
@@ -12001,6 +12485,26 @@ function addPropertyRow(prop = null) {
   });
   nameInput.addEventListener("input", () => actualizarGuardadoDelDialogo());
   targetSelect.addEventListener("change", () => actualizarGuardadoDelDialogo());
+  // Una sola propiedad marca el cierre: el servidor obedece a la primera
+  // marcada, y dos marcadores serían dos respuestas para la misma pregunta.
+  doneBox.addEventListener("change", () => {
+    if (doneBox.checked) {
+      propRowsContainer.querySelectorAll(".prop-done-check").forEach((otra) => {
+        if (otra !== doneBox) otra.checked = false;
+      });
+      // En una selección, el último valor es el de «hecho» por convenio
+      // (Pendiente, En curso, Hecho): se propone, y se puede cambiar.
+      if (typeSelect.value !== "checkbox" && !doneValues.value.trim()) {
+        const opciones = optionsInput.value
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (opciones.length) doneValues.value = opciones[opciones.length - 1];
+      }
+    }
+    actualizarGuardadoDelDialogo();
+  });
+  doneValues.addEventListener("input", () => actualizarGuardadoDelDialogo());
   // Al quitar una fila de propiedad, el aviso y el botón se recalculan: la
   // relación incompleta que bloqueaba puede ser justo la que se ha quitado.
   removeBtn.addEventListener("click", () => {
@@ -12008,7 +12512,7 @@ function addPropertyRow(prop = null) {
     actualizarGuardadoDelDialogo();
   });
 
-  wrap.append(row, optionsInput, relWrap);
+  wrap.append(row, optionsInput, relWrap, doneWrap);
   propRowsContainer.appendChild(wrap);
   aplicarVisibilidad();
 }
@@ -12059,6 +12563,25 @@ function readSchemaFromDialog() {
       // vale es lo que el usuario ve en el diálogo.
       prop.target_database = wrap.querySelector(".prop-target")?.value || "";
       prop.multiple = Boolean(wrap.querySelector(".prop-multiple")?.checked);
+    }
+    if (["checkbox", "select", "multiselect"].includes(type)) {
+      if (wrap.querySelector(".prop-done-check")?.checked) {
+        if (type === "checkbox") {
+          prop.done = true;
+        } else {
+          const valores = (wrap.querySelector(".prop-done-values")?.value || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          // Sin valores no se manda nada: «Guardar» está apagado con su
+          // motivo escrito (`actualizarGuardadoDelDialogo`).
+          if (valores.length) prop.done = valores;
+        }
+      } else if (wrap.__doneAntes) {
+        // Desmarcado a propósito: se quita el marcador. No mandar la clave la
+        // conservaría y no habría forma de apagar el contador desde aquí.
+        prop.done = false;
+      }
     }
     schema_def.push(prop);
   });

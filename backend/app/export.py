@@ -38,6 +38,8 @@ from app.config import settings
 from app.properties import person_ids, person_keys
 from app.repository import Database, Page, Repository, View
 from app.vault import fm
+from app.hierarchy import parent_key
+from app.vault.reader import PARENT_ROW
 from app.views import apply_view
 
 # El `info string` de la valla que marca un bloque de base.
@@ -204,6 +206,8 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
         rows = apply_view(
             rows,
             view.config or {},
+            parent_key=parent_key(database.schema_def),
+            view_type=getattr(view.type, "value", view.type),
             people={key: datos[0] for key, datos in users.items()},
             person_keys=claves_persona,
         )
@@ -261,8 +265,18 @@ def _resolve_view(repo: Repository, database: Database, wanted: Any) -> Optional
 
 
 def _visible_columns(database: Database, view: Optional[View]) -> list[dict]:
-    """Las propiedades de la vista, en su orden; sin vista, todo el esquema."""
-    properties = [p for p in database.schema_def if isinstance(p, dict) and p.get("key")]
+    """Las propiedades de la vista, en su orden; sin vista, todo el esquema.
+
+    La propiedad `parent_row` (subtareas) no es una columna: es el vínculo con
+    la fila madre, y su celda es un id. Exportarla pondría un uuid en la tabla
+    del `.md`, que no dice nada; la jerarquía ya se lee en el orden de las
+    filas (cada hija detrás de su madre) y en el contador de la tarjeta.
+    """
+    properties = [
+        p
+        for p in database.schema_def
+        if isinstance(p, dict) and p.get("key") and p.get("type") != PARENT_ROW
+    ]
     if view is None:
         return properties
 

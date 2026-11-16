@@ -15,12 +15,15 @@ schema de cada base (`databases.schema_json`). La vista contesta a la pregunta
 - el nombre de la base sale del `JOIN` con su página, porque la fila sola no
   dice de dónde viene.
 
-**Qué es «abierta»** (decisión de esta tarjeta, a falta de la función 5 del
-estado «cerrado» con semántica): una fila cuya propiedad de estado tenga un
-valor de `CLOSED_STATES` no sale. Una base **sin** propiedad de estado no
-filtra nada — sus filas entran todas, porque no hay nada que diga que están
-hechas. La lista se devuelve con la respuesta (`closed_values`) para que la
-interfaz pueda explicarla sin repetirla a mano.
+**Qué es «abierta».** Manda la regla que declara cada base: si su schema marca
+una propiedad con `done` (lo mismo que usa el contador de subtareas — una
+casilla `done: true` o una selección con `done: [Hecho, ...]`), una fila cerrada
+según esa regla no sale. Si la base no marca nada, se aplica la lista de
+respaldo `CLOSED_STATES` (hecho, cerrada, done, ganado…) sobre su propiedad de
+estado; y una base **sin** estado ni marcador no filtra nada — sus filas entran
+todas, porque no hay nada que diga que están hechas. La lista de respaldo se
+devuelve con la respuesta (`closed_values`) para que la interfaz pueda
+explicarla sin repetirla a mano.
 
 La propiedad de estado es la de **selección** llamada «Estado» o con la clave
 `estado`; si no la hay, no se enseña estado. La fecha límite es la **primera**
@@ -38,6 +41,7 @@ import unicodedata
 from datetime import date, datetime
 from typing import Any, Optional
 
+from app import hierarchy
 from app.properties import person_keys
 
 # Lo que el schema marca como selección: `select` (un valor) y `multiselect`
@@ -90,7 +94,7 @@ _CLOSED_FOLDED = frozenset(folded(state) for state in CLOSED_STATES)
 
 
 def is_closed(value: Any) -> bool:
-    """¿El valor de estado de una fila la marca como hecha?
+    """¿El valor de estado de una fila la marca como hecha, por la lista de respaldo?
 
     Un `multiselect` cuenta como cerrado si **alguno** de sus valores lo está:
     «hecho, archivado» sigue siendo una tarea hecha. Un valor que no es texto
@@ -100,6 +104,26 @@ def is_closed(value: Any) -> bool:
     return any(
         folded(one) in _CLOSED_FOLDED for one in values if isinstance(one, str) and one.strip()
     )
+
+
+def closed_row(schema_def: list[dict], status: Optional[dict], props: dict) -> bool:
+    """¿La fila cuenta como cerrada (y por tanto no sale en la vista)?
+
+    Manda la regla de la base. Si su schema marca una propiedad con `done` —lo
+    mismo que usa el contador de subtareas: `done: true` en una casilla,
+    `done: [Hecho, Cancelado]` en una selección— se aplica esa, tal cual, sobre
+    la celda que el marcador nombra (puede no ser la del estado visible: una
+    casilla «Terminada» cuenta igual).
+
+    Si la base no marca nada, se cae a la lista de respaldo `CLOSED_STATES`
+    sobre la propiedad de estado. Y si tampoco hay propiedad de estado, la fila
+    entra: no hay nada que diga que está hecha.
+    """
+    if hierarchy.done_property(schema_def) is not None:
+        return hierarchy.is_closed(schema_def, props)
+    if status is None:
+        return False
+    return is_closed(props.get(status["key"]))
 
 
 def status_property(schema_def: list[dict]) -> Optional[dict]:
@@ -187,6 +211,7 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
             continue
         bases[row["id"]] = {
             "title": row["title"] or "Base de datos",
+            "schema_def": schema_def,
             "person_keys": keys,
             "status": status_property(schema_def),
             "date": date_property(schema_def),
@@ -238,7 +263,7 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
             if not mine:
                 continue
             status = _cell(base["status"], props)
-            if status is not None and is_closed(props.get(base["status"]["key"])):
+            if closed_row(base["schema_def"], base["status"], props):
                 continue
             tasks.append(
                 {

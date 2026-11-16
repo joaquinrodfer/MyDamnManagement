@@ -45,7 +45,10 @@ PROGRESS_EVERY = 200
 # reexporta para que el nombre viva en un solo sitio.
 DATABASES_DIR = "Bases"
 
-TYPES = {"text", "number", "select", "multiselect", "checkbox", "date", "url", "relation", "person"}
+TYPES = {
+    "text", "number", "select", "multiselect", "checkbox", "date", "url",
+    "relation", "parent_row", "person",
+}
 
 
 @dataclass
@@ -181,6 +184,13 @@ RESERVED_ROW_KEYS = frozenset({"title", "id", "icon", "description", "created", 
 #   múltiple:  contacto: [7f3a91c2-..., 91be02dd-...]
 RELATION = "relation"
 
+# Tipo de propiedad cuyo valor es el **`id`** de la fila madre, de la MISMA base
+# (subtareas). Como en `relation`, una celda guarda un id y nunca un título. Una
+# base tiene como mucho una propiedad de este tipo: la jerarquía es una, no una
+# por columna, y es lo que permite decir «las subtareas de esta fila» sin
+# preguntar por cuál de las dos columnas. Ver `app.hierarchy`.
+#   madre: 7f3a91c2-...
+PARENT_ROW = "parent_row"
 # Tipo de propiedad cuyo valor es el **`id`** de un usuario de la app (la tabla
 # `users` del índice), nunca texto libre. Se guarda el id y no el nombre visible
 # porque la persona puede renombrarse: la celda tiene que seguir apuntando a la
@@ -256,6 +266,17 @@ def _relation_value(prop: dict, raw):
     return relation_id(raw)
 
 
+def _parent_value(raw):
+    """El id de la fila madre que hay en una celda `parent_row`, o `None`.
+
+    Un id y nada más: una lista o un título donde ahora hay una celda de
+    subtarea se leen como «sin madre», igual que en una relación, y el fichero
+    no se toca. Nunca se lanza: un `.md` con basura no puede tumbar el
+    reindexado (`app.hierarchy.parent_of` hace la misma lectura).
+    """
+    if isinstance(raw, (list, dict)):
+        return None
+    return relation_id(raw)
 def _person_value(raw):
     """El id de usuario que hay en una celda `person`, o `None` si no hay.
 
@@ -276,6 +297,8 @@ def _coerce(prop: dict, raw):
         return None
     if ptype == RELATION:
         return _relation_value(prop, raw)
+    if ptype == PARENT_ROW:
+        return _parent_value(raw)
     if ptype == PERSON:
         return _person_value(raw)
     if ptype == "number":
