@@ -438,6 +438,41 @@
   #mytasks-section .sidebar-section-head { padding: 4px 8px 6px; }
   #btn-mytasks[aria-current="page"],
   #btn-mytasks[aria-current="page"]:hover { color: var(--accent-ink); }
+  /* El contador de lo urgente, pegado a «Mis tareas» y a la derecha.
+     Dos números porque son dos preguntas distintas —lo que ya se pasó y lo que
+     se pasa hoy— y una sola cifra sumada las confundiría; se leen sin leyenda
+     («3 vencidas · 1 hoy») y no aparecen si no hay nada. El texto del botón se
+     recorta antes que los números: la etiqueta ya se sabe, la cifra no. */
+  #mytasks-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mytasks-badges { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+  .mytasks-badges[hidden] { display: none; }
+  .mytasks-badge {
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  /* Los mismos dos colores de siempre: --down es «vencido» en el resto del
+     panel (la fecha de una tarea vencida en la landing) y --warn es «hoy / en
+     curso». El fondo es el mismo tono al 16 %, para que se lea como una
+     insignia y no como texto suelto. */
+  .mytasks-badge.is-overdue {
+    color: var(--down);
+    background: color-mix(in srgb, var(--down) 16%, transparent);
+  }
+  .mytasks-badge.is-today {
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+  }
   .my-tasks-head { display: flex; flex-direction: column; gap: 4px; }
   .my-tasks-title {
     font-family: var(--font-body);
@@ -2380,6 +2415,16 @@
      (`renderTable`), y con el título oculto (`title_hidden`) no hay ninguna
      que destacar. */
   .rows-table td.cell-title { font-weight: 600; color: var(--ink); }
+  /* Fecha vencida de una fila abierta: la marca la dice el servidor
+     (`overdue_keys`), no una cuenta del navegador. No es solo negrita —el tono
+     de «peligro» que el panel ya usa para lo vencido— porque en una tabla de
+     números una negrita más no se distingue de una columna que ya va en
+     semibold. Se pinta el texto y un fondo del mismo tono al 10 %: la celda se
+     ve de un vistazo sin que parezca un error de la página. */
+  .rows-table td.cell-overdue {
+    color: var(--down);
+    background: color-mix(in srgb, var(--down) 10%, transparent);
+  }
   /* Una celda de relación enseña los TÍTULOS de las filas enlazadas, y saltan
      de línea dentro del ancho de la celda: un título largo no puede desbordar
      la tabla (el `td` recorta y a 375 px se perdería la mitad). */
@@ -2788,6 +2833,63 @@
   }
   .cal-event:hover { border-color: var(--accent); color: var(--accent-ink); }
   .cal-event:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* --- barras de varios días (calendario con rango) ---
+     La semana es una fila de la rejilla con su propia rejilla de siete columnas
+     y una capa encima para las barras: una barra cruza de día de una pieza (no
+     se parte en trozos por celda) y el recorte al borde de la semana es solo su
+     `left`/`width` en porcentaje de siete días, que es el ancho de las celdas.
+     El alto de la semana lo pone su número de carriles desde `app.js`, porque
+     dos barras que se pisan se reparten en alturas distintas. */
+  .cal-week {
+    position: relative;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--panel-border);
+  }
+  /* El alto lo manda la semana (carriles), no la celda. */
+  .cal-week .cal-day { min-height: 0; }
+  .cal-week-bars { position: absolute; inset: 0; pointer-events: none; }
+  .cal-bar {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    padding: 0 2px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-xs);
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-size: var(--text-xs);
+    line-height: 1;
+    cursor: grab;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+  }
+  /* Un trozo que viene de la semana anterior (o sigue en la siguiente): el
+     borde de ese lado no es el final de la tarea, así que no se redondea. */
+  .cal-bar.is-corta-izq { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
+  .cal-bar.is-corta-der { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-style: dashed; }
+  .cal-bar:hover { border-color: var(--accent-ink); color: var(--accent-ink); }
+  .cal-bar-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal-bar-handle {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: 5px;
+    border-radius: 2px;
+    background: var(--accent);
+    opacity: 0;
+    cursor: ew-resize;
+  }
+  .cal-bar:hover .cal-bar-handle, .cal-bar:focus-within .cal-bar-handle { opacity: 0.9; }
+  .cal-bar.is-dragging { opacity: 0.5; cursor: grabbing; }
+  .cal-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* Los días adonde caería el gesto que se está arrastrando. */
+  .cal-day.is-destino { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
+
   /* Agenda: el calendario en pantalla estrecha. Un bloque por día con sus
      filas en línea, sin rejilla de siete columnas (que a 375 px deja 45 px
      por día). Mismo contenido, misma navegación. */
@@ -4070,6 +4172,7 @@
             <button type="button" class="sidebar-section-toggle" id="btn-mytasks" aria-current="false">
               <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
               <span id="mytasks-label">Mis tareas</span>
+              <span class="mytasks-badges" id="mytasks-badges" hidden></span>
             </button>
           </div>
         </div>
@@ -4195,6 +4298,13 @@
     <div class="field" id="view-date-field" hidden>
       <label for="view-date">Fecha</label>
       <select id="view-date"></select>
+    </div>
+    <!-- El fin del rango: la fila se pinta como una barra del inicio al fin (los
+         dos incluidos). «—» deja el calendario de un evento por fila, como
+         siempre. Solo tiene sentido con al menos dos propiedades de fecha. -->
+    <div class="field" id="view-date-end-field" hidden>
+      <label for="view-date-end">Hasta (opcional)</label>
+      <select id="view-date-end"></select>
     </div>
     <div class="dialog-actions">
       <button class="btn" id="btn-cancel-view">Cancelar</button>

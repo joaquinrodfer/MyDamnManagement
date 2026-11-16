@@ -24,7 +24,7 @@ const state = {
   ownRemoteEvents: new Map(), // page_id -> ms: cambio en disco que ha hecho esta app (no es «de fuera»)
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
-  myTasks: { count: 0, tasks: [], closed_values: [] }, // «Mis tareas», de GET /my-tasks
+  myTasks: { count: 0, today: null, counts: { overdue: 0, today: 0 }, tasks: [], closed_values: [] }, // «Mis tareas», de GET /my-tasks
 };
 
 // ---------------------------------------------------------------- helpers
@@ -120,8 +120,13 @@ const MAX_ERROR_TOASTS = 3;
 /** Aviso discreto abajo a la derecha, descartable con su aspa, que se apila
  * si llegan varios y se va solo a los ~6s. El nodo se crea desde aquí (el
  * HTML no lleva nada) y cuelga de body, no de #main, para seguir visible
- * mientras se navega. */
-function showError(message, kind = "error") {
+ * mientras se navega.
+ *
+ * `options.sticky` lo deja hasta que se cierre (para un aviso que hay que
+ * poder leer con calma, como el de las tareas vencidas) y
+ * `options.onDismiss` se llama al cerrarlo, venga del aspa o del temporizador:
+ * quien lo pinta puede apuntar que ya se ha visto. */
+function showError(message, kind = "error", options = {}) {
   let stack = document.getElementById("error-toasts");
   if (!stack) {
     stack = document.createElement("div");
@@ -167,20 +172,22 @@ function showError(message, kind = "error") {
   close.setAttribute("aria-label", "Descartar aviso");
   close.innerHTML = svgIcon("i-x");
 
-  let timer = setTimeout(dismiss, ERROR_TOAST_MS);
+  let timer = options.sticky ? null : setTimeout(dismiss, ERROR_TOAST_MS);
   function dismiss() {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
     toast.remove();
     // Sin toasts no hay nada que apilar: se va también el contenedor, para no
     // ir dejando nodos vacíos colgando de body.
     if (stack.childElementCount === 0) stack.remove();
+    if (typeof options.onDismiss === "function") options.onDismiss();
   }
   // Retirar sin tocar el contenedor: lo usa el tope de apilado, que va a
   // añadir otro aviso justo después (dismiss() borraría el contenedor vacío
   // y el aviso nuevo se quedaría colgando de un nodo suelto).
   toast.retireToast = () => {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
     toast.remove();
+    if (typeof options.onDismiss === "function") options.onDismiss();
   };
   close.addEventListener("click", dismiss);
 
@@ -192,9 +199,10 @@ function showError(message, kind = "error") {
 /** Un aviso informativo (no es un fallo): mismo sitio y misma pila que los
  * errores, con el filo de color de acento. Se usa cuando algo ha salido bien
  * pero el usuario tiene que saber que ha cambiado (el modo de orden de una
- * propiedad, por ejemplo). */
-function showNotice(message) {
-  return showError(message, "info");
+ * propiedad, por ejemplo) o cuando hay algo que mirar al entrar («tienes 3
+ * tareas vencidas»). */
+function showNotice(message, options = {}) {
+  return showError(message, "info", options);
 }
 
 /** Deja el detalle técnico en la consola (para depurar) y avisa al usuario
@@ -1685,8 +1693,21 @@ initInbox();
 //
 // La sección de la barra lateral es un botón que abre la vista y solo existe
 // si hay algo, como la bandeja: quien no usa responsables no ve una sección
-// vacía. La vista agrupa por fecha (vencidas / hoy / esta semana / resto) y
-// cada fila se abre como página, que es el mecanismo que ya hay.
+// vacía. A su lado, un contador con lo que **ya se pasó** y lo que **se pasa
+// hoy**, que es la única parte de la vista que hay que ver sin abrirla. La
+// vista agrupa por fecha (vencidas / hoy / esta semana / resto) y cada fila se
+// abre como página, que es el mecanismo que ya hay.
+//
+// **Qué está vencido lo dice el servidor.** La respuesta trae `today` (el día
+// con el que comparó), `counts` (los dos números de la barra) y, por tarea, su
+// bloque (`due`) y los días que le quedan (`days`). Aquí no se mira el reloj ni
+// se repite la resta: con dos portátiles en husos distintos el contador y la
+// lista tendrían dos «hoy» y se contradirían. Lo mismo hace la tabla con
+// `overdue_keys` (ver `paintCell`).
+//
+// Al entrar, si hay algo vencido se avisa una vez por sesión con un aviso
+// discreto y descartable (`avisarDeVencidas`): ni modal ni nada que bloquee, y
+// nada fuera de la app —sin correo, sin push, sin nada en segundo plano—.
 //
 // Las filas **cerradas** no salen. Manda la regla de cada base (`closed:
 // {property, values}` en su `.md`, la misma que cuenta las subtareas); una base
@@ -1725,6 +1746,7 @@ async function loadMyTasks() {
   }
   state.myTasks = datos;
   paintMyTasks();
+  avisarDeVencidas(datos);
   // La vista abierta se repinta con lo que acaba de llegar: quitarse de una
   // tarea o marcarla «Hecho» tiene que verse sin recargar la página. Con una
   // fila abierta como página NO se toca nada: `clearMain()` la cerraría y el
@@ -1734,23 +1756,115 @@ async function loadMyTasks() {
   }
 }
 
+/** La clave con la que se recuerda, **en esta sesión**, que el aviso de
+ * vencidas ya salió. `sessionStorage` y no `localStorage`: cerrar la pestaña
+ * vuelve a empezar, y mañana el aviso tiene que volver a decir la verdad de
+ * mañana. */
+const AVISO_VENCIDAS_KEY = "mdm_aviso_vencidas";
+
+/** Aviso de «tienes N tareas vencidas» al entrar, una vez por sesión.
+ *
+ * Discreto y descartable (el aviso informativo de siempre): no es un modal ni
+ * bloquea nada, y si se cierra no vuelve a salir hasta la próxima sesión. La
+ * cuenta la trae el servidor (`counts.overdue`), así que lo que dice el aviso
+ * es exactamente lo que cuenta la barra lateral. Sin nada vencido no se pinta.
+ *
+ * `sticky` porque no se va solo: un aviso que hay que poder leer con calma no
+ * debería desaparecer a los seis segundos. La marca de «ya salió» se pone al
+ * pintarlo —no al cerrarlo— para que un refresco del árbol (que llega cada vez
+ * que cambia algo en el vault) no lo repita tres veces seguidas. */
+function avisarDeVencidas(datos) {
+  const vencidas = Number(datos?.counts?.overdue) || 0;
+  if (vencidas <= 0) return;
+  try {
+    if (sessionStorage.getItem(AVISO_VENCIDAS_KEY)) return;
+    sessionStorage.setItem(AVISO_VENCIDAS_KEY, "1");
+  } catch {
+    // Sin almacenamiento (modo privado estricto) el aviso sale igual: lo que
+    // se pierde es que no se repita, no el aviso.
+  }
+  showNotice(
+    vencidas === 1 ? "Tienes 1 tarea vencida" : `Tienes ${vencidas} tareas vencidas`,
+    { sticky: true },
+  );
+}
+
 function paintMyTasks() {
   const section = document.getElementById("mytasks-section");
   const label = document.getElementById("mytasks-label");
   const boton = document.getElementById("btn-mytasks");
+  const badges = document.getElementById("mytasks-badges");
   if (!section || !label) return;
 
   const count = state.myTasks?.count || 0;
+  const vencidas = Number(state.myTasks?.counts?.overdue) || 0;
+  const paraHoy = Number(state.myTasks?.counts?.today) || 0;
   // Sin nada asignado la sección no existe (ni un «Mis tareas (0)» que no dice
   // nada): el mismo criterio que la bandeja.
   section.hidden = count === 0;
-  label.textContent = count ? `Mis tareas (${count})` : "Mis tareas";
+  label.textContent = "Mis tareas";
+  // El total no va en la etiqueta: lo urgente es lo que se ve, y el total está
+  // al abrir la vista. Va en el `title` y en el `aria-label`, para quien no ve
+  // los números o pasa el ratón.
+  const total = count === 1 ? "1 tarea abierta" : `${count} tareas abiertas`;
+  if (badges) {
+    badges.replaceChildren();
+    const piezas = [];
+    if (vencidas > 0) {
+      const texto = vencidas === 1 ? "1 vencida" : `${vencidas} vencidas`;
+      piezas.push(texto);
+      badges.appendChild(
+        badgeDeMisTareas(
+          "is-overdue",
+          texto,
+          vencidas === 1
+            ? "1 tarea vencida (fecha anterior a hoy)"
+            : `${vencidas} tareas vencidas (fecha anterior a hoy)`,
+        ),
+      );
+    }
+    if (paraHoy > 0) {
+      const texto = paraHoy === 1 ? "1 hoy" : `${paraHoy} hoy`;
+      piezas.push(texto);
+      badges.appendChild(
+        badgeDeMisTareas(
+          "is-today",
+          texto,
+          paraHoy === 1 ? "1 tarea vence hoy" : `${paraHoy} tareas vencen hoy`,
+        ),
+      );
+    }
+    badges.hidden = piezas.length === 0;
+    if (boton) {
+      boton.title = piezas.length
+        ? `Mis tareas: ${total} · ${piezas.join(" · ")}`
+        : `Mis tareas: ${total}`;
+      boton.setAttribute(
+        "aria-label",
+        piezas.length ? `Mis tareas, ${piezas.join(" y ")}` : "Mis tareas",
+      );
+    }
+  }
   if (boton) {
     boton.setAttribute("aria-current", state.current?.kind === "mytasks" ? "page" : "false");
   }
 }
 
-/** «2026-11-16» -> `Date` local a medianoche, o `null` si no es una fecha. */
+/** Una insignia del contador de la barra lateral. El texto visible es corto
+ * («3 vencidas», «1 hoy») y el `title` dice lo mismo con todas las palabras. */
+function badgeDeMisTareas(clase, texto, descripcion) {
+  const badge = document.createElement("span");
+  badge.className = `mytasks-badge ${clase}`;
+  badge.textContent = texto;
+  badge.title = descripcion;
+  return badge;
+}
+
+/** «2026-11-16» -> `Date` local a medianoche, o `null` si no es una fecha.
+ *
+ * Solo para pintar el texto de la fecha (el `toLocaleDateString` de un día
+ * lejano) y para ordenar dentro del bloque: qué bloque es cada tarea y cuántos
+ * días le quedan lo dice el servidor (`due` / `days`), no esta resta. */
 function fechaLocalDe(iso) {
   const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || "").trim());
   if (!partes) return null;
@@ -1758,43 +1872,34 @@ function fechaLocalDe(iso) {
   return Number.isNaN(fecha.getTime()) ? null : fecha;
 }
 
-/** Días de calendario entre hoy y `fecha` (negativo = ya pasó).
- *
- * Se redondea porque el día de un cambio de hora no dura 24 h justas, y el
- * día que cuenta es el del calendario de quien mira la pantalla, no el del
- * servidor (que puede estar en otro huso). */
-function diasHastaHoy(fecha) {
-  const ahora = new Date();
-  const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
-  return Math.round((fecha - hoy) / 86400000);
-}
-
-/** El domingo de esta semana (la semana empieza el lunes).
- *
- * «Esta semana» es de mañana al domingo: hoy tiene su bloque y lo de la
- * semana que viene no es asunto de la vista de un vistazo. */
-function domingoDeEstaSemana() {
-  const ahora = new Date();
-  const dia = ahora.getDay() === 0 ? 7 : ahora.getDay(); // 1 = lunes … 7 = domingo
-  return new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + (7 - dia));
-}
+/** El bloque de la vista para cada bloque del servidor (`due` en la respuesta).
+ * El servidor dice `overdue`/`today`/`week`/`later` comparando contra su día;
+ * aquí solo se traduce al nombre que se pinta, y `null` (sin fecha legible) cae
+ * en el «Resto», que es lo que es: una tarea sin fecha no está ni vencida ni
+ * para hoy. */
+const BLOQUE_DEL_SERVIDOR = {
+  overdue: "vencidas",
+  today: "hoy",
+  week: "semana",
+  later: "resto",
+};
 
 /** Reparte las tareas en los cuatro bloques, ordenadas por fecha ascendente
- * (las que no tienen fecha, al final de «Resto»). */
+ * (las que no tienen fecha, al final de «Resto»).
+ *
+ * El reparto NO vuelve a restar fechas: usa `due` (el bloque) y `days` (los
+ * días) que calculó el servidor contra su propio día. Con un portátil en otro
+ * huso, la lista y el contador de la barra lateral seguirían diciendo lo mismo,
+ * porque los dos leen la misma resta; si el cliente la repitiera con su reloj,
+ * un contador de «2 vencidas» podría abrir una lista de «Vencidas: 0». */
 function bloquesDeMisTareas(tasks) {
   const bloques = new Map(BLOQUES_DE_MIS_TAREAS.map((bloque) => [bloque.key, []]));
-  const domingo = domingoDeEstaSemana();
 
   for (const tarea of tasks || []) {
+    const key = BLOQUE_DEL_SERVIDOR[tarea.due] || "resto";
     const fecha = fechaLocalDe(tarea.date?.value);
-    let key = "resto";
-    if (fecha) {
-      const dias = diasHastaHoy(fecha);
-      if (dias < 0) key = "vencidas";
-      else if (dias === 0) key = "hoy";
-      else if (fecha <= domingo) key = "semana";
-    }
-    bloques.get(key).push({ tarea, fecha, dias: fecha ? diasHastaHoy(fecha) : null });
+    const dias = Number.isInteger(tarea.days) ? tarea.days : null;
+    bloques.get(key).push({ tarea, fecha, dias });
   }
 
   // `sort` es estable: lo que empata (misma fecha) conserva el orden del
@@ -1862,7 +1967,8 @@ function itemDeMiTarea({ tarea, fecha, dias }, abrir) {
   }
 
   const meta = document.createElement("span");
-  meta.className = "dashboard-item-meta" + (fecha && dias < 0 ? " overdue" : "");
+  // El tono de vencida lo dice el servidor (`due`), no se deduce de `dias`.
+  meta.className = "dashboard-item-meta" + (tarea.due === "overdue" ? " overdue" : "");
   meta.textContent = etiquetaDeFecha({ fecha, dias });
   item.append(meta);
 
@@ -10466,9 +10572,33 @@ function repaintCell(td, database, row, prop, focus, hooks = null) {
   const ownedFocus = td.contains(document.activeElement);
   paintCell(td, database, row, prop, hooks);
   if (!td.isConnected) return;
+  repintarFechasDeLaFila(td, database, row, hooks);
   setRovingCell(td);
   const shouldFocus = focus === undefined ? ownedFocus || document.activeElement === document.body : focus;
   if (shouldFocus) td.focus();
+}
+
+/** Repinta las celdas de fecha de la fila, menos la que se acaba de guardar.
+ *
+ * La marca de «fecha vencida» depende de si la **fila** está cerrada —una tarea
+ * hecha tarde no está vencida—, así que guardar el estado cambia celdas que no
+ * se han tocado. Sin esto, cerrar una tarea desde la tabla dejaba su fecha en
+ * tono de aviso hasta el siguiente repintado de la vista: el servidor ya había
+ * dicho que no estaba vencida y la fila decía que sí. Solo se hace en bases que
+ * declaran regla de cierre (en las demás no hay marca que cambiar) y solo con
+ * las propiedades de tipo `date` de esa fila. */
+function repintarFechasDeLaFila(td, database, row, hooks = null) {
+  if (!reglaDeCierre(database)) return;
+  const tr = td?.closest("tr");
+  if (!tr) return;
+  for (const otra of tr.querySelectorAll("td[data-col-key]")) {
+    if (otra === td) continue;
+    const clave = otra.dataset.colKey;
+    if (!clave || clave === "@title") continue;
+    const prop = (database.schema_def || []).find((p) => p && p.key === clave);
+    if (prop?.type !== "date") continue;
+    paintCell(otra, database, row, prop, hooks);
+  }
 }
 
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
@@ -10485,6 +10615,15 @@ function paintCell(td, database, row, prop, hooks = null) {
       ? formatPropValueHtml(row.properties?.[prop.key], prop, row)
       : escapeHtml(row.title || "Sin título");
   }
+  // Una fecha que ya pasó se marca con el tono de aviso del panel. Qué fechas
+  // son lo dice el servidor en `overdue_keys`, que ya aplicó las dos reglas: la
+  // base tiene que declarar regla de cierre (sin estado no hay «sin terminar») y
+  // la fila no puede estar cerrada (una tarea hecha tarde no está vencida). Aquí
+  // no se compara ninguna fecha con el reloj del navegador.
+  const vencida = Boolean(
+    prop?.type === "date" && (row.overdue_keys || []).includes(prop.key),
+  );
+  td.classList.toggle("cell-overdue", vencida);
   // La columna del título se lee como jerarquía (la regla CSS va por clase:
   // la primera columna de la tabla es la de abrir la fila).
   td.classList.toggle("cell-title", !prop);
@@ -10492,11 +10631,13 @@ function paintCell(td, database, row, prop, hooks = null) {
   // y un id (que ya no se enseña) salía siempre en una sola línea.
   td.classList.toggle("cell-rel", Boolean(esRelacion));
   td.classList.toggle("cell-person", Boolean(esPersona));
-  td.title = esRelacion
-    ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
-    : esPersona
-      ? "Clic para asignar una persona · el lápiz edita"
-      : "Clic para editar";
+  td.title = vencida
+    ? "Fecha vencida (la fila sigue abierta) · clic para editar"
+    : esRelacion
+      ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
+      : esPersona
+        ? "Clic para asignar una persona · el lápiz edita"
+        : "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
   // Dentro de una nota, el widget del editor se lleva el `mousedown` del bloque
@@ -11275,6 +11416,227 @@ const MESES = [
 ];
 // Semana que empieza en lunes, como los calendarios de aquí.
 const DIAS_SEMANA = ["L", "M", "X", "J", "V", "S", "D"];
+// Para la etiqueta de una barra: «10 nov – 20 nov» cabe donde «10 de
+// noviembre» no.
+const MESES_CORTOS = [
+  "ene", "feb", "mar", "abr", "may", "jun",
+  "jul", "ago", "sep", "oct", "nov", "dic",
+];
+
+// --- fechas civiles, sin husos ni `Date` --------------------------------
+//
+// Una fecha del vault es un día civil. `Date` no sirve para hacer cuentas con
+// ella: `new Date("2026-11-10")` es medianoche UTC (un día menos al oeste de
+// Greenwich) y `Date.UTC(99, …)` convierte el año 99 en 1999. Estas dos
+// funciones son el algoritmo de Hinnant (`days_from_civil`/`civil_from_days`),
+// el mismo que usan las bibliotecas de fechas: días enteros desde el 1 de
+// enero de 1970 y vuelta, exactos para cualquier año de cuatro cifras.
+
+/** Días desde 1970-01-01 hasta una clave `YYYY-MM-DD`. */
+function diasDeClave(clave) {
+  const [textoAnio, textoMes, textoDia] = String(clave).split("-");
+  let anio = Number(textoAnio);
+  let mes = Number(textoMes);
+  const dia = Number(textoDia);
+  if (mes <= 2) {
+    anio -= 1;
+    mes += 12;
+  }
+  const era = Math.floor(anio / 400);
+  const anioDeEra = anio - era * 400;
+  const diaDelAnio = Math.floor((153 * (mes - 3) + 2) / 5) + dia - 1;
+  const diaDeEra =
+    anioDeEra * 365 + Math.floor(anioDeEra / 4) - Math.floor(anioDeEra / 100) + diaDelAnio;
+  return era * 146097 + diaDeEra - 719468;
+}
+
+/** La clave `YYYY-MM-DD` que cae `dias` días después de 1970-01-01. */
+function claveDeDias(dias) {
+  const n = dias + 719468;
+  const era = Math.floor(n / 146097);
+  const diaDeEra = n - era * 146097;
+  const anioDeEra = Math.floor(
+    (diaDeEra -
+      Math.floor(diaDeEra / 1460) +
+      Math.floor(diaDeEra / 36524) -
+      Math.floor(diaDeEra / 146096)) /
+      365,
+  );
+  const anio = anioDeEra + era * 400;
+  const diaDelAnio =
+    diaDeEra - (365 * anioDeEra + Math.floor(anioDeEra / 4) - Math.floor(anioDeEra / 100));
+  const mesAproximado = Math.floor((5 * diaDelAnio + 2) / 153);
+  const dia = diaDelAnio - Math.floor((153 * mesAproximado + 2) / 5) + 1;
+  const mes = mesAproximado < 10 ? mesAproximado + 3 : mesAproximado - 9;
+  return `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+}
+
+/** El valor de una fecha (con su posible hora) puesto en el día `clave`.
+ *
+ * Mover una barra cambia el DÍA, no el valor entero: un `2026-11-10T23:00` que
+ * se arrastra al 15 sigue siendo de las once de la noche del 15.
+ */
+function fechaEnDia(valor, clave) {
+  const m = String(valor ?? "").match(/^\d{4}-\d{2}-\d{2}(.*)$/);
+  return m ? clave + m[1] : clave;
+}
+
+/** «10 nov» para la etiqueta de una barra. */
+function fechaCorta(clave) {
+  const mes = Number(clave.slice(5, 7));
+  return `${Number(clave.slice(8, 10))} ${MESES_CORTOS[mes - 1] || ""}`.trim();
+}
+
+/** «10 nov – 20 nov», o «10 nov» si el tramo dura un día. */
+function textoDeTramo(desde, hasta) {
+  return desde === hasta ? fechaCorta(desde) : `${fechaCorta(desde)} – ${fechaCorta(hasta)}`;
+}
+
+// --- el rango de una vista de calendario --------------------------------
+//
+// `config.start_property` y `config.end_property` son la clave de dos
+// propiedades de fecha: la fila se pinta como una barra del primer día al
+// último, los dos incluidos. Sin ninguna de las dos claves la vista no declara
+// rango y el calendario sigue pintando un punto por fila (`date_property`),
+// como siempre.
+
+/** Las dos propiedades que dibujan la barra, o `null` si la vista no declara
+ * rango.
+ *
+ * `end_property` puede faltar (filas de un día) y una vista que solo declara
+ * `end_property` coloca la fila en el día de fin: una barra de un día no
+ * necesita un inicio inventado.
+ */
+function rangoDeVista(database, view) {
+  const fechas = (database.schema_def || []).filter((p) => p.type === "date");
+  const buscar = (clave) => fechas.find((p) => p.key === clave) || null;
+  const inicio = buscar(view.config?.start_property);
+  const fin = buscar(view.config?.end_property);
+  if (!inicio && !fin) return null;
+  if (!inicio) return { inicio: fin, fin: null };
+  return { inicio, fin: fin && fin.key !== inicio.key ? fin : null };
+}
+
+/** Los días que ocupa una fila en un calendario con rango.
+ *
+ * Devuelve `{desde, hasta}` con claves civiles y `hasta >= desde`, o el motivo
+ * por el que no se puede pintar: `{falta}` (no hay ninguna de las dos fechas) o
+ * `{invalida}` (hay un valor que no es un día real —31-nov—, un fin sin inicio
+ * que no es fecha, o un fin ANTES del inicio: una barra al revés no se pinta y
+ * la fila cuenta como «fecha no válida», igual que la imposible).
+ */
+function tramoDeFila(row, rango) {
+  const vacio = (v) => v === null || v === undefined || String(v).trim() === "";
+  const crudoInicio = row.properties?.[rango.inicio.key];
+  const crudoFin = rango.fin ? row.properties?.[rango.fin.key] : null;
+  const inicio = claveDeFecha(crudoInicio);
+  const fin = claveDeFecha(crudoFin);
+  if (vacio(crudoInicio)) {
+    // Sin inicio: si hay fin, la fila se coloca en su día de fin (un día).
+    if (!rango.fin || vacio(crudoFin)) return { falta: true };
+    return fin ? { desde: fin, hasta: fin } : { invalida: true };
+  }
+  if (!inicio) return { invalida: true };
+  if (!rango.fin || vacio(crudoFin)) return { desde: inicio, hasta: inicio };
+  if (!fin) return { invalida: true };
+  if (diasDeClave(fin) < diasDeClave(inicio)) return { invalida: true };
+  return { desde: inicio, hasta: fin };
+}
+
+/** Reparte las filas del mes en carriles para que dos barras que se pisan no
+ * se tapen, y para que una barra que cruza de semana no cambie de altura al
+ * pasar el domingo: el carril se decide sobre el tramo entero, no por trozos. */
+function asignarCarriles(filas) {
+  const ocupados = [];
+  [...filas]
+    .sort((a, b) =>
+      a.desde < b.desde ? -1 : a.desde > b.desde ? 1 : a.hasta < b.hasta ? -1 : 1,
+    )
+    .forEach((f) => {
+      let carril = 0;
+      for (;;) {
+        if (!ocupados[carril]) ocupados[carril] = [];
+        const franjas = ocupados[carril];
+        if (!franjas.some(([desde, hasta]) => !(f.hasta < desde || f.desde > hasta))) {
+          f.carril = carril;
+          franjas.push([f.desde, f.hasta]);
+          break;
+        }
+        carril += 1;
+      }
+    });
+  return filas;
+}
+
+/** Las semanas que pinta la rejilla de un mes: filas de siete días civiles,
+ * con los días del mes anterior al principio y los del siguiente al final.
+ *
+ * Se devuelven enteras (huecos incluidos) porque una barra que empieza el 28
+ * del mes anterior y acaba el 3 se ve en los dos sitios: recortarla a los días
+ * del mes la haría desaparecer de la semana en la que de verdad empieza.
+ */
+function semanasDeMes(anio, mes) {
+  const dias = new Date(anio, mes + 1, 0).getDate(); // día 0 del mes siguiente
+  const primerDia = new Date(anio, mes, 1);
+  const hueco = (primerDia.getDay() + 6) % 7; // lunes = 0
+  const inicio = diasDeClave(`${anio}-${String(mes + 1).padStart(2, "0")}-01`) - hueco;
+  const total = Math.ceil((hueco + dias) / 7) * 7;
+  const semanas = [];
+  for (let i = 0; i < total; i += 7) {
+    const semana = [];
+    for (let d = 0; d < 7; d++) semana.push(claveDeDias(inicio + i + d));
+    semanas.push(semana);
+  }
+  return semanas;
+}
+
+// Alto de una barra y separación entre carriles, en píxeles: el alto de la
+// semana se calcula con ellos (`TOPE_DE_BARRAS` es la línea del número del
+// día, que la capa de barras no tapa).
+const ALTO_DE_BARRA = 18;
+const HUECO_DE_BARRAS = 3;
+const TOPE_DE_BARRAS = 22;
+
+// El último gesto del calendario, para deshacerlo con UN `Ctrl+Z`: se guarda el
+// valor que tenían las dos fechas antes del arrastre, así que un solo atajo
+// devuelve el gesto entero (no hay un paso por fecha). Una sola casilla: se
+// deshace lo último, y solo en el calendario donde se hizo (`clave`).
+let ultimoGestoDeRango = null;
+
+/** Deshacer el gesto del calendario: un PATCH con las dos fechas de antes. */
+async function deshacerGestoDeRango(gesto) {
+  try {
+    await saveRow(gesto.database, gesto.row, { properties: gesto.antes });
+    gesto.repintar?.();
+  } catch (e) {
+    reportError("No se pudo deshacer el movimiento del calendario", e);
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  if (e.key !== "z" && e.key !== "Z") return;
+  const gesto = ultimoGestoDeRango;
+  if (!gesto) return;
+  // Solo en el calendario donde se hizo y que se está mirando: si el usuario se
+  // ha ido a una nota, el Ctrl+Z ya no es de este gesto.
+  if (!calendarioVivo?.wrap?.isConnected || calendarioVivo.clave !== gesto.clave) return;
+  // Dentro de un campo (el nombre de una fila nueva, un selector, el editor de
+  // la nota) el Ctrl+Z es del campo: deshacer el arrastre desde ahí sería un
+  // secuestro.
+  const destino = e.target;
+  if (
+    destino &&
+    destino.closest &&
+    destino.closest("input, textarea, select, [contenteditable='true']")
+  ) {
+    return;
+  }
+  e.preventDefault();
+  ultimoGestoDeRango = null;
+  deshacerGestoDeRango(gesto);
+});
+
 
 // El mes que está mirando el usuario, por vista. `refresh` (guardar una fila,
 // mover una tarjeta) reconstruye la vista entera; sin esto, editar un evento
@@ -11332,14 +11694,24 @@ function textoDeFilasFuera(sueltas, invalidas) {
   return partes.join(" · ");
 }
 
-/** Vista de calendario: cada fila en el día que tiene en una propiedad de
- * fecha, en una rejilla mensual con navegación.
+/** Vista de calendario.
  *
- * Qué fecha se usa lo dice `config.date_property` (lo elige el diálogo de la
- * vista); una vista antigua sin esa clave, o con una propiedad que ya no
- * existe, cae en la primera propiedad de fecha del esquema. Si la base no
- * tiene ninguna, no se pinta una tabla por debajo ni una caja vacía: se dice
- * lo que pasa y cómo arreglarlo.
+ * Dos modos, según lo que declare la vista:
+ *
+ * - **rango** (`config.start_property`/`end_property`): cada fila es una barra
+ *   continua de su primer día a su último día, con el título dentro. La barra
+ *   se corta en el borde de la semana y SIGUE en la siguiente (el trozo del
+ *   lunes no lleva asa de inicio: el inicio está en otra semana) y se arrastra:
+ *   el cuerpo mueve la tarea entera —las dos fechas, los mismos días— y las
+ *   asas de los bordes estiran o encogen una sola. Un gesto es UN PATCH, así
+ *   que un solo `Ctrl+Z` lo deshace.
+ * - **un día** (sin rango, como siempre): cada fila es un chip en el día que
+ *   tiene en `config.date_property`.
+ *
+ * Qué fecha se usa lo dice la vista; una vista antigua sin esa clave, o con una
+ * propiedad que ya no existe, cae en la primera propiedad de fecha del esquema.
+ * Si la base no tiene ninguna, no se pinta una tabla por debajo ni una caja
+ * vacía: se dice lo que pasa y cómo arreglarlo.
  */
 function renderCalendar(database, rows, view, refresh) {
   const dateProps = database.schema_def.filter((p) => p.type === "date");
@@ -11350,17 +11722,29 @@ function renderCalendar(database, rows, view, refresh) {
     );
   }
 
-  // La elegida por la vista, si sigue existiendo; si no, la primera.
-  let dateProp = dateProps.find((p) => p.key === view.config?.date_property) || dateProps[0];
+  // Un gesto de OTRO calendario no se deshace desde aquí: el Ctrl+Z es del
+  // calendario que se está mirando.
+  const claveDeVista = claveDeMesDeVista(database, view);
+  if (ultimoGestoDeRango && ultimoGestoDeRango.clave !== claveDeVista) {
+    ultimoGestoDeRango = null;
+  }
+
+  // El rango, si la vista lo declara; sin él, la fecha de siempre. La fecha
+  // «base» —donde nace una fila nueva y donde se cuentan las que no se pueden
+  // colocar— es el inicio del rango cuando lo hay.
+  let rango = rangoDeVista(database, view);
+  let dateProp = rango
+    ? rango.inicio
+    : dateProps.find((p) => p.key === view.config?.date_property) || dateProps[0];
 
   const hoy = claveDeHoy();
   const [anioHoy, mesHoy] = [Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1];
   // Si esta vista ya estaba abierta en otro mes, se vuelve a ese mes: un
   // repintado (guardar una fila desde un chip) no puede devolver al de hoy.
-  const mesGuardado = mesDeCalendario.get(claveDeMesDeVista(database, view));
+  const mesGuardado = mesDeCalendario.get(claveDeVista);
   let anio = mesGuardado?.anio ?? anioHoy;
   let mes = mesGuardado?.mes ?? mesHoy;
-  const recordarMes = () => mesDeCalendario.set(claveDeMesDeVista(database, view), { anio, mes });
+  const recordarMes = () => mesDeCalendario.set(claveDeVista, { anio, mes });
 
   const wrap = document.createElement("div");
   wrap.className = "calendar-wrap";
@@ -11388,6 +11772,24 @@ function renderCalendar(database, rows, view, refresh) {
 
   const lado = document.createElement("div");
   lado.className = "cal-side";
+
+  /** Guardar el `config` de la vista y repintar la base entera: el rango cambia
+   * la forma de la vista (barra o punto), así que se vuelve a pedir todo en vez
+   * de repintar con una copia que ya no vale. */
+  const guardarConfig = async (config, aviso) => {
+    try {
+      await api(`/databases/${database.id}/views/${view.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ config }),
+      });
+      view.config = config;
+      if (refresh) refresh();
+      else repaint();
+    } catch (e) {
+      reportError(aviso, e);
+    }
+  };
+
   // Con una sola propiedad de fecha no hay nada que elegir; con dos o más, se
   // elige aquí y la elección se guarda en la vista.
   if (dateProps.length > 1) {
@@ -11406,24 +11808,57 @@ function renderCalendar(database, rows, view, refresh) {
     });
     sel.value = dateProp.key;
     pick.append(pickText, sel);
-    sel.addEventListener("change", async () => {
-      dateProp = dateProps.find((p) => p.key === sel.value) || dateProps[0];
-      repaint();
-      const config = { ...(view.config || {}), date_property: dateProp.key };
-      try {
-        await api(`/databases/${database.id}/views/${view.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ config }),
-        });
-        view.config = config;
-      } catch (e) {
-        // El calendario ya está pintado con la fecha nueva; lo que no se pudo
-        // guardar es que la vista se acuerde la próxima vez.
-        reportError("No se pudo guardar la fecha de la vista", e);
+    sel.addEventListener("change", () => {
+      const config = { ...(view.config || {}) };
+      if (rango) {
+        // En una vista con rango, esta es la propiedad del INICIO de la barra.
+        config.start_property = sel.value;
+        if (config.end_property === sel.value) delete config.end_property;
+      } else {
+        config.date_property = sel.value;
       }
+      guardarConfig(config, "No se pudo guardar la fecha de la vista");
     });
     lado.appendChild(pick);
+
+    // El fin del rango. «—» deja la vista en barras de un día (o en el punto de
+    // siempre si nunca declaró inicio).
+    const pickFin = document.createElement("label");
+    pickFin.className = "cal-date-pick";
+    const finText = document.createElement("span");
+    finText.textContent = "Hasta";
+    const selFin = document.createElement("select");
+    selFin.className = "cal-date-select";
+    selFin.setAttribute("aria-label", "Propiedad de fin del rango del calendario");
+    const sinFin = document.createElement("option");
+    sinFin.value = "";
+    sinFin.textContent = "—";
+    selFin.appendChild(sinFin);
+    dateProps.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.name;
+      selFin.appendChild(opt);
+    });
+    selFin.value = rango?.fin?.key || "";
+    pickFin.append(finText, selFin);
+    selFin.addEventListener("change", () => {
+      const config = { ...(view.config || {}) };
+      if (!selFin.value) {
+        if (!rango) return; // no declaraba rango: no hay nada que quitar
+        delete config.end_property;
+        // La vista se queda con la fecha que estaba usando: si solo tenía
+        // fin, esa fecha es la de sus barras de un día.
+        config.start_property = rango.inicio.key;
+      } else {
+        config.start_property = rango ? rango.inicio.key : dateProp.key;
+        config.end_property = selFin.value;
+      }
+      guardarConfig(config, "No se pudo guardar el rango de la vista");
+    });
+    lado.appendChild(pickFin);
   }
+
   const sinFecha = document.createElement("span");
   sinFecha.className = "cal-undated";
   lado.appendChild(sinFecha);
@@ -11455,83 +11890,359 @@ function renderCalendar(database, rows, view, refresh) {
     return chip;
   };
 
-  const repaintAgenda = (porDia, dias, sueltas, invalidas) => {
-    let pintados = 0;
-    for (let dia = 1; dia <= dias; dia++) {
-      const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
-      const delDia = porDia.get(clave) || [];
-      if (!delDia.length) continue; // en la agenda, los días vacíos no ocupan
-      pintados += 1;
-      const bloque = document.createElement("div");
-      bloque.className = "cal-agenda-day" + (clave === hoy ? " is-today" : "");
-      const fecha = document.createElement("span");
-      fecha.className = "cal-agenda-date";
-      fecha.textContent = `${dia} de ${MESES[mes]}`;
-      const eventos = document.createElement("div");
-      eventos.className = "cal-events";
-      delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
-      bloque.append(fecha, eventos);
-      grid.appendChild(bloque);
+  // ---------------------------------------------------------- arrastre
+  // Un gesto empieza en una barra (el cuerpo mueve, un asa estira) y termina al
+  // soltar: mientras dura se marca el día de destino bajo el puntero y no se
+  // escribe nada. Al soltar se manda UN PATCH con las fechas que cambian.
+  let gesto = null;
+  let suprimirClic = false;
+
+  /** La clave del día que hay debajo del puntero, mirando la semana por
+   * geometría: así sirve también cuando lo que hay debajo es la capa de barras
+   * (que tapa las celdas) o el hueco entre dos días. */
+  const diaEnPunto = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    const semanaEl = el?.closest?.(".cal-week");
+    if (!semanaEl) return null;
+    const caja = semanaEl.getBoundingClientRect();
+    const col = Math.min(6, Math.max(0, Math.floor(((x - caja.left) / caja.width) * 7)));
+    const celda = semanaEl.querySelectorAll(".cal-day")[col];
+    return celda?.dataset.dia || null;
+  };
+
+  /** Los días que resultarían del gesto si se soltara en el día `destino`. */
+  const prevision = (g, destino) => {
+    if (!destino) return null;
+    if (g.modo === "mover") {
+      // Mover la tarea entera: las dos fechas se desplazan los mismos días.
+      const delta = diasDeClave(destino) - diasDeClave(g.diaEnPuntero);
+      return {
+        desde: claveDeDias(diasDeClave(g.desde) + delta),
+        hasta: claveDeDias(diasDeClave(g.hasta) + delta),
+      };
     }
-    if (pintados === 0) {
-      const vacio = document.createElement("p");
-      vacio.className = "cal-agenda-empty";
-      vacio.textContent = `Ninguna fila en ${MESES[mes]} de ${anio}.`;
-      grid.appendChild(vacio);
+    // Los bordes cambian SOLO su fecha, y no se cruzan: arrastrar el inicio más
+    // allá del fin lo deja pegado al fin (la barra no se da la vuelta).
+    if (g.modo === "inicio") {
+      return {
+        desde: diasDeClave(destino) <= diasDeClave(g.hasta) ? destino : g.hasta,
+        hasta: g.hasta,
+      };
     }
-    if (sueltas) {
-      const nota = document.createElement("p");
-      nota.className = "cal-agenda-empty";
-      nota.textContent =
-        sueltas === 1
-          ? "1 fila sin fecha no se puede colocar: rellena «" + dateProp.name + "»."
-          : `${sueltas} filas sin fecha no se pueden colocar: rellena «${dateProp.name}».`;
-      grid.appendChild(nota);
+    return {
+      desde: g.desde,
+      hasta: diasDeClave(destino) >= diasDeClave(g.desde) ? destino : g.desde,
+    };
+  };
+
+  const marcarDestino = (tramo) => {
+    grid.querySelectorAll(".cal-day.is-destino").forEach((c) => c.classList.remove("is-destino"));
+    if (!tramo) return;
+    const desde = diasDeClave(tramo.desde);
+    const hasta = diasDeClave(tramo.hasta);
+    grid.querySelectorAll(".cal-day[data-dia]").forEach((c) => {
+      const n = diasDeClave(c.dataset.dia);
+      if (n >= desde && n <= hasta) c.classList.add("is-destino");
+    });
+  };
+
+  const escucharArrastre = (activar) => {
+    const metodo = activar ? "addEventListener" : "removeEventListener";
+    document[metodo]("pointermove", moverArrastre, true);
+    document[metodo]("pointerup", soltarArrastre, true);
+    document[metodo]("pointercancel", soltarArrastre, true);
+    document[metodo]("keydown", teclaDeArrastre, true);
+  };
+
+  /** Escribir el gesto: un PATCH con la fecha de inicio, la de fin, o las dos.
+   *
+   * `modo` dice qué se está haciendo —`mover`, `inicio` o `fin`—, y con eso se
+   * decide qué fechas se escriben. Al MOVER solo se desplazan las que la fila
+   * ya tenía: rellenar la que faltaba convertía una fila de un día (solo
+   * `inicio`) en una con `entrega`, y el `.md` es la verdad del repo —los
+   * filtros `is_empty`/`is_not_empty`, el orden y la tabla leen esa clave—, así
+   * que el gesto no debe inventar propiedades. Un asa sí crea la suya: es la
+   * fecha que se está estirando.
+   */
+  const aplicarGesto = async (row, desde, hasta, modo) => {
+    const properties = {};
+    const antes = {};
+    const claveActual = (prop) => claveDeFecha(row.properties?.[prop.key]);
+    // Solo se toca la fecha que cambia y, según el gesto, solo la que le toca:
+    // mover las que existen; un asa, la suya (aunque la fila no la tuviera).
+    const seEscribe = (prop, clave, modoPropio) =>
+      clave !== claveActual(prop) &&
+      (modo === "mover" ? claveActual(prop) !== null : modo === modoPropio);
+    if (seEscribe(rango.inicio, desde, "inicio")) {
+      antes[rango.inicio.key] = row.properties?.[rango.inicio.key] ?? null;
+      properties[rango.inicio.key] = fechaEnDia(row.properties?.[rango.inicio.key], desde);
     }
-    if (invalidas) {
-      const nota = document.createElement("p");
-      nota.className = "cal-agenda-empty is-warn";
-      nota.textContent =
-        invalidas === 1
-          ? `1 fila tiene una fecha no válida en «${dateProp.name}» y no se puede colocar: corrige el día y el mes.`
-          : `${invalidas} filas tienen una fecha no válida en «${dateProp.name}» y no se pueden colocar: corrige el día y el mes.`;
-      grid.appendChild(nota);
+    if (rango.fin && seEscribe(rango.fin, hasta, "fin")) {
+      antes[rango.fin.key] = row.properties?.[rango.fin.key] ?? null;
+      properties[rango.fin.key] = fechaEnDia(row.properties?.[rango.fin.key], hasta);
+    }
+    if (!Object.keys(properties).length) return;
+    try {
+      await saveRow(database, row, { properties });
+      // Un solo PATCH por gesto: el Ctrl+Z devuelve las dos fechas de una vez,
+      // no una por fecha.
+      ultimoGestoDeRango = {
+        clave: claveDeVista,
+        database,
+        row,
+        antes,
+        repintar: () => (refresh ? refresh() : repaint()),
+      };
+      if (refresh) refresh();
+      else repaint();
+    } catch (e) {
+      reportError("No se pudo mover la fila en el calendario", e);
     }
   };
 
-  const repaint = () => {
-    // Una pasada por fila: las que no tienen fecha o tienen una imposible no se
-    // colocan, se cuentan y se avisa de cada grupo por separado.
-    const porDia = new Map();
-    let sueltas = 0;
-    let invalidas = 0;
-    rows.forEach((row) => {
-      const valor = row.properties?.[dateProp.key];
-      const key = claveDeFecha(valor);
-      if (!key) {
-        if (valor === null || valor === undefined || String(valor).trim() === "") sueltas += 1;
-        else invalidas += 1;
+  const soltarArrastre = (e) => {
+    const g = gesto;
+    if (!g) return;
+    gesto = null;
+    escucharArrastre(false);
+    g.barra.classList.remove("is-dragging");
+    wrap.classList.remove("is-arrastrando");
+    marcarDestino(null);
+    const destino = diaEnPunto(e.clientX, e.clientY) || g.destino || g.diaEnPuntero;
+    const fin = prevision(g, destino);
+    if (!fin) return;
+    if (fin.desde === g.desde && fin.hasta === g.hasta) return; // un clic, no un gesto
+    suprimirClic = true;
+    aplicarGesto(g.row, fin.desde, fin.hasta, g.modo);
+  };
+
+  function moverArrastre(e) {
+    if (!gesto) return;
+    gesto.destino = diaEnPunto(e.clientX, e.clientY);
+    marcarDestino(prevision(gesto, gesto.destino));
+  }
+
+  /** Esc cancela el gesto: la barra se queda donde estaba y no se escribe nada. */
+  function teclaDeArrastre(e) {
+    if (e.key !== "Escape" || !gesto) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const g = gesto;
+    gesto = null;
+    escucharArrastre(false);
+    g.barra.classList.remove("is-dragging");
+    wrap.classList.remove("is-arrastrando");
+    marcarDestino(null);
+  }
+
+  /** Una barra de la rejilla: un trozo del tramo de una fila dentro de UNA
+   * semana. Los asideros solo se pintan donde está el borde de verdad: el trozo
+   * que sigue la semana siguiente no lleva el asa de inicio. */
+  const barraDeTramo = (tramo, semana, colIni, colFin) => {
+    const barra = document.createElement("div");
+    barra.className = "cal-bar";
+    barra.dataset.rowId = String(tramo.row.id);
+    barra.dataset.desde = tramo.desde;
+    barra.dataset.hasta = tramo.hasta;
+    const cortaIzq = tramo.desde < semana[0];
+    const cortaDer = tramo.hasta > semana[6];
+    if (cortaIzq) barra.classList.add("is-corta-izq");
+    if (cortaDer) barra.classList.add("is-corta-der");
+    barra.style.left = `calc(${(colIni * 100) / 7}% + 1px)`;
+    barra.style.width = `calc(${((colFin - colIni + 1) * 100) / 7}% - 2px)`;
+    barra.style.top = `${TOPE_DE_BARRAS + tramo.carril * (ALTO_DE_BARRA + HUECO_DE_BARRAS)}px`;
+    barra.style.height = `${ALTO_DE_BARRA}px`;
+    barra.title = `${tramo.row.title || "Sin título"} · ${textoDeTramo(tramo.desde, tramo.hasta)}`;
+
+    const texto = document.createElement("span");
+    texto.className = "cal-bar-title";
+    texto.textContent = tramo.row.title || "Sin título";
+    barra.appendChild(texto);
+
+    const empezar = (modo) => (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (gesto) return;
+      const dia = diaEnPunto(e.clientX, e.clientY);
+      if (!dia) return;
+      gesto = {
+        modo,
+        row: tramo.row,
+        barra,
+        desde: tramo.desde,
+        hasta: tramo.hasta,
+        diaEnPuntero: dia,
+        destino: dia,
+      };
+      suprimirClic = false;
+      barra.classList.add("is-dragging");
+      wrap.classList.add("is-arrastrando");
+      escucharArrastre(true);
+    };
+    barra.addEventListener("pointerdown", empezar("mover"));
+
+    if (rango.fin) {
+      const asa = (modo, etiqueta) => {
+        const el = document.createElement("span");
+        el.className = `cal-bar-handle is-${modo}`;
+        el.setAttribute("aria-hidden", "true");
+        el.title = etiqueta;
+        // El asa vive DENTRO de la barra: sin parar el `pointerdown` aquí, el
+        // de la barra empezaría un «mover» a la vez que el «estirar».
+        el.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          empezar(modo)(e);
+        });
+        return el;
+      };
+      // El asa de inicio va DELANTE del título (borde izquierdo de la barra) y
+      // la de fin detrás (borde derecho): el orden del flex es el orden en que
+      // se pintan.
+      if (!cortaIzq) {
+        barra.insertBefore(asa("inicio", "Arrastra para cambiar el día de inicio"), barra.firstChild);
+      }
+      if (!cortaDer) barra.appendChild(asa("fin", "Arrastra para cambiar el día de fin"));
+    }
+
+    barra.addEventListener("click", (e) => {
+      if (suprimirClic) {
+        suprimirClic = false;
+        e.preventDefault();
         return;
       }
-      if (!porDia.has(key)) porDia.set(key, []);
-      porDia.get(key).push(row);
+      openRowPage(database, tramo.row, { origin: barra, onClose: () => refresh?.() });
     });
+    makeKeyboardActivatable(barra, "button", 0);
+    return barra;
+  };
+
+  const repaint = () => {
+    // La vista puede haber cambiado de fecha sin que se reconstruya el
+    // calendario (un repintado por el ancho): se resuelve otra vez.
+    rango = rangoDeVista(database, view);
+    dateProp = rango
+      ? rango.inicio
+      : dateProps.find((p) => p.key === view.config?.date_property) || dateProps[0];
+
+    // Una pasada por fila: las que no tienen fecha o tienen una imposible no se
+    // colocan, se cuentan y se avisa de cada grupo por separado.
+    let sueltas = 0;
+    let invalidas = 0;
+    const tramos = [];
+    const porDia = new Map();
+    if (rango) {
+      rows.forEach((row) => {
+        const tramo = tramoDeFila(row, rango);
+        if (tramo.falta) {
+          sueltas += 1;
+          return;
+        }
+        if (tramo.invalida) {
+          invalidas += 1;
+          return;
+        }
+        tramos.push({ row, desde: tramo.desde, hasta: tramo.hasta });
+      });
+      asignarCarriles(tramos);
+    } else {
+      rows.forEach((row) => {
+        const valor = row.properties?.[dateProp.key];
+        const key = claveDeFecha(valor);
+        if (!key) {
+          if (valor === null || valor === undefined || String(valor).trim() === "") sueltas += 1;
+          else invalidas += 1;
+          return;
+        }
+        if (!porDia.has(key)) porDia.set(key, []);
+        porDia.get(key).push(row);
+      });
+    }
+
+    /** Las filas que tocan un día: en modo rango, todas las barras que lo
+     * cubren (una tarea del 10 al 20 está en los once días). */
+    const filasDelDia = (clave) => {
+      if (!rango) return porDia.get(clave) || [];
+      return tramos.filter((t) => t.desde <= clave && t.hasta >= clave).map((t) => t.row);
+    };
+
+    const etiquetaDeFechas = rango
+      ? rango.fin
+        ? `«${rango.inicio.name}» y «${rango.fin.name}»`
+        : `«${rango.inicio.name}»`
+      : `«${dateProp.name}»`;
 
     titulo.textContent = `${MESES[mes]} de ${anio}`;
     sinFecha.textContent = textoDeFilasFuera(sueltas, invalidas);
     sinFecha.title = invalidas
-      ? "«Sin fecha»: no tienen valor en esta propiedad. «Fecha no válida»: el valor no es un día real (por ejemplo, 31 de noviembre) y hay que corregirlo."
-      : "Filas que no se pueden colocar: no tienen valor en esta propiedad de fecha.";
+      ? `«Sin fecha»: no tienen valor en ${etiquetaDeFechas}. «Fecha no válida»: el valor no es un día real (por ejemplo, 31 de noviembre)` +
+        (rango?.fin ? ", o el fin es anterior al inicio," : "") +
+        " y hay que corregirlo."
+      : `Filas que no se pueden colocar: no tienen valor en ${etiquetaDeFechas}.`;
     sinFecha.classList.toggle("is-warn", invalidas > 0);
     sinFecha.hidden = sueltas + invalidas === 0 || calendarQuery.matches;
 
     grid.innerHTML = "";
     const dias = new Date(anio, mes + 1, 0).getDate(); // día 0 del mes siguiente
+
     if (calendarQuery.matches) {
       grid.className = "calendar-agenda";
-      repaintAgenda(porDia, dias, sueltas, invalidas);
+      let pintados = 0;
+      for (let dia = 1; dia <= dias; dia++) {
+        const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+        const delDia = filasDelDia(clave);
+        if (!delDia.length) continue; // en la agenda, los días vacíos no ocupan
+        pintados += 1;
+        const bloque = document.createElement("div");
+        bloque.className = "cal-agenda-day" + (clave === hoy ? " is-today" : "");
+        const fecha = document.createElement("span");
+        fecha.className = "cal-agenda-date";
+        fecha.textContent = `${dia} de ${MESES[mes]}`;
+        const eventos = document.createElement("div");
+        eventos.className = "cal-events";
+        delDia.forEach((row) => {
+          const chip = chipDeFila(row);
+          // En una agenda una barra no cabe: se dice que sigue, para que una
+          // tarea de once días no parezca once tareas de un día.
+          const tramo = rango ? tramos.find((t) => t.row === row) : null;
+          if (tramo && (tramo.desde < clave || tramo.hasta > clave)) {
+            chip.textContent =
+              (tramo.desde < clave ? "← " : "") +
+              (row.title || "Sin título") +
+              (tramo.hasta > clave ? " →" : "");
+            chip.title = `${row.title || "Sin título"} · ${textoDeTramo(tramo.desde, tramo.hasta)}`;
+            chip.classList.add("is-continua");
+          }
+          eventos.appendChild(chip);
+        });
+        bloque.append(fecha, eventos);
+        grid.appendChild(bloque);
+      }
+      if (pintados === 0) {
+        const vacio = document.createElement("p");
+        vacio.className = "cal-agenda-empty";
+        vacio.textContent = `Ninguna fila en ${MESES[mes]} de ${anio}.`;
+        grid.appendChild(vacio);
+      }
+      if (sueltas) {
+        const nota = document.createElement("p");
+        nota.className = "cal-agenda-empty";
+        nota.textContent =
+          sueltas === 1
+            ? `1 fila sin fecha no se puede colocar: rellena ${etiquetaDeFechas}.`
+            : `${sueltas} filas sin fecha no se pueden colocar: rellena ${etiquetaDeFechas}.`;
+        grid.appendChild(nota);
+      }
+      if (invalidas) {
+        const nota = document.createElement("p");
+        nota.className = "cal-agenda-empty is-warn";
+        nota.textContent =
+          invalidas === 1
+            ? `1 fila tiene una fecha no válida en ${etiquetaDeFechas} y no se puede colocar: corrige el día y el mes.`
+            : `${invalidas} filas tienen una fecha no válida en ${etiquetaDeFechas} y no se pueden colocar: corrige el día y el mes.`;
+        grid.appendChild(nota);
+      }
       return;
     }
+
     grid.className = "calendar-grid";
 
     DIAS_SEMANA.forEach((d) => {
@@ -11541,42 +12252,94 @@ function renderCalendar(database, rows, view, refresh) {
       grid.appendChild(head);
     });
 
-    // Hueco de los días de la semana anterior al día 1 (lunes = 0).
-    const primerDia = new Date(anio, mes, 1);
-    const hueco = (primerDia.getDay() + 6) % 7;
-    for (let i = 0; i < hueco; i++) {
-      const vacia = document.createElement("div");
-      vacia.className = "cal-day is-out";
-      grid.appendChild(vacia);
+    if (!rango) {
+      // El calendario de un punto por fila, como siempre.
+      // Hueco de los días de la semana anterior al día 1 (lunes = 0).
+      const primerDia = new Date(anio, mes, 1);
+      const hueco = (primerDia.getDay() + 6) % 7;
+      for (let i = 0; i < hueco; i++) {
+        const vacia = document.createElement("div");
+        vacia.className = "cal-day is-out";
+        grid.appendChild(vacia);
+      }
+
+      for (let dia = 1; dia <= dias; dia++) {
+        const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+        const delDia = porDia.get(clave) || [];
+        const celda = document.createElement("div");
+        celda.className = "cal-day" + (clave === hoy ? " is-today" : "");
+        celda.dataset.dia = clave;
+        celda.setAttribute(
+          "aria-label",
+          `${dia} de ${MESES[mes]}` +
+            (delDia.length ? `, ${delDia.length === 1 ? "1 fila" : `${delDia.length} filas`}` : ""),
+        );
+        const num = document.createElement("span");
+        num.className = "cal-daynum";
+        num.textContent = String(dia);
+        celda.appendChild(num);
+        const eventos = document.createElement("div");
+        eventos.className = "cal-events";
+        delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
+        celda.appendChild(eventos);
+        grid.appendChild(celda);
+      }
+      // Completa la última semana: la rejilla no deja huecos a la derecha.
+      while (grid.children.length % 7 !== 0) {
+        const vacia = document.createElement("div");
+        vacia.className = "cal-day is-out";
+        grid.appendChild(vacia);
+      }
+      return;
     }
 
-    for (let dia = 1; dia <= dias; dia++) {
-      const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
-      const delDia = porDia.get(clave) || [];
-      const celda = document.createElement("div");
-      celda.className = "cal-day" + (clave === hoy ? " is-today" : "");
-      celda.dataset.dia = clave;
-      celda.setAttribute(
-        "aria-label",
-        `${dia} de ${MESES[mes]}` +
-          (delDia.length ? `, ${delDia.length === 1 ? "1 fila" : `${delDia.length} filas`}` : ""),
+    // Modo rango: una fila de la rejilla por semana, con sus siete días y una
+    // capa encima para las barras. Así una barra cruza de día de una pieza y el
+    // recorte al borde de la semana es solo su `left`/`width` en porcentaje.
+    semanasDeMes(anio, mes).forEach((semana) => {
+      const semanaEl = document.createElement("div");
+      semanaEl.className = "cal-week";
+      const delMes = `${anio}-${String(mes + 1).padStart(2, "0")}`;
+      const tramosDeLaSemana = tramos.filter(
+        (t) => t.desde <= semana[6] && t.hasta >= semana[0],
       );
-      const num = document.createElement("span");
-      num.className = "cal-daynum";
-      num.textContent = String(dia);
-      celda.appendChild(num);
-      const eventos = document.createElement("div");
-      eventos.className = "cal-events";
-      delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
-      celda.appendChild(eventos);
-      grid.appendChild(celda);
-    }
-    // Completa la última semana: la rejilla no deja huecos a la derecha.
-    while (grid.children.length % 7 !== 0) {
-      const vacia = document.createElement("div");
-      vacia.className = "cal-day is-out";
-      grid.appendChild(vacia);
-    }
+      const carriles = tramosDeLaSemana.length
+        ? Math.max(...tramosDeLaSemana.map((t) => t.carril)) + 1
+        : 0;
+      semanaEl.style.minHeight = `${Math.max(
+        84,
+        TOPE_DE_BARRAS + carriles * (ALTO_DE_BARRA + HUECO_DE_BARRAS) + 10,
+      )}px`;
+
+      semana.forEach((clave) => {
+        const esDelMes = clave.slice(0, 7) === delMes;
+        const cuantas = filasDelDia(clave).length;
+        const celda = document.createElement("div");
+        celda.className =
+          "cal-day" + (esDelMes ? "" : " is-out") + (clave === hoy ? " is-today" : "");
+        celda.dataset.dia = clave;
+        celda.setAttribute(
+          "aria-label",
+          `${Number(clave.slice(8, 10))} de ${MESES[Number(clave.slice(5, 7)) - 1]}` +
+            (cuantas ? `, ${cuantas === 1 ? "1 fila" : `${cuantas} filas`}` : ""),
+        );
+        const num = document.createElement("span");
+        num.className = "cal-daynum";
+        num.textContent = String(Number(clave.slice(8, 10)));
+        celda.appendChild(num);
+        semanaEl.appendChild(celda);
+      });
+
+      const capa = document.createElement("div");
+      capa.className = "cal-week-bars";
+      tramosDeLaSemana.forEach((tramo) => {
+        const colIni = Math.max(0, diasDeClave(tramo.desde) - diasDeClave(semana[0]));
+        const colFin = Math.min(6, diasDeClave(tramo.hasta) - diasDeClave(semana[0]));
+        capa.appendChild(barraDeTramo(tramo, semana, colIni, colFin));
+      });
+      semanaEl.appendChild(capa);
+      grid.appendChild(semanaEl);
+    });
   };
 
   const mover = (delta) => {
@@ -11611,8 +12374,10 @@ function renderCalendar(database, rows, view, refresh) {
     onCreate: (titulo, plantilla) => {
       const extra = { ...(plantilla?.properties || {}) };
       // Un evento sin fecha no cae en ningún día y no se vería: si la plantilla
-      // no trae la fecha, se pone la de hoy (el día en que se añade).
-      if (extra[dateProp.key] === undefined) extra[dateProp.key] = claveDeHoy();
+      // no trae la fecha, se pone la de hoy (el día en que se añade). Con rango,
+      // en la propiedad de inicio: una barra de un día.
+      const propDeAlta = rango ? rango.inicio : dateProp;
+      if (extra[propDeAlta.key] === undefined) extra[propDeAlta.key] = claveDeHoy();
       return crearFilaEnVista(database, view, titulo, extra, plantilla?.body || "");
     },
     onDone: (res) => {
@@ -11632,8 +12397,9 @@ function renderCalendar(database, rows, view, refresh) {
   repaint();
   // Este es el calendario que hay que repintar al cambiar el ancho. El anterior
   // (otra pestaña, la misma vista repintada tras guardar) queda sin
-  // referencias y se puede recoger.
-  calendarioVivo = { wrap, repaint };
+  // referencias y se puede recoger. `clave` dice cuál es, para que el Ctrl+Z de
+  // un gesto no se dispare desde otro calendario.
+  calendarioVivo = { wrap, repaint, clave: claveDeVista };
   return wrap;
 }
 
@@ -13887,8 +14653,25 @@ function openViewDialog(database) {
       opt.textContent = p.name;
       dateSelect.appendChild(opt);
     });
+  // El fin del rango: «—» (una fila, un día) o una segunda fecha. Se rellena
+  // igual que la primera y se elige cuál es el fin al crear.
+  const endSelect = document.getElementById("view-date-end");
+  endSelect.innerHTML = "";
+  const sinFin = document.createElement("option");
+  sinFin.value = "";
+  sinFin.textContent = "— (un día)";
+  endSelect.appendChild(sinFin);
+  database.schema_def
+    .filter((p) => p.type === "date")
+    .forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.name;
+      endSelect.appendChild(opt);
+    });
   document.getElementById("view-groupby-field").hidden = true;
   document.getElementById("view-date-field").hidden = true;
+  document.getElementById("view-date-end-field").hidden = true;
   viewDialog.showModal();
 }
 
@@ -13896,8 +14679,12 @@ document.getElementById("view-type").addEventListener("change", (e) => {
   document.getElementById("view-groupby-field").hidden = e.target.value !== "board";
   // Sin propiedades de fecha no hay nada que elegir: el calendario se crea
   // igual y dentro dice que a la base le falta una fecha.
-  document.getElementById("view-date-field").hidden =
-    e.target.value !== "calendar" || document.getElementById("view-date").options.length === 0;
+  const hayFechas = document.getElementById("view-date").options.length > 0;
+  document.getElementById("view-date-field").hidden = e.target.value !== "calendar" || !hayFechas;
+  // El fin del rango necesita una SEGUNDA fecha: con una sola no hay nada que
+  // estirar y el campo sobraría.
+  document.getElementById("view-date-end-field").hidden =
+    e.target.value !== "calendar" || document.getElementById("view-date").options.length < 2;
 });
 document.getElementById("btn-cancel-view").addEventListener("click", () => viewDialog.close());
 
@@ -13911,7 +14698,14 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
   }
   if (type === "calendar") {
     const dateKey = document.getElementById("view-date").value;
-    if (dateKey) config.date_property = dateKey;
+    const endKey = document.getElementById("view-date-end").value;
+    if (dateKey && endKey && endKey !== dateKey) {
+      // Con fin: la vista declara un rango y sus filas se pintan como barras.
+      config.start_property = dateKey;
+      config.end_property = endKey;
+    } else if (dateKey) {
+      config.date_property = dateKey;
+    }
   }
   try {
     const created = await api(`/databases/${viewDialogDatabase.id}/views`, {

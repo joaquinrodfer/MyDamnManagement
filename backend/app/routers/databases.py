@@ -4,7 +4,7 @@ from typing import Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app import closed, hierarchy, schemas
+from app import closed, due, hierarchy, schemas
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -25,7 +25,7 @@ from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app import templates as template_defs
 from app.vault.store import UNSET, VaultError
-from app.views import apply_view, sort_keys
+from app.views import apply_view, sort_keys, validar_rango
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
@@ -128,6 +128,9 @@ def _serialize_rows(
     ids = relation_ids(db_def.schema_def, properties)
     refs = repo.row_refs(ids) if ids else {}
     cuentas = counts or {}
+    # Un solo «hoy» por respuesta: la fecha de cada fila se compara contra el
+    # día del servidor (app.due), no contra el reloj de quien mira.
+    hoy = due.server_today()
     if users is None:
         gente = person_ids(db_def.schema_def, properties)
         users = repo.user_refs(gente) if gente else {}
@@ -149,6 +152,12 @@ def _serialize_rows(
                 closed=cuentas.get(str(row.id), (0, 0))[1],
             ),
             closed=closed.is_closed(db_def.closed, props),
+            # Qué fechas ya pasaron en esta fila. La regla de «no marcar lo
+            # cerrado» y la de «solo donde la base declara estado» viven en
+            # `app.due`: el cliente pinta la celda, no decide.
+            overdue_keys=due.overdue_date_keys(
+                db_def.schema_def, props, db_def.closed, hoy
+            ),
             people=people_of(db_def.schema_def, props, users),
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
@@ -676,7 +685,13 @@ def delete_row(
 def create_view(
     database_id: uuid.UUID, payload: schemas.ViewCreate, repo: Repository = Depends(get_repo)
 ):
-    _get_database_or_404(repo, database_id)
+    db_def = _get_database_or_404(repo, database_id)
+    # El rango de un calendario se valida contra el schema de la base, que el
+    # esquema de la petición no tiene: una vista que nombra una fecha que no
+    # existe es un 400 que dice cuál, no un calendario que cae a otra fecha.
+    motivo = validar_rango(payload.config, db_def.schema_def)
+    if motivo:
+        raise HTTPException(400, motivo)
     with _vault_errors():
         view = repo.create_view(database_id, name=payload.name, type=payload.type, config=payload.config)
     publish_database(database_id, "updated")
@@ -696,6 +711,10 @@ def update_view(
     payload: schemas.ViewUpdate,
     repo: Repository = Depends(get_repo),
 ):
+    db_def = _get_database_or_404(repo, database_id)
+    motivo = validar_rango(payload.config, db_def.schema_def)
+    if motivo:
+        raise HTTPException(400, motivo)
     with _vault_errors():
         view = repo.update_view(
             database_id, view_id, name=payload.name, type=payload.type, config=payload.config

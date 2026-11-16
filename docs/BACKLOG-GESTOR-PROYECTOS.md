@@ -20,23 +20,23 @@ Reglas de este backlog:
 | # | Función | Coste | Estado |
 |---|---|---|---|
 | 6 | Persona como propiedad (usuario real, con avatar) | medio | hecha (v2.5.x, 5770157) |
-| 8 | «Mis tareas» global, cruzando todas las bases | medio | en tarjeta (`t_c25422bd`) |
+| 8 | «Mis tareas» global, cruzando todas las bases | medio | hecha (8259823) |
 | 2 | Subtareas con estado propio y recuento en la tarjeta | medio | hecha (16c8e57) |
 
-## Lote 2 — «que la base tenga reglas» (en curso)
+## Lote 2 — «que la base tenga reglas» (cerrado)
 
 | # | Función | Coste | Estado |
 |---|---|---|---|
-| 5 | Estado «cerrado» con semántica (deja de contar en todas partes) | bajo | hecha (`feat/estado-cerrado`) |
-| 3 | Prioridad con orden semántico | bajo | en tarjeta (`t_d3b55d4e`) |
-| 29 | Plantilla de tarea y de proyecto completo | bajo | hecha (`feat/plantillas`) |
+| 5 | Estado «cerrado» con semántica (deja de contar en todas partes) | bajo | hecha (b72329e) |
+| 3 | Orden por tipo, con manual/auto en las selecciones | bajo | hecha (dd0d1ae) |
+| 29 | Plantilla de tarea y de proyecto completo | bajo | hecha (645963c) |
 
-## Lote 3 — «el día a día»
+## Lote 3 — «el día a día» (en curso)
 
 | # | Función | Coste | Estado |
 |---|---|---|---|
-| 19 | Calendario con rango inicio-fin y arrastre | medio | pendiente |
-| 12 | Aviso de vencimiento dentro de la app | bajo | pendiente |
+| 19 | Calendario con rango inicio-fin y arrastre | medio | en tarjeta (`t_56e9655a`) |
+| 12 | Aviso de vencimiento dentro de la app | bajo | en tarjeta (`t_cd70b74e`) |
 
 ## Lote 4 — «memoria del trabajo»
 
