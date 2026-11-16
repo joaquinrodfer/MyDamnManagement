@@ -22,6 +22,7 @@ from app.routers import (
     events,
     files,
     graph,
+    mytasks,
     pages,
     people,
     search,
@@ -60,6 +61,11 @@ app.include_router(status.router)
 app.include_router(trash.router)
 app.include_router(search.router)
 app.include_router(dashboard.router)
+# `/my-tasks`: «Mis tareas», la vista que cruza **todas** las bases y devuelve
+# las filas cuyo responsable es quien pregunta. Una llamada y no cuarenta: el
+# cálculo (qué bases tienen propiedad `person`, qué filas son mías) se hace en
+# dos consultas dentro de `app.mytasks`.
+app.include_router(mytasks.router)
 # `/files` es una ruta y no un `StaticFiles` (P1.2b): los adjuntos viven dentro
 # del vault (`_attachments/`) y la URL es su ruta ahí, así que hay que resolver
 # el tipo por magic bytes y decidir qué se sirve inline en cada petición.

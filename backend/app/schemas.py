@@ -296,6 +296,51 @@ class ViewRead(BaseModel):
     config: dict[str, Any]
 
 
+# --- Mis tareas (vista que cruza todas las bases) ------------------------
+
+
+class MyTaskCell(BaseModel):
+    """Una celda que la vista enseña: de qué propiedad sale y qué valor tiene.
+
+    `value` es el texto tal como está guardado (para una fecha, `YYYY-MM-DD`):
+    el nombre visible (`name`) va al lado porque la tabla de la base no está
+    abierta y sin él no se sabe qué se está leyendo.
+    """
+
+    key: str
+    name: str
+    value: str
+
+
+class MyTask(BaseModel):
+    """Una fila que es mía: de qué base viene y qué se enseña de ella."""
+
+    row_id: uuid.UUID
+    database_id: uuid.UUID
+    database_title: str
+    title: str
+    icon: Optional[str] = None
+    # `None` cuando la base no tiene una propiedad de selección que haga de
+    # estado (o la fila la tiene vacía): el interfaz no enseña hueco.
+    status: Optional[MyTaskCell] = None
+    # La primera propiedad `date` de la base. `None` = sin fecha o base sin
+    # ninguna propiedad de fecha.
+    date: Optional[MyTaskCell] = None
+
+
+class MyTasksRead(BaseModel):
+    """`GET /my-tasks`: todas mis filas de todas las bases, de una vez.
+
+    `closed_values` viaja con la respuesta para que la interfaz pueda explicar
+    el criterio con la misma lista que se aplicó, y no con una copia que se
+    quede vieja.
+    """
+
+    count: int
+    closed_values: list[str]
+    tasks: list[MyTask]
+
+
 # --- Papelera (P1.2b) ---------------------------------------------------
 
 
