@@ -12811,7 +12811,6 @@ function addPropertyRow(prop = null) {
   // Se arranca con el orden declarado (no con el de `options`): abrir el
   // diálogo y guardar sin tocar nada no puede cambiar el orden que ya había.
   wrap.__orden = [...(prop?.sort_order || [])];
-  wrap.__sortOrder = [...(prop?.sort_order || [])];
   let arrastrandoValor = null;
 
   /** Los valores de `options` como están ahora en el campo de texto, sin
@@ -13071,15 +13070,18 @@ function readSchemaFromDialog() {
       }
       // El modo SIEMPRE viaja: en `auto` el servidor suelta el `sort_order`
       // (en automático el orden es el alfabético) y en `manual` guarda la
-      // lista en el orden en que se ha quedado. Un valor declarado que ya no
-      // está en `options` se conserva al final: puede seguir en las filas.
+      // lista en el orden en que se ha quedado — solo con los valores que
+      // siguen en `options`, que son los que el diálogo enseña. Un valor
+      // retirado sale del orden declarado y cae al final al ordenar (el tramo
+      // «fuera del orden declarado»); así lo que se ve y lo que se escribe en
+      // el `.md` coinciden y no queda un valor escondido que no se puede
+      // mover ni quitar.
       prop.sort_mode = sortMode === "manual" ? "manual" : "auto";
       if (sortMode === "manual") {
         const enOpciones = new Set((prop.options || []).map((v) => v.toLowerCase()));
-        const sobrantes = (wrap.__sortOrder || []).filter(
-          (v) => !enOpciones.has(String(v).toLowerCase()),
+        prop.sort_order = (wrap.__orden || []).filter((v) =>
+          enOpciones.has(String(v).toLowerCase()),
         );
-        prop.sort_order = [...(wrap.__orden || []), ...sobrantes];
       }
     }
     if (type === "relation") {
