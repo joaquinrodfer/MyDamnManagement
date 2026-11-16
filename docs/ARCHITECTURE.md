@@ -16,7 +16,8 @@
 > misma base: es una propiedad de tipo `parent_row` (una sola por base) cuyo
 > valor es el `id` de la madre, y la vista elige su nivel con `parent_level`
 > (`roots` en tabla y tablero, `all` en lista y calendario). La fila madre lleva
-> el contador de sus hijas cerradas. Decisiones en
+> el contador de sus hijas cerradas; qué cuenta como cerrada se marca en el
+> diálogo de Propiedades de la base (el marcador `done` del schema). Decisiones en
 > [`ADR-0006-subtareas.md`](ADR-0006-subtareas.md).
 >
 > Lo que sigue describe el diseño funcional (motor, rutas, flujos) y sigue

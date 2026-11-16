@@ -218,8 +218,10 @@ guarda el `id` de la fila madre en el frontmatter de la hija:
 `paso_de: 7a1b4c5d-…` (el id, nunca el título). La madre lleva el contador de sus
 hijas directas —«1 de 3», cerradas— y ese «cerrada» lo define el schema con
 `done` en la propiedad del estado: `done: true` en una casilla o
-`done: [Hecho, Cancelado]` en una selección. Sin ninguna propiedad marcada,
-ninguna hija cuenta como cerrada. La vista elige si enseña solo las madres
+`done: [Hecho, Cancelado]` en una selección. Se marca en el diálogo de
+**Propiedades** de la base («esta propiedad dice si la fila está cerrada»), que
+lo guarda en el `.md`; sin ninguna propiedad marcada, ninguna hija cuenta como
+cerrada. La vista elige si enseña solo las madres
 (`parent_level: roots`, el defecto en tabla y tablero: una hija ya se ve bajo su
 madre) o todas (`all`, con las hijas detrás de su madre; el defecto en lista y
 calendario); «Todas (sin vista)» las enseña todas. La fila abierta como página

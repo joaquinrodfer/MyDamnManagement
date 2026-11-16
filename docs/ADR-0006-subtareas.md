@@ -61,9 +61,14 @@ madres). El rechazo es un **400 con el motivo y la ruta del círculo**:
 de ella (Diseño → Textos → Lanzar la web): sería un ciclo. Elige otra fila madre.
 ```
 
-Un ciclo solo podría entrar editando el `.md` a mano; el resto del código
-(`app.hierarchy.arrange`) no se cuelga si lo encuentra: cada fila se emite una
-vez.
+Un ciclo solo podría entrar editando el `.md` a mano; el resto del código no
+se cuelga si lo encuentra. `arrange` emite cada fila una vez, y `only_roots`
+(la vista «solo madres») recorre la cadena de madres con un conjunto de
+visitadas: una fila cuya ascendencia solo da vueltas no cuelga de ninguna raíz
+de la lista, así que **se enseña como raíz**. Antes se descartaba por tener
+madre en la lista y las dos filas del círculo desaparecían de la tabla y del
+tablero por defecto, sin aviso; un dato raro del usuario no puede vaciar la
+vista.
 
 **D4 — «Cerrada» lo dice el schema, con un marcador `done` en la propiedad del
 estado.**
@@ -78,6 +83,15 @@ ninguna hija cuenta como cerrada** (`0 de N`): la base no sabe qué es estar
 cerrada, y el contador no se lo inventa. Esto es la parte de la función 5 del
 backlog (estado «cerrado» con semántica) que el contador necesita; generalizarla
 a toda la app es otra tarjeta.
+
+El marcador se pone **desde la app**: en el diálogo de Propiedades de la base,
+cada propiedad de tipo casilla o selección lleva la casilla «esta propiedad dice
+si la fila está cerrada»; en una selección, el campo de valores que cuentan (con
+el último valor propuesto, que es el de «hecho» por convenio). Marcar una
+desmarca las demás —el servidor obedece a la primera—, desmarcarla manda
+`done: false` y guardar el resto del schema no lo pierde. Sin esa ruta, una base
+creada desde la interfaz se quedaba en «0 de N» con trabajo hecho: el contador
+era un adorno.
 
 **D5 — El contador cuenta las hijas DIRECTAS**, sobre **todas** las filas de la
 base: «1 de 3» es «una de sus tres hijas», no de toda la descendencia, y no
@@ -116,7 +130,9 @@ se lee en el orden de las filas y en el contador, no en una columna de uuids.
 ## Lo que ve quien usa la app
 
 - En la tabla y la lista, la hija va sangrada bajo su madre (`↳`) y la madre
-  lleva su contador («1 de 3», cerradas).
+  lleva su contador («1 de 3», cerradas). La sangría de la tabla se pinta solo
+  cuando la vista **no agrupa** por otra cosa: en una vista agrupada la fila cae
+  donde la pone su grupo y la sangría mentiría.
 - En el tablero, la tarjeta de una subtarea dice de quién es; las madres llevan
   su contador.
 - La fila madre se abre como página y ahí están sus subtareas: una mini-tabla
@@ -125,6 +141,8 @@ se lee en el orden de las filas y en el contador, no en una columna de uuids.
   entregable.
 - La barra de la vista tiene el selector «Filas» (solo madres / todas) y lo
   guarda en el `.md`.
+- El diálogo de Propiedades marca cuál es la propiedad que dice si una fila
+  está cerrada (D4), que es lo que alimenta el contador.
 
 ## Consecuencias
 
