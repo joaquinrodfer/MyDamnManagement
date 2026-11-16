@@ -74,6 +74,23 @@ Reglas de este backlog:
 | 33 | Importar/exportar CSV con esquema | medio | pendiente, y sube de prioridad con ADR-0005 |
 | 34 | API con webhooks salientes | medio | pendiente |
 
+## Aplazado a una versión grande: la migración a base de datos
+
+[ADR-0005](ADR-0005-verdad-en-base-de-datos.md) decidió que la verdad pase a la
+base y el Markdown quede como autoría y exportación. **El dueño lo ha aplazado
+explícitamente**: será una versión mayor (v3 o v4), no parte de esta fase. El
+orden sigue siendo:
+
+1. **Export íntegro y verificado** (del índice a un vault completo, con test de
+   ida y vuelta). Es la red de seguridad: sin ella la decisión no es reversible.
+2. **Los cuerpos dejan de necesitar el fichero** (`pages.body` ya guarda el
+   cuerpo).
+3. **Versiones por documento y varios escritores** (`If-Match`).
+4. **Tiempo real** (presencia, cursores) — que es la función 26 de arriba.
+
+Mientras esté aquí, la obligación que sí aplica desde ya: **nada nuevo se guarda
+de una forma que no se pueda escribir a `.md` sin pérdida**.
+
 ## Descartadas (y por qué)
 
 Ninguna todavía. Las «aplazadas» no están descartadas: están esperando a que
