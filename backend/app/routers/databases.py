@@ -10,6 +10,9 @@ from app import auth
 from app.dependencies import get_current_user, get_repo
 from app.events import publish_database
 from app.properties import (
+    people_of,
+    person_ids,
+    person_keys,
     plan_schema,
     related_refs,
     relation_ids,
@@ -77,19 +80,30 @@ def _serialize_database(
 
 
 def _serialize_rows(
-    repo: Repository, db_def: Database, rows: List[Page]
+    repo: Repository,
+    db_def: Database,
+    rows: List[Page],
+    users: Optional[dict] = None,
 ) -> List[schemas.RowRead]:
-    """Serializa filas resolviendo sus relaciones **en una sola consulta**.
+    """Serializa filas resolviendo relaciones y personas **en una consulta cada una**.
 
     Los ids de todas las celdas de relación de la respuesta se juntan y se
     resuelven de una vez (`repo.row_refs`): el coste es el de la respuesta, no
     el de cada fila. Lo que no resuelve (fila borrada) sale con `title: null`,
     y el id se queda en `properties`: la celda apunta a algo que ya no está y
     el interfaz tiene que poder decirlo.
+
+    Las celdas `person` hacen lo mismo con los usuarios (`repo.user_refs`): el
+    id se queda en `properties` y `people` lleva el nombre visible y el color.
+    `users` se puede pasar ya resuelto (el router lo necesita antes para
+    filtrar y ordenar por nombre); si no, se resuelve aquí.
     """
     properties = [row.properties or {} for row in rows]
     ids = relation_ids(db_def.schema_def, properties)
     refs = repo.row_refs(ids) if ids else {}
+    if users is None:
+        gente = person_ids(db_def.schema_def, properties)
+        users = repo.user_refs(gente) if gente else {}
     return [
         schemas.RowRead(
             id=row.id,
@@ -98,6 +112,7 @@ def _serialize_rows(
             icon=row.icon,
             properties=props,
             related=related_refs(db_def.schema_def, props, refs),
+            people=people_of(db_def.schema_def, props, users),
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
         )
@@ -243,7 +258,7 @@ def create_row(
 ):
     db_def = _get_database_or_404(repo, database_id)
     cleaned = validate_properties(
-        db_def.schema_def, payload.properties, refs=repo.row_refs
+        db_def.schema_def, payload.properties, refs=repo.row_refs, users=repo.user_refs
     )
     with _vault_errors():
         row = repo.create_row(
@@ -263,13 +278,29 @@ def list_rows(
     db_def = _get_database_or_404(repo, database_id)
     rows = repo.list_rows(database_id)
 
+    # Una celda `person` guarda un id, pero el filtro se escribe con el nombre
+    # que se lee y el orden va por nombre: se resuelven los usuarios de TODAS
+    # las filas antes de filtrar, en una consulta (el filtro se lleva unas
+    # cuantas y el nombre del resto sigue haciendo falta para el orden).
+    claves_persona = person_keys(db_def.schema_def)
+    users: Optional[dict] = None
+    if claves_persona:
+        users = repo.user_refs(
+            person_ids(db_def.schema_def, [row.properties or {} for row in rows])
+        )
+
     if view is not None:
         view_def = repo.get_view(database_id, view)
         if view_def is None:
             raise HTTPException(404, "Vista no encontrada")
-        rows = apply_view(rows, view_def.config or {})
+        rows = apply_view(
+            rows,
+            view_def.config or {},
+            people={key: datos[0] for key, datos in (users or {}).items()},
+            person_keys=claves_persona,
+        )
 
-    return _serialize_rows(repo, db_def, rows)
+    return _serialize_rows(repo, db_def, rows, users=users)
 
 
 @router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowPageRead)
@@ -298,7 +329,7 @@ def update_row(
     cleaned = None
     if payload.properties is not None:
         cleaned = validate_properties(
-            db_def.schema_def, payload.properties, refs=repo.row_refs
+            db_def.schema_def, payload.properties, refs=repo.row_refs, users=repo.user_refs
         )
 
     # El cuerpo es del `.md` de la fila, como el de una nota: `""` lo vacía,
