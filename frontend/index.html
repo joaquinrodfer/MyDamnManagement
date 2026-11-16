@@ -2350,6 +2350,31 @@
     border-style: dashed;
     cursor: default;
   }
+  /* Una celda de tipo Persona: el nombre visible del usuario con su color. El
+     id no se pinta nunca; un usuario que ya no está se dice, no se calla. */
+  .person-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    vertical-align: middle;
+  }
+  .person-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ink-muted);
+  }
+  .person-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .person-gone { color: var(--ink-muted); font-style: italic; }
+  /* En el selector la bolita va con el nombre, alineada con la línea. */
+  .rel-picker-option .person-dot { align-self: center; }
+  .rel-picker-option-title { display: inline-flex; align-items: center; gap: 6px; }
   /* El lápiz de la celda: abre el selector sin abrir ninguna fila (el clic en
      un título lleva a su fila, así que no queda hueco que clicar). */
   .rel-edit {
