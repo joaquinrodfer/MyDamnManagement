@@ -956,7 +956,8 @@ class Repository:
         (la identidad de la fila); `plan_schema` devuelve el schema final y qué
         claves cambian de nombre. Un renombrado escribe la clave nueva en
         **todas** las filas y en las vistas que la nombran (`group_by`,
-        `date_property`, `filters`, `sort`, `visible_properties`): un rename
+        `date_property`, `start_property`, `end_property`, `filters`, `sort`,
+        `visible_properties`): un rename
         que deja filas con la clave vieja es peor que no poder renombrar.
 
         Borrar una propiedad **no** borra los valores de las filas (el `.md` es
@@ -1244,7 +1245,7 @@ class Repository:
         views = self._views_with(database_id)
         for view in views:
             config = dict(view.get("config") or {})
-            for field in ("group_by", "date_property"):
+            for field in ("group_by", "date_property", "start_property", "end_property"):
                 if field not in config:
                     continue
                 new = mapped(config[field])

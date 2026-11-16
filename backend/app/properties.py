@@ -217,8 +217,8 @@ def plan_schema(
       «normaliza» sola: las bases con `proximo_contacto` siguen como están
       hasta que alguien renombre esa propiedad de verdad.
     - `borradas`: claves que ya no están en el schema (para limpiar las vistas
-      que las nombran en `group_by`, `date_property`, `filters`, `sort` o
-      `visible_properties`).
+      que las nombran en `group_by`, `date_property`, `start_property`,
+      `end_property`, `filters`, `sort` o `visible_properties`).
 
     Dos propiedades no pueden quedar con la misma clave; si el nombre nuevo
     choca con una existente, se le pone sufijo numérico (la clave es interna,
