@@ -11477,8 +11477,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "z" && e.key !== "Z") return;
   const gesto = ultimoGestoDeRango;
   if (!gesto) return;
-  // Dentro de un campo (el nombre de una fila nueva, un selector) el Ctrl+Z es
-  // del campo: deshacer el arrastre desde ahí sería un secuestro.
+  // Solo en el calendario donde se hizo y que se está mirando: si el usuario se
+  // ha ido a una nota, el Ctrl+Z ya no es de este gesto.
+  if (!calendarioVivo?.wrap?.isConnected || calendarioVivo.clave !== gesto.clave) return;
+  // Dentro de un campo (el nombre de una fila nueva, un selector, el editor de
+  // la nota) el Ctrl+Z es del campo: deshacer el arrastre desde ahí sería un
+  // secuestro.
   const destino = e.target;
   if (
     destino &&
@@ -11935,7 +11939,12 @@ function renderCalendar(database, rows, view, refresh) {
         });
         return el;
       };
-      if (!cortaIzq) barra.appendChild(asa("inicio", "Arrastra para cambiar el día de inicio"));
+      // El asa de inicio va DELANTE del título (borde izquierdo de la barra) y
+      // la de fin detrás (borde derecho): el orden del flex es el orden en que
+      // se pintan.
+      if (!cortaIzq) {
+        barra.insertBefore(asa("inicio", "Arrastra para cambiar el día de inicio"), barra.firstChild);
+      }
       if (!cortaDer) barra.appendChild(asa("fin", "Arrastra para cambiar el día de fin"));
     }
 
@@ -12233,8 +12242,9 @@ function renderCalendar(database, rows, view, refresh) {
   repaint();
   // Este es el calendario que hay que repintar al cambiar el ancho. El anterior
   // (otra pestaña, la misma vista repintada tras guardar) queda sin
-  // referencias y se puede recoger.
-  calendarioVivo = { wrap, repaint };
+  // referencias y se puede recoger. `clave` dice cuál es, para que el Ctrl+Z de
+  // un gesto no se dispare desde otro calendario.
+  calendarioVivo = { wrap, repaint, clave: claveDeVista };
   return wrap;
 }
 
