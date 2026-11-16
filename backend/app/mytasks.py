@@ -28,9 +28,16 @@ la interfaz explique el criterio sin repetirlo a mano.
 La propiedad de estado es la de **selección** llamada «Estado» o con la clave
 `estado`; si no la hay, no se enseña estado. La fecha límite es la **primera**
 propiedad de tipo `date` de la base (el mismo criterio que `GET /dashboard`), y
-su valor se devuelve tal cual (`YYYY-MM-DD`): quién decide si está vencida o en
-qué bloque cae es el navegador, que es el único que sabe qué día es hoy para
-quien está mirando la pantalla.
+su valor se devuelve tal cual (`YYYY-MM-DD`).
+
+**Qué está vencido lo dice este módulo, no el navegador.** La fecha de cada fila
+se compara contra el día de hoy **del servidor** (`app.due.server_today()`) y el
+resultado viaja en la respuesta: `today` (el día con el que se comparó),
+`counts.overdue` / `counts.today` (los dos números de la barra lateral) y, por
+cada tarea, su bloque (`due`: `overdue` / `today` / `week` / `later`, o `null`
+sin fecha) y los días que le quedan (`days`). Así un equipo con los portátiles en
+husos distintos no puede ver dos «hoy» distintos: la pantalla pinta la resta que
+ya hizo el servidor y no mira ningún reloj.
 """
 
 from __future__ import annotations
@@ -38,10 +45,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import unicodedata
-from datetime import date, datetime
 from typing import Any, Optional
 
-from app import closed
+from app import closed, due
 from app.properties import person_keys
 
 # Lo que el schema marca como selección: `select` (un valor) y `multiselect`
@@ -150,14 +156,8 @@ def _cell(prop: Optional[dict], props: dict, *, parse_date: bool = False) -> Opt
 
 def _iso_date(raw: str) -> Optional[str]:
     """`2026-11-14` (o un ISO completo) -> `2026-11-14`; si no casa, `None`."""
-    try:
-        return date.fromisoformat(raw[:10]).isoformat()
-    except ValueError:
-        pass
-    try:
-        return datetime.fromisoformat(raw).date().isoformat()
-    except ValueError:
-        return None
+    day = due.iso_day(raw)
+    return day.isoformat() if day else None
 
 
 def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
@@ -197,15 +197,24 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
 def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     """Las filas de todas las bases cuyo responsable es `user_id`.
 
-    Devuelve `{"count", "closed_values", "tasks"}`. Cada tarea lleva de dónde
-    sale (`database_id`, `database_title`), su título, su estado si la base
-    tiene uno y su fecha si la base tiene alguna. Ordenadas por fecha
-    ascendente (las sin fecha al final) y, a igual fecha, por base y título:
-    los bloques (vencidas/hoy/esta semana/resto) los pinta quien las enseña.
+    Devuelve `{"count", "today", "counts", "closed_values", "tasks"}`. Cada
+    tarea lleva de dónde sale (`database_id`, `database_title`), su título, su
+    estado si la base tiene uno, su fecha si la base tiene alguna y en qué
+    bloque cae (`due`) con los días que le quedan (`days`), contados contra el
+    día del servidor. Ordenadas por fecha ascendente (las sin fecha al final) y,
+    a igual fecha, por base y título.
+
+    `counts` son los dos números de la barra lateral: lo **vencido** y lo que
+    **vence hoy**. Se cuentan sobre las mismas tareas que se devuelven (las
+    abiertas), así que lo que dice el número y lo que se ve al abrir la vista no
+    pueden discrepar.
     """
     user_id = str(user_id or "").strip()
+    hoy = due.server_today()
     salida: dict[str, Any] = {
         "count": 0,
+        "today": hoy.isoformat(),
+        "counts": {"overdue": 0, "today": 0},
         "closed_values": [],
         "tasks": [],
     }
@@ -243,6 +252,8 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
             status = _cell(base["status"], props)
             if closed_row(base["closed"], props):
                 continue
+            fecha = _cell(base["date"], props, parse_date=True)
+            dia = due.iso_day(fecha["value"]) if fecha else None
             tasks.append(
                 {
                     "row_id": row["id"],
@@ -251,7 +262,9 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
                     "title": row["title"] or "Sin título",
                     "icon": row["icon"],
                     "status": status,
-                    "date": _cell(base["date"], props, parse_date=True),
+                    "date": fecha,
+                    "due": due.classify(dia, hoy) if dia else None,
+                    "days": (dia - hoy).days if dia else None,
                 }
             )
 
@@ -265,4 +278,9 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     )
     salida["tasks"] = tasks
     salida["count"] = len(tasks)
+    # Los dos números de la barra lateral, contados sobre lo que se devuelve.
+    salida["counts"] = {
+        "overdue": sum(1 for task in tasks if task["due"] == due.OVERDUE),
+        "today": sum(1 for task in tasks if task["due"] == due.TODAY),
+    }
     return salida
