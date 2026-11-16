@@ -114,6 +114,14 @@
     --dur-spin: 700ms;
     --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
     --ease-std: ease;
+
+    /* --- Tabla de una base ---
+       La fila mide siempre lo mismo (antes iba de 33 a 37 px según la celda
+       llevara o no un lápiz) y el hover es un velo de tinta, no un color
+       propio: se nota al pasar y no compite con la fila seleccionada. */
+    --row-height: 36px;
+    --row-hover: color-mix(in srgb, var(--ink) 5%, transparent);
+    --cell-ring: color-mix(in srgb, var(--ink-muted) 55%, transparent);
   }
 
   html[data-theme="light"] {
@@ -1829,7 +1837,17 @@
   .db-tools { display: flex; flex-direction: column; gap: 8px; margin: -6px 0 12px; }
   .db-tools-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .db-tools .btn.is-active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
-  .db-count { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  /* «N de M filas»: un dato de la vista, no un rótulo suelto entre botones.
+     Va en su propia pastilla apagada, con los números a plomo. */
+  .db-count {
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--row-hover);
+    font-size: 12px;
+    color: var(--ink-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
   .db-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .db-chips:empty { display: none; }
   .db-chip {
@@ -1884,10 +1902,9 @@
     background: none;
     color: inherit;
     font: inherit;
-    font-weight: 600;
     cursor: pointer;
   }
-  .th-sort:hover { color: var(--accent-ink); }
+  .th-sort:hover { color: var(--ink); }
   .th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
   .th-sort.is-sorted { color: var(--accent-ink); }
   .sort-arrow { font-size: 11px; }
@@ -1988,10 +2005,15 @@
      hasta 678 px y las celdas recortaban su texto con puntos suspensivos sin
      que nada avisara; con él, quien no cabe es el contenedor, que entonces
      desplaza (`.table-wrap` tiene scroll propio). */
-  table.rows-table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: 12.5px; }
+  table.rows-table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: var(--text-base); }
+  /* Alto fijo y sin padding vertical: la fila mide --row-height lleve lo que
+     lleve la celda (un lápiz, una casilla, un contador). En una tabla `height`
+     hace de mínimo, así que una celda de relación con dos líneas sigue
+     creciendo. */
   .rows-table th, .rows-table td {
     text-align: left;
-    padding: 7px 11px;
+    height: var(--row-height);
+    padding: 0 12px;
     border-bottom: 1px solid var(--panel-border);
     font-variant-numeric: tabular-nums;
     max-width: 240px;
@@ -1999,20 +2021,21 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Cabecera: versalitas y --surface-elevated, para que la fila de títulos se
-     lea como cabecera y no como una fila más. En la pila del sistema (ya no
-     mono) las versalitas pesan menos: 11,5 px en vez de 10,5 para conservar
-     la misma lectura. Los números siguen tabulares para que las columnas
-     queden a plomo. */
+  /* Cabecera: se lee como cabecera por el tono apagado y el peso, no por las
+     versalitas (en mayúsculas y con fondo propio la tabla parecía un listado
+     de administración). Mismo fondo que las filas, algo más baja y con el
+     nombre de la columna tal como se escribió. Los números siguen tabulares
+     para que las columnas queden a plomo. */
   .rows-table th {
-    background: var(--surface-elevated);
+    height: 34px;
+    background: var(--panel);
     font-family: var(--font-body);
-    font-size: var(--text-sm);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-size: 12px;
     color: var(--ink-muted);
-    font-weight: 600;
+    font-weight: 500;
   }
+  /* La última fila no dibuja su línea: debajo ya está el borde de la caja. */
+  .rows-table tbody tr:last-child td { border-bottom-color: transparent; }
   /* ------------------------------------------ ancho y orden de las columnas
      (por vista: `views[].widths` y `views[].order` del `.md`). El asa vive
      DENTRO del `<th>` --que lleva `overflow: hidden`-- pegada al borde derecho:
@@ -2111,15 +2134,23 @@
     right: 13px;
     top: 50%;
     transform: translateY(-50%);
-    width: 18px;
-    height: 18px;
+    width: 22px;
+    height: 22px;
     opacity: 0.6;
   }
   /* En táctil no hay hover: el botón se ve siempre, algo más apagado. */
   .db-col-head:hover .db-col-menu-btn,
+  .db-col-menu-btn[aria-expanded="true"],
   .db-col-menu-btn:focus-visible { opacity: 1; }
-  .db-col-menu-btn:hover { background: var(--accent-soft); color: var(--ink); }
+  .db-col-menu-btn:hover,
+  .db-col-menu-btn[aria-expanded="true"] { background: var(--row-hover); color: var(--ink); }
   .db-col-menu-btn .svg-icon { width: 14px; height: 14px; }
+  /* Con ratón, el menú de la columna aparece al pasar por SU cabecera: ocho
+     «⋮» fijos en la fila de títulos pesaban más que los propios nombres. Con
+     teclado se ve al recibir el foco, y abierto se queda a la vista. */
+  @media (hover: hover) and (pointer: fine) {
+    .db-col-menu-btn { opacity: 0; }
+  }
   .rows-table th.db-col-add-head { width: 30px; padding: 0; text-align: center; }
   /* Las filas llevan el hueco del «+» en la misma posición (antes de
      «Acciones») y con la misma anchura: si no, la cabecera tendría una celda
@@ -2153,19 +2184,17 @@
     max-height: min(70vh, 560px);
     overflow-y: auto;
     padding: 5px;
-    background: var(--panel);
+    background: var(--surface-elevated);
     border: 1px solid var(--panel-border);
-    border-radius: var(--radius-md);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-float);
     color: var(--ink);
-    font-size: var(--text-sm);
+    font-size: 12.5px;
   }
   .db-col-menu-label {
-    padding: 5px 8px 4px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    padding: 6px 8px 5px;
+    font-size: 11.5px;
+    font-weight: 500;
     color: var(--ink-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -2177,7 +2206,8 @@
     justify-content: space-between;
     gap: 12px;
     width: 100%;
-    padding: 7px 8px;
+    min-height: 30px;
+    padding: 5px 8px;
     border: none;
     border-radius: var(--radius-sm);
     background: none;
@@ -2187,14 +2217,17 @@
     cursor: pointer;
   }
   .db-col-menu-item:hover,
-  .db-col-menu-item:focus-visible { background: var(--code-bg); }
+  .db-col-menu-item:focus-visible { background: var(--row-hover); }
+  /* El foco de teclado dentro del menú: el mismo velo del hover más el anillo
+     por dentro, para que se distinga de «tengo el ratón encima». */
+  .db-col-menu-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .db-col-menu-item.danger { color: var(--down); }
   .db-col-menu-item.danger:hover,
   .db-col-menu-item.danger:focus-visible { background: var(--down-bg); }
   /* Apagado pero alcanzable: al pulsarlo escribe el motivo (en táctil no hay
      `title` que leer). */
   .db-col-menu-item.is-off { color: var(--ink-muted); cursor: default; }
-  .db-col-menu-item.is-off:hover { background: var(--code-bg); }
+  .db-col-menu-item.is-off:hover { background: var(--row-hover); }
   .db-col-menu-mark { color: var(--ink-muted); font-size: 12px; }
   .db-col-menu-sep { height: 1px; background: var(--panel-border); margin: 5px 4px; }
   .db-col-menu-note {
@@ -2419,12 +2452,24 @@
      (`overdue_keys`), no una cuenta del navegador. No es solo negrita —el tono
      de «peligro» que el panel ya usa para lo vencido— porque en una tabla de
      números una negrita más no se distingue de una columna que ya va en
-     semibold. Se pinta el texto y un fondo del mismo tono al 10 %: la celda se
-     ve de un vistazo sin que parezca un error de la página. */
-  .rows-table td.cell-overdue {
-    color: var(--down);
-    background: color-mix(in srgb, var(--down) 10%, transparent);
+     semibold. Se pinta el texto y un punto del mismo tono delante: la celda se
+     ve de un vistazo sin que parezca un error de la página. (Antes era un
+     fondo al 10 %: con dos columnas de fecha la tabla se llenaba de bloques
+     rojos que pesaban más que los títulos.) */
+  .rows-table td.cell-overdue { color: var(--down); }
+  .rows-table td.cell-overdue::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    vertical-align: 1px;
   }
+  /* Una celda sin valor: la raya está para que la fila no parezca rota, no
+     para leerse. (La clase la pone `paintCell`.) */
+  .rows-table td.cell-empty { color: color-mix(in srgb, var(--ink-muted) 55%, transparent); }
   /* Una celda de relación enseña los TÍTULOS de las filas enlazadas, y saltan
      de línea dentro del ancho de la celda: un título largo no puede desbordar
      la tabla (el `td` recorta y a 375 px se perdería la mitad). */
@@ -2503,9 +2548,11 @@
     cursor: pointer;
     vertical-align: middle;
     opacity: 0.75;
+    transition: background-color var(--dur-fast) var(--ease-std),
+                opacity var(--dur-fast) var(--ease-std);
   }
   .rel-edit:hover,
-  .rel-edit:focus-visible { background: var(--accent-soft); color: var(--ink); opacity: 1; }
+  .rel-edit:focus-visible { background: var(--row-hover); color: var(--ink); opacity: 1; }
   .rel-edit .svg-icon { width: 13px; height: 13px; }
   /* Columna de abrir la fila como página: estrecha, y el botón discreto hasta
      que se pasa por encima (en táctil se ve siempre, al 65 %). */
@@ -2535,11 +2582,40 @@
   .row-open:hover, .row-open:focus-visible {
     opacity: 1;
     color: var(--ink);
-    background: var(--accent-soft);
+    background: var(--row-hover);
   }
   .row-open .svg-icon { width: 15px; height: 15px; }
-  .rows-table tr:hover td { background: var(--code-bg); }
-  .rows-table td:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+  .rows-table tbody tr:hover td { background: var(--row-hover); }
+  /* Una celda editable lo dice al pasar: un filo por dentro, como el de un
+     campo. Es `box-shadow` (no borde) para no mover ni un píxel la rejilla. */
+  .rows-table td[data-editable="1"]:hover { box-shadow: inset 0 0 0 1px var(--cell-ring); }
+  /* La celda con el foco del teclado: el anillo de acento por dentro, el
+     mismo de toda la app, y sin tinte (el tinte es de la fila seleccionada). */
+  .rows-table td:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+  /* Con ratón, lo que actúa sobre UNA fila (abrirla, el lápiz, borrarla) solo
+     se ve en la fila por la que se pasa o en la que tiene el foco: en reposo la
+     tabla enseña datos, no cuarenta iconos. En táctil no hay hover y se quedan
+     a la vista, como antes. */
+  @media (hover: hover) and (pointer: fine) {
+    .rows-table .row-open,
+    .rows-table .rel-edit,
+    .rows-table .row-del { opacity: 0; }
+    .rows-table tr:hover .row-open,
+    .rows-table tr:focus-within .row-open,
+    .rows-table tr:hover .rel-edit,
+    .rows-table tr:focus-within .rel-edit { opacity: 0.75; }
+    .rows-table tr:hover .row-del,
+    .rows-table tr:focus-within .row-del,
+    .rows-table .row-open:hover,
+    .rows-table .row-open:focus-visible,
+    .rows-table .rel-edit:hover,
+    .rows-table .rel-edit:focus-visible { opacity: 1; }
+    /* La casilla, apagada hasta que hace falta: al pasar, con foco o marcada. */
+    .rows-table td .row-check { opacity: 0.45; }
+    .rows-table tr:hover .row-check,
+    .rows-table .row-check:focus-visible,
+    .rows-table .row-check:checked { opacity: 1; }
+  }
   /* Scroll horizontal propio y SIEMPRE visible: a 1024 px la tabla mide
      ~947 px de ancho natural contra los ~663 px útiles del panel, así que
      sin esto se recortaban columnas sin avisar (auditoría, §2.6). */
@@ -2551,7 +2627,7 @@
     position: relative;
     overflow-x: auto;
     border: 1px solid var(--panel-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--panel);
     scrollbar-width: thin;
     scrollbar-color: var(--border-input) transparent;
@@ -2572,6 +2648,25 @@
     margin: 0;
     font: inherit;
     color: inherit;
+  }
+  /* El editor ocupa la celda en vez de flotar dentro de ella: mismo alto que
+     la fila menos un respiro, filo de acento y nada del bisel del navegador.
+     Así editar una celda no hace saltar la fila ni parece un formulario. */
+  .rows-table td[data-editable="1"] > input:not([type="checkbox"]),
+  .rows-table td[data-editable="1"] > select {
+    height: 28px;
+    padding: 0 7px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .rows-table td[data-editable="1"]:has(> input:not([type="checkbox"])),
+  .rows-table td[data-editable="1"]:has(> select) {
+    padding: 0 4px;
+    box-shadow: none;
+    overflow: visible;
   }
 
   /* ---------- selección múltiple de filas ---------- */
@@ -2597,7 +2692,11 @@
   /* La fila marcada se tiñe entera: con la casilla sola no se ve de un vistazo
      cuáles van a entrar en la acción. Va DESPUÉS del `:hover` de la tabla, que
      tiene la misma especificidad. */
-  .rows-table tr.is-selected td { background: var(--accent-soft); }
+  .rows-table tr.is-selected td,
+  .rows-table tbody tr.is-selected:hover td { background: var(--accent-soft); }
+  /* Y un filo de acento en su borde izquierdo: con el tinte solo, una fila
+     marcada entre dos con hover se perdía. */
+  .rows-table tr.is-selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 
   /* La barra aparece con la primera fila marcada y va encima de la tabla (y de
      la lista), en el flujo: no tapa filas ni se va con su scroll horizontal. */
@@ -3725,7 +3824,8 @@
        columna: cuatro carriles de 256 px no caben en 375. */
     .table-wrap { max-width: 100%; }
     .rows-table th,
-    .rows-table td { padding: 10px 12px; }
+    .rows-table td { padding: 4px 12px; }
+    .rows-table td { height: 48px; }
     .board { flex-direction: column; overflow-x: visible; }
     .board-col { flex: 1 1 auto; width: 100%; }
     /* El calendario a 375 px no usa rejilla: se pinta como agenda (un bloque
@@ -3817,8 +3917,16 @@
       background: var(--panel);
       box-shadow: -1px 0 0 var(--panel-border);
     }
-    .rows-table tr:hover td.row-sel-cell { background: var(--code-bg); }
-    .rows-table tr.is-selected td.row-sel-cell { background: var(--accent-soft); }
+    /* El velo del hover y el tinte de la selección son translúcidos: sobre una
+       celda pegada dejaban ver el texto que pasa por debajo al desplazar. Se
+       pintan encima del fondo opaco de la caja. */
+    .rows-table tbody tr:hover td.row-sel-cell {
+      background: linear-gradient(var(--row-hover), var(--row-hover)), var(--panel);
+    }
+    .rows-table tr.is-selected td.row-sel-cell,
+    .rows-table tbody tr.is-selected:hover td.row-sel-cell {
+      background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel);
+    }
   }
 
   /* Cabecera muy estrecha / móvil pequeño: el nombre de usuario se queda en su
@@ -3890,7 +3998,7 @@
   }
   /* El contador es un dato, no un control: dentro de la celda del título el
      clic tiene que seguir editando el título. */
-  .cell-subtasks { margin-left: 8px; pointer-events: none; }
+  .cell-subtasks { margin-left: 8px; pointer-events: none; font-weight: 500; }
   /* La hija de una base se lee como hija también en la tabla: la sangría sola
      se confunde con el padding de la celda, y una flecha no admite duda. */
   .cell-title.is-subtask::before {

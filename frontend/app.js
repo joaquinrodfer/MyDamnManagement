@@ -10624,6 +10624,17 @@ function paintCell(td, database, row, prop, hooks = null) {
     prop?.type === "date" && (row.overdue_keys || []).includes(prop.key),
   );
   td.classList.toggle("cell-overdue", vencida);
+  // Sin valor: la raya se pinta apagada (solo presentación, ver `.cell-empty`).
+  const valorDeCelda = prop ? row.properties?.[prop.key] : row.title;
+  td.classList.toggle(
+    "cell-empty",
+    Boolean(prop) &&
+      prop.type !== "checkbox" &&
+      (valorDeCelda === undefined ||
+        valorDeCelda === null ||
+        valorDeCelda === "" ||
+        (Array.isArray(valorDeCelda) && valorDeCelda.length === 0)),
+  );
   // La columna del título se lee como jerarquía (la regla CSS va por clase:
   // la primera columna de la tabla es la de abrir la fila).
   td.classList.toggle("cell-title", !prop);
