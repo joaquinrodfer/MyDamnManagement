@@ -394,7 +394,9 @@ async function renderDashboard(main) {
   recentSection.appendChild(recentHead);
 
   if (data.recent_pages.length === 0) {
-    recentSection.innerHTML += '<div class="search-empty">Elige una página o crea una nueva.</div>';
+    recentSection.innerHTML +=
+      '<div class="empty-hint"><p class="empty-hint-title">Aquí saldrán las últimas páginas que toques.</p>' +
+      '<p class="empty-hint-note">Para empezar, crea una nota con «+» en la barra lateral, o una base desde el botón de plantilla que tiene al lado.</p></div>';
   } else {
     data.recent_pages.forEach((p) => {
       recentSection.appendChild(
@@ -2025,7 +2027,8 @@ function renderMisTareas(main) {
   if (!datos.count) {
     const vacio = document.createElement("div");
     vacio.className = "my-tasks-empty";
-    vacio.textContent = "No tienes ninguna tarea asignada.";
+    vacio.textContent =
+      "No tienes ninguna tarea asignada. Ponte como responsable en una fila de cualquier base y aparecerá aquí.";
     wrap.appendChild(vacio);
     main.appendChild(wrap);
     return;
@@ -2098,7 +2101,11 @@ async function loadTree() {
     const treeContainer = document.getElementById("tree-container");
     treeContainer.innerHTML = "";
 
-    if (notes.length === 0) treeContainer.innerHTML = '<div class="search-empty">Sin páginas aún.</div>';
+    if (notes.length === 0) {
+      treeContainer.innerHTML =
+        '<div class="empty-hint empty-hint--side"><p class="empty-hint-title">Todavía no hay páginas.</p>' +
+        '<p class="empty-hint-note">Pulsa «+» aquí arriba para escribir la primera nota.</p></div>';
+    }
     notes.forEach((n) => treeContainer.appendChild(renderTreeNode(n)));
 
     if (state.current) markActive(state.current.id);
@@ -2419,10 +2426,20 @@ function openEmojiPicker(anchorEl, onSelect) {
 
 // ------------------------------------------------------------------ notas
 
+/** Mientras llega una página: una línea fina bajo la cabecera (`.is-loading`
+ * en el CSS, que espera 150 ms antes de enseñarla: una carga rápida no
+ * parpadea). Se cuenta, porque dos navegaciones pueden solaparse. */
+let cargasEnCurso = 0;
+function marcarCarga(empieza) {
+  cargasEnCurso = Math.max(0, cargasEnCurso + (empieza ? 1 : -1));
+  document.body.classList.toggle("is-loading", cargasEnCurso > 0);
+}
+
 async function selectNote(id) {
   const previous = state.current;
   state.current = { kind: "note", id };
   markActive(id);
+  marcarCarga(true);
   try {
     const [page, backlinks] = await Promise.all([api(`/pages/${id}`), api(`/pages/${id}/backlinks`)]);
     renderNote(page, backlinks);
@@ -2433,6 +2450,8 @@ async function selectNote(id) {
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la nota", e);
+  } finally {
+    marcarCarga(false);
   }
 }
 
@@ -4756,6 +4775,7 @@ async function selectDatabase(id, { focus = null } = {}) {
   const previous = state.current;
   state.current = { kind: "database", id };
   markActive(id);
+  marcarCarga(true);
   try {
     const [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
     await renderDatabase(database, views, views[0]?.id ?? null, { focus });
@@ -4765,6 +4785,8 @@ async function selectDatabase(id, { focus = null } = {}) {
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la base de datos", e);
+  } finally {
+    marcarCarga(false);
   }
 }
 
@@ -10340,8 +10362,18 @@ function renderTable(
     // repintar) + la columna de acciones, que ahora está siempre.
     td.colSpan =
       propiedades.length + (muestraTitulo ? 1 : 0) + 2 + (onChanged ? 1 : 0);
-    td.className = "search-empty";
-    td.textContent = vacio || "Sin filas todavía.";
+    // Un vacío dice qué hacer: con filtro, que es el filtro; sin él, dónde se
+    // añade la primera fila (el alta está justo debajo de la tabla).
+    td.className = "search-empty rows-empty";
+    const tituloVacio = document.createElement("span");
+    tituloVacio.className = "empty-hint-title";
+    tituloVacio.textContent = vacio || "Esta base aún no tiene filas.";
+    const notaVacio = document.createElement("span");
+    notaVacio.className = "empty-hint-note";
+    notaVacio.textContent = vacio
+      ? "Cambia o quita una condición en «Filtrar» para ver más."
+      : "Añade la primera en «Nueva fila», aquí debajo.";
+    td.append(tituloVacio, notaVacio);
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
@@ -11925,7 +11957,11 @@ function renderList(database, rows, view, refresh) {
     return item;
   };
 
-  const avisoVacio = () => avisoDeVista("Sin filas todavía.", null);
+  const avisoVacio = () =>
+    avisoDeVista(
+      "Aquí no hay filas todavía.",
+      "Añade una con «Nueva fila», aquí debajo. Si la base ya tiene filas, las está dejando fuera el filtro de la vista.",
+    );
   rows.forEach((row) => wrap.appendChild(lineaDeFila(row)));
   if (rows.length === 0) wrap.appendChild(avisoVacio());
 
