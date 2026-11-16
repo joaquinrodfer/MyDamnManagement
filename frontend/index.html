@@ -1920,6 +1920,18 @@
     background: var(--panel);
     color: var(--ink);
   }
+  .db-add-row-template {
+    flex: 0 1 auto;
+    max-width: 46%;
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 9px;
+    border-radius: 7px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .db-add-row-template:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
   .db-add-row-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
   .db-add-row-status { margin: 6px 0 0; font-size: var(--text-sm); color: var(--ink-muted); line-height: 1.5; }
   /* Vacío no ocupa: el hueco del aviso no deja un espacio muerto debajo. */
@@ -3174,6 +3186,81 @@
   }
   .db-save-hint[hidden] { display: none; }
 
+  /* Plantillas (función 29): la lista de plantillas de serie y las tarjetas
+     del editor de plantillas de fila. Los botones de la lista son <button> (no
+     radios nativos) para que el foco y el teclado sean los de siempre en este
+     panel; el estado va en aria-checked. */
+  .sidebar-head-actions { display: flex; align-items: center; gap: 2px; }
+  .template-list { display: grid; gap: 8px; }
+  .template-option {
+    display: grid;
+    gap: 2px;
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+  }
+  .template-option:hover { border-color: var(--ink-muted); }
+  .template-option[aria-checked="true"] {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    background: var(--accent-soft);
+  }
+  .template-option-name { font-weight: 600; }
+  .template-option-desc { font-size: 12.5px; line-height: 1.4; color: var(--ink-muted); }
+  .template-option-meta { font-size: 11.5px; color: var(--ink-muted); }
+  .dialog-note { margin: 0 0 12px; font-size: 12.5px; line-height: 1.45; color: var(--ink-muted); }
+  .row-templates-list {
+    display: grid;
+    gap: 10px;
+    max-height: 46vh;
+    overflow-y: auto;
+    margin-bottom: 10px;
+  }
+  .row-template-card {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+  }
+  .row-template-head { display: flex; align-items: flex-end; gap: 8px; }
+  .row-template-head .field { flex: 1; margin: 0; }
+  .row-template-remove { flex: 0 0 auto; font-size: 20px; line-height: 1; }
+  .row-template-defaults {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+  }
+  .row-template-defaults .field { margin: 0; }
+  .row-template-body-label {
+    display: grid;
+    gap: 4px;
+    font-family: var(--font-body);
+    font-size: var(--text-xs);
+    color: var(--ink-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .row-template-body {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    text-transform: none;
+    letter-spacing: 0;
+    resize: vertical;
+  }
+
   /* Diálogos de cuenta (P11b): lista de usuarios y avisos en línea. */
   .users-list {
     display: flex;
@@ -3540,7 +3627,7 @@
     /* El nombre de la fila nueva se toca y se escribe con el dedo: 44 px de
        alto y 16 px de letra (por debajo, iOS hace zoom al enfocar). El botón
        ya mide 44 por la regla general de `.btn`. */
-    .db-add-row-input { min-height: 44px; font-size: 16px; }
+    .db-add-row-input, .db-add-row-template { min-height: 44px; font-size: 16px; }
     .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
     .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed { font-size: 16px; min-height: 44px; }
     #prop-rows { max-height: 50dvh; }
@@ -3924,7 +4011,10 @@
         <div class="sidebar-section">
           <div class="sidebar-section-head">
             <span>Páginas</span>
-            <button class="icon-btn" id="btn-new-note" title="Nueva nota" aria-label="Nueva nota"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
+            <div class="sidebar-head-actions">
+              <button class="icon-btn" id="btn-new-from-template" title="Crear desde plantilla" aria-label="Crear desde plantilla"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-database"/></svg></button>
+              <button class="icon-btn" id="btn-new-note" title="Nueva nota" aria-label="Nueva nota"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
+            </div>
           </div>
           <!-- role="tree": contenedor ARIA del árbol de páginas (SPEC-B §5 #1).
                Las filas son treeitem y .tree-children es group. -->
@@ -3960,6 +4050,44 @@
     <div class="dialog-actions">
       <button class="btn" id="btn-cancel-database">Cancelar</button>
       <button class="btn btn-primary" id="btn-save-database">Crear</button>
+    </div>
+  </dialog>
+
+  <!-- «Crear desde plantilla» (función 29): nombre, carpeta destino y la
+       plantilla de serie. La lista la pinta app.js desde /databases/templates;
+       el servidor valida la plantilla entera antes de escribir nada. -->
+  <dialog id="dialog-template">
+    <h3>Crear desde plantilla</h3>
+    <div class="field">
+      <label for="template-name">Nombre</label>
+      <input type="text" id="template-name" placeholder="Mi proyecto" />
+    </div>
+    <div class="field">
+      <label for="template-folder">Carpeta</label>
+      <select id="template-folder"></select>
+    </div>
+    <div class="field">
+      <label id="template-list-label">Plantilla</label>
+      <div id="template-list" class="template-list" role="radiogroup" aria-labelledby="template-list-label"></div>
+    </div>
+    <p id="template-hint" class="db-save-hint" role="status" hidden></p>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-cancel-template">Cancelar</button>
+      <button class="btn btn-primary" id="btn-create-template" disabled>Crear</button>
+    </div>
+  </dialog>
+
+  <!-- Plantillas de fila de la base: nombre, valores por defecto y cuerpo
+       inicial. Se guardan en el `.md` de la base (`row_templates:`). -->
+  <dialog id="dialog-row-templates">
+    <h3>Plantillas de fila</h3>
+    <p class="dialog-note">El «+ Nueva fila» de esta base ofrecerá estas plantillas: nombre, valores por defecto y, si lo hay, el cuerpo con el que nace la fila. Se guardan en el fichero de la base.</p>
+    <div id="row-templates-list" class="row-templates-list"></div>
+    <button type="button" class="btn" id="btn-add-row-template"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Plantilla</button>
+    <p id="row-templates-hint" class="db-save-hint" role="status" hidden></p>
+    <div class="dialog-actions">
+      <button class="btn" id="btn-cancel-row-templates">Cancelar</button>
+      <button class="btn btn-primary" id="btn-save-row-templates">Guardar</button>
     </div>
   </dialog>
 

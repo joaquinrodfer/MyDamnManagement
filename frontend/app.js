@@ -4913,6 +4913,15 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const newViewBtn = document.createElement("button");
   newViewBtn.className = "btn";
   newViewBtn.innerHTML = `${svgIcon("i-plus")}Vista`;
+  // Las plantillas de fila se configuran desde la base (función 29): lo que se
+  // guarda es parte de su `.md`, no una preferencia de esta pestaña.
+  const rowTemplatesBtn = document.createElement("button");
+  rowTemplatesBtn.className = "btn";
+  rowTemplatesBtn.textContent = "Plantillas de fila";
+  rowTemplatesBtn.addEventListener("click", () =>
+    openRowTemplatesDialog(database, recargarVistas),
+  );
+
   newViewBtn.addEventListener("click", () => openViewDialog(database));
 
   // Borrar la vista activa: se lleva su filtro, su orden y su tipo, y ninguna
@@ -4971,7 +4980,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     }
   });
 
-  headerActions.append(schemaBtn, newViewBtn);
+  headerActions.append(schemaBtn, rowTemplatesBtn, newViewBtn);
   if (activeView) headerActions.append(deleteViewBtn);
   headerActions.append(deleteDbBtn);
   header.append(title, headerActions);
@@ -6237,7 +6246,15 @@ async function renderDatabaseEmbed(block, container) {
     // tabla. El aviso de «el filtro la deja fuera» vive dentro del control.
     renderAddRowControl({
       vista: activeView,
-      onCreate: (titulo) => crearFilaEnVista(database, activeView, titulo),
+      plantillas: database.row_templates || [],
+      onCreate: (titulo, plantilla) =>
+        crearFilaEnVista(
+          database,
+          activeView,
+          titulo,
+          plantilla?.properties || {},
+          plantilla?.body || "",
+        ),
       onDone: (res) => {
         // Con el total de la base: si la vista filtra, el contador sigue
         // diciendo «N de M» en vez de perder el «de M» al crear la fila.
@@ -6354,7 +6371,7 @@ let ultimoCambioPropio = { databaseId: null, ts: 0 };
  * ordenada, y `total` (nulo si la vista no filtra) es el tamaño de la base,
  * que es lo que hace honesto el recuento «N de M» tras un alta.
  */
-async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
+async function crearFilaEnVista(database, activeView, titulo, extra = {}, body = "") {
   // ANTES del POST: el servidor publica `rows` en /events (M2) antes de
   // responder, así que el aviso le llega a esta pestaña antes que la fila. Se
   // apunta que el cambio es de aquí para ignorar el eco (si no, el editor
@@ -6363,7 +6380,13 @@ async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
   const fila = await api(`/databases/${database.id}/rows`, {
     method: "POST",
-    body: JSON.stringify({ title: titulo, properties: extra }),
+    // `body_markdown` viaja cuando la fila nace de una plantilla de fila: es su
+    // cuerpo inicial. Sin plantilla no se manda la clave (cuerpo vacío).
+    body: JSON.stringify({
+      title: titulo,
+      properties: extra,
+      ...(body ? { body_markdown: body } : {}),
+    }),
   });
   const filas = await api(
     `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
@@ -6458,7 +6481,13 @@ function enfocarFila(container, rowId) {
  * El aviso (`role=status`) vive aquí dentro, así que sobrevive al repintado de
  * las filas y se lee sin mover el foco.
  */
-function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row" }) {
+function renderAddRowControl({
+  vista,
+  plantillas = [],
+  onCreate,
+  onDone,
+  className = "db-add-row",
+}) {
   const wrap = document.createElement("div");
   wrap.className = className;
   // Dentro de una nota, el bloque de la base es un widget del editor con un
@@ -6485,6 +6514,33 @@ function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row"
   submit.type = "submit";
   submit.className = "btn btn-primary";
   submit.textContent = "Añadir";
+  // El desplegable de plantillas de fila (función 29): elegir una rellena el
+  // alta con sus valores por defecto y su cuerpo. Sin plantillas en la base no
+  // se pinta nada: un desplegable con una sola opción vacía es ruido.
+  const selectorPlantilla = document.createElement("select");
+  selectorPlantilla.className = "db-add-row-template";
+  selectorPlantilla.setAttribute("aria-label", "Plantilla de fila");
+  if (plantillas.length) {
+    const vacia = document.createElement("option");
+    vacia.value = "";
+    vacia.textContent = "Sin plantilla";
+    selectorPlantilla.appendChild(vacia);
+    plantillas.forEach((plantilla) => {
+      const opcion = document.createElement("option");
+      opcion.value = plantilla.name;
+      opcion.textContent = plantilla.name;
+      selectorPlantilla.appendChild(opcion);
+    });
+    selectorPlantilla.addEventListener("change", () => input.focus());
+    // Va delante del nombre: primero se elige la plantilla y luego se escribe
+    // el nombre. `append` y no `insertBefore`: el `input` aún no es hijo del
+    // formulario en este punto (se añade justo abajo).
+    form.append(selectorPlantilla);
+  } else {
+    selectorPlantilla.hidden = true;
+  }
+  const plantillaElegida = () =>
+    plantillas.find((plantilla) => plantilla.name === selectorPlantilla.value) || null;
   form.append(input, submit);
 
   const status = document.createElement("p");
@@ -6501,6 +6557,7 @@ function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row"
   };
   const cerrar = () => {
     input.value = "";
+    selectorPlantilla.value = "";
     form.hidden = true;
     btn.hidden = false;
     btn.focus();
@@ -6555,7 +6612,7 @@ function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row"
     input.disabled = true;
     submit.disabled = true;
     try {
-      const res = await onCreate(titulo);
+      const res = await onCreate(titulo, plantillaElegida());
       cerrar();
       status.textContent = res.visible
         ? `Fila «${titulo}» añadida.`
@@ -11204,8 +11261,14 @@ function renderCalendar(database, rows, view, refresh) {
   // hoy para enseñarla; el filtro de la vista, si la deja fuera, se dice.
   const addRow = renderAddRowControl({
     vista: view,
-    onCreate: (titulo) =>
-      crearFilaEnVista(database, view, titulo, { [dateProp.key]: claveDeHoy() }),
+    plantillas: database.row_templates || [],
+    onCreate: (titulo, plantilla) => {
+      const extra = { ...(plantilla?.properties || {}) };
+      // Un evento sin fecha no cae en ningún día y no se vería: si la plantilla
+      // no trae la fecha, se pone la de hoy (el día en que se añade).
+      if (extra[dateProp.key] === undefined) extra[dateProp.key] = claveDeHoy();
+      return crearFilaEnVista(database, view, titulo, extra, plantilla?.body || "");
+    },
     onDone: (res) => {
       refrescarRecuentoDeVista(grid, res.filas.length, res.total);
       if (!res.visible) return; // el aviso del control ya dice por qué no se ve
@@ -11332,7 +11395,15 @@ function renderList(database, rows, view, refresh) {
   const addRow = renderAddRowControl({
     vista: view,
     className: "db-add-row db-add-row--list",
-    onCreate: (titulo) => crearFilaEnVista(database, view, titulo),
+    plantillas: database.row_templates || [],
+    onCreate: (titulo, plantilla) =>
+      crearFilaEnVista(
+        database,
+        view,
+        titulo,
+        plantilla?.properties || {},
+        plantilla?.body || "",
+      ),
     onDone: (res) => {
       // La cabecera (la casilla de «todas») se queda: se rehacen las filas.
       for (const hijo of [...wrap.children]) {
@@ -12294,6 +12365,51 @@ function renderAddRowForm(database) {
     propInputs.push({ prop: p, input, read });
     });
 
+  // Plantillas de fila de ESTA base (función 29). Elegir una rellena los
+  // valores por defecto y el cuerpo con el que nace la fila. El título no se
+  // rellena: la plantilla es una forma de empezar, no un nombre en serie (dos
+  // «Revisión semanal» acabarían compartiendo carpeta y nombre).
+  const plantillas = Array.isArray(database.row_templates) ? database.row_templates : [];
+  let cuerpoDePlantilla = "";
+  if (plantillas.length) {
+    const templateField = document.createElement("div");
+    templateField.className = "field";
+    const templateLabel = document.createElement("label");
+    templateLabel.textContent = "Plantilla";
+    templateLabel.htmlFor = "nueva-fila-plantilla";
+    const templateSelect = document.createElement("select");
+    templateSelect.id = "nueva-fila-plantilla";
+    const vacia = document.createElement("option");
+    vacia.value = "";
+    vacia.textContent = "Sin plantilla";
+    templateSelect.appendChild(vacia);
+    plantillas.forEach((plantilla) => {
+      const opcion = document.createElement("option");
+      opcion.value = plantilla.name;
+      opcion.textContent = plantilla.name;
+      templateSelect.appendChild(opcion);
+    });
+    templateSelect.addEventListener("change", () => {
+      const elegida =
+        plantillas.find((plantilla) => plantilla.name === templateSelect.value) || null;
+      // Al volver a «Sin plantilla» no se borra lo que ya hay escrito: solo se
+      // deja de enviar el cuerpo. Deshacer lo tecleado sin avisar sería peor.
+      cuerpoDePlantilla = elegida?.body || "";
+      if (!elegida) return;
+      propInputs.forEach(({ prop, input }) => {
+        const valores = elegida.properties || {};
+        if (!Object.prototype.hasOwnProperty.call(valores, prop.key)) return;
+        const valor = valores[prop.key];
+        if (prop.type === "checkbox") input.checked = Boolean(valor);
+        else if (Array.isArray(valor)) input.value = valor.join(", ");
+        else input.value = valor === null || valor === undefined ? "" : String(valor);
+      });
+    });
+    templateField.append(templateLabel, templateSelect);
+    // Justo debajo del título: es lo primero que se elige al añadir una fila.
+    wrap.insertBefore(templateField, titleField.nextSibling);
+  }
+
   const submitBtn = document.createElement("button");
   submitBtn.className = "btn btn-primary";
   submitBtn.textContent = "Añadir fila";
@@ -12329,7 +12445,11 @@ function renderAddRowForm(database) {
     try {
       await api(`/databases/${database.id}/rows`, {
         method: "POST",
-        body: JSON.stringify({ title: titulo, properties }),
+        body: JSON.stringify({
+          title: titulo,
+          properties,
+          ...(cuerpoDePlantilla ? { body_markdown: cuerpoDePlantilla } : {}),
+        }),
       });
       selectDatabase(database.id, { focus: "addRow" });
     } catch (e) {
@@ -12611,6 +12731,328 @@ function addPropertyRow(prop = null) {
   propRowsContainer.appendChild(wrap);
   aplicarVisibilidad();
 }
+
+
+// --------------------------------------------------- plantillas (función 29)
+// Una plantilla es parte de la base: el catálogo de serie vive en el servidor
+// (`GET /databases/templates`) y las plantillas de fila en el `.md` de cada
+// base (`row_templates:`). Aquí solo se eligen, se aplican y se editan.
+
+let plantillasDeSerie = null;
+
+async function cargarPlantillasDeSerie() {
+  if (!plantillasDeSerie) plantillasDeSerie = await api("/databases/templates");
+  return plantillasDeSerie;
+}
+
+/** Las notas donde puede nacer una base (la carpeta destino es una nota).
+ * En la raíz la base vive en `Bases/`; colgando de una nota, en su carpeta. */
+function notasParaCarpetaDePlantilla() {
+  return [...state.pagesById.values()]
+    .filter((n) => n && n.type === "note")
+    .sort((a, b) =>
+      String(a.title || "").localeCompare(String(b.title || ""), "es", {
+        sensitivity: "base",
+      }),
+    );
+}
+
+/** «Crear desde plantilla»: nombre, carpeta destino y una plantilla de serie.
+ *
+ * El servidor valida la plantilla entera antes de escribir nada y contesta un
+ * 400 con el motivo si algo no encaja; el diálogo se queda abierto con esa
+ * frase a la vista y no se crea nada a medias.
+ */
+async function openTemplateDialog() {
+  const dialog = document.getElementById("dialog-template");
+  const lista = document.getElementById("template-list");
+  const nombre = document.getElementById("template-name");
+  const carpeta = document.getElementById("template-folder");
+  const crear = document.getElementById("btn-create-template");
+  const cancelar = document.getElementById("btn-cancel-template");
+  const hint = document.getElementById("template-hint");
+  hint.hidden = true;
+  hint.textContent = "";
+
+  let catalogo;
+  try {
+    catalogo = await cargarPlantillasDeSerie();
+  } catch (e) {
+    reportError("No se pudieron cargar las plantillas", e);
+    return;
+  }
+
+  let elegida = catalogo[0]?.key || null;
+  const pintarSeleccion = () => {
+    lista.querySelectorAll(".template-option").forEach((opcion) => {
+      opcion.setAttribute(
+        "aria-checked",
+        opcion.dataset.key === elegida ? "true" : "false",
+      );
+    });
+    crear.disabled = !nombre.value.trim() || !elegida;
+  };
+
+  lista.innerHTML = "";
+  catalogo.forEach((plantilla) => {
+    const opcion = document.createElement("button");
+    opcion.type = "button";
+    opcion.className = "template-option";
+    opcion.dataset.key = plantilla.key;
+    opcion.setAttribute("role", "radio");
+    const titulo = document.createElement("span");
+    titulo.className = "template-option-name";
+    titulo.textContent = plantilla.title;
+    const descripcion = document.createElement("span");
+    descripcion.className = "template-option-desc";
+    descripcion.textContent = plantilla.description || "";
+    const meta = document.createElement("span");
+    meta.className = "template-option-meta";
+    meta.textContent = `${plantilla.properties.length} propiedades · ${(
+      plantilla.views || []
+    ).join(", ")}`;
+    opcion.append(titulo, descripcion, meta);
+    opcion.addEventListener("click", () => {
+      elegida = plantilla.key;
+      pintarSeleccion();
+      if (!nombre.dataset.tocado) {
+        nombre.placeholder = `Mi ${plantilla.title.toLowerCase()}`;
+      }
+    });
+    lista.appendChild(opcion);
+  });
+
+  carpeta.innerHTML = "";
+  const raiz = document.createElement("option");
+  raiz.value = "";
+  raiz.textContent = "Bases (raíz)";
+  carpeta.appendChild(raiz);
+  notasParaCarpetaDePlantilla().forEach((nota) => {
+    const opcion = document.createElement("option");
+    opcion.value = nota.id;
+    opcion.textContent = nota.title || "Sin título";
+    carpeta.appendChild(opcion);
+  });
+
+  nombre.value = "";
+  delete nombre.dataset.tocado;
+  nombre.placeholder = catalogo[0]
+    ? `Mi ${catalogo[0].title.toLowerCase()}`
+    : "Mi proyecto";
+  pintarSeleccion();
+
+  nombre.oninput = () => {
+    nombre.dataset.tocado = "1";
+    pintarSeleccion();
+  };
+  cancelar.onclick = () => dialog.close();
+  crear.onclick = async () => {
+    const titulo = nombre.value.trim();
+    if (!titulo) {
+      nombre.focus();
+      return;
+    }
+    crear.disabled = true;
+    hint.hidden = true;
+    try {
+      const base = await api("/databases/from-template", {
+        method: "POST",
+        body: JSON.stringify({
+          template: elegida,
+          title: titulo,
+          ...(carpeta.value ? { parent_id: carpeta.value } : {}),
+        }),
+      });
+      dialog.close();
+      await loadTree();
+      await goTo("database", base.id);
+    } catch (e) {
+      hint.textContent = describeError(e);
+      hint.hidden = false;
+      crear.disabled = false;
+    }
+  };
+  dialog.showModal();
+  nombre.focus();
+}
+
+/** Un campo de valor por defecto de una plantilla de fila.
+ *
+ * Reusa `buildPropertyInput`, que es el único sitio que decide qué control usa
+ * cada tipo y cómo se lee, para que lo que se guarda aquí sea exactamente lo
+ * que se escribiría en una fila. */
+function campoDeValorPorDefecto(prop, valor, indice) {
+  const campo = document.createElement("div");
+  campo.className = "field";
+  const label = document.createElement("label");
+  label.textContent = prop.name;
+  const { input, read } = buildPropertyInput(prop, valor);
+  const id = idDeCampo("plantilla-fila", indice, prop.key);
+  input.id = id;
+  label.htmlFor = id;
+  campo.append(label, input);
+  return { campo, prop, read };
+}
+
+/** Una tarjeta del editor de plantillas de fila: nombre, valores por defecto
+ * de las propiedades que admiten literal y cuerpo inicial. */
+function plantillaDeFilaEditable(template, indice, schema, alQuitar) {
+  const card = document.createElement("div");
+  card.className = "row-template-card";
+
+  const head = document.createElement("div");
+  head.className = "row-template-head";
+  const campoNombre = document.createElement("div");
+  campoNombre.className = "field";
+  const labelNombre = document.createElement("label");
+  labelNombre.textContent = "Nombre";
+  const nombre = document.createElement("input");
+  nombre.type = "text";
+  nombre.className = "row-template-name";
+  nombre.value = template?.name || "";
+  const idNombre = idDeCampo("plantilla-fila-nombre", indice, "nombre");
+  nombre.id = idNombre;
+  labelNombre.htmlFor = idNombre;
+  campoNombre.append(labelNombre, nombre);
+
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "icon-btn row-template-remove";
+  quitar.title = "Quitar plantilla";
+  quitar.setAttribute("aria-label", "Quitar plantilla");
+  quitar.textContent = "×";
+  quitar.addEventListener("click", () => alQuitar(card));
+  head.append(campoNombre, quitar);
+  card.appendChild(head);
+
+  // Una relación, una subtarea o una persona no pueden traer un valor por
+  // defecto: se guardan por ids que no existen hasta que hay filas o usuarios.
+  const editables = schema.filter(
+    (prop) => !["relation", "parent_row", "person"].includes(prop.type),
+  );
+  const lectores = [];
+  if (editables.length) {
+    const defaults = document.createElement("div");
+    defaults.className = "row-template-defaults";
+    editables.forEach((prop) => {
+      const { campo, read } = campoDeValorPorDefecto(
+        prop,
+        (template?.properties || {})[prop.key],
+        indice,
+      );
+      defaults.appendChild(campo);
+      lectores.push({ prop, read });
+    });
+    card.appendChild(defaults);
+  }
+
+  const labelCuerpo = document.createElement("label");
+  labelCuerpo.className = "row-template-body-label";
+  labelCuerpo.textContent = "Cuerpo inicial";
+  const cuerpo = document.createElement("textarea");
+  cuerpo.className = "row-template-body";
+  cuerpo.rows = 3;
+  cuerpo.value = template?.body || "";
+  labelCuerpo.appendChild(cuerpo);
+  card.appendChild(labelCuerpo);
+
+  card.__nombre = nombre;
+  card.__cuerpo = cuerpo;
+  card.__lectores = lectores;
+  // Lo que la plantilla YA declaraba: un checkbox sin marcar que nadie ha
+  // tocado no se guarda como `false` (sería inventarle un valor por defecto a
+  // una propiedad que la plantilla no mencionaba). Si estaba declarado, el
+  // `false` es lo que el usuario acaba de elegir y sí se guarda.
+  card.__previos = new Set(Object.keys(template?.properties || {}));
+  return card;
+}
+
+/** «Plantillas de fila» (menú de la base): lo que se guarda es parte del `.md`
+ * de la base, no una preferencia de esta pestaña. Al guardar, `refresh` relee
+ * la base para que el «+ Nueva fila» ofrezca las plantillas nuevas. */
+function openRowTemplatesDialog(database, refresh = null) {
+  const dialog = document.getElementById("dialog-row-templates");
+  const lista = document.getElementById("row-templates-list");
+  const hint = document.getElementById("row-templates-hint");
+  const guardar = document.getElementById("btn-save-row-templates");
+  const schema = (database.schema_def || []).filter((p) => p && p.key);
+  hint.hidden = true;
+  hint.textContent = "";
+  lista.innerHTML = "";
+
+  const alQuitar = (card) => card.remove();
+  const anadir = (template, indice) => {
+    lista.appendChild(plantillaDeFilaEditable(template, indice, schema, alQuitar));
+  };
+  (database.row_templates || []).forEach((t, i) => anadir(t, i));
+  if (!(database.row_templates || []).length) anadir(null, 0);
+
+  document.getElementById("btn-add-row-template").onclick = () => {
+    const card = plantillaDeFilaEditable(
+      null,
+      lista.querySelectorAll(".row-template-card").length,
+      schema,
+      alQuitar,
+    );
+    lista.appendChild(card);
+    card.querySelector(".row-template-name").focus();
+  };
+  document.getElementById("btn-cancel-row-templates").onclick = () => dialog.close();
+  guardar.onclick = async () => {
+    const row_templates = [];
+    for (const card of [...lista.querySelectorAll(".row-template-card")]) {
+      const name = card.__nombre.value.trim();
+      const body = card.__cuerpo.value;
+      const properties = {};
+      for (const { prop, read } of card.__lectores) {
+        const valor = read();
+        if (valor === null || valor === undefined || valor === "") continue;
+        if (Array.isArray(valor) && valor.length === 0) continue;
+        if (prop.type === "checkbox" && valor === false && !card.__previos.has(prop.key)) {
+          continue;
+        }
+        properties[prop.key] = valor;
+      }
+      if (!name) {
+        // Una tarjeta vacía no es una plantilla; una con contenido y sin nombre
+        // no se puede elegir en el alta, así que se dice y no se guarda.
+        if (body.trim() || Object.keys(properties).length) {
+          hint.textContent = "Cada plantilla necesita un nombre.";
+          hint.hidden = false;
+          card.__nombre.focus();
+          return;
+        }
+        continue;
+      }
+      row_templates.push({ name, properties, body });
+    }
+    guardar.disabled = true;
+    hint.hidden = true;
+    try {
+      const actualizada = await api(`/databases/${database.id}/row-templates`, {
+        method: "PUT",
+        body: JSON.stringify({ row_templates }),
+      });
+      database.row_templates = actualizada.row_templates;
+      dialog.close();
+      if (refresh) await refresh();
+    } catch (e) {
+      // El servidor dice qué valor o qué clave no existe; el diálogo sigue
+      // abierto y el `.md` no se ha tocado.
+      hint.textContent = describeError(e);
+      hint.hidden = false;
+    } finally {
+      guardar.disabled = false;
+    }
+  };
+  dialog.showModal();
+}
+
+document.getElementById("btn-new-from-template").addEventListener("click", () => {
+  openTemplateDialog().catch((e) =>
+    reportError("No se pudo abrir «Crear desde plantilla»", e),
+  );
+});
 
 /** Abre el diálogo en alta (`database` nulo) o para editar una existente.
  * `refresh` repinta la vista actual cuando el PATCH del schema termina; el
