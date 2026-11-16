@@ -182,6 +182,11 @@ RESERVED_ROW_KEYS = frozenset({"title", "id", "icon", "description", "created", 
 # títulos cambian y una relación guardada por título se rompe al renombrar.
 #   simple:    contacto: 7f3a91c2-...
 #   múltiple:  contacto: [7f3a91c2-..., 91be02dd-...]
+# Tipos de propiedad cuyos valores salen de una lista cerrada (`options`) y que
+# por tanto pueden declarar en qué orden se leen (`sort_order`). Ver
+# `sort_order_property`.
+SORTABLE_TYPES = ("select", "multiselect")
+
 RELATION = "relation"
 
 # Tipo de propiedad cuyo valor es el **`id`** de la fila madre, de la MISMA base
@@ -524,12 +529,71 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
             continue
         if isinstance(prop, dict):
             prop = relation_property(prop)
+            prop = sort_order_property(prop, path, warnings)
         effective.append(prop)
         if not isinstance(prop, dict) or "key" not in prop:
             warnings.append(f"propiedad de schema inválida en {path}: {prop!r}")
         elif prop.get("type") not in TYPES:
             warnings.append(f"tipo desconocido {prop.get('type')!r} en {path}:{prop.get('key')}")
     return effective
+
+
+def sort_order_property(prop: dict, path: str, warnings: list[str]) -> dict:
+    """El orden declarado de una selección (`sort_order`), tal y como lo lee la app.
+
+    `sort_order` dice en qué orden se leen y se agrupan los valores de un
+    `select`/`multiselect`: `[alta, media, baja]` se ordena por importancia y no
+    por alfabeto. Es **opcional**, y una base que no lo declara se ordena como
+    siempre (alfabético): así esta función no cambia el orden de las bases que
+    ya existían sin que nadie lo haya pedido.
+
+    Se limpia al leer (sin vacíos, sin repetir, sin espacios de sobra) para que
+    un `.md` escrito a mano se comporte como uno guardado desde la app; una
+    lista vacía es «no declara nada» y la clave se va del modelo. Una propiedad
+    que no es de selección lo suelta con aviso: en un texto el orden de esa
+    lista no significa nada, y guardarlo haría que el próximo guardado de la
+    base lo reescribiera.
+    """
+    if "sort_order" not in prop:
+        return prop
+    out = dict(prop)
+    valores = sort_values(out.get("sort_order"))
+    if not valores:
+        out.pop("sort_order", None)
+        return out
+    if out.get("type") not in SORTABLE_TYPES:
+        warnings.append(
+            f"{path}: 'sort_order' de {out.get('key')!r} se ignora: solo vale en "
+            "una selección o multiselección (ahí sí dice el orden de sus valores)"
+        )
+        out.pop("sort_order", None)
+        return out
+    out["sort_order"] = valores
+    return out
+
+
+def sort_values(raw) -> list[str]:
+    """Los valores de una lista del `.md`, limpios: sin vacíos y sin repetir.
+
+    El parser no infiere tipos y el `.md` lo escribe el usuario: se acepta una
+    lista (`[alta, media, baja]`) y también un texto con comas
+    (`sort_order: alta, media, baja`), que es como se escribe a mano un orden
+    corto. Se conserva el orden de aparición y la grafía del primero que la
+    declare (quien compara normaliza mayúsculas aparte).
+    """
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, list):
+        return []
+    valores: list[str] = []
+    vistos: set[str] = set()
+    for valor in raw:
+        texto = str(valor).strip()
+        clave = texto.casefold()
+        if texto and clave not in vistos:
+            vistos.add(clave)
+            valores.append(texto)
+    return valores
 
 
 def relation_property(prop: dict) -> dict:

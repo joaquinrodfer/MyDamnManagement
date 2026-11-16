@@ -2657,6 +2657,25 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
+  /* Asa de la cabecera: recoloca la columna. El orden se guarda en la
+     propiedad (`sort_order` en el `.md` de la base), no en la vista. */
+  .board-col-head.is-reorderable { cursor: grab; }
+  .board-col-head.is-reorderable:active { cursor: grabbing; }
+  .board-col-grip {
+    color: var(--ink-muted);
+    font-size: 12px;
+    letter-spacing: 0;
+    margin-right: 6px;
+    opacity: 0.5;
+  }
+  .board-col-head.is-reorderable:hover .board-col-grip { opacity: 1; }
+  .board-col.is-col-dragging { opacity: 0.5; border-style: dashed; }
+  .board-col.is-col-dragover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    outline: 1px dashed var(--accent);
+    outline-offset: -3px;
+  }
   .board-card {
     background: var(--surface-elevated);
     border: 1px solid var(--panel-border);

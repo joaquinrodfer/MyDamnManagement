@@ -8758,7 +8758,11 @@ function esquemaConPropiedad(database, key, cambios) {
   return (database.schema_def || []).map((p) => {
     if (p.key !== key) return { ...p };
     const nueva = { ...p, ...cambios };
-    if (nueva.type !== "select" && nueva.type !== "multiselect") delete nueva.options;
+    if (nueva.type !== "select" && nueva.type !== "multiselect") {
+      // El orden declarado y las opciones solo existen en una selección.
+      delete nueva.options;
+      delete nueva.sort_order;
+    }
     if (nueva.type !== "relation") {
       delete nueva.target_database;
       delete nueva.multiple;
@@ -10393,6 +10397,56 @@ function editCell(td, database, row, prop, hooks = null) {
  * eventos lo traen y además se rellena por si lo lee alguien más. */
 let boardDrag = null;
 
+/** Columna que se está arrastrando para recolocarla. Es un arrastre distinto
+ * del de las tarjetas: `boardDrag` mueve una fila a otra columna, este mueve la
+ * columna de sitio (y lo que cambia es el `sort_order` de la propiedad). */
+let boardColumnDrag = null;
+
+/** Quita las marcas de un arrastre de columnas que se canceló (Esc). */
+function limpiarArrastreDeColumnas() {
+  document
+    .querySelectorAll(".board-col.is-col-dragover, .board-col.is-col-dragging")
+    .forEach((c) => c.classList.remove("is-col-dragover", "is-col-dragging"));
+}
+
+/** `lista` con `movido` en el sitio de `destino`.
+ *
+ * Se mueve el valor, no se intercambian dos: lo que el usuario ve al soltar es
+ * que su columna cae donde apuntaba y las demás se corren un puesto. Si va
+ * hacia la derecha cae DESPUÉS de la de destino y si va hacia la izquierda,
+ * antes — así arrastrar un puesto a la derecha mueve de verdad en vez de
+ * dejarla donde estaba.
+ */
+function moverEnLista(lista, movido, destino) {
+  const desde = lista.findIndex((v) => mismoValorDeColumna(v, movido));
+  const hasta = lista.findIndex((v) => mismoValorDeColumna(v, destino));
+  if (desde < 0 || hasta < 0 || desde === hasta) return [...lista];
+  const resto = lista.filter((_, i) => i !== desde);
+  const antes = lista.slice(0, hasta).filter((_, i) => i !== desde).length;
+  const posicion = antes + (desde < hasta ? 1 : 0);
+  return [...resto.slice(0, posicion), lista[desde], ...resto.slice(posicion)];
+}
+
+/** Guarda el orden de las columnas en la PROPIEDAD (`sort_order`), no en la
+ * vista: es el mismo PATCH del `schema_def` que usa el menú de una columna, con
+ * la lista limpia de valores vacíos («Sin valor» no es un valor de la
+ * propiedad). El `.md` de la base es la verdad, así que recargar lo mantiene.
+ */
+async function guardarOrdenDeColumnas(database, groupKey, orden, refresh) {
+  const limpio = (orden || []).filter(
+    (v) => v !== null && v !== undefined && String(v).trim() !== "",
+  );
+  try {
+    await guardarEsquemaDeColumnas(
+      database,
+      esquemaConPropiedad(database, groupKey, { sort_order: limpio }),
+    );
+    refresh?.();
+  } catch (e) {
+    reportError("No se pudo guardar el orden de las columnas", e);
+  }
+}
+
 function renderBoard(database, rows, view, refresh) {
   const groupKey = view.config.group_by;
   const prop = database.schema_def.find((p) => p.key === groupKey);
@@ -10490,9 +10544,18 @@ function renderBoard(database, rows, view, refresh) {
     return board;
   }
 
-  const columns = prop?.options?.length ? prop.options : uniqueValues(rows, groupKey);
+  // Las columnas, en el orden que declara la propiedad (`sort_order` en el
+  // `schema` de la base): `[alta, media, baja]` se lee por importancia y no por
+  // alfabeto, y el tablero es donde eso se ve. Sin orden declarado, el de
+  // `options` (el de siempre) y después los valores que solo están en filas.
+  const columnas = columnasDelTablero(prop, rows, groupKey);
+  const valoresDeColumnas = columnas.map((c) => c.valor);
+  // Solo una selección puede declarar el orden de sus valores, así que solo
+  // ahí la cabecera de la columna se arrastra: el orden se guarda en la
+  // PROPIEDAD (no en la vista) para que lo vean todas las vistas del tablero.
+  const reordenable = prop?.type === "select" || prop?.type === "multiselect";
 
-  const grouped = new Map(columns.map((c) => [c, []]));
+  const grouped = new Map(columnas.map((c) => [c.valor, []]));
   const other = [];
   rows.forEach((r) => {
     const v = r.properties?.[groupKey];
@@ -10501,8 +10564,14 @@ function renderBoard(database, rows, view, refresh) {
   });
 
   const options = { groupKey, refresh, porId };
-  columns.forEach((col) =>
-    board.appendChild(renderBoardColumn(database, col, grouped.get(col) || [], options))
+  columnas.forEach((columna) =>
+    board.appendChild(
+      renderBoardColumn(database, columna.valor, grouped.get(columna.valor) || [], {
+        ...options,
+        soltar: columna.soltar,
+        columna: reordenable ? { valor: columna.valor, valores: valoresDeColumnas } : null,
+      }),
+    ),
   );
   // "Sin valor" también es destino: soltar ahí vacía la propiedad, que es lo
   // mismo que sacar la tarjeta de cualquier columna.
@@ -10522,14 +10591,55 @@ function uniqueValues(rows, key) {
   return seen;
 }
 
+/** Las columnas de un tablero, en orden: `[{ valor, soltar }]`.
+ *
+ * Primero los valores que declara `sort_order` (el orden semántico: alta,
+ * media, baja), después los de `options` que no estén declarados y al final los
+ * que solo existen en las filas (escritos a mano en un `.md`, o de una opción
+ * borrada). Un valor sin sitio va al final y no al principio: es la misma regla
+ * que la ordenación de la tabla, y por lo mismo — lo que apareció después no es
+ * «lo más importante».
+ *
+ * `soltar` dice si una tarjeta puede caer en esa columna. Con `options`
+ * declaradas el servidor rechaza un valor que no esté en la lista (400), así
+ * que una columna de un valor suelto no es un destino: se pinta para que la
+ * fila se pueda leer, no para soltarle cosas encima.
+ */
+function columnasDelTablero(prop, rows, groupKey) {
+  const opciones = new Set((prop?.options || []).map((v) => String(v).trim().toLowerCase()));
+  const conOpciones = opciones.size > 0;
+  const vistas = new Set();
+  const columnas = [];
+  const anadir = (valor) => {
+    // Una multiselección guarda una lista: no es un valor de columna.
+    if (typeof valor !== "string" && typeof valor !== "number") return;
+    const texto = String(valor);
+    const clave = texto.trim().toLowerCase();
+    if (!clave || vistas.has(clave)) return;
+    vistas.add(clave);
+    columnas.push({ valor: texto, soltar: !conOpciones || opciones.has(clave) });
+  };
+  (prop?.sort_order || []).forEach(anadir);
+  (prop?.options || []).forEach(anadir);
+  uniqueValues(rows, groupKey).forEach(anadir);
+  return columnas;
+}
+
+/** Dos valores de columna son el mismo si lo son sin mayúsculas ni espacios:
+ * el `.md` lo escribe una persona y `Alta` y `alta` son la misma opción. */
+function mismoValorDeColumna(a, b) {
+  return String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+}
+
 function renderBoardColumn(
   database,
   label,
   rows,
-  { groupKey, refresh, value = label, porId = null },
+  { groupKey, refresh, value = label, porId = null, soltar = true, columna = null },
 ) {
   const col = document.createElement("div");
   col.className = "board-col";
+  col.dataset.columna = String(label);
 
   const head = document.createElement("div");
   head.className = "board-col-head";
@@ -10540,9 +10650,66 @@ function renderBoardColumn(
   head.append(labelSpan, countSpan);
   col.appendChild(head);
 
+  // El asa de la cabecera recoloca la columna. El orden se guarda en el
+  // `schema` de la base (`sort_order`), así que sobrevive a recargar y lo ven
+  // todas las vistas de este tablero: no es un orden de la vista.
+  if (columna && groupKey) {
+    const asa = document.createElement("span");
+    asa.className = "board-col-grip";
+    asa.textContent = "⠿";
+    asa.title = "Arrastra para recolocar la columna";
+    asa.setAttribute("aria-hidden", "true");
+    head.prepend(asa);
+    head.classList.add("is-reorderable");
+    head.draggable = true;
+    head.addEventListener("dragstart", (e) => {
+      boardColumnDrag = {
+        databaseId: database.id,
+        valor: columna.valor,
+        valores: columna.valores,
+      };
+      col.classList.add("is-col-dragging");
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        try {
+          e.dataTransfer.setData("text/plain", String(columna.valor));
+        } catch {
+          // algunos navegadores no dejan tocar dataTransfer en dragstart
+        }
+      }
+    });
+    head.addEventListener("dragend", () => {
+      boardColumnDrag = null;
+      limpiarArrastreDeColumnas();
+    });
+    col.addEventListener("dragover", (e) => {
+      if (!boardColumnDrag || boardColumnDrag.databaseId !== database.id) return;
+      e.preventDefault();
+      col.classList.add("is-col-dragover");
+    });
+    col.addEventListener("dragleave", (e) => {
+      if (e.relatedTarget && col.contains(e.relatedTarget)) return;
+      col.classList.remove("is-col-dragover");
+    });
+    col.addEventListener("drop", (e) => {
+      const drag = boardColumnDrag;
+      if (!drag || drag.databaseId !== database.id) return;
+      e.preventDefault();
+      boardColumnDrag = null;
+      limpiarArrastreDeColumnas();
+      if (mismoValorDeColumna(drag.valor, columna.valor)) return;
+      guardarOrdenDeColumnas(
+        database,
+        groupKey,
+        moverEnLista(drag.valores, drag.valor, columna.valor),
+        refresh,
+      );
+    });
+  }
+
   // Sin `group_by` no hay arrastre: sin clave no se escribe nada, así que la
   // columna no acepta drops.
-  if (groupKey) {
+  if (groupKey && soltar) {
     col.addEventListener("dragover", (e) => {
       if (!boardDrag || boardDrag.databaseId !== database.id) return;
       e.preventDefault();

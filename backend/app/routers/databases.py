@@ -10,6 +10,7 @@ from app import auth
 from app.dependencies import get_current_user, get_repo
 from app.events import publish_database
 from app.properties import (
+    order_ranks,
     people_of,
     person_ids,
     person_keys,
@@ -371,6 +372,10 @@ def list_rows(
             view_type=getattr(view_def.type, "value", view_def.type),
             people={key: datos[0] for key, datos in (users or {}).items()},
             person_keys=claves_persona,
+            # El orden declarado de cada selección (`sort_order`): ordenar por
+            # `prioridad` da alta, media, baja y no el alfabeto. Las bases que
+            # no lo declaran no aparecen en el mapa y ordenan como siempre.
+            orders=order_ranks(db_def.schema_def),
         )
     elif key:
         # «Todas» no tiene vista que diga el nivel, así que se ven todas las

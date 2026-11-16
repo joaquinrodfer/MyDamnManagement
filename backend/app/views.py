@@ -32,6 +32,14 @@ tipos), así que los operadores comparan como número cuando los dos lados lo
 son y como texto en el resto de los casos: una fecha ISO se compara bien como
 texto.
 
+Una propiedad `select`/`multiselect` puede declarar el **orden de sus valores**
+(`sort_order` en el `schema` de la base, ver `app.properties.order_ranks`).
+Entonces ordenar por ella usa ese orden y no el alfabético, en `asc` y en
+`desc`, y como clave secundaria de un orden de varias claves. El valor que no
+está declarado —el que apareció después, o el que alguien escribió a mano en un
+`.md`— va **al final en las dos direcciones**: no tener sitio no es «ser el
+primero». Una propiedad sin `sort_order` se ordena como siempre.
+
 Una propiedad `person` guarda el **id** de un usuario, pero lo que se lee y se
 escribe es su nombre visible: `eq`/`neq` aceptan el nombre además del id y el
 orden va por nombre. Para eso hace falta `people` (`id -> display_name`), que
@@ -42,6 +50,7 @@ determinista.
 from typing import Any, Mapping
 
 from app import hierarchy
+from app.properties import option_key
 from app.repository import Page
 
 # Operadores que no llevan `value`: la condición es sobre el estado del valor.
@@ -59,6 +68,7 @@ def apply_view(
     view_type: str | None = None,
     people: Mapping[str, str] | None = None,
     person_keys: frozenset[str] | set[str] = frozenset(),
+    orders: Mapping[str, Mapping[str, int]] | None = None,
 ) -> list[Page]:
     """Aplica los `filters`, el `sort` y el nivel de una vista sobre sus filas.
 
@@ -80,6 +90,11 @@ def apply_view(
     `people` e `person_keys` son para las propiedades `person`: el `.md` guarda
     el id de un usuario y el nombre visible lo resuelve el servidor. Sin
     `person_keys` todo se comporta como siempre.
+
+    `orders` es `{clave: {valor: puesto}}` de las propiedades que declaran el
+    orden de sus valores (`app.properties.order_ranks`). Sin `orders`, o con
+    una clave que no está, el orden es el de siempre (alfabético o numérico):
+    las bases que no declaran nada no cambian.
     """
     gente = people or {}
     claves_persona = person_keys or frozenset()
@@ -106,6 +121,7 @@ def apply_view(
     # significativa a la más significativa: `sorted` es estable y cada pasada
     # conserva el orden de la anterior (así se hace un orden por varias claves
     # sin construir una tupla de longitud variable).
+    puestos = orders or {}
     for key, direccion in reversed(claves):
         rows = _sort_rows(
             rows,
@@ -113,6 +129,7 @@ def apply_view(
             direccion == "desc",
             persona=key in claves_persona,
             people=gente,
+            orden=puestos.get(key),
         )
 
     if parent_key:
@@ -145,6 +162,7 @@ def _sort_rows(
     *,
     persona: bool = False,
     people: Mapping[str, str] | None = None,
+    orden: Mapping[str, int] | None = None,
 ) -> list[Page]:
     """Ordena por una clave, dejando SIEMPRE las filas sin valor al final.
 
@@ -154,6 +172,11 @@ def _sort_rows(
 
     Una persona se ordena por su **nombre visible** (el id no se lee), y un id
     que ya no resuelve por sí mismo, para que no se quede fuera del orden.
+
+    Con `orden` (el `sort_order` de una selección) manda ese puesto y no el
+    alfabeto. Los valores sin sitio declarado van al final **en las dos
+    direcciones**, igual que las filas vacías: `desc` da la vuelta al orden
+    declarado, no convierte «lo que no sé dónde va» en lo más importante.
     """
     con_valor = [r for r in rows if _valor(r, key) is not None]
     sin_valor = [r for r in rows if _valor(r, key) is None]
@@ -166,8 +189,31 @@ def _sort_rows(
                 return _sort_key(nombre)
         return _sort_key(valor)
 
+    if orden:
+        con_puesto = [r for r in con_valor if _puesto(_valor(r, key), orden) is not None]
+        sin_puesto = [r for r in con_valor if _puesto(_valor(r, key), orden) is None]
+        con_puesto.sort(key=lambda r: _puesto(_valor(r, key), orden), reverse=descendente)
+        # Entre los que no tienen sitio, el orden de siempre (alfabético, en
+        # la dirección pedida): siguen siendo comparables entre ellos.
+        sin_puesto.sort(key=clave, reverse=descendente)
+        return con_puesto + sin_puesto + sin_valor
+
     con_valor.sort(key=clave, reverse=descendente)
     return con_valor + sin_valor
+
+
+def _puesto(value: Any, orden: Mapping[str, int]) -> int | None:
+    """El puesto de un valor en el orden declarado, o `None` si no tiene sitio.
+
+    Una multiselección se ordena por su valor **más importante** (el puesto más
+    bajo): una fila con `[media, alta]` es una fila de alta, y es lo que se
+    espera al mirar la columna. Si ninguno de sus valores está declarado, la
+    fila no tiene sitio.
+    """
+    if isinstance(value, list):
+        puestos = [orden[option_key(v)] for v in value if option_key(v) in orden]
+        return min(puestos) if puestos else None
+    return orden.get(option_key(value))
 
 
 def _valor(row: Page, key: str) -> Any:
