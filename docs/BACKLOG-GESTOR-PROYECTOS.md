@@ -66,12 +66,12 @@ Reglas de este backlog:
 | 22 | Vista guardada con URL propia | bajo | ya se puede con bases (cada vista es una pestaña) |
 | 24 | Menciones `@usuario` con aviso | medio | pendiente (depende de 23) |
 | 25 | Bandeja de notificaciones | medio | pendiente (depende de 23 y 12) |
-| 26 | Presencia / edición simultánea | alto | ver la decisión de arquitectura del `.md` |
+| 26 | Presencia / edición simultánea | alto | aplazada: la arquitectura ya está decidida (ADR-0005, opción B); falta la etapa 3 |
 | 28 | Reglas «si X entonces Y» | alto | pendiente (depende de 5) |
 | 30 | Campos calculados (fórmula, rollup, % completado) | medio | pendiente (depende de 2) |
 | 31 | Agente que propone cambios con revisión | bajo | ya se puede (P15, sugerencias con revisión) |
 | 32 | Permisos por proyecto o base | alto | aplazada (con una persona, cero valor) |
-| 33 | Importar/exportar CSV con esquema | medio | pendiente |
+| 33 | Importar/exportar CSV con esquema | medio | pendiente, y sube de prioridad con ADR-0005 |
 | 34 | API con webhooks salientes | medio | pendiente |
 
 ## Descartadas (y por qué)
