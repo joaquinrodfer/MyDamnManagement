@@ -13492,6 +13492,10 @@ function plantillaDeFilaEditable(template, indice, schema, alQuitar) {
   descartes.className = "db-save-hint row-template-warning row-template-dropped";
   descartes.setAttribute("role", "status");
   descartes.hidden = true;
+  // El motivo que da el servidor habla de lo que el `.md` tiene ahora: en cuanto
+  // el valor se arregla en su control deja de ser verdad, así que se apaga con
+  // la línea de descarte (las dos describen lo mismo: qué pasa al guardar).
+  let avisoMotivo = null;
   card.__pintarDescartes = () => {
     // Sin nombre la tarjeta no se guarda: no hay nada que perder que decir.
     const perdidos = card.__nombre.value.trim()
@@ -13501,6 +13505,7 @@ function plantillaDeFilaEditable(template, indice, schema, alQuitar) {
       ? `Guardar quitará de «${card.__nombre.value.trim()}»: ${perdidos.join(", ")}.`
       : "";
     descartes.hidden = !perdidos.length;
+    if (avisoMotivo) avisoMotivo.hidden = !perdidos.length;
   };
   card.addEventListener("input", card.__pintarDescartes);
   card.addEventListener("change", card.__pintarDescartes);
@@ -13510,11 +13515,12 @@ function plantillaDeFilaEditable(template, indice, schema, alQuitar) {
   // motivo a la vista: lo que el formulario no puede pintar no se arregla desde
   // aquí, y lo que se queda fuera al guardar lo dice la línea de arriba.
   if (template?.error) {
-    const aviso = document.createElement("p");
-    aviso.className = "db-save-hint row-template-warning";
-    aviso.setAttribute("role", "status");
-    aviso.textContent = "Esta plantilla ya no encaja con la base: " + template.error;
-    card.insertBefore(aviso, descartes);
+    avisoMotivo = document.createElement("p");
+    avisoMotivo.className = "db-save-hint row-template-warning";
+    avisoMotivo.setAttribute("role", "status");
+    avisoMotivo.textContent =
+      "Esta plantilla ya no encaja con la base: " + template.error;
+    card.insertBefore(avisoMotivo, descartes);
   }
   card.__pintarDescartes();
   return card;
