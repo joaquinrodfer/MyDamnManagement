@@ -27,12 +27,11 @@ Reglas que decide este módulo y que ningún otro sitio puede contradecir:
   descendiente suya: `validate_parent` lo rechaza con un 400 que se entiende.
   Un ciclo solo podría entrar editando el `.md` a mano, así que el resto de
   funciones lo toleran sin colgarse (`arrange` no visita dos veces una fila).
-- **Cerrada.** Una fila está cerrada cuando la propiedad que el schema marca con
-  `done` lo dice: un `checkbox` con `done: true` marcado, o un `select` /
-  `multiselect` cuya celda valga uno de los valores de `done: [..]`. Sin
-  ninguna propiedad marcada, ninguna hija cuenta como cerrada (el contador sale
-  «0 de N», que es la verdad: esa base no sabe qué es estar cerrada). Se mira la
-  **primera** propiedad marcada, en el orden del schema.
+- **Cerrada.** La decide la **regla de la base** (`closed: {property, values}`
+  en su `.md`, ver `app.closed`), no este módulo: aquí solo se cuenta. Una base
+  sin regla no tiene estado y ninguna hija cuenta como cerrada (el contador sale
+  «0 de N», que es la verdad). Antes la regla era un marcador `done` por
+  propiedad; se sigue leyendo para no romper las bases que ya lo tenían.
 - **El contador** (`child_counts`) cuenta solo las hijas DIRECTAS: «2 de 3» es
   «dos de sus tres hijas», no de toda la descendencia. Las nietas se ven al
   abrir la hija, que es una madre a su vez.
@@ -52,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from fastapi import HTTPException
 
+from app import closed
 from app.vault.reader import PARENT_ROW, relation_id
 
 if TYPE_CHECKING:  # pragma: no cover - solo para los tipos
@@ -65,19 +65,6 @@ LEVELS = (LEVEL_ROOTS, LEVEL_ALL)
 # Vista cuyo nivel por defecto es «solo madres»: la tabla y el tablero enseñan
 # una fila por sitio, y una hija ya se ve debajo de su madre.
 _DEFAULT_ROOTS = frozenset({"table", "board"})
-
-# Valores que el `.md` (YAML sin tipos) puede devolver donde se escribió `true`.
-_TRUTHY = ("true", "1", "yes", "on", "si", "sí")
-
-
-def _flag(raw: Any) -> bool:
-    """`true` de verdad, venga como booleano o como el texto del `.md`."""
-    if isinstance(raw, bool):
-        return raw
-    if raw is None:
-        return False
-    return str(raw).strip().lower() in _TRUTHY
-
 
 def parent_property(schema_def: Iterable[dict]) -> Optional[dict]:
     """La propiedad `parent_row` del schema, si la hay (la primera)."""
@@ -107,66 +94,15 @@ def parent_of(row: "Page | dict", key: Optional[str]) -> Optional[str]:
     return relation_id(props.get(key))
 
 
-def done_property(schema_def: Iterable[dict]) -> Optional[dict]:
-    """La propiedad que dice si una fila está cerrada, si el schema la marca.
-
-    El marcador es la clave `done` del schema: `done: true` en un `checkbox` y
-    `done: [valor, ...]` en un `select`/`multiselect`. Se devuelve la PRIMERA
-    marcada, en el orden del schema, para que dos marcadores no puedan dar dos
-    respuestas distintas.
-    """
-    for prop in schema_def or []:
-        if not isinstance(prop, dict) or not prop.get("key"):
-            continue
-        raw = prop.get("done")
-        if isinstance(raw, list):
-            if [v for v in raw if str(v).strip()]:
-                return prop
-        elif _flag(raw):
-            return prop
-    return None
-
-
-def done_values(prop: Optional[dict]) -> list[str]:
-    """Los valores que cuentan como «cerrada» en esa propiedad."""
-    if not prop:
-        return []
-    raw = prop.get("done")
-    if isinstance(raw, list):
-        return [str(v).strip() for v in raw if str(v).strip()]
-    return []
-
-
-def is_closed(schema_def: Iterable[dict], properties: dict) -> bool:
-    """¿La fila está cerrada según la regla de `done` de su base?"""
-    prop = done_property(schema_def)
-    if prop is None:
-        return False
-    value = (properties or {}).get(str(prop["key"]))
-    if value is None or value == "":
-        return False
-    tipo = prop.get("type")
-    if tipo == "checkbox":
-        return _flag(value)
-    if tipo in ("select", "multiselect"):
-        cerradas = {v.casefold() for v in done_values(prop)}
-        actuales = value if isinstance(value, list) else [value]
-        return any(
-            str(v).strip().casefold() in cerradas
-            for v in actuales
-            if v is not None and str(v).strip()
-        )
-    return False
-
-
 def child_counts(
-    rows: Iterable["Page"], key: Optional[str], schema_def: Iterable[dict]
+    rows: Iterable["Page"], key: Optional[str], rule: Optional[dict]
 ) -> dict[str, tuple[int, int]]:
     """`{id_de_madre: (hijas, cerradas)}` de todas las filas de la base.
 
     Se calcula sobre TODAS las filas de la base, no sobre las que deja pasar la
     vista: «1 de 3» es la verdad de la fila, y no puede cambiar porque la vista
-    esté filtrando por otra cosa.
+    esté filtrando por otra cosa. `rule` es la regla de la base (`Database.closed`,
+    ya resuelta); sin ella, ninguna hija cuenta como cerrada.
     """
     if not key:
         return {}
@@ -177,7 +113,7 @@ def child_counts(
             continue
         par = cuenta.setdefault(pid, [0, 0])
         par[0] += 1
-        if is_closed(schema_def, row.properties or {}):
+        if closed.is_closed(rule, row.properties or {}):
             par[1] += 1
     return {pid: (par[0], par[1]) for pid, par in cuenta.items()}
 

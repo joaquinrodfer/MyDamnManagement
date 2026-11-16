@@ -4,7 +4,7 @@ from typing import Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app import hierarchy, schemas
+from app import closed, hierarchy, schemas
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -74,6 +74,17 @@ def _serialize_database(
         schema_def=schema_with_relation_warnings(db_def.schema_def, known_databases),
         title_name=db_def.title_name,
         title_hidden=db_def.title_hidden,
+        # La regla de «cerrada» viaja resuelta y con su origen: la interfaz
+        # enseña la columna marcada y puede decir que viene del `done` viejo.
+        closed=(
+            schemas.ClosedRule(
+                property=str(db_def.closed[closed.PROPERTY_KEY]),
+                values=list(db_def.closed.get(closed.VALUES_KEY) or []),
+                source=closed.SOURCE_DONE if db_def.closed_from_done else closed.SOURCE_BASE,
+            )
+            if db_def.closed
+            else None
+        ),
         created_at=as_utc(db_def.created_at),
         updated_at=as_utc(db_def.updated_at),
     )
@@ -125,7 +136,7 @@ def _serialize_rows(
                 total=cuentas.get(str(row.id), (0, 0))[0],
                 closed=cuentas.get(str(row.id), (0, 0))[1],
             ),
-            closed=hierarchy.is_closed(db_def.schema_def, props),
+            closed=closed.is_closed(db_def.closed, props),
             people=people_of(db_def.schema_def, props, users),
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
@@ -146,9 +157,7 @@ def _hierarchy_counts(
     key = hierarchy.parent_key(db_def.schema_def)
     if not key:
         return None, {}
-    return key, hierarchy.child_counts(
-        repo.list_rows(db_def.id), key, db_def.schema_def
-    )
+    return key, hierarchy.child_counts(repo.list_rows(db_def.id), key, db_def.closed)
 
 
 def _serialize_row(
@@ -172,9 +181,7 @@ def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schema
     # fila y sus subtareas (ver `_serialize_row`, que hace lo propio cuando la
     # fila va sola).
     todas = repo.list_rows(db_def.id)
-    counts = (
-        hierarchy.child_counts(todas, key, db_def.schema_def) if key else {}
-    )
+    counts = hierarchy.child_counts(todas, key, db_def.closed) if key else {}
     base = _serialize_rows(repo, db_def, [row], parent_key=key, counts=counts)[0]
     # Las subtareas van en orden de creación (el de `list_rows`): lo que se
     # cuelga de una fila es un plan, y un plan se lee en el orden en que se
@@ -223,6 +230,14 @@ def create_database(
     schema_def, _renames, _borradas = plan_schema(
         [], [p.model_dump() for p in payload.schema_def]
     )
+    # La regla de «cerrada» se valida contra las opciones del schema **antes**
+    # de escribir nada: un valor que no existe es un 400, no un `closed` que
+    # nunca cuenta.
+    closed_rule = None
+    if payload.closed is not None:
+        closed_rule = closed.validate(
+            schema_def, payload.closed.property, payload.closed.values
+        )
     with _vault_errors():
         db_def = repo.create_database(
             title=payload.title,
@@ -230,6 +245,7 @@ def create_database(
             icon=payload.icon or settings.default_icon,
             created_by=user.display_name,
             schema_def=schema_def,
+            closed_rule=closed_rule,
         )
     return _serialize_database(db_def, repo.database_ids())
 
@@ -279,6 +295,51 @@ def get_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
     return _serialize_database(
         _get_database_or_404(repo, database_id), repo.database_ids()
     )
+
+
+@router.put("/{database_id}/closed", response_model=schemas.DatabaseRead)
+def set_closed(
+    database_id: uuid.UUID,
+    payload: schemas.ClosedValues,
+    repo: Repository = Depends(get_repo),
+):
+    """La base declara qué cuenta como fila cerrada.
+
+    Se valida contra las opciones reales de la propiedad —un valor que no
+    existe es un 400 que dice cuáles hay— y se escribe el bloque `closed:` en
+    el frontmatter, retirando los marcadores `done` viejos. Una sola propiedad
+    cerrada por base: si se manda otra, se mueve (una base no tiene dos
+    verdades sobre qué es estar cerrada).
+
+    No se toca ninguna fila: los contadores, «Mis tareas» y los filtros leen la
+    regla de la base, así que cambiarla recalcula sin reescribir los `.md`.
+    """
+    db_def = _get_database_or_404(repo, database_id)
+    rule = closed.validate(db_def.schema_def, payload.property, payload.values)
+    with _vault_errors():
+        actualizada = repo.set_closed(database_id, rule)
+    if actualizada is None:
+        raise HTTPException(404, "Base de datos no encontrada")
+    # M2: la tabla incrustada en una nota tiene que repintar sus contadores.
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
+
+
+@router.delete("/{database_id}/closed", response_model=schemas.DatabaseRead)
+def clear_closed(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    """La base deja de declarar estado.
+
+    Quitar la regla no cierra nada: el contador vuelve a «0 de N», «Mis tareas»
+    entra todo y los filtros `is_closed` no dejan pasar ninguna fila. Los `.md`
+    de las filas no se tocan (ni los valores de la columna de estado).
+    """
+    _get_database_or_404(repo, database_id)
+    with _vault_errors():
+        actualizada = repo.set_closed(database_id, None)
+    if actualizada is None:
+        raise HTTPException(404, "Base de datos no encontrada")
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
 
 
 @router.patch("/{database_id}", response_model=schemas.DatabaseRead)
@@ -371,6 +432,7 @@ def list_rows(
             view_type=getattr(view_def.type, "value", view_def.type),
             people={key: datos[0] for key, datos in (users or {}).items()},
             person_keys=claves_persona,
+            closed_rule=db_def.closed,
         )
     elif key:
         # «Todas» no tiene vista que diga el nivel, así que se ven todas las

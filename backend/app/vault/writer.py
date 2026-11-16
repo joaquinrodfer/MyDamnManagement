@@ -243,7 +243,8 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
                       created_by: str | None = None,
                       header_image: str | None = None,
                       title_name: str | None = None,
-                      title_hidden: bool = False) -> str:
+                      title_hidden: bool = False,
+                      closed: dict | None = None) -> str:
     """`Bases/<slug>.md`: `type: database`, `schema` y `views` en el frontmatter.
 
     Cada vista se escribe con `id`, `name`, `type` y su `config` **al mismo
@@ -255,6 +256,11 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
     nombre visible y `title_hidden` dice si la tabla la enseña. Los valores por
     defecto («Título», visible) no se escriben, así que una base nueva sigue
     teniendo un `.md` mínimo.
+
+    `closed` es la regla de qué cuenta como fila cerrada (`{property, values}`,
+    ver `app.closed`). Va como mapa anidado en el frontmatter y **no** dentro
+    del `schema`: es una regla de la base, no de una propiedad, y así una
+    selección puede cambiar sus opciones sin arrastrar consigo la semántica.
     """
     now = created or reader.now_iso()
     updates: dict = {"id": id_, "type": "database"}
@@ -274,6 +280,8 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
         updates["title_name"] = str(title_name).strip()
     if title_hidden:
         updates["title_hidden"] = True
+    if closed:
+        updates["closed"] = closed
     raw, _ = fm.update("", updates)
     return fm.compose(raw, "\n")
 
@@ -282,7 +290,8 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
                     views: list[dict] | None = None, *, icon: str | None = "🗄",
                     db_id: str | None = None, description: str | None = None,
                     created_by: str | None = None,
-                    title_name: str | None = None, title_hidden: bool = False
+                    title_name: str | None = None, title_hidden: bool = False,
+                    closed: dict | None = None
                     ) -> tuple[reader.Page, list[str]]:
     """Crea `folder/title.md` y su carpeta de filas (mismo nombre sin .md)."""
     stem, notes = names.sanitize(title)
@@ -296,7 +305,7 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
     text = database_markdown(id_=db_id or new_id(), icon=icon, schema=schema,
                              views=views or [], description=description,
                              created_by=created_by, title_name=title_name,
-                             title_hidden=title_hidden)
+                             title_hidden=title_hidden, closed=closed)
     vaultfs.atomic_write(os.path.join(vault_root, rel), text)
     os.makedirs(os.path.join(vault_root, rel[:-3]), exist_ok=True)
     return reader.read_file(os.path.join(vault_root, rel), rel), notes

@@ -17,7 +17,10 @@ Forma del `config` de una vista (en el frontmatter de `Bases/<slug>.md`):
 
 - `filters: [{key, op, value}]`: se combinan con **Y** (la fila se enseña si
   cumple todas). `value` no se escribe en los operadores que no lo necesitan
-  (`is_empty`, `is_not_empty`, `checked`, `unchecked`).
+  (`is_empty`, `is_not_empty`, `checked`, `unchecked`). `is_closed` e `is_open`
+  tampoco llevan `value` **ni necesitan `key`**: quién está cerrada lo dice la
+  regla de la base (`closed: {property, values}`, ver `app.closed`), así que el
+  filtro no tiene que enumerar valores ni acertar con la columna.
 - `sort: [{key, dir}]`: varias claves en orden de prioridad. También se acepta
   la forma de una sola clave que escribían las versiones anteriores
   (`sort: {key, dir}`); se sigue leyendo y no se reescribe al mirarla.
@@ -41,11 +44,15 @@ determinista.
 
 from typing import Any, Mapping
 
-from app import hierarchy
+from app import closed, hierarchy
 from app.repository import Page
 
 # Operadores que no llevan `value`: la condición es sobre el estado del valor.
 SIN_VALOR = frozenset({"is_empty", "is_not_empty", "checked", "unchecked"})
+
+# Operadores que pregunta por la semántica de «cerrada» de la base. No llevan
+# `value` ni `key`: la respuesta la da la regla de la base, no una celda.
+CLOSED_OPS = frozenset({"is_closed", "is_open"})
 
 # Operadores que comparan magnitudes (número, o fecha ISO como texto).
 COMPARACIONES = frozenset({"gt", "gte", "lt", "lte", "before", "after"})
@@ -59,6 +66,7 @@ def apply_view(
     view_type: str | None = None,
     people: Mapping[str, str] | None = None,
     person_keys: frozenset[str] | set[str] = frozenset(),
+    closed_rule: Mapping[str, Any] | None = None,
 ) -> list[Page]:
     """Aplica los `filters`, el `sort` y el nivel de una vista sobre sus filas.
 
@@ -80,6 +88,11 @@ def apply_view(
     `people` e `person_keys` son para las propiedades `person`: el `.md` guarda
     el id de un usuario y el nombre visible lo resuelve el servidor. Sin
     `person_keys` todo se comporta como siempre.
+
+    `closed_rule` es la regla de qué cuenta como fila cerrada de ESTA base
+    (`Database.closed`). Solo la usan los filtros `is_closed`/`is_open`; sin
+    regla, nada está cerrado y `is_open` deja pasar todo, que es la verdad de
+    una base que no declara estado.
     """
     gente = people or {}
     claves_persona = person_keys or frozenset()
@@ -89,7 +102,19 @@ def apply_view(
     for f in config.get("filters") or []:
         if not isinstance(f, dict):
             continue
-        key, op, value = f.get("key"), f.get("op", "eq"), f.get("value")
+        op = f.get("op", "eq")
+        # «cerrada»/«abierta» no son una comparación sobre una celda: lo decide
+        # la regla de la base, y por eso funcionan sin `key` y sin enumerar los
+        # valores de estado (que es lo que obligaba a repetirlos en cada filtro).
+        if op in CLOSED_OPS:
+            quiere_cerrada = op == "is_closed"
+            rows = [
+                r
+                for r in rows
+                if closed.is_closed(closed_rule, r.properties or {}) == quiere_cerrada
+            ]
+            continue
+        key, value = f.get("key"), f.get("value")
         if not key:
             continue
         es_persona = key in claves_persona

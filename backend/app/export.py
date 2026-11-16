@@ -210,6 +210,7 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
             view_type=getattr(view.type, "value", view.type),
             people={key: datos[0] for key, datos in users.items()},
             person_keys=claves_persona,
+            closed_rule=database.closed,
         )
 
     total = len(rows)

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
-from app import index as index_mod
+from app import closed, index as index_mod
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
@@ -105,6 +105,13 @@ class Database:
     # sin estas claves en su `.md` sale con «Título» y visible.
     title_name: str = DEFAULT_TITLE_NAME
     title_hidden: bool = False
+    # Qué cuenta como «fila cerrada»: `{property, values}`, o `None` si la base
+    # no declara estado. Es la regla EFECTIVA: el bloque `closed:` del `.md` o,
+    # si no lo hay, la que implican los marcadores `done` viejos
+    # (`app.closed.effective`). `closed_from_done` dice que viene de ahí, para
+    # que la interfaz pueda explicar que se está leyendo el formato anterior.
+    closed: Optional[dict[str, Any]] = None
+    closed_from_done: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,16 +167,28 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         "SELECT name, hidden FROM database_titles WHERE database_id = ?",
         (row["id"],),
     ).fetchone()
+    schema_def = _load(row["schema_json"], [])
+    # La regla efectiva se decide aquí y en un solo sitio (`app.closed`): el
+    # bloque `closed:` del `.md` manda; sin él, los `done` viejos del schema.
+    declared = conn.execute(
+        "SELECT rule_json FROM database_closed WHERE database_id = ?", (row["id"],)
+    ).fetchone()
+    rule, source = closed.effective(
+        _load(declared["rule_json"], None) if declared is not None else None,
+        schema_def,
+    )
     return Database(
         id=uuid.UUID(row["id"]),
         page_id=uuid.UUID(row["page_id"]),
         title=page["title"],
         icon=page["icon"],
-        schema_def=_load(row["schema_json"], []),
+        schema_def=schema_def,
         created_at=_dt(page["created_at"]),
         updated_at=_dt(page["updated_at"]),
         title_name=(title["name"] or DEFAULT_TITLE_NAME) if title else DEFAULT_TITLE_NAME,
         title_hidden=bool(title["hidden"]) if title else False,
+        closed=rule,
+        closed_from_done=source == closed.SOURCE_DONE,
     )
 
 
@@ -849,8 +868,14 @@ class Repository:
         icon: Optional[str] = None,
         created_by: Optional[str] = None,
         views: Optional[list[dict[str, Any]]] = None,
+        closed_rule: Optional[dict[str, Any]] = None,
     ) -> Database:
-        """Crea `Bases/<slug>.md` (y sus vistas en el frontmatter) y la indexa."""
+        """Crea `Bases/<slug>.md` (y sus vistas en el frontmatter) y la indexa.
+
+        `closed_rule` es la regla de qué cuenta como fila cerrada, ya validada
+        contra el schema (`app.closed.validate`); se escribe como bloque
+        `closed:` y no como marcadores `done`.
+        """
         return self.get_database(uuid.UUID(self.vault.create_database(
             title=title,
             schema=schema_def,
@@ -858,7 +883,33 @@ class Repository:
             parent_id=parent_id,
             icon=icon,
             created_by=created_by,
+            closed=closed_rule,
         )))
+
+    def set_closed(
+        self, database_id: uuid.UUID, rule: Optional[dict[str, Any]]
+    ) -> Optional[Database]:
+        """Escribe (o retira) la regla de qué cuenta como fila cerrada.
+
+        `rule` llega ya validada (`app.closed.validate`): aquí solo se escribe.
+        La escritura es **una**: el bloque `closed:` nuevo y el `schema` sin los
+        marcadores `done` viejos, para que no queden dos declaraciones. Retirar
+        la regla (`None`) tampoco deja marcadores detrás: quitar el `closed` de
+        una base no puede volver a cerrar filas por un `done` olvidado.
+
+        No toca ninguna fila: la regla se lee del `.md` de la base al contar, así
+        que cambiar los valores recalcula contadores sin reescribir los `.md` de
+        las filas.
+        """
+        current = self.get_database(database_id)
+        if current is None:
+            return None
+        self.vault.save_database(
+            current.page_id,
+            schema=closed.without_legacy(current.schema_def),
+            closed=rule,
+        )
+        return self.get_database(database_id)
 
     def update_database(
         self,
@@ -955,6 +1006,52 @@ class Repository:
                 database_id, {**renames, **{key: None for key in deleted}}
             )
 
+        # La regla de «cerrada» sigue a su propiedad: si se renombra, el bloque
+        # `closed:` pasa a la clave nueva; si la propiedad desaparece o deja de
+        # ser una selección/casilla, la base deja de declarar estado (una regla
+        # que nombra una columna que ya no cierra nada mentiría en el `.md`), y
+        # si cambian las opciones se quedan solo los valores que siguen
+        # existiendo. Guardar el resto de la base no puede fallar por la regla:
+        # aquí se ajusta en silencio, no se valida con un 400 (nadie la está
+        # editando en esta petición).
+        #
+        # Solo se propaga la regla DECLARADA en el `.md`: un `done` viejo no se
+        # materializa como `closed:` al guardar el schema. Quien quita ese
+        # marcador manda `done: false` y la base tiene que dejar de cerrar
+        # filas, no quedarse con la regla convertida que nadie ha escrito.
+        closed_update: Any = UNSET
+        if current.closed and not current.closed_from_done and schema_def is not None:
+            clave = str(current.closed.get(closed.PROPERTY_KEY) or "")
+            clave = renames.get(clave, clave)
+            if clave in deleted:
+                closed_update = None
+            else:
+                final = {
+                    str(p.get("key")): p
+                    for p in (final_schema or [])
+                    if isinstance(p, dict) and p.get("key")
+                }
+                prop = final.get(clave)
+                tipo = closed.type_of(prop) if prop else ""
+                if prop is None or tipo not in closed.STATUS_TYPES:
+                    closed_update = None
+                elif tipo == "checkbox":
+                    closed_update = {closed.PROPERTY_KEY: clave, closed.VALUES_KEY: []}
+                else:
+                    opciones = {
+                        str(o).strip().casefold() for o in (prop.get("options") or [])
+                    }
+                    valores = [
+                        v
+                        for v in (current.closed.get(closed.VALUES_KEY) or [])
+                        if str(v).strip().casefold() in opciones
+                    ]
+                    closed_update = (
+                        {closed.PROPERTY_KEY: clave, closed.VALUES_KEY: valores}
+                        if valores
+                        else None
+                    )
+
         self.vault.save_database(
             current.page_id,
             title=UNSET if title is None else title,
@@ -963,6 +1060,7 @@ class Repository:
             views=UNSET if views is None else views,
             title_name=UNSET if title_name is None else title_name,
             title_hidden=UNSET if title_hidden is None else title_hidden,
+            closed=closed_update,
         )
         if schema_def is not None:
             # El índice de una fila se filtra contra el schema de su base: si

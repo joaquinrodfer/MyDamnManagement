@@ -10,9 +10,11 @@ Lo que se fija aquí (tarjeta «Mis tareas»):
    estado («Estado» o clave `estado`) y, si no la tiene, no se enseña;
 4. la **fecha** es la primera propiedad `date` de la base, y una fecha que no
    se puede leer no se inventa;
-5. las filas **cerradas** no salen (lista `CLOSED_STATES`, devuelta con la
-   respuesta para que la interfaz la explique), y una base **sin** estado entra
-   toda: no hay nada que diga que está hecha;
+5. las filas **cerradas** no salen, y «cerrada» lo dice cada base con su
+   regla (`closed: {property, values}`, la misma del contador de subtareas y de
+   los filtros). Una base **sin** regla no tiene estado y entra toda: no hay
+   nada que diga que está hecha. Los valores que las bases declaran viajan con
+   la respuesta (`closed_values`) para que la interfaz explique el criterio;
 6. orden por fecha ascendente y, al final, las que no tienen fecha;
 7. sin sesión, 401: esto es «mis» tareas.
 """
@@ -62,10 +64,20 @@ def crear_usuario(client, username: str, display_name: str) -> dict:
     return respuesta.json()
 
 
-def crear_base(client, title: str, schema_def: list[dict]) -> dict:
-    respuesta = client.post("/databases", json={"title": title, "schema_def": schema_def})
+def crear_base(
+    client, title: str, schema_def: list[dict], closed: dict | None = None
+) -> dict:
+    cuerpo = {"title": title, "schema_def": schema_def}
+    if closed is not None:
+        cuerpo["closed"] = closed
+    respuesta = client.post("/databases", json=cuerpo)
     assert respuesta.status_code == 200, respuesta.text
     return respuesta.json()
+
+
+# La regla de la base «Proyectos»: los dos estados que cuentan como cerrada. Sin
+# ella la vista no esconde nada, porque una base sin regla no tiene estado.
+CERRADA_EN_PROYECTOS = {"property": "estado", "values": ["Hecho", "Cerrado"]}
 
 
 def crear_fila(client, database_id: str, title: str, properties: dict | None = None) -> dict:
@@ -91,7 +103,7 @@ def escenario(client):
     """Dos bases con responsables («Proyectos» con estado y fecha, «Notas» sin
     nada de eso), una tercera sin propiedad `person`, y otra persona."""
     ana = crear_usuario(client, "ana", "Ana")
-    proyectos = crear_base(client, "Proyectos", PROYECTOS)
+    proyectos = crear_base(client, "Proyectos", PROYECTOS, closed=CERRADA_EN_PROYECTOS)
     notas = crear_base(client, "Notas", NOTAS)
     libros = crear_base(client, "Libros", LIBROS)
     return {
@@ -236,6 +248,7 @@ def test_el_estado_de_un_multiseleccion_cierra_si_uno_de_sus_valores_esta_hecho(
                 "options": ["En curso", "Hecho", "Archivado"],
             },
         ],
+        closed={"property": "estado", "values": ["Hecho"]},
     )
     crear_fila(
         client,
@@ -329,38 +342,39 @@ def test_una_fila_con_estado_hecho_no_sale(client, escenario, estado):
 
 
 @pytest.mark.parametrize(
-    "valor",
-    [
-        "hecha",
-        "HECHO",
-        "  cerrada  ",
-        "Cerrados",
-        "done",
-        "DONE",
-        "ganado",
-        "ganada",
-        "Ganados",
-        "hechos",
-    ],
+    "valor", ["hecha", "HECHO", "  cerrada  ", "Cerrados", "done", "DONE", "ganada"]
 )
-def test_el_estado_hecho_casa_sin_depender_de_mayusculas_ni_acentos(valor):
-    """La comparación es de la lista cerrada, no del texto exacto: `folded`.
+def test_el_valor_cerrado_casa_sin_depender_de_mayusculas_ni_espacios(valor):
+    """La comparación es contra la regla de la base, no del texto exacto.
 
     Se prueba en la función y no por la API porque las opciones de un `select`
     son las que son: por HTTP solo se pueden guardar las que la base declara.
     """
-    from app.mytasks import is_closed
+    from app.closed import is_closed
 
-    assert is_closed(valor) is True
+    regla = {
+        "property": "estado",
+        "values": ["hecha", "hecho", "cerrada", "cerrados", "done", "ganada"],
+    }
+    assert is_closed(regla, {"estado": valor}) is True
 
 
-@pytest.mark.parametrize("valor", ["Abierto", "En curso", "bloqueada", "", None, 3, ["hecho", "x"]])
-def test_lo_que_no_esta_en_la_lista_no_cierra(valor):
-    """Una lista (multiselect) cuenta: «hecho» dentro cierra la fila."""
-    from app.mytasks import is_closed
+@pytest.mark.parametrize("valor", ["Abierto", "En curso", "bloqueada", "", None, 3])
+def test_lo_que_la_base_no_declara_cerrado_no_cierra(valor):
+    """Sin regla, nada cierra; y un valor fuera de la regla tampoco."""
+    from app.closed import is_closed
 
-    esperado = valor == ["hecho", "x"]
-    assert is_closed(valor) is esperado
+    assert is_closed(None, {"estado": valor}) is False
+    assert is_closed({"property": "estado", "values": ["hecha"]}, {"estado": valor}) is False
+
+
+def test_un_multiselect_cierra_si_uno_de_sus_valores_esta_en_la_regla():
+    """«hecho, archivado» sigue siendo una tarea hecha."""
+    from app.closed import is_closed
+
+    regla = {"property": "estado", "values": ["Hecho"]}
+    assert is_closed(regla, {"estado": ["En curso", "Hecho"]}) is True
+    assert is_closed(regla, {"estado": ["En curso"]}) is False
 
 
 def test_una_fila_en_curso_si_sale(client, escenario):
@@ -388,10 +402,19 @@ def test_una_base_sin_estado_entra_toda(client, escenario):
     assert sorted(titulos(mis_tareas(client))) == ["Otra", "Una", "Y otra"]
 
 
-def test_la_lista_de_cerradas_viaja_con_la_respuesta(client):
+def test_la_lista_de_cerradas_sale_de_las_bases(client, escenario):
+    """Ya no hay lista cableada: sin reglas en las bases, no hay valores.
+
+    La interfaz necesita saber qué se está escondiendo para explicarlo; esa
+    lista sale de las bases que declaran estado, no de una constante del
+    servidor (que podía contradecir al `.md`).
+    """
+    sin_reglas = [b for b in ("notas", "libros") if not escenario[b].get("closed")]
+    assert len(sin_reglas) == 2
+
     datos = mis_tareas(client)
 
-    assert "hecho" in datos["closed_values"] and "done" in datos["closed_values"]
+    assert datos["closed_values"] == ["Cerrado", "Hecho"]
     assert datos["tasks"] == [] and datos["count"] == 0
 
 

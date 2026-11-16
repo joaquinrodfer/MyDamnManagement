@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, Optional
 
 from app import index as index_mod
+from app import closed as closed_rules
 from app.links import sync_wikilinks
 from app.vault import fm, names, reader, suggestions, vaultfs, writer
 
@@ -654,11 +655,26 @@ class VaultStore:
         )
         title_name = reader.database_title_name(page)
         title_hidden = reader.database_title_hidden(page)
+        # Lo que la base DECLARA: el bloque `closed:` del frontmatter. Los
+        # marcadores `done` viejos no se copian aquí; se derivan del schema al
+        # leer la base (`app.closed.effective`), que es la compatibilidad.
+        declared = closed_rules.from_frontmatter(page.frontmatter)
         self.conn.execute(
             "INSERT INTO databases (id, page_id, schema_json) VALUES (?, ?, ?)"
             " ON CONFLICT(id) DO UPDATE SET schema_json = excluded.schema_json",
             (record.id, record.id, _dump(schema)),
         )
+        # La regla de «cerrada» va en su tabla (v7). Se reescribe siempre, como
+        # las vistas: el índice tiene que decir lo mismo que el fichero, y un
+        # bloque que se ha quitado del `.md` no puede quedarse en el índice.
+        self.conn.execute(
+            "DELETE FROM database_closed WHERE database_id = ?", (record.id,)
+        )
+        if declared:
+            self.conn.execute(
+                "INSERT INTO database_closed (database_id, rule_json) VALUES (?, ?)",
+                (record.id, _dump(declared)),
+            )
         # La columna del título va en su tabla (su clave es la reservada
         # `title` y no puede estar en el `schema`). Se escribe una fila siempre
         # —aunque sean los valores por defecto— para que reindexar produzca
@@ -1215,6 +1231,7 @@ class VaultStore:
         created_by: Optional[str] = None,
         title_name: Optional[str] = None,
         title_hidden: bool = False,
+        closed: Optional[dict] = None,
     ) -> str:
         """Escribe `Bases/<slug>.md` (y su carpeta de filas) e indexa. Devuelve su id."""
         self.ensure_structure()
@@ -1227,7 +1244,7 @@ class VaultStore:
         page, notes = writer.create_database(
             self.root, folder, title, schema, entries,
             icon=icon, db_id=page_id, description=description, created_by=created_by,
-            title_name=title_name, title_hidden=title_hidden,
+            title_name=title_name, title_hidden=title_hidden, closed=closed,
         )
         with self._tx():
             self._index_file(page.path, self._parent_str(parent_id))
@@ -1249,6 +1266,7 @@ class VaultStore:
         parent_id: Any = UNSET,
         title_name: Any = UNSET,
         title_hidden: Any = UNSET,
+        closed: Any = UNSET,
     ) -> None:
         """Reescribe la base (y la renombra con sus filas si toca) y la indexa.
 
@@ -1334,6 +1352,10 @@ class VaultStore:
             )
         if title_hidden is not UNSET:
             updates["title_hidden"] = True if title_hidden else None
+        if closed is not UNSET:
+            # El bloque `closed:` del frontmatter. `None` lo borra: la base deja
+            # de declarar estado y nada se considera cerrado.
+            updates["closed"] = closed
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)

@@ -163,11 +163,39 @@ class PropertyDef(BaseModel):
         return str(v).strip().lower() in ("true", "1", "yes", "on", "si", "sí")
 
 
+class ClosedValues(BaseModel):
+    """Lo que la interfaz manda al declarar qué cuenta como fila cerrada.
+
+    `property` es la clave de la columna de estado y `values` los valores que
+    cierran (vacía en una casilla). El servidor lo valida contra las opciones
+    reales de la propiedad antes de escribir nada (`app.closed.validate`).
+    """
+
+    property: str = ""
+    values: list[str] = []
+
+
+class ClosedRule(BaseModel):
+    """La regla efectiva de una base, tal y como la lee la interfaz.
+
+    `source` dice de dónde sale: `base` (el bloque `closed:` del `.md`) o
+    `done` (el marcador viejo del schema, que se sigue leyendo para no romper
+    ninguna base y se convierte al guardar desde la interfaz).
+    """
+
+    property: str
+    values: list[str] = []
+    source: str = "base"
+
+
 class DatabaseCreate(BaseModel):
     title: str = "Sin título"
     icon: Optional[str] = None
     parent_id: Optional[uuid.UUID] = None
     schema_def: list[PropertyDef] = []
+    # La regla de qué cuenta como fila cerrada, si la plantilla la trae. Se
+    # valida contra las opciones del schema: un valor que no existe es un 400.
+    closed: Optional[ClosedValues] = None
 
 
 class DatabaseFromTemplate(BaseModel):
@@ -204,6 +232,11 @@ class DatabaseRead(BaseModel):
     # valores por defecto («Título», visible).
     title_name: str = DEFAULT_TITLE_NAME
     title_hidden: bool = False
+    # Qué cuenta como fila cerrada en esta base, o `None` si no declara estado
+    # (entonces nada se considera cerrado: ni el contador, ni «Mis tareas», ni
+    # los filtros). Viene resuelta: la interfaz no tiene que mirar los `done`
+    # viejos del schema.
+    closed: Optional[ClosedRule] = None
     created_at: datetime
     updated_at: datetime
 
