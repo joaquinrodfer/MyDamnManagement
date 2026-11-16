@@ -15,21 +15,21 @@ Reglas de este backlog:
   hasta cerrar el anterior: con un trabajador, tres lotes abiertos son tres
   frentes a medias.
 
-## Lote 1 — «quién hace qué» (en curso)
+## Lote 1 — «quién hace qué» (cerrado)
 
 | # | Función | Coste | Estado |
 |---|---|---|---|
-| 6 | Persona como propiedad (usuario real, con avatar) | medio | en tarjeta |
-| 8 | «Mis tareas» global, cruzando todas las bases | medio | en tarjeta (espera a 6) |
-| 2 | Subtareas con estado propio y recuento en la tarjeta | medio | en tarjeta |
+| 6 | Persona como propiedad (usuario real, con avatar) | medio | hecha (v2.5.x, 5770157) |
+| 8 | «Mis tareas» global, cruzando todas las bases | medio | en tarjeta (`t_c25422bd`) |
+| 2 | Subtareas con estado propio y recuento en la tarjeta | medio | hecha (16c8e57) |
 
-## Lote 2 — «que la base tenga reglas»
+## Lote 2 — «que la base tenga reglas» (en curso)
 
 | # | Función | Coste | Estado |
 |---|---|---|---|
-| 3 | Prioridad con orden semántico | bajo | pendiente |
-| 5 | Estado «cerrado» con semántica (deja de contar en todas partes) | bajo | pendiente |
-| 29 | Plantilla de tarea y de proyecto completo | bajo | pendiente |
+| 5 | Estado «cerrado» con semántica (deja de contar en todas partes) | bajo | en tarjeta (`t_bb986a26`) |
+| 3 | Prioridad con orden semántico | bajo | en tarjeta (`t_d3b55d4e`) |
+| 29 | Plantilla de tarea y de proyecto completo | bajo | en tarjeta (`t_d5ed2de0`, espera a 5) |
 
 ## Lote 3 — «el día a día»
 
