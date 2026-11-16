@@ -402,12 +402,38 @@
     background: var(--bg);
     color: var(--ink);
   }
-  .sidebar-section { padding: 10px 8px; }
+  .sidebar-section { padding: 8px 8px 6px; }
+  /* «Mis tareas» y «Bandeja» son sitios a los que se va, no rótulos de
+     sección: se leen como una fila del árbol (mismo alto, mismo hover, mismo
+     activo) y las versalitas quedan para el rótulo «Páginas». */
+  #mytasks-section, #inbox-section { padding-bottom: 0; }
+  #mytasks-section .sidebar-section-head,
+  #inbox-section .sidebar-section-head {
+    font-size: 13.5px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--ink);
+  }
+  #mytasks-section .sidebar-section-toggle,
+  #inbox-section .sidebar-section-toggle {
+    gap: 8px;
+    min-height: 30px;
+    padding: 0 8px;
+    border-radius: 6px;
+    transition: background-color var(--dur-fast) var(--ease-std);
+  }
+  #mytasks-section .sidebar-section-toggle:hover,
+  #inbox-section .sidebar-section-toggle:hover { background: var(--row-hover); }
+  #mytasks-section .sidebar-section-toggle .svg-icon,
+  #inbox-section .sidebar-section-toggle .svg-icon { width: 16px; height: 16px; color: var(--ink-muted); }
+  #btn-mytasks[aria-current="page"] { background: var(--accent-soft); font-weight: 600; }
+  #btn-mytasks[aria-current="page"] .svg-icon { color: var(--accent-ink); }
+  .sidebar-section-toggle:focus-visible { outline-offset: -2px; border-radius: 6px; }
 
   /* ---------- bandeja de capturas (P13) ----------
      La primera sección de la barra lateral, y solo si hay algo: una captura
      sin clasificar no es todavía una página del wiki. */
-  #inbox-section .sidebar-section-head { padding: 4px 8px 6px; }
+  #inbox-section .sidebar-section-head { padding: 0; }
   .sidebar-section-toggle {
     display: flex;
     align-items: center;
@@ -465,9 +491,9 @@
      La sección de la barra lateral es un botón que navega, no una lista que se
      despliega: lo que se enseña (bloques por fecha y de qué base viene cada
      fila) no cabe en 248 px. Solo existe si hay algo, como la bandeja. */
-  #mytasks-section .sidebar-section-head { padding: 4px 8px 6px; }
+  #mytasks-section .sidebar-section-head { padding: 0; }
   #btn-mytasks[aria-current="page"],
-  #btn-mytasks[aria-current="page"]:hover { color: var(--accent-ink); }
+  #btn-mytasks[aria-current="page"]:hover { color: var(--ink); }
   /* El contador de lo urgente, pegado a «Mis tareas» y a la derecha.
      Dos números porque son dos preguntas distintas —lo que ya se pasó y lo que
      se pasa hoy— y una sola cifra sumada las confundiría; se leen sin leyenda
@@ -601,17 +627,30 @@
   .tree-row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 5px 8px;
+    gap: 8px;
+    min-height: 30px;
+    padding: 0 8px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 13.5px;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
   }
-  .tree-row:hover { background: var(--code-bg); }
-  .tree-row.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+  /* El nombre es lo que se recorta (la fila es flex: los puntos suspensivos
+     del contenedor no llegaban al texto y un título largo se cortaba a ras). */
+  .tree-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* Un píxel entre nodos: el hover y el activo de dos filas seguidas no se
+     funden en un solo bloque. */
+  .tree-node + .tree-node { margin-top: 1px; }
+  .tree-row:hover { background: var(--row-hover); }
+  /* La página abierta: el tinte de acento y el nombre en tinta plena y
+     semibold. El color de acento se queda en el icono; con el nombre también
+     en azul, la fila activa se leía como un enlace y no como «estás aquí». */
+  .tree-row.active,
+  .tree-row.active:hover { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+  /* El foco del teclado va por dentro: la fila ocupa el ancho de la barra y un
+     anillo por fuera se recortaba contra su borde. */
+  .tree-row:focus-visible { outline-offset: -2px; }
   /* Selección múltiple (Ctrl/Mayús+clic) -- distinta de "active" (la página
      abierta ahora mismo): ambas pueden darse a la vez en la misma fila. */
   .tree-row-selected { outline: 1.5px solid var(--accent); outline-offset: -1.5px; background: var(--code-bg); }
@@ -626,7 +665,12 @@
     color: var(--ink-muted);
   }
   .tree-row.active .type-icon { color: var(--accent-ink); }
-  .tree-children { margin-left: 16px; border-left: 1px solid var(--panel-border); padding-left: 4px; }
+  /* Los hijos cuelgan de la guía, que baja desde el centro del icono de su
+     madre (8 px de padding + medio icono), y van un punto más apagados y
+     pequeños: la raíz manda, lo de dentro acompaña. */
+  .tree-children { margin: 1px 0 1px 15px; border-left: 1px solid var(--panel-border); padding-left: 5px; }
+  .tree-children .tree-row { font-size: 13px; color: color-mix(in srgb, var(--ink) 78%, var(--ink-muted)); }
+  .tree-children .tree-row.active { color: var(--ink); }
 
   .search-results { padding: 6px; }
   .search-hit {
@@ -3925,7 +3969,10 @@
     .inbox-open { min-height: 44px; }
     /* Un resultado de búsqueda también se elige con el dedo: estaba en 28. */
     .search-hit { min-height: 44px; padding: 10px 8px; }
-    .sidebar-section-toggle { min-height: 44px; }
+    .sidebar-section-toggle,
+    #mytasks-section .sidebar-section-toggle,
+    #inbox-section .sidebar-section-toggle { min-height: 44px; }
+    .tree-children .tree-row { font-size: 13.5px; }
     .template-btn { min-height: 36px; padding: 6px 10px; }
 
     /* --- lienzo y nota --- */
