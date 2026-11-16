@@ -388,6 +388,27 @@ def test_sort_order_solo_vale_en_una_seleccion(client):
     assert "sort_order" in respuesta.text
 
 
+def test_la_tabla_exportada_ordena_igual_que_el_panel(client):
+    # La tabla incrustada en una nota (y su exportación) es la misma que se ve:
+    # el bloque `mdm-database` pasa por el mismo `apply_view`, con el orden
+    # declarado de la propiedad.
+    base = crear_base(client)
+    crear_filas(client, base["id"])
+    crear_vista(client, base["id"], "Por prioridad", {"sort": [{"key": "prioridad", "dir": "asc"}]})
+    valla = "```mdm-database\nid: " + base["id"] + "\nview: Por prioridad\n```"
+    nota = client.post(
+        "/pages", json={"title": "Tablero de tareas", "body_markdown": valla}
+    )
+    assert nota.status_code == 200, nota.text
+    texto = client.get(f"/pages/{nota.json()['id']}/export.md").text
+    filas = [linea for linea in texto.split("\n") if linea.startswith("|")]
+    # Cabecera + separador + las cinco filas, en el orden de la prioridad.
+    assert filas[0] == "| Título | Prioridad | Fecha |"
+    assert [linea.split("|")[2].strip() for linea in filas[2:]] == [
+        "alta", "alta", "media", "media", "baja",
+    ]
+
+
 def test_un_valor_declarado_que_no_esta_en_las_opciones_ordena_igual(client):
     # El `.md` es del usuario: se puede declarar el sitio de un valor que no
     # está en `options` (una opción retirada, o escrita a mano en las filas).

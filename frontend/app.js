@@ -10549,7 +10549,9 @@ function renderBoard(database, rows, view, refresh) {
   // alfabeto, y el tablero es donde eso se ve. Sin orden declarado, el de
   // `options` (el de siempre) y después los valores que solo están en filas.
   const columnas = columnasDelTablero(prop, rows, groupKey);
-  const valoresDeColumnas = columnas.map((c) => c.valor);
+  // Solo los valores de la propiedad: recolocar escribe el orden de esos (un
+  // valor que solo está en una fila no pasa a estar declarado por arrastrar).
+  const valoresDeColumnas = columnas.filter((c) => c.declarada).map((c) => c.valor);
   // Solo una selección puede declarar el orden de sus valores, así que solo
   // ahí la cabecera de la columna se arrastra: el orden se guarda en la
   // PROPIEDAD (no en la vista) para que lo vean todas las vistas del tablero.
@@ -10569,7 +10571,13 @@ function renderBoard(database, rows, view, refresh) {
       renderBoardColumn(database, columna.valor, grouped.get(columna.valor) || [], {
         ...options,
         soltar: columna.soltar,
-        columna: reordenable ? { valor: columna.valor, valores: valoresDeColumnas } : null,
+        // Solo las columnas de un valor de la propiedad se recolocan: un valor
+        // que únicamente está en una fila va al final por la regla de siempre,
+        // así que su columna no tiene sitio que guardar.
+        columna:
+          reordenable && columna.declarada
+            ? { valor: columna.valor, valores: valoresDeColumnas }
+            : null,
       }),
     ),
   );
@@ -10591,7 +10599,7 @@ function uniqueValues(rows, key) {
   return seen;
 }
 
-/** Las columnas de un tablero, en orden: `[{ valor, soltar }]`.
+/** Las columnas de un tablero, en orden: `[{ valor, soltar, declarada }]`.
  *
  * Primero los valores que declara `sort_order` (el orden semántico: alta,
  * media, baja), después los de `options` que no estén declarados y al final los
@@ -10604,24 +10612,33 @@ function uniqueValues(rows, key) {
  * declaradas el servidor rechaza un valor que no esté en la lista (400), así
  * que una columna de un valor suelto no es un destino: se pinta para que la
  * fila se pueda leer, no para soltarle cosas encima.
+ *
+ * `declarada` dice si el valor es de la propiedad (`options`/`sort_order`) o
+ * solo aparece en una fila. Recolocar las columnas guarda el orden de las
+ * declaradas: un valor que nadie declaró no se queda escrito en el `schema` por
+ * haber arrastrado otra columna (seguirá al final por la regla de siempre).
  */
 function columnasDelTablero(prop, rows, groupKey) {
   const opciones = new Set((prop?.options || []).map((v) => String(v).trim().toLowerCase()));
   const conOpciones = opciones.size > 0;
   const vistas = new Set();
   const columnas = [];
-  const anadir = (valor) => {
+  const anadir = (valor, declarada) => {
     // Una multiselección guarda una lista: no es un valor de columna.
     if (typeof valor !== "string" && typeof valor !== "number") return;
     const texto = String(valor);
     const clave = texto.trim().toLowerCase();
     if (!clave || vistas.has(clave)) return;
     vistas.add(clave);
-    columnas.push({ valor: texto, soltar: !conOpciones || opciones.has(clave) });
+    columnas.push({
+      valor: texto,
+      soltar: !conOpciones || opciones.has(clave),
+      declarada,
+    });
   };
-  (prop?.sort_order || []).forEach(anadir);
-  (prop?.options || []).forEach(anadir);
-  uniqueValues(rows, groupKey).forEach(anadir);
+  (prop?.sort_order || []).forEach((v) => anadir(v, true));
+  (prop?.options || []).forEach((v) => anadir(v, true));
+  uniqueValues(rows, groupKey).forEach((v) => anadir(v, false));
   return columnas;
 }
 
