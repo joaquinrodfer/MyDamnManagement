@@ -2937,6 +2937,8 @@
     color: var(--ink-muted);
   }
   .inline-form > .field { margin-bottom: 0; }
+  /* El aviso de una plantilla de fila que no encaja ocupa la fila entera. */
+  .inline-form > .inline-form-hint { grid-column: 1 / -1; margin: 0; }
   .inline-form > .btn-primary { height: var(--control-size); align-self: end; justify-self: start; }
 
   /* ---------- fila abierta como página ---------- */

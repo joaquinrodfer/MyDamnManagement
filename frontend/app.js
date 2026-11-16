@@ -5198,6 +5198,10 @@ const OPERADORES_FILTRO = {
     ["before", "antes de"],
     ["after", "después de"],
     ["is_empty", "está vacío"],
+    // El servidor lo admite en cualquier tipo (`views.SIN_VALOR`); sin esta
+    // fila el chip de un calendario de serie enseñaba el operador en crudo
+    // («Entrega is_not_empty») y el diálogo lo perdía al aplicarlo.
+    ["is_not_empty", "no está vacío"],
   ],
   select: [
     ["eq", "es"],
@@ -12429,13 +12433,16 @@ function renderAddRowForm(database) {
       });
       refrescarBoton();
     });
+    templateField.append(templateLabel, templateSelect);
+    // El motivo va a lo ancho de la rejilla, no en la celda del desplegable: a
+    // 375 px la columna mide ~150 px y el aviso quedaba en un hilo vertical.
     avisoDePlantilla = document.createElement("p");
-    avisoDePlantilla.className = "db-save-hint";
+    avisoDePlantilla.className = "db-save-hint inline-form-hint";
     avisoDePlantilla.setAttribute("role", "status");
     avisoDePlantilla.hidden = true;
-    templateField.append(templateLabel, templateSelect, avisoDePlantilla);
     // Justo debajo del título: es lo primero que se elige al añadir una fila.
     wrap.insertBefore(templateField, titleField.nextSibling);
+    wrap.insertBefore(avisoDePlantilla, templateField.nextSibling);
   }
 
   const submitBtn = document.createElement("button");
