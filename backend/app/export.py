@@ -35,9 +35,9 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from app.config import settings
+from app.properties import person_ids, person_keys
 from app.repository import Database, Page, Repository, View
 from app.vault import fm
-from app.properties import person_ids, person_keys
 from app.views import apply_view
 
 # El `info string` de la valla que marca un bloque de base.

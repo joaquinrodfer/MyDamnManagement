@@ -451,6 +451,25 @@ def test_no_se_convierte_a_persona_desde_otro_tipo(client):
     assert "Persona" in respuesta.json()["detail"]
 
 
+def test_el_md_exportado_lleva_el_nombre_no_el_id(client, personas):
+    """La tabla exportada dice lo mismo que el panel: el nombre visible."""
+    base = personas["base"]
+    crear_fila(client, base["id"], title="De Ana", properties={"responsable": personas["ana"]["id"]})
+    nota = client.post(
+        "/pages",
+        json={
+            "title": "Panel",
+            "body_markdown": f"```mdm-database\nid: {base['id']}\n```",
+        },
+    ).json()
+
+    exportado = client.get(f"/pages/{nota['id']}/export.md")
+    assert exportado.status_code == 200, exportado.text
+    cuerpo = exportado.text
+    assert "Ana" in cuerpo
+    assert personas["ana"]["id"] not in cuerpo, "el .md exportado no enseña el id"
+
+
 # --------------------------------------------------------------------------
 # 7. el directorio de personas
 # --------------------------------------------------------------------------
