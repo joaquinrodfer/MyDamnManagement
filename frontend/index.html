@@ -2145,6 +2145,50 @@
   .db-add-row-status { margin: 6px 0 0; font-size: var(--text-sm); color: var(--ink-muted); line-height: 1.5; }
   /* Vacío no ocupa: el hueco del aviso no deja un espacio muerto debajo. */
   .db-add-row-status:empty { display: none; }
+  /* El botón de alta. Con plantillas de fila lleva pegado un desplegable
+     discreto (▾): dos botones que se leen como uno. */
+  .db-new-row { display: inline-flex; align-items: stretch; }
+  .db-new-row.has-templates .db-add-row-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .db-new-row-more {
+    margin-left: -1px;
+    padding: 0 8px;
+    min-width: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    color: var(--ink-muted);
+    font-size: 11px;
+  }
+  .db-new-row-more:hover, .db-new-row-more[aria-expanded="true"] { color: var(--ink); }
+  /* La fila fantasma: una fila más de la tabla, con el título en edición. No
+     tiene velo de hover ni controles: todavía no es una fila. */
+  .rows-table tr.row-ghost td { background: transparent; cursor: default; }
+  .rows-table tr.row-ghost input::placeholder { color: var(--ink-muted); opacity: 0.7; }
+  /* En el tablero el alta va al pie de cada columna, callada hasta que se
+     mira: sin caja, del ancho de la columna. */
+  .board-col-add { display: flex; margin-top: 2px; }
+  .board-col-add .btn {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ink-muted);
+    box-shadow: none;
+  }
+  .board-col-add .db-add-row-btn { flex: 1 1 auto; justify-content: flex-start; }
+  .board-col-add .btn:hover,
+  .board-col-add .btn:focus-visible { background: var(--row-hover); color: var(--ink); }
+  .board-card.board-card-ghost { cursor: text; padding: 6px 8px; }
+  .board-card.board-card-ghost:hover { transform: none; box-shadow: var(--shadow-card); }
+  .board-card-input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-weight: 600;
+    padding: 4px;
+    border-radius: 4px;
+  }
+  .board-card-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
   /* Dentro de la lista (caja con borde) el control es una línea más. */
   .db-add-row--list { margin-top: 0; padding: 8px 12px; border-top: 1px solid var(--panel-border); }
   /* El botón y el formulario se turnan: `hidden` solo, no basta, porque
@@ -3455,40 +3499,6 @@
     background: var(--panel);
     color: var(--ink);
   }
-  /* "+ Nueva fila": rejilla compacta en vez de 7 campos apilados (medían
-     541 px de alto, hallazgo #5). Los hijos de renderAddRowForm() ya encajan
-     sin tocar su estructura: el título ocupa la fila entera y cada .field va
-     a una celda. */
-  .inline-form {
-    margin-top: 14px;
-    padding: 12px 14px;
-    border: 1px solid var(--panel-border);
-    border-radius: var(--radius-lg);
-    background: var(--bg);
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 10px 12px;
-    align-items: end;
-  }
-  .inline-form > .panel-head {
-    grid-column: 1 / -1;
-    margin: 0 0 2px !important;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-family: var(--font-body);
-    font-size: 12.5px;
-    font-weight: 600;
-    letter-spacing: 0;
-    text-transform: none;
-    color: var(--ink);
-  }
-  .inline-form > .panel-head .svg-icon { color: var(--ink-muted); }
-  .inline-form > .field { margin-bottom: 0; }
-  /* El aviso de una plantilla de fila que no encaja ocupa la fila entera. */
-  .inline-form > .inline-form-hint { grid-column: 1 / -1; margin: 0; }
-  .inline-form > .btn-primary { height: var(--control-size); align-self: end; justify-self: start; }
-
   /* ---------- fila abierta como página ---------- */
   /* Abrir una fila la pinta como una PÁGINA dentro de #main (ver
      `openRowPage` en app.js): el mismo contenedor y los mismos márgenes que
@@ -4261,6 +4271,8 @@
        alto y 16 px de letra (por debajo, iOS hace zoom al enfocar). El botón
        ya mide 44 por la regla general de `.btn`. */
     .db-add-row-input, .db-add-row-template { min-height: 44px; font-size: 16px; }
+    .board-card-input, .rows-table tr.row-ghost input { min-height: 44px; font-size: 16px; }
+    .db-new-row-more { min-width: 44px; }
     .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
     .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed { font-size: 16px; min-height: 44px; }
     .prop-sort-mode select, .prop-sort-item { font-size: 16px; min-height: 44px; }
