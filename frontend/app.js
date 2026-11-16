@@ -4409,13 +4409,22 @@ function claveDeJerarquia(database) {
   return prop ? String(prop.key) : null;
 }
 
+/** ¿La propiedad lleva el marcador `done` que dice qué cuenta como cerrada?
+ *
+ * Un `checkbox` con `done: true` (marcado) o un `select`/`multiselect` con
+ * `done: [valor, ...]`. La misma regla que `app.hierarchy.done_property`. */
+function tieneMarcadorDeCierre(prop) {
+  if (!prop || !prop.key) return false;
+  return Array.isArray(prop.done)
+    ? prop.done.length > 0
+    : prop.done === true || prop.done === "true";
+}
+
 /** La propiedad que dice si una fila está cerrada (el `done` del schema), o
  * `null`. Solo sirve para enseñar el estado en la lista de subtareas: quien
  * cuenta las cerradas es el servidor. */
 function propiedadDeCierre(database) {
-  const marcada = (p) =>
-    p && p.key && (Array.isArray(p.done) ? p.done.length > 0 : p.done === true || p.done === "true");
-  return (database?.schema_def || []).find(marcada) || null;
+  return (database?.schema_def || []).find(tieneMarcadorDeCierre) || null;
 }
 
 /** El nivel de filas de una vista: `roots` (solo madres) o `all`.
@@ -9087,6 +9096,10 @@ function renderTable(
   // contador de cada madre.
   const claveJerarquia = claveDeJerarquia(database);
   const profundidades = mapaDeProfundidades(rows, claveJerarquia);
+  // Una vista agrupada pinta cada fila donde cae su grupo, no bajo su madre:
+  // ahí la sangría mentiría sobre dónde está la jerarquía. El contador sí se
+  // pinta igual (es un dato de la fila, no una posición).
+  const indenta = Boolean(claveJerarquia) && !view?.config?.group_by;
   rows.forEach((row) => {
     const tr = document.createElement("tr");
     // `data-row-id`: el «+ Nueva fila» de la vista deja el foco en el nombre de
@@ -9130,7 +9143,7 @@ function renderTable(
       const titleTd = document.createElement("td");
       titleTd.dataset.colKey = "@title";
       paintCell(titleTd, database, row, null, hooks);
-      if (claveJerarquia) {
+      if (indenta) {
         const prof = profundidades.get(String(row.id)) || 0;
         if (prof) {
           // Hija: se sangra bajo su madre. La sangría es de la celda y no del
@@ -11372,24 +11385,50 @@ function actualizarGuardadoDelDialogo() {
   const aviso = document.getElementById("db-save-hint");
   if (!guardar || !aviso) return;
   const sinDestino = [];
+  const sinValores = [];
   propRowsContainer.querySelectorAll(".prop-row-wrap:not(.prop-title-row)").forEach((wrap) => {
-    if (wrap.querySelector(".prop-type")?.value !== "relation") return;
-    if (wrap.querySelector(".prop-target")?.value) return;
-    sinDestino.push(wrap.querySelector(".prop-name")?.value.trim() || "una propiedad");
+    const tipo = wrap.querySelector(".prop-type")?.value;
+    const nombre = wrap.querySelector(".prop-name")?.value.trim() || "una propiedad";
+    if (tipo === "relation" && !wrap.querySelector(".prop-target")?.value) {
+      sinDestino.push(nombre);
+    }
+    // «Dice si está cerrada» en una selección necesita al menos un valor: sin
+    // él no hay nada que contar y el servidor rechazaría el guardado.
+    if (
+      ["select", "multiselect"].includes(tipo) &&
+      wrap.querySelector(".prop-done-check")?.checked &&
+      !(wrap.querySelector(".prop-done-values")?.value || "").trim()
+    ) {
+      sinValores.push(nombre);
+    }
   });
-  if (!sinDestino.length) {
+  const avisos = [];
+  if (sinDestino.length) {
+    avisos.push(
+      sinDestino.length === 1
+        ? `Elige la base destino de «${sinDestino[0]}» para poder guardar.`
+        : `Elige la base destino de ${sinDestino
+            .map((n) => `«${n}»`)
+            .join(", ")} para poder guardar.`,
+    );
+  }
+  if (sinValores.length) {
+    avisos.push(
+      sinValores.length === 1
+        ? `Escribe qué valores cuentan como cerrada en «${sinValores[0]}» (separados por coma).`
+        : `Escribe qué valores cuentan como cerrada en ${sinValores
+            .map((n) => `«${n}»`)
+            .join(", ")} (separados por coma).`,
+    );
+  }
+  if (!avisos.length) {
     guardar.disabled = false;
     aviso.textContent = "";
     aviso.hidden = true;
     return;
   }
   aviso.hidden = false;
-  aviso.textContent =
-    sinDestino.length === 1
-      ? `Elige la base destino de «${sinDestino[0]}» para poder guardar.`
-      : `Elige la base destino de ${sinDestino
-          .map((n) => `«${n}»`)
-          .join(", ")} para poder guardar.`;
+  aviso.textContent = avisos.join(" ");
   guardar.disabled = true;
 }
 
@@ -11522,6 +11561,32 @@ function addPropertyRow(prop = null) {
 
   relWrap.append(targetLabel, multipleLabel);
 
+  // Cierre: la propiedad que dice si una fila está cerrada (el `done` del
+  // schema). Es lo que cuenta el contador de subtareas de la madre: sin esta
+  // casilla, una base recién creada desde la interfaz no puede pasar de «0 de
+  // N». En una casilla basta con marcarla; en una selección hay que decir qué
+  // valores cierran (`done: [..]`), y se guardan en el `.md` de la base.
+  const doneWrap = document.createElement("div");
+  doneWrap.className = "prop-done";
+  doneWrap.hidden = true;
+
+  const doneLabel = document.createElement("label");
+  doneLabel.className = "prop-done-flag";
+  const doneBox = document.createElement("input");
+  doneBox.type = "checkbox";
+  doneBox.className = "prop-done-check";
+  const doneText = document.createElement("span");
+  doneText.className = "prop-done-text";
+  doneLabel.append(doneBox, doneText);
+
+  const doneValues = document.createElement("input");
+  doneValues.type = "text";
+  doneValues.className = "prop-done-values";
+  doneValues.placeholder = "valores que cuentan como cerrada, separados por coma (p. ej. Hecho)";
+  doneValues.setAttribute("aria-label", "Valores que cuentan como fila cerrada");
+
+  doneWrap.append(doneLabel, doneValues);
+
   let destinoPedido = false;
   /** Rellena el `<select>` la primera vez que hace falta: una base sin
    * relaciones no pide la lista de bases. */
@@ -11556,11 +11621,31 @@ function addPropertyRow(prop = null) {
   };
 
   const aplicarVisibilidad = () => {
-    const esRelacion = typeSelect.value === "relation";
+    const tipo = typeSelect.value;
+    const esRelacion = tipo === "relation";
     relWrap.hidden = !esRelacion;
-    optionsInput.hidden = !["select", "multiselect"].includes(typeSelect.value);
+    optionsInput.hidden = !["select", "multiselect"].includes(tipo);
+    // El cierre cabe donde hay algo que leer: una casilla (marcada) o una
+    // selección (uno de sus valores). En texto, fecha o número no hay estado.
+    doneWrap.hidden = !["checkbox", "select", "multiselect"].includes(tipo);
+    if (!doneWrap.hidden) {
+      const esCasilla = tipo === "checkbox";
+      doneText.textContent = esCasilla
+        ? "Marcada cuenta como cerrada"
+        : "Esta propiedad dice si la fila está cerrada";
+      doneValues.hidden = esCasilla;
+    }
     if (esRelacion) llenarDestino();
   };
+
+  // Lo que traía la propiedad. Si el usuario desmarca la casilla es que
+  // quiere quitar el marcador (`done: false`); si no la toca, el PATCH no
+  // manda la clave y el servidor conserva el `done` que ya tenía.
+  wrap.__doneAntes = tieneMarcadorDeCierre(prop);
+  if (wrap.__doneAntes) {
+    doneBox.checked = true;
+    if (Array.isArray(prop.done)) doneValues.value = prop.done.join(", ");
+  }
 
   if (prop) {
     nameInput.value = prop.name;
@@ -11575,6 +11660,26 @@ function addPropertyRow(prop = null) {
   });
   nameInput.addEventListener("input", () => actualizarGuardadoDelDialogo());
   targetSelect.addEventListener("change", () => actualizarGuardadoDelDialogo());
+  // Una sola propiedad marca el cierre: el servidor obedece a la primera
+  // marcada, y dos marcadores serían dos respuestas para la misma pregunta.
+  doneBox.addEventListener("change", () => {
+    if (doneBox.checked) {
+      propRowsContainer.querySelectorAll(".prop-done-check").forEach((otra) => {
+        if (otra !== doneBox) otra.checked = false;
+      });
+      // En una selección, el último valor es el de «hecho» por convenio
+      // (Pendiente, En curso, Hecho): se propone, y se puede cambiar.
+      if (typeSelect.value !== "checkbox" && !doneValues.value.trim()) {
+        const opciones = optionsInput.value
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (opciones.length) doneValues.value = opciones[opciones.length - 1];
+      }
+    }
+    actualizarGuardadoDelDialogo();
+  });
+  doneValues.addEventListener("input", () => actualizarGuardadoDelDialogo());
   // Al quitar una fila de propiedad, el aviso y el botón se recalculan: la
   // relación incompleta que bloqueaba puede ser justo la que se ha quitado.
   removeBtn.addEventListener("click", () => {
@@ -11582,7 +11687,7 @@ function addPropertyRow(prop = null) {
     actualizarGuardadoDelDialogo();
   });
 
-  wrap.append(row, optionsInput, relWrap);
+  wrap.append(row, optionsInput, relWrap, doneWrap);
   propRowsContainer.appendChild(wrap);
   aplicarVisibilidad();
 }
@@ -11633,6 +11738,25 @@ function readSchemaFromDialog() {
       // vale es lo que el usuario ve en el diálogo.
       prop.target_database = wrap.querySelector(".prop-target")?.value || "";
       prop.multiple = Boolean(wrap.querySelector(".prop-multiple")?.checked);
+    }
+    if (["checkbox", "select", "multiselect"].includes(type)) {
+      if (wrap.querySelector(".prop-done-check")?.checked) {
+        if (type === "checkbox") {
+          prop.done = true;
+        } else {
+          const valores = (wrap.querySelector(".prop-done-values")?.value || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          // Sin valores no se manda nada: «Guardar» está apagado con su
+          // motivo escrito (`actualizarGuardadoDelDialogo`).
+          if (valores.length) prop.done = valores;
+        }
+      } else if (wrap.__doneAntes) {
+        // Desmarcado a propósito: se quita el marcador. No mandar la clave la
+        // conservaría y no habría forma de apagar el contador desde aquí.
+        prop.done = false;
+      }
     }
     schema_def.push(prop);
   });
