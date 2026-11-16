@@ -226,6 +226,21 @@ class RowTemplate(BaseModel):
     body: str = ""
 
 
+class RowTemplateRead(RowTemplate):
+    """Una plantilla de fila tal y como la lee la interfaz.
+
+    `properties` es lo que dice el `.md` (texto: el fichero no infiere tipos) y
+    `values` los mismos valores coaccionados al tipo de su propiedad —un
+    `false` de verdad, un número, una fecha—, que es lo que se puede pintar en
+    un control. `error` explica por qué la plantilla ya no encaja con la base
+    (una opción que se quitó, una columna que se borró): el alta avisa con ese
+    motivo y no crea la fila a medias.
+    """
+
+    values: dict[str, Any] = {}
+    error: Optional[str] = None
+
+
 class RowTemplatesUpdate(BaseModel):
     """El cuerpo de `PUT /databases/{id}/row-templates`."""
 
@@ -279,7 +294,9 @@ class DatabaseRead(BaseModel):
     closed: Optional[ClosedRule] = None
     # Plantillas de fila de ESTA base, en el orden del `.md`: el «+ Nueva fila»
     # las ofrece y el servidor las aplica por nombre. `[]` = la base no tiene.
-    row_templates: list[RowTemplate] = []
+    # Viajan con sus valores ya coaccionados (`values`) y, si no encajan, con el
+    # motivo (`error`): el cliente no reinterpreta el texto del `.md`.
+    row_templates: list[RowTemplateRead] = []
     created_at: datetime
     updated_at: datetime
 
@@ -288,6 +305,12 @@ class RowCreate(BaseModel):
     title: str = "Sin título"
     icon: Optional[str] = None
     properties: dict[str, Any] = {}
+    # Nombre de la plantilla de fila con la que nace la fila (opcional). El
+    # servidor la valida contra el schema actual —una plantilla que miente es un
+    # 400 con el motivo, no una fila a medias— y rellena con sus valores las
+    # propiedades que el cuerpo no traiga. `properties` manda sobre la plantilla:
+    # lo que el usuario cambió en el alta se respeta.
+    template: Optional[str] = None
     # Cuerpo markdown inicial de la fila (lo usa la plantilla de fila: una fila
     # nueva puede nacer con su «## Qué revisar»). Ausente = cuerpo vacío.
     body_markdown: Optional[str] = None

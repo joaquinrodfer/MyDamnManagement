@@ -23,6 +23,8 @@ Dos decisiones que la tarjeta pide explícitamente:
 
 from __future__ import annotations
 
+import re
+from datetime import date
 from typing import Any
 
 from fastapi import HTTPException
@@ -106,6 +108,17 @@ def _opciones(prop: dict) -> list[str]:
 
 def _error(title: str, motivo: str) -> HTTPException:
     return HTTPException(400, f"La plantilla «{title}» no es válida: {motivo}")
+
+
+def _sin_prefijo(detalle: str, title: str) -> str:
+    """El motivo de un 400 de plantilla, sin la coletilla «La plantilla ...».
+
+    El mismo texto sirve para el `detail` de la API y para la línea que la
+    interfaz enseña junto a una plantilla de fila que ya no encaja; el prefijo
+    sobra en lo segundo.
+    """
+    prefijo = f"La plantilla «{title}» no es válida: "
+    return detalle[len(prefijo):] if detalle.startswith(prefijo) else detalle
 
 
 # --------------------------------------------------------------------------
@@ -405,6 +418,22 @@ def _valor_por_defecto(prop: dict, valor: Any, title: str) -> Any:
             f"«{nombre}» es de tipo {_TIPOS_VISIBLES.get(tipo, tipo)} y su valor "
             "no puede ser una lista ni un mapa.",
         )
+    if tipo == "date":
+        # Una fecha que el `<input type="date">` rechaza deja la celda vacía y
+        # la fila nacería sin el dato, sin decir nada: mejor un 400 aquí, que
+        # es donde se puede explicar.
+        texto = str(valor).strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", texto):
+            raise _error(
+                title, f"«{nombre}» es una fecha: su valor es AAAA-MM-DD, no «{texto}»."
+            )
+        try:
+            date.fromisoformat(texto)
+        except ValueError as exc:
+            raise _error(
+                title, f"«{nombre}» tiene una fecha que no existe: «{texto}»."
+            ) from exc
+        return texto
     return str(valor)
 
 
@@ -472,6 +501,112 @@ def apply_row_template(template: dict, schema: list[dict]) -> tuple[dict, str]:
     return validadas[0]["properties"], validadas[0]["body"]
 
 
+def motivo_de_row_template(template: dict, schema: list[dict]) -> str | None:
+    """Por qué una plantilla de fila guardada ya no encaja con su base.
+
+    `None` = encaja. El `.md` es del usuario: puede haberlo escrito a mano, o el
+    schema puede haber cambiado desde que se guardó. La plantilla no se toca al
+    leerla (el fichero manda), pero quien la va a usar —el alta de fila— tiene
+    que saberlo antes de crear nada a medias.
+    """
+    props = _propiedades(schema)
+    for key in (template.get("properties") or {}):
+        if str(key) not in props:
+            return f"«{key}» ya no es una propiedad de la base."
+    try:
+        validate_row_templates([template], schema, "Plantillas de fila")
+    except HTTPException as exc:
+        return _sin_prefijo(str(exc.detail), "Plantillas de fila")
+    return None
+
+
+def resolve_row_templates(templates: list, schema: list[dict]) -> list[dict]:
+    """Las plantillas de fila de una base, con sus valores ya coaccionados.
+
+    El `.md` no infiere tipos: `false`, `3` o una fecha llegan como texto. Quien
+    pinta un control con ese texto lo interpreta a su manera (`Boolean("false")`
+    es `true`), así que la coerción se hace **una vez, aquí**, con las mismas
+    reglas con las que se aplican al crear la fila.
+
+    Devuelve, por plantilla, `{name, properties, body, values, error}`:
+
+    - `properties`: lo que dice el `.md`, tal cual (la forma que se reescribe);
+    - `values`: los valores coaccionados de las propiedades que sí encajan;
+    - `error`: el motivo por el que la plantilla no se puede usar, o `None`.
+      Un valor que ya no es válido no entra en `values` —pintarlo en un control
+      que no lo puede representar lo perdería en silencio— y la interfaz lo
+      enseña al lado de la plantilla.
+    """
+    props = _propiedades(schema)
+    salida: list[dict] = []
+    for template in templates or []:
+        if not isinstance(template, dict):
+            continue
+        name = str(template.get("name") or "").strip()
+        properties = template.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        body = template.get("body")
+        body = body if isinstance(body, str) else ""
+        values: dict[str, Any] = {}
+        for key, valor in properties.items():
+            prop = props.get(str(key))
+            if prop is None or valor is None:
+                continue
+            try:
+                values[str(key)] = _valor_por_defecto(prop, valor, name or "Plantillas")
+            except HTTPException:
+                continue
+        salida.append(
+            {
+                "name": name,
+                "properties": properties,
+                "body": body,
+                "values": values,
+                "error": motivo_de_row_template(
+                    {"name": name, "properties": properties, "body": body}, schema
+                ),
+            }
+        )
+    return salida
+
+
+def adapt_row_templates(
+    templates: list, schema: list[dict], mapping: dict[str, str] | None = None
+) -> list[dict]:
+    """Las plantillas de fila que siguen encajando tras cambiar el schema.
+
+    Se usa al guardar el schema de la base, como las vistas: un rename
+    traduce las claves (`mapping`), una propiedad borrada deja de aparecer y un
+    valor que el tipo nuevo ya no admite se retira. En silencio a propósito —
+    nadie está editando la plantilla en esa petición y guardar el resto de la
+    base no puede fallar por ella—, pero sin dejar en el `.md` una plantilla que
+    mienta: el alta se negaría a usarla.
+    """
+    props = _propiedades(schema)
+    salida: list[dict] = []
+    for template in templates or []:
+        if not isinstance(template, dict):
+            continue
+        name = str(template.get("name") or "").strip()
+        if not name:
+            continue
+        body = template.get("body")
+        body = body if isinstance(body, str) else ""
+        limpias: dict[str, Any] = {}
+        for key, valor in (template.get("properties") or {}).items():
+            clave = str(key)
+            if mapping:
+                clave = mapping.get(clave, clave)
+            if clave is None or clave not in props or valor is None:
+                continue
+            try:
+                limpias[clave] = _valor_por_defecto(props[clave], valor, name)
+            except HTTPException:
+                continue
+        salida.append({"name": name, "properties": limpias, "body": body})
+    return salida
+
+
 # --------------------------------------------------------------------------
 # plantillas de serie
 # --------------------------------------------------------------------------
@@ -524,14 +659,26 @@ TEMPLATES: dict[str, dict] = {
                 },
             },
             {
+                # Lo hecho sale del tablero: para verlo está la tabla. Es la
+                # configuración que la tarjeta pide de serie (agrupación +
+                # filtros) y no un `is_closed`, que depende de la regla y no
+                # debe cambiar de forma si la base la mueve.
                 "name": "Tablero",
                 "type": "board",
-                "config": {"group_by": "estado"},
+                "config": {
+                    "group_by": "estado",
+                    "filters": [{"key": "estado", "op": "neq", "value": "hecha"}],
+                },
             },
             {
+                # Un calendario solo pinta filas con fecha: sin este filtro, la
+                # vista arrastra las que no tienen entrega y no salen.
                 "name": "Calendario",
                 "type": "calendar",
-                "config": {"date_property": "entrega"},
+                "config": {
+                    "date_property": "entrega",
+                    "filters": [{"key": "entrega", "op": "is_not_empty"}],
+                },
             },
         ],
         "row_templates": [
@@ -578,7 +725,10 @@ TEMPLATES: dict[str, dict] = {
             {
                 "name": "Tablero",
                 "type": "board",
-                "config": {"group_by": "estado"},
+                "config": {
+                    "group_by": "estado",
+                    "filters": [{"key": "estado", "op": "neq", "value": "hecha"}],
+                },
             },
         ],
         "row_templates": [
@@ -590,9 +740,9 @@ TEMPLATES: dict[str, dict] = {
         ],
     },
     "crm": {
-        "title": "Contactos",
+        "title": "CRM",
         "description": (
-            "Empresas y oportunidades: fase del pipeline, valor y próximo "
+            "Contactos, empresas y oportunidades: fase del pipeline, valor y próximo "
             "contacto. Tablero, tabla y agenda."
         ),
         "schema_def": [
@@ -633,7 +783,10 @@ TEMPLATES: dict[str, dict] = {
             {
                 "name": "Agenda",
                 "type": "calendar",
-                "config": {"date_property": "proximo_contacto"},
+                "config": {
+                    "date_property": "proximo_contacto",
+                    "filters": [{"key": "proximo_contacto", "op": "is_not_empty"}],
+                },
             },
         ],
         "row_templates": [
@@ -668,7 +821,10 @@ TEMPLATES: dict[str, dict] = {
             {
                 "name": "Calendario",
                 "type": "calendar",
-                "config": {"date_property": "fecha"},
+                "config": {
+                    "date_property": "fecha",
+                    "filters": [{"key": "fecha", "op": "is_not_empty"}],
+                },
             },
         ],
         "row_templates": [

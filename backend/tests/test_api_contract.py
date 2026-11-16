@@ -260,7 +260,7 @@ def test_plantilla_crm_y_dashboard(client):
     }
 
     crm = client.post("/databases/from-template", json={"template": "crm"}).json()
-    assert crm["title"] == "Contactos"
+    assert crm["title"] == "CRM"
     assert {p["key"] for p in crm["schema_def"]} == {
         "empresa",
         "fase",
@@ -286,14 +286,14 @@ def test_plantilla_crm_y_dashboard(client):
     )
 
     dashboard = client.get("/dashboard").json()
-    assert dashboard["recent_pages"][0]["title"] == "Contactos"
+    assert dashboard["recent_pages"][0]["title"] == "CRM"
     assert dashboard["recent_pages"][0]["database_id"] == crm["id"]
 
     fechas = dashboard["upcoming_dates"]
     assert [f["row_title"] for f in fechas] == ["Acme", "Globex"]
     assert [f["days_from_today"] for f in fechas] == [0, 3]
     assert fechas[0]["property_name"] == "Próximo contacto"
-    assert fechas[0]["database_title"] == "Contactos"
+    assert fechas[0]["database_title"] == "CRM"
 
 
 def test_imagen_de_cabecera(client):

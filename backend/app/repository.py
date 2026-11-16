@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
-from app import closed, index as index_mod
+from app import closed, index as index_mod, templates as template_defs
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
@@ -1086,6 +1086,22 @@ class Repository:
                         else None
                     )
 
+        # Las plantillas de fila siguen al schema igual que las vistas: un
+        # rename traduce sus claves, una propiedad borrada deja de aparecer y un
+        # valor que el tipo nuevo ya no admite se retira. En silencio, como la
+        # regla `closed`: nadie está editando la plantilla en esta petición, y
+        # guardar el resto de la base no puede fallar por ella. Sin esto el `.md`
+        # se queda con plantillas que mienten, que en el editor son invisibles
+        # (su clave ya no está en el schema) y que el alta rechazaría sin decir
+        # por qué.
+        row_templates_update: Any = UNSET
+        if schema_def is not None and current.row_templates:
+            ajustadas = template_defs.adapt_row_templates(
+                current.row_templates, final_schema or [], renames
+            )
+            if ajustadas != current.row_templates:
+                row_templates_update = ajustadas
+
         self.vault.save_database(
             current.page_id,
             title=UNSET if title is None else title,
@@ -1095,6 +1111,7 @@ class Repository:
             title_name=UNSET if title_name is None else title_name,
             title_hidden=UNSET if title_hidden is None else title_hidden,
             closed=closed_update,
+            row_templates=row_templates_update,
         )
         if schema_def is not None:
             # El índice de una fila se filtra contra el schema de su base: si

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.vault import fm
 
 
@@ -48,7 +50,7 @@ def test_el_catalogo_ofrece_las_cuatro_plantillas(client):
     assert [p["title"] for p in catalogo] == [
         "Proyecto",
         "Tareas sueltas",
-        "Contactos",
+        "CRM",
         "Reuniones",
     ]
     # El catálogo dice lo que trae cada plantilla: la interfaz no adivina.
@@ -85,8 +87,14 @@ def test_crear_desde_proyecto_deja_esquema_vistas_y_estado(client, vault_path):
     # Tres vistas, cada una con SU configuración, escritas en el `.md`.
     vistas_de_la_base = {v["name"]: v for v in vistas(client, base["id"])}
     assert set(vistas_de_la_base) == {"Tabla", "Tablero", "Calendario"}
-    assert vistas_de_la_base["Tablero"]["config"] == {"group_by": "estado"}
-    assert vistas_de_la_base["Calendario"]["config"] == {"date_property": "entrega"}
+    assert vistas_de_la_base["Tablero"]["config"] == {
+        "group_by": "estado",
+        "filters": [{"key": "estado", "op": "neq", "value": "hecha"}],
+    }
+    assert vistas_de_la_base["Calendario"]["config"] == {
+        "date_property": "entrega",
+        "filters": [{"key": "entrega", "op": "is_not_empty"}],
+    }
     tabla = vistas_de_la_base["Tabla"]["config"]
     assert tabla["sort"] == [{"key": "entrega", "dir": "asc"}]
     assert tabla["order"] == ["estado", "responsable", "prioridad", "entrega"]
@@ -107,6 +115,13 @@ def test_crear_desde_proyecto_deja_esquema_vistas_y_estado(client, vault_path):
     assert datos["type"] == "database"
     assert datos["closed"] == {"property": "estado", "values": ["hecha"]}
     assert {v["name"] for v in datos["views"]} == {"Tabla", "Tablero", "Calendario"}
+    en_el_fichero = {v["name"]: v for v in datos["views"]}
+    assert en_el_fichero["Tablero"]["filters"] == [
+        {"key": "estado", "op": "neq", "value": "hecha"}
+    ]
+    assert en_el_fichero["Calendario"]["filters"] == [
+        {"key": "entrega", "op": "is_not_empty"}
+    ]
     assert [t["name"] for t in datos["row_templates"]] == [
         "Revisión semanal",
         "Tarea urgente",
@@ -126,9 +141,9 @@ def test_crear_desde_tareas_sueltas_es_la_version_simple(client, vault_path):
     assert client.get(f"/databases/{base['id']}/rows").json() == []
 
 
-def test_crear_desde_crm_conserva_la_plantilla_de_siempre(client):
+def test_crear_desde_crm_conserva_la_plantilla_de_siempre(client, vault_path):
     base = crear_desde(client, "crm").json()
-    assert base["title"] == "Contactos"
+    assert base["title"] == "CRM"
     assert {p["key"] for p in base["schema_def"]} == {
         "empresa",
         "fase",
@@ -353,6 +368,8 @@ def test_guardar_plantillas_de_fila_las_escribe_en_el_md(client, vault_path):
             "name": "Revisión semanal",
             "properties": {"estado": "abierta", "prioridad": "media"},
             "body": "## Qué revisar\n",
+            "values": {"estado": "abierta", "prioridad": "media"},
+            "error": None,
         }
     ]
 
@@ -464,3 +481,256 @@ def test_las_plantillas_de_fila_sobreviven_a_un_reindexado(client, vault_path):
         "Revisión semanal",
         "Tarea urgente",
     ]
+
+
+# --------------------------------------------------------------------------
+# 5. las vistas de serie traen su configuración entera (agrupación y filtros)
+# --------------------------------------------------------------------------
+
+FILTROS_DE_SERIE = [
+    (
+        "proyecto",
+        [
+            {"key": "estado", "op": "neq", "value": "hecha"},
+            {"key": "entrega", "op": "is_not_empty"},
+        ],
+    ),
+    ("tasks", [{"key": "estado", "op": "neq", "value": "hecha"}]),
+    ("crm", [{"key": "proximo_contacto", "op": "is_not_empty"}]),
+    ("reuniones", [{"key": "fecha", "op": "is_not_empty"}]),
+]
+
+
+@pytest.mark.parametrize("clave,filtros", FILTROS_DE_SERIE)
+def test_cada_plantilla_de_serie_trae_sus_filtros_en_el_md(
+    client, vault_path, clave, filtros
+):
+    base = crear_desde(client, clave, title="Copia").json()
+    datos = frontmatter(vault_path / "Bases" / "Copia.md")
+    en_el_md = [f for v in datos["views"] for f in (v.get("filters") or [])]
+    assert en_el_md == filtros
+    # Y la API devuelve lo mismo: el filtro no se queda a medio escribir.
+    devueltos = [f for v in vistas(client, base["id"]) for f in (v["config"].get("filters") or [])]
+    assert devueltos == filtros
+
+
+# --------------------------------------------------------------------------
+# 6. la plantilla de fila viaja resuelta y no miente al pintarse
+# --------------------------------------------------------------------------
+
+def base_de_tipos(client):
+    return client.post(
+        "/databases",
+        json={
+            "title": "Tipos",
+            "schema_def": [
+                {"key": "hecho", "name": "Hecho", "type": "checkbox"},
+                {"key": "horas", "name": "Horas", "type": "number"},
+                {"key": "cuando", "name": "Cuándo", "type": "date"},
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["abierta", "hecha"],
+                },
+            ],
+        },
+    ).json()
+
+
+def test_la_plantilla_de_fila_llega_con_los_valores_coaccionados(client):
+    base = base_de_tipos(client)
+    client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {
+                    "name": "Completa",
+                    "properties": {
+                        "hecho": False,
+                        "horas": 3,
+                        "cuando": "2026-11-16",
+                        "estado": "abierta",
+                    },
+                    "body": "## Contexto\n",
+                }
+            ]
+        },
+    )
+    leida = client.get(f"/databases/{base['id']}").json()["row_templates"][0]
+    # El `.md` no infiere tipos: se lee texto…
+    assert leida["properties"] == {
+        "hecho": "false",
+        "horas": "3",
+        "cuando": "2026-11-16",
+        "estado": "abierta",
+    }
+    # …y `values` es lo que se puede pintar en un control. `Boolean("false")` en
+    # el cliente marcaba la casilla y la fila nacía con `hecho: true`.
+    assert leida["values"] == {
+        "hecho": False,
+        "horas": 3,
+        "cuando": "2026-11-16",
+        "estado": "abierta",
+    }
+    assert leida["error"] is None
+
+
+def test_guardar_el_editor_sin_tocar_nada_no_reescribe_el_md(client, vault_path):
+    base = base_de_tipos(client)
+    client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {"name": "Con casilla", "properties": {"hecho": False}, "body": ""}
+            ]
+        },
+    )
+    archivo = vault_path / "Bases" / "Tipos.md"
+    antes = frontmatter(archivo)["row_templates"]
+
+    # Es exactamente lo que hace el editor al abrir y guardar: manda de vuelta
+    # los valores que pintó (los coaccionados), no el texto del `.md`.
+    leida = client.get(f"/databases/{base['id']}").json()["row_templates"][0]
+    respuesta = client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {
+                    "name": leida["name"],
+                    "properties": leida["values"],
+                    "body": leida["body"],
+                }
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    assert frontmatter(archivo)["row_templates"] == antes
+    texto = archivo.read_text(encoding="utf-8")
+    assert "hecho: false" in texto
+    assert "hecho: true" not in texto
+
+
+def test_una_plantilla_que_ya_no_encaja_dice_por_que_y_no_crea_fila(client, vault_path):
+    base = crear_desde(client, "proyecto", title="Miente").json()
+    archivo = vault_path / "Bases" / "Miente.md"
+    # Alguien edita el `.md` a mano (o el fichero viene de otra versión): la
+    # plantilla nombra un valor que la propiedad ya no tiene.
+    archivo.write_text(
+        archivo.read_text(encoding="utf-8").replace(
+            "prioridad: media", "prioridad: inventada"
+        ),
+        encoding="utf-8",
+    )
+    client.post("/reindex")
+
+    leida = next(
+        t
+        for t in client.get(f"/databases/{base['id']}").json()["row_templates"]
+        if t["name"] == "Revisión semanal"
+    )
+    assert leida["error"] is not None
+    assert "inventada" in leida["error"]
+    # El valor que no encaja no viaja como si fuera bueno: pintarlo en un
+    # `<select>` sin esa opción lo perdería en silencio.
+    assert "prioridad" not in leida["values"]
+    assert leida["values"]["estado"] == "abierta"
+
+    # El alta no crea a medias: 400 con el motivo y ninguna fila.
+    respuesta = client.post(
+        f"/databases/{base['id']}/rows",
+        json={"title": "A medias", "template": "Revisión semanal"},
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    assert "inventada" in respuesta.json()["detail"]
+    assert client.get(f"/databases/{base['id']}/rows").json() == []
+
+
+def test_el_alta_con_plantilla_revalida_y_respeta_lo_editado(client):
+    base = crear_desde(client, "proyecto", title="Alta").json()
+    respuesta = client.post(
+        f"/databases/{base['id']}/rows",
+        json={
+            "title": "Urgente de verdad",
+            "template": "Tarea urgente",
+            "properties": {"prioridad": "baja"},
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    fila = respuesta.json()
+    assert fila["properties"]["prioridad"] == "baja"  # lo editado manda
+    assert fila["properties"]["estado"] == "abierta"  # el resto, de la plantilla
+    detalle = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert "## Qué hay que hacer" in detalle["body_markdown"]
+
+    # Una plantilla que no existe no crea nada.
+    inexistente = client.post(
+        f"/databases/{base['id']}/rows",
+        json={"title": "X", "template": "No está"},
+    )
+    assert inexistente.status_code == 404
+
+
+def test_cambiar_el_schema_ajusta_las_plantillas_de_fila(client, vault_path):
+    base = crear_desde(client, "proyecto", title="Ajuste").json()
+    schema = []
+    for prop in base["schema_def"]:
+        if prop["key"] == "prioridad":
+            # La opción «alta» desaparece del vocabulario de la base.
+            prop = {**prop, "options": ["media", "baja"], "sort_order": ["media", "baja"]}
+        schema.append(prop)
+    respuesta = client.patch(f"/databases/{base['id']}", json={"schema_def": schema})
+    assert respuesta.status_code == 200, respuesta.text
+
+    plantillas = {t["name"]: t for t in respuesta.json()["row_templates"]}
+    # «Tarea urgente» pedía prioridad alta: el valor se retira, no se queda
+    # mintiendo ni el editor lo pierde en silencio al guardar.
+    assert plantillas["Tarea urgente"]["properties"] == {"estado": "abierta"}
+    assert plantillas["Tarea urgente"]["error"] is None
+    assert plantillas["Revisión semanal"]["properties"] == {
+        "estado": "abierta",
+        "prioridad": "media",
+    }
+    en_el_md = frontmatter(vault_path / "Bases" / "Ajuste.md")["row_templates"]
+    assert {t["name"]: t.get("properties") for t in en_el_md}["Tarea urgente"] == {
+        "estado": "abierta"
+    }
+
+
+def test_renombrar_una_propiedad_traduce_las_plantillas_de_fila(client, vault_path):
+    base = crear_desde(client, "proyecto", title="Renombre").json()
+    schema = [
+        {**prop, "name": "Urgencia"} if prop["key"] == "prioridad" else prop
+        for prop in base["schema_def"]
+    ]
+    respuesta = client.patch(f"/databases/{base['id']}", json={"schema_def": schema})
+    assert respuesta.status_code == 200, respuesta.text
+    claves = {p["key"] for p in respuesta.json()["schema_def"]}
+    plantillas = respuesta.json()["row_templates"]
+    for plantilla in plantillas:
+        assert set(plantilla["properties"]) <= claves
+        assert "prioridad" not in plantilla["properties"]
+    # La que tenía prioridad la sigue teniendo, con la clave nueva.
+    semanal = next(t for t in plantillas if t["name"] == "Revisión semanal")
+    assert semanal["values"] == {"estado": "abierta", "urgencia": "media"}
+
+
+def test_una_fecha_por_defecto_que_no_es_fecha_no_se_guarda(client, vault_path):
+    base = client.post(
+        "/databases",
+        json={
+            "title": "Citas",
+            "schema_def": [{"key": "cuando", "name": "Cuándo", "type": "date"}],
+        },
+    ).json()
+    respuesta = client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {"name": "Mala", "properties": {"cuando": "31/12/2026"}, "body": ""}
+            ]
+        },
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    assert "AAAA-MM-DD" in respuesta.json()["detail"]
+    assert "row_templates" not in frontmatter(vault_path / "Bases" / "Citas.md")

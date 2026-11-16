@@ -93,9 +93,9 @@ def reindexar_y_comparar_huella(client, index_path: Path) -> None:
 def test_crear_una_base_desde_la_plantilla_escribe_sus_ficheros(client, index_path, vault_path):
     base = client.post("/databases/from-template", json={"template": "crm"}).json()
 
-    fichero = vault_path / "Bases" / "Contactos.md"
+    fichero = vault_path / "Bases" / "CRM.md"
     assert fichero.exists(), "crear una base tiene que crear su .md"
-    assert (vault_path / "Bases" / "Contactos").is_dir(), "falta la carpeta de filas"
+    assert (vault_path / "Bases" / "CRM").is_dir(), "falta la carpeta de filas"
 
     datos = frontmatter(fichero)
     assert datos["type"] == "database"
@@ -563,7 +563,7 @@ def test_una_base_escrita_a_mano_se_indexa_con_su_schema_y_sus_vistas(client, va
 def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     client, index_path, vault_path, acceso
 ):
-    """`cp Bases/Contactos.md "Bases/Contactos copia.md"` es copiar y ya.
+    """`cp Bases/CRM.md "Bases/CRM copia.md"` es copiar y ya.
 
     Las dos bases traen las `views` con el mismo `id` en el frontmatter: la PK
     de `views` no puede hacerse con eso. El ADR acepta el `id` duplicado como
@@ -574,8 +574,8 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     que haga falta.
     """
     client.post("/databases/from-template", json={"template": "crm"})
-    original = vault_path / "Bases" / "Contactos.md"
-    copia = vault_path / "Bases" / "Contactos copia.md"
+    original = vault_path / "Bases" / "CRM.md"
+    copia = vault_path / "Bases" / "CRM copia.md"
     copia.write_text(texto(original), encoding="utf-8")
 
     respuesta = client.post("/reindex")
@@ -587,7 +587,7 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
 
     # Dos bases de verdad, no una que se come a la otra.
     bases = {b["title"]: b for b in client.get("/databases").json()}
-    assert set(bases) == {"Contactos", "Contactos copia"}
+    assert set(bases) == {"CRM", "CRM copia"}
 
     # Cada una con sus tres vistas y sin compartir ids (la PK de `views`).
     vistas = {
@@ -596,11 +596,11 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     }
     ids = [v["id"] for lista in vistas.values() for v in lista]
     assert len(ids) == 6 and len(set(ids)) == 6, ids
-    assert [v["name"] for v in vistas["Contactos copia"]] == [
+    assert [v["name"] for v in vistas["CRM copia"]] == [
         "Pipeline", "Tabla", "Agenda",
     ]
     # La copia conserva el `group_by` de la vista.
-    assert vistas["Contactos copia"][0]["config"] == {"group_by": "fase"}
+    assert vistas["CRM copia"][0]["config"] == {"group_by": "fase"}
 
     # La huella no cambia entre reindexados (los ids derivados son estables) y
     # el arranque siguiente levanta con las dos bases.
@@ -608,7 +608,7 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     with arrancar_de_nuevo() as otro:
         acceso(otro)
         despues = otro.get("/databases").json()
-        assert {b["title"] for b in despues} == {"Contactos", "Contactos copia"}
+        assert {b["title"] for b in despues} == {"CRM", "CRM copia"}
         # Las dos siguen sirviendo sus vistas y sus filas desde el índice.
         for base_reconstruida in despues:
             ruta = f"/databases/{base_reconstruida['id']}"

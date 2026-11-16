@@ -87,7 +87,14 @@ def _serialize_database(
         ),
         # Las plantillas de fila viajan con la base: el «+ Nueva fila» las
         # ofrece sin otra consulta y el cliente no tiene que leer el `.md`.
-        row_templates=[schemas.RowTemplate(**t) for t in db_def.row_templates],
+        # Con `values` coaccionados (el `.md` no infiere tipos y `Boolean("false")`
+        # es `true`) y con `error` cuando ya no encajan con el schema.
+        row_templates=[
+            schemas.RowTemplateRead(**t)
+            for t in template_defs.resolve_row_templates(
+                db_def.row_templates, db_def.schema_def
+            )
+        ],
         created_at=as_utc(db_def.created_at),
         updated_at=as_utc(db_def.updated_at),
     )
@@ -446,8 +453,35 @@ def create_row(
     database_id: uuid.UUID, payload: schemas.RowCreate, repo: Repository = Depends(get_repo)
 ):
     db_def = _get_database_or_404(repo, database_id)
+    properties = dict(payload.properties or {})
+    body = payload.body_markdown or ""
+    if payload.template:
+        # La plantilla se valida aquí también, aunque el alta ya haya pintado
+        # sus valores: es la última puerta antes de escribir, y una plantilla
+        # que miente (una opción que ya no existe, una columna borrada) es un
+        # 400 con el motivo, no una fila a medias. Lo que el usuario cambió en
+        # el formulario manda sobre el valor por defecto.
+        nombre = payload.template.strip()
+        plantilla = next(
+            (
+                t
+                for t in db_def.row_templates
+                if str(t.get("name") or "").strip().casefold() == nombre.casefold()
+            ),
+            None,
+        )
+        if plantilla is None:
+            raise HTTPException(
+                404, f"La plantilla de fila «{nombre}» no existe en esta base"
+            )
+        por_defecto, cuerpo = template_defs.apply_row_template(
+            plantilla, db_def.schema_def
+        )
+        properties = {**por_defecto, **properties}
+        if not body:
+            body = cuerpo
     cleaned = validate_properties(
-        db_def.schema_def, payload.properties, refs=repo.row_refs, users=repo.user_refs
+        db_def.schema_def, properties, refs=repo.row_refs, users=repo.user_refs
     )
     # La jerarquía no puede colgar de otra base. Una fila nueva todavía no
     # existe, así que aquí solo se puede comprobar el destino; los ciclos se
@@ -461,7 +495,7 @@ def create_row(
             title=payload.title,
             icon=payload.icon,
             properties=cleaned,
-            body=payload.body_markdown or "",
+            body=body,
         )
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
     publish_database(database_id, "rows")
