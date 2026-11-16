@@ -29,6 +29,13 @@ Forma del `config` de una vista (en el frontmatter de `Bases/<slug>.md`):
   tablero: una hija ya se ve debajo de su madre, y duplicarla es ruido); `all`
   enseña todas, indentadas bajo su madre. Sin la clave manda el tipo de vista
   (ver `app.hierarchy.level`), así que una base sin jerarquía no cambia nada.
+- `start_property` / `end_property`: el **rango** de un calendario. Las dos son
+  la clave de una propiedad de fecha; la barra de la fila va del primer día de
+  `start_property` al último de `end_property` (los dos incluidos) y `end_property`
+  puede faltar, que entonces la fila dura un día. Sin ninguna de las dos, el
+  calendario coloca cada fila en un solo día (`date_property`), como siempre.
+  No afectan al filtro ni al orden: son metadatos de dibujo, como `group_by`.
+  `validar_rango` comprueba que nombran fechas de verdad.
 
 Los valores del frontmatter se leen como texto (el parser de `fm` no infiere
 tipos), así que los operadores comparan como número cuando los dos lados lo
@@ -62,7 +69,7 @@ determinista.
 import re
 import unicodedata
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from app import closed, hierarchy
 from app.properties import option_key
@@ -70,6 +77,71 @@ from app.repository import Page
 
 # Operadores que no llevan `value`: la condición es sobre el estado del valor.
 SIN_VALOR = frozenset({"is_empty", "is_not_empty", "checked", "unchecked"})
+
+# Claves del `config` que declaran el **rango** de un calendario: de qué
+# propiedad de fecha sale el primer día de la barra y de cuál el último. Sin
+# ellas el calendario coloca cada fila en un solo día (`date_property`), como
+# siempre.
+INICIO_DE_RANGO = "start_property"
+FIN_DE_RANGO = "end_property"
+CLAVES_DE_RANGO = (INICIO_DE_RANGO, FIN_DE_RANGO)
+
+
+def validar_rango(
+    config: Mapping[str, Any] | None, schema_def: list[dict]
+) -> Optional[str]:
+    """Motivo por el que el rango de una vista no vale, o `None` si vale.
+
+    Un calendario con rango declara `start_property` y `end_property` con la
+    **clave interna** de dos propiedades de fecha, igual que `group_by` o
+    `date_property`. Se valida contra el `schema` de la base, que el esquema de
+    la petición no tiene:
+
+    - la clave tiene que existir en el schema. Una vista que nombra una
+      propiedad que ya no está dejaría el calendario cayendo a la primera fecha
+      en silencio, y eso es peor que decir que la vista está mal;
+    - tiene que ser de tipo `date`: una relación o un texto no son un día;
+    - las dos, si están, no pueden ser la misma: un rango de la misma fecha
+      consigo misma no dice nada.
+
+    `end_property` es opcional: un rango con solo inicio son filas de un día
+    (el día de inicio). Sin ninguna de las dos claves la vista no declara rango
+    y el calendario se comporta como antes (`date_property`).
+
+    Devuelve el motivo en castellano, listo para un 400, o `None`.
+    """
+    if not config:
+        return None
+    props = {
+        str(p.get("key")): p
+        for p in (schema_def or [])
+        if isinstance(p, dict) and p.get("key")
+    }
+    elegidas: dict[str, str] = {}
+    for clave in CLAVES_DE_RANGO:
+        valor = config.get(clave)
+        if valor is None or (isinstance(valor, str) and not valor.strip()):
+            continue
+        if not isinstance(valor, str):
+            return f"«{clave}» tiene que ser la clave de una propiedad de fecha."
+        prop = props.get(valor.strip())
+        if prop is None:
+            return (
+                f"La vista declara «{clave}: {valor}», pero esa propiedad no "
+                "existe en la base. Corrige la vista o vuelve a elegir la fecha."
+            )
+        if prop.get("type") != "date":
+            return (
+                f"«{prop.get('name') or valor}» no es una propiedad de fecha, y "
+                f"«{clave}» tiene que serlo: un rango se mide en días."
+            )
+        elegidas[clave] = valor.strip()
+    if len(set(elegidas.values())) != len(elegidas):
+        return (
+            "El inicio y el fin del rango no pueden ser la misma propiedad: "
+            "«{0}» ya es el inicio.".format(next(iter(elegidas.values())))
+        )
+    return None
 
 # Operadores que pregunta por la semántica de «cerrada» de la base. No llevan
 # `value` ni `key`: la respuesta la da la regla de la base, no una celda.
