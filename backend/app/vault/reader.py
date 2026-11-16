@@ -47,7 +47,7 @@ DATABASES_DIR = "Bases"
 
 TYPES = {
     "text", "number", "select", "multiselect", "checkbox", "date", "url",
-    "relation", "parent_row",
+    "relation", "parent_row", "person",
 }
 
 
@@ -191,6 +191,12 @@ RELATION = "relation"
 # preguntar por cuál de las dos columnas. Ver `app.hierarchy`.
 #   madre: 7f3a91c2-...
 PARENT_ROW = "parent_row"
+# Tipo de propiedad cuyo valor es el **`id`** de un usuario de la app (la tabla
+# `users` del índice), nunca texto libre. Se guarda el id y no el nombre visible
+# porque la persona puede renombrarse: la celda tiene que seguir apuntando a la
+# misma y enseñar el nombre nuevo. Un id que ya no resuelve (el usuario se
+# borró) se lee tal cual y quien serializa la fila avisa (ver `app.properties`).
+PERSON = "person"
 
 
 def relation_multiple(prop: dict) -> bool:
@@ -271,6 +277,18 @@ def _parent_value(raw):
     if isinstance(raw, (list, dict)):
         return None
     return relation_id(raw)
+def _person_value(raw):
+    """El id de usuario que hay en una celda `person`, o `None` si no hay.
+
+    Una lista o un mapa en una celda de persona no se puede representar (una
+    persona por celda): se leen como «sin valor», igual que una relación simple
+    con dos ids. Nunca se lanza: un `.md` con basura no puede tumbar el
+    reindexado.
+    """
+    if isinstance(raw, (list, dict)):
+        return None
+    text = str(raw).strip()
+    return text or None
 
 
 def _coerce(prop: dict, raw):
@@ -281,6 +299,8 @@ def _coerce(prop: dict, raw):
         return _relation_value(prop, raw)
     if ptype == PARENT_ROW:
         return _parent_value(raw)
+    if ptype == PERSON:
+        return _person_value(raw)
     if ptype == "number":
         try:
             return float(raw)

@@ -109,6 +109,7 @@ class PropertyType(str, Enum):
     # `parent_row`: subtareas. La celda es el id de la fila madre, de la MISMA
     # base, y una base tiene como mucho una propiedad de este tipo.
     parent_row = "parent_row"
+    person = "person"
 
 
 class PropertyDef(BaseModel):
@@ -249,6 +250,18 @@ class RowChildren(BaseModel):
 
     total: int = 0
     closed: int = 0
+class PersonRef(BaseModel):
+    """El usuario al que apunta una celda de tipo `person`, resuelto al leer.
+
+    `display_name: None` = el id guardado ya no está en `users` (se borró la
+    cuenta). El `.md` conserva el id y la celda enseña que ya no está, igual que
+    una relación con la fila borrada: una celda vacía no explicaría nada.
+    """
+
+    id: str
+    display_name: Optional[str] = None
+    username: Optional[str] = None
+    color: Optional[str] = None
 
 
 class RowRead(BaseModel):
@@ -273,6 +286,11 @@ class RowRead(BaseModel):
     # el título ya resuelto por el servidor (una consulta por respuesta). Una
     # fila sin relaciones devuelve `{}`.
     related: dict[str, list[RelatedRow]] = {}
+    # `{clave_de_la_propiedad: persona}` de las propiedades `person`, con el
+    # nombre visible ya resuelto por el servidor: la celda enseña el nombre y
+    # no el id, y el cliente no necesita la tabla de usuarios. Una fila sin
+    # personas devuelve `{}`.
+    people: dict[str, PersonRef] = {}
     created_at: datetime
     updated_at: datetime
 

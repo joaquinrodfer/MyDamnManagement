@@ -10,6 +10,9 @@ from app import auth
 from app.dependencies import get_current_user, get_repo
 from app.events import publish_database
 from app.properties import (
+    people_of,
+    person_ids,
+    person_keys,
     plan_schema,
     related_refs,
     relation_ids,
@@ -83,19 +86,28 @@ def _serialize_rows(
     *,
     parent_key: Optional[str] = None,
     counts: Optional[dict[str, tuple[int, int]]] = None,
+    users: Optional[dict] = None,
 ) -> List[schemas.RowRead]:
-    """Serializa filas resolviendo sus relaciones **en una sola consulta**.
+    """Serializa filas resolviendo relaciones y personas **en una consulta cada una**.
 
     Los ids de todas las celdas de relación de la respuesta se juntan y se
     resuelven de una vez (`repo.row_refs`): el coste es el de la respuesta, no
     el de cada fila. Lo que no resuelve (fila borrada) sale con `title: null`,
     y el id se queda en `properties`: la celda apunta a algo que ya no está y
     el interfaz tiene que poder decirlo.
+
+    Las celdas `person` hacen lo mismo con los usuarios (`repo.user_refs`): el
+    id se queda en `properties` y `people` lleva el nombre visible y el color.
+    `users` se puede pasar ya resuelto (el router lo necesita antes para
+    filtrar y ordenar por nombre); si no, se resuelve aquí.
     """
     properties = [row.properties or {} for row in rows]
     ids = relation_ids(db_def.schema_def, properties)
     refs = repo.row_refs(ids) if ids else {}
     cuentas = counts or {}
+    if users is None:
+        gente = person_ids(db_def.schema_def, properties)
+        users = repo.user_refs(gente) if gente else {}
     return [
         schemas.RowRead(
             id=row.id,
@@ -114,6 +126,7 @@ def _serialize_rows(
                 closed=cuentas.get(str(row.id), (0, 0))[1],
             ),
             closed=hierarchy.is_closed(db_def.schema_def, props),
+            people=people_of(db_def.schema_def, props, users),
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
         )
@@ -307,7 +320,7 @@ def create_row(
 ):
     db_def = _get_database_or_404(repo, database_id)
     cleaned = validate_properties(
-        db_def.schema_def, payload.properties, refs=repo.row_refs
+        db_def.schema_def, payload.properties, refs=repo.row_refs, users=repo.user_refs
     )
     # La jerarquía no puede colgar de otra base. Una fila nueva todavía no
     # existe, así que aquí solo se puede comprobar el destino; los ciclos se
@@ -336,6 +349,17 @@ def list_rows(
     # deja fuera: por eso se calcula antes de filtrar.
     key, counts = _hierarchy_counts(repo, db_def)
 
+    # Una celda `person` guarda un id, pero el filtro se escribe con el nombre
+    # que se lee y el orden va por nombre: se resuelven los usuarios de TODAS
+    # las filas antes de filtrar, en una consulta (el filtro se lleva unas
+    # cuantas y el nombre del resto sigue haciendo falta para el orden).
+    claves_persona = person_keys(db_def.schema_def)
+    users: Optional[dict] = None
+    if claves_persona:
+        users = repo.user_refs(
+            person_ids(db_def.schema_def, [row.properties or {} for row in rows])
+        )
+
     if view is not None:
         view_def = repo.get_view(database_id, view)
         if view_def is None:
@@ -345,6 +369,8 @@ def list_rows(
             view_def.config or {},
             parent_key=key,
             view_type=getattr(view_def.type, "value", view_def.type),
+            people={key: datos[0] for key, datos in (users or {}).items()},
+            person_keys=claves_persona,
         )
     elif key:
         # «Todas» no tiene vista que diga el nivel, así que se ven todas las
@@ -352,7 +378,9 @@ def list_rows(
         # madre, como en cualquier vista de la base.
         rows = hierarchy.arrange(rows, key)
 
-    return _serialize_rows(repo, db_def, rows, parent_key=key, counts=counts)
+    return _serialize_rows(
+        repo, db_def, rows, parent_key=key, counts=counts, users=users
+    )
 
 
 @router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowPageRead)
@@ -381,7 +409,7 @@ def update_row(
     cleaned = None
     if payload.properties is not None:
         cleaned = validate_properties(
-            db_def.schema_def, payload.properties, refs=repo.row_refs
+            db_def.schema_def, payload.properties, refs=repo.row_refs, users=repo.user_refs
         )
         # Con la fila delante, la comprobación completa: ni su propia madre ni
         # una descendiente suya (ciclo).

@@ -4385,6 +4385,7 @@ const TIPOS_VISIBLES = {
   url: "Enlace",
   relation: "Relación",
   parent_row: "Subtarea de",
+  person: "Persona",
 };
 
 function tipoVisible(tipo) {
@@ -4469,6 +4470,14 @@ function contadorDeSubtareas(row) {
 }
 
 async function renderDatabase(database, views, activeViewId, { focus = null } = {}) {
+  // El selector de una celda de persona necesita el directorio: se pide al
+  // abrir una base que tenga alguna, antes de que nadie pinte una celda.
+  if ((database.schema_def || []).some((p) => p.type === "person")) {
+    // `forzar`: el nombre visible de una persona puede haber cambiado desde el
+    // último pintado (la celda lo lee del servidor, pero los desplegables de
+    // alta y de la ficha salen del directorio cacheado).
+    cargarPersonas({ forzar: true }).catch(() => {});
+  }
   const main = clearMain();
   // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
   // usan el tablero tras mover una tarjeta y el diálogo de propiedades, para no
@@ -4884,6 +4893,12 @@ const OPERADORES_FILTRO = {
     ["is_empty", "está vacío"],
     ["is_not_empty", "no está vacío"],
   ],
+  person: [
+    ["eq", "es"],
+    ["neq", "no es"],
+    ["is_empty", "está vacía"],
+    ["is_not_empty", "no está vacía"],
+  ],
 };
 
 /** Los operadores que no llevan valor: el estado lo dice el propio operador. */
@@ -4971,7 +4986,9 @@ function textoDeCondicion(cond, database) {
   const valor =
     prop.type === "relation"
       ? titulosDeRelacion.get(prop.key)?.get(cond.value) || String(cond.value ?? "")
-      : String(cond.value ?? "");
+      : prop.type === "person"
+        ? nombreDePersona(cond.value) || String(cond.value ?? "")
+        : String(cond.value ?? "");
   return `${prop.name} ${operador} «${valor}»`;
 }
 
@@ -5108,6 +5125,17 @@ function renderViewTools({ database, view, visibles, total, onCambio }) {
       if (!chips.isConnected) return;
       pintarChipsDeVista(chips, database, filtros, claves, onCambio);
     });
+  }
+  // Un filtro sobre una persona enseña el id hasta que llega el directorio.
+  if (
+    filtros.some((f) => database.schema_def.find((p) => p.key === f.key)?.type === "person")
+  ) {
+    cargarPersonas()
+      .then(() => {
+        if (!chips.isConnected) return;
+        pintarChipsDeVista(chips, database, filtros, claves, onCambio);
+      })
+      .catch(() => {});
   }
 
   return tools;
@@ -5246,6 +5274,13 @@ function openFilterDialog(database, view, onCambio) {
   cargarTitulosDeRelacion(database).then(() => {
     if (filterDialog.open) pintarFilasDeFiltro();
   });
+  if (database.schema_def.some((p) => p.type === "person")) {
+    cargarPersonas()
+      .then(() => {
+        if (filterDialog.open) pintarFilasDeFiltro();
+      })
+      .catch(() => {});
+  }
 }
 
 function pintarFilasDeFiltro() {
@@ -5356,6 +5391,8 @@ function controlDeValor(prop, cond, indice) {
     control.value = cond.value || "";
   } else if (prop.type === "relation") {
     control = controlDeRelacion(prop, cond);
+  } else if (prop.type === "person") {
+    control = controlDePersona(prop, cond);
   } else if (prop.type === "date") {
     control = document.createElement("input");
     control.type = "date";
@@ -5381,6 +5418,42 @@ function controlDeValor(prop, cond, indice) {
   control.addEventListener("change", leer);
   caja.appendChild(control);
   return caja;
+}
+
+/** El valor de un filtro sobre una persona: el desplegable del directorio.
+ *
+ * Se guarda el **id** (lo que dice la celda), pero se elige por nombre. Si el
+ * directorio aún no está, se pide y el panel se repinta al llegar; mientras
+ * tanto el desplegable sale con «sin asignar» y el valor guardado, que no se
+ * pierde.
+ */
+function controlDePersona(prop, cond) {
+  if (!personasCache.size) {
+    cargarPersonas()
+      .then(() => {
+        if (filterDialog.open) pintarFilasDeFiltro();
+      })
+      .catch(() => {});
+  }
+  const select = document.createElement("select");
+  const vacio = document.createElement("option");
+  vacio.value = "";
+  vacio.textContent = "— sin asignar";
+  select.appendChild(vacio);
+  personasCache.forEach((persona, id) => {
+    const opcion = document.createElement("option");
+    opcion.value = id;
+    opcion.textContent = persona.display_name || id;
+    select.appendChild(opcion);
+  });
+  if (cond.value && !personasCache.has(String(cond.value))) {
+    const huerfana = document.createElement("option");
+    huerfana.value = String(cond.value);
+    huerfana.textContent = String(cond.value);
+    select.appendChild(huerfana);
+  }
+  select.value = cond.value || "";
+  return select;
 }
 
 function controlDeRelacion(prop, cond) {
@@ -6672,6 +6745,355 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
   }
 }
 
+// ------------------------------------------------------------------ personas
+// Una celda `person` guarda en el `.md` el **id** de un usuario (tabla
+// `users`); el servidor devuelve además `people`, con su nombre visible y su
+// color (una consulta por respuesta, como `related`). Aquí vive lo que la
+// interfaz hace con eso: enseñar el nombre y nunca el id, decir «(ya no está)»
+// cuando el id ya no resuelve, y elegir la persona en la celda.
+
+/** El tope de personas que ofrece el selector: mismo criterio que las filas de
+ * una relación, no es una lista que se recorra entera escribiendo. */
+const PERSONAS_CHOICES_LIMIT = 50;
+
+/** `id -> {id, display_name, username, color}` de `GET /people`, y la promesa en
+ * curso (una sola petición aunque haya diez celdas esperando). */
+const personasCache = new Map();
+let personasPromesa = null;
+
+function cargarPersonas({ forzar = false } = {}) {
+  if (personasPromesa && !forzar) return personasPromesa;
+  personasPromesa = api("/people")
+    .then((gente) => {
+      personasCache.clear();
+      (Array.isArray(gente) ? gente : []).forEach((p) => {
+        if (p && p.id != null) personasCache.set(String(p.id), p);
+      });
+      return [...personasCache.values()];
+    })
+    .catch((e) => {
+      personasPromesa = null; // el siguiente intento vuelve a pedirlas
+      throw e;
+    });
+  return personasPromesa;
+}
+
+/** La persona que el servidor resolvió para una fila (`people`), o `null`. */
+function personaDeFila(row, key) {
+  const ref = row?.people?.[key];
+  return ref && ref.id != null && ref.display_name ? ref : null;
+}
+
+/** El id de usuario que guarda una celda de persona ('' si está vacía). */
+function personaIdDeFila(row, key) {
+  return String(row?.properties?.[key] ?? "").trim();
+}
+
+/** El nombre visible de un id de usuario: el de la fila, o el del directorio. */
+function nombreDePersona(id, row = null, key = null) {
+  const ref = row && key ? row?.people?.[key] : null;
+  if (ref?.display_name) return ref.display_name;
+  return personasCache.get(String(id ?? ""))?.display_name || null;
+}
+
+/** Una celda de persona en HTML plano (la lista, la tarjeta del tablero, la
+ * ficha de la fila): el NOMBRE con su color; nunca el id. */
+function htmlDePersona(value, prop, row) {
+  const id = String(value ?? "").trim();
+  if (!id) return "—";
+  const ref = personaDeFila(row, prop.key);
+  if (!ref) {
+    return `<span class="rel-cell"><span class="rel-chip rel-borrada person-gone" title="${escapeHtml(id)}">(ya no está)</span></span>`;
+  }
+  const color = ref.color ? ` style="background:${escapeHtml(ref.color)}"` : "";
+  return `<span class="person-cell"><span class="person-dot"${color} aria-hidden="true"></span><span class="person-name">${escapeHtml(ref.display_name)}</span></span>`;
+}
+
+/** Pinta la celda de una persona (tabla y tabla incrustada). El clic abre el
+ * selector; el lápiz hace lo mismo sin depender de que haya hueco. */
+function pintarPersonaEnCelda(td, database, row, prop, hooks = null) {
+  const id = personaIdDeFila(row, prop.key);
+  td.textContent = "";
+  if (!id) {
+    td.textContent = "—";
+    return;
+  }
+  const ref = personaDeFila(row, prop.key);
+  const caja = document.createElement("span");
+  caja.className = "person-cell";
+  if (!ref) {
+    const roto = document.createElement("span");
+    roto.className = "person-gone";
+    roto.textContent = "(ya no está)";
+    roto.title = id;
+    roto.setAttribute("aria-label", `El usuario ${id} ya no existe`);
+    caja.appendChild(roto);
+  } else {
+    const punto = document.createElement("span");
+    punto.className = "person-dot";
+    if (ref.color) punto.style.background = ref.color;
+    punto.setAttribute("aria-hidden", "true");
+    const nombre = document.createElement("span");
+    nombre.className = "person-name";
+    nombre.textContent = ref.display_name;
+    caja.title = ref.username ? `${ref.display_name} (@${ref.username})` : ref.display_name;
+    caja.append(punto, nombre);
+  }
+  td.appendChild(caja);
+  const lapiz = document.createElement("button");
+  lapiz.type = "button";
+  lapiz.className = "rel-edit";
+  lapiz.innerHTML = svgIcon("i-pencil");
+  lapiz.title = `Elegir la persona de «${prop.name}»`;
+  lapiz.setAttribute("aria-label", `Elegir la persona de «${prop.name}»`);
+  lapiz.tabIndex = -1;
+  if (hooks?.embed) lapiz.dataset.dbAction = "editar-persona";
+  lapiz.addEventListener("click", (e) => {
+    e.stopPropagation();
+    editarCeldaDePersona(td, database, row, prop, hooks).catch((err) =>
+      reportError("No se pudo abrir el selector de personas", err),
+    );
+  });
+  lapiz.addEventListener("keydown", (e) => e.stopPropagation());
+  td.appendChild(lapiz);
+}
+
+// --- el selector de personas de una celda --------------------------------
+
+let selectorDePersona = null;
+
+function cerrarSelectorDePersona({ foco = false } = {}) {
+  const abierto = selectorDePersona;
+  if (!abierto) return;
+  selectorDePersona = null;
+  abierto.limpiar();
+  abierto.panel.remove();
+  if (foco && abierto.ancla?.isConnected) abierto.ancla.focus({ preventScroll: true });
+}
+
+/** Abre el selector de personas sobre una celda `person`.
+ *
+ * Se filtra escribiendo (sin mayúsculas ni tildes), como el de relaciones, y la
+ * primera opción es «Sin asignar»: una celda vacía es un valor legítimo —es lo
+ * que hace que `is_empty` del filtro sirva—. Elegir guarda por el mismo PATCH
+ * que cualquier otra celda.
+ */
+async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
+  if (selectorDePersona) return;
+  cerrarSelectorDeRelacion();
+  let gente = [];
+  let error = "";
+  try {
+    gente = await cargarPersonas({ forzar: true });
+  } catch (e) {
+    // Con una lista ya cargada, se sigue con ella: elegir a alguien de un
+    // directorio de hace un rato es mejor que no poder elegir.
+    gente = [...personasCache.values()];
+    if (!gente.length) error = `No se pudo leer la lista de personas: ${describeError(e)}`;
+  }
+  // La tabla pudo repintarse mientras llegaba la respuesta.
+  if (!td.isConnected) return;
+
+  const panel = document.createElement("div");
+  panel.className = "rel-picker person-picker";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", `Elegir la persona de «${prop.name}»`);
+
+  const cabecera = document.createElement("div");
+  cabecera.className = "rel-picker-head";
+  const nombre = document.createElement("span");
+  nombre.className = "rel-picker-name";
+  nombre.textContent = prop.name;
+  const modo = document.createElement("span");
+  modo.className = "rel-picker-mode";
+  modo.textContent = "una persona";
+  cabecera.append(nombre, modo);
+
+  const buscar = document.createElement("input");
+  buscar.type = "search";
+  buscar.className = "rel-picker-search";
+  buscar.placeholder = "Buscar por nombre o @usuario…";
+  buscar.autocomplete = "off";
+  buscar.setAttribute("aria-label", "Buscar una persona");
+  buscar.disabled = Boolean(error) || !gente.length;
+
+  const lista = document.createElement("div");
+  lista.className = "rel-picker-list";
+  lista.setAttribute("role", "listbox");
+
+  const nota = document.createElement("p");
+  nota.className = "rel-picker-note";
+  nota.setAttribute("role", "status");
+
+  panel.append(cabecera);
+  if (!error) panel.append(buscar);
+  panel.append(lista, nota);
+
+  const estado = { activo: -1, opciones: [] };
+  const actual = () => personaIdDeFila(row, prop.key);
+
+  const guardar = async (id) => {
+    const valor = id || null;
+    if (sameValue(valor, row.properties?.[prop.key] ?? null)) {
+      cerrarSelectorDePersona({ foco: true });
+      return;
+    }
+    try {
+      await saveRow(database, row, { properties: { [prop.key]: valor } }, hooks);
+      nota.textContent = "Guardado.";
+      repaintCell(td, database, row, prop, false, hooks);
+      cerrarSelectorDePersona({ foco: true });
+    } catch (e) {
+      // Se queda abierto con el motivo dentro: cerrarlo dejaría al usuario con
+      // un aviso y sin el sitio donde arreglarlo.
+      nota.textContent = `No se pudo guardar: ${describeError(e)}`;
+      reportError("No se pudo guardar la persona", e);
+      repaintCell(td, database, row, prop, false, hooks);
+    }
+  };
+
+  function pintarOpciones() {
+    lista.textContent = "";
+    estado.opciones = [];
+    estado.activo = -1;
+    if (error) {
+      const p = document.createElement("p");
+      p.className = "rel-picker-note";
+      p.textContent = error;
+      lista.appendChild(p);
+      return;
+    }
+    const consulta = plegarTexto(buscar.value.trim());
+    const candidatas = [{ id: "", display_name: "Sin asignar", username: "" }, ...gente].filter(
+      (p) =>
+        !consulta ||
+        plegarTexto(p.display_name || "").includes(consulta) ||
+        plegarTexto(p.username || "").includes(consulta),
+    );
+    const visibles = candidatas.slice(0, PERSONAS_CHOICES_LIMIT);
+    if (!visibles.length) {
+      const p = document.createElement("p");
+      p.className = "rel-picker-note";
+      p.textContent = "Nadie coincide con lo escrito.";
+      lista.appendChild(p);
+      return;
+    }
+    const elegida = actual();
+    visibles.forEach((persona) => {
+      const esVacio = !persona.id;
+      const marcada = esVacio ? !elegida : String(persona.id) === elegida;
+      const opcion = document.createElement("button");
+      opcion.type = "button";
+      opcion.className = "rel-picker-option" + (marcada ? " is-chosen" : "");
+      opcion.setAttribute("role", "option");
+      opcion.setAttribute("aria-selected", marcada ? "true" : "false");
+      const titulo = document.createElement("span");
+      titulo.className = "rel-picker-option-title";
+      if (!esVacio) {
+        const punto = document.createElement("span");
+        punto.className = "person-dot";
+        if (persona.color) punto.style.background = persona.color;
+        punto.setAttribute("aria-hidden", "true");
+        titulo.appendChild(punto);
+      }
+      const texto = document.createElement("span");
+      texto.textContent = esVacio ? "Sin asignar" : persona.display_name || "(sin nombre)";
+      titulo.appendChild(texto);
+      const suyo = document.createElement("span");
+      suyo.className = "rel-picker-option-base";
+      suyo.textContent = esVacio ? "la celda queda vacía" : `@${persona.username || "usuario"}`;
+      opcion.append(titulo, suyo);
+      if (marcada) {
+        const marca = document.createElement("span");
+        marca.className = "rel-picker-check";
+        marca.setAttribute("aria-hidden", "true");
+        marca.textContent = "✓";
+        opcion.appendChild(marca);
+      }
+      opcion.addEventListener("click", (e) => {
+        e.stopPropagation();
+        guardar(persona.id || null);
+      });
+      estado.opciones.push(opcion);
+      lista.appendChild(opcion);
+    });
+    if (candidatas.length > visibles.length) {
+      const mas = document.createElement("p");
+      mas.className = "rel-picker-more";
+      mas.textContent = `… y ${candidatas.length - visibles.length} más, sigue escribiendo`;
+      lista.appendChild(mas);
+    }
+  }
+
+  buscar.addEventListener("input", () => pintarOpciones());
+  buscar.addEventListener("keydown", (e) => {
+    // Dentro de una nota, lo que no se consuma acaba en el keymap de
+    // CodeMirror (su Enter insertaría un salto en el `.md`).
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      estado.opciones[Math.max(estado.activo, 0)]?.click();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if (!estado.opciones.length) return;
+    e.preventDefault();
+    estado.activo =
+      e.key === "ArrowDown"
+        ? (estado.activo + 1) % estado.opciones.length
+        : (estado.activo - 1 + estado.opciones.length) % estado.opciones.length;
+    estado.opciones.forEach((op, i) => op.classList.toggle("is-active", i === estado.activo));
+    estado.opciones[estado.activo].scrollIntoView({ block: "nearest" });
+  });
+
+  document.body.appendChild(panel);
+  colocarPanelFlotante(panel, td);
+  const fuera = (e) => {
+    if (panel.contains(e.target) || td.contains(e.target)) return;
+    cerrarSelectorDePersona();
+  };
+  // Escape en el documento: cuando la lista de personas no se pudo leer no hay
+  // buscador que lo reciba, y un panel que solo se cierra con el ratón deja
+  // tirado a quien va con el teclado.
+  const teclas = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    cerrarSelectorDePersona({ foco: true });
+  };
+  const recolocar = () => {
+    if (!td.isConnected) {
+      cerrarSelectorDePersona();
+      return;
+    }
+    colocarPanelFlotante(panel, td);
+  };
+  document.addEventListener("mousedown", fuera, true);
+  document.addEventListener("keydown", teclas, true);
+  window.addEventListener("scroll", recolocar, true);
+  window.addEventListener("resize", recolocar);
+  const observador =
+    typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => recolocar());
+  observador?.observe(panel);
+  selectorDePersona = {
+    panel,
+    ancla: td,
+    limpiar: () => {
+      observador?.disconnect();
+      document.removeEventListener("mousedown", fuera, true);
+      document.removeEventListener("keydown", teclas, true);
+      window.removeEventListener("scroll", recolocar, true);
+      window.removeEventListener("resize", recolocar);
+    },
+  };
+  pintarOpciones();
+  if (error) {
+    panel.tabIndex = -1;
+    panel.focus({ preventScroll: true });
+  } else {
+    buscar.focus({ preventScroll: true });
+  }
+}
+
 function formatPropValue(value, prop) {
   if (value === undefined || value === null || value === "") return "—";
   if (prop.type === "checkbox") return value ? "✓" : "—";
@@ -6688,6 +7110,7 @@ function formatPropValueHtml(value, prop, row = null) {
     return value ? `${svgIcon("i-check")}<span class="sr-only">Sí</span>` : "—";
   }
   if (prop.type === "relation") return htmlDeRelacion(value, prop, row);
+  if (prop.type === "person") return htmlDePersona(value, prop, row);
   return escapeHtml(formatPropValue(value, prop));
 }
 
@@ -6715,7 +7138,7 @@ function readPropertyValue(prop, input) {
  * que decide qué control usa cada tipo: lo comparten el alta de fila, la
  * edición de una celda y el panel de fila del tablero. Devuelve también
  * `read()`, que traduce el control a valor (`null` = sin valor). */
-function buildPropertyInput(prop, value) {
+function buildPropertyInput(prop, value, ref = null) {
   let input;
   if (prop.type === "select") {
     input = document.createElement("select");
@@ -6749,6 +7172,47 @@ function buildPropertyInput(prop, value) {
     input = document.createElement("input");
     input.type = "date";
     input.value = value ?? "";
+  } else if (prop.type === "person") {
+    // Una persona se elige de la lista, no se escribe: el valor es el id de un
+    // usuario y el `.md` no admite texto libre. El valor guardado se conserva
+    // como opción aunque el directorio no haya llegado todavía.
+    input = document.createElement("select");
+    const vacio = document.createElement("option");
+    vacio.value = "";
+    vacio.textContent = "— sin asignar";
+    input.appendChild(vacio);
+    const sembrado = value === undefined || value === null ? "" : String(value);
+    if (sembrado) {
+      const suya = document.createElement("option");
+      suya.value = sembrado;
+      // El nombre que trae la fila (`people`, resuelto por el servidor) manda
+      // sobre el directorio: es el que se acaba de leer.
+      suya.textContent = ref?.display_name || nombreDePersona(sembrado) || sembrado;
+      input.appendChild(suya);
+    }
+    input.value = sembrado;
+    const pintarGente = (gente) => {
+      const elegido = input.value;
+      [...input.querySelectorAll("option")].slice(1).forEach((opcion) => opcion.remove());
+      (gente || []).forEach((persona) => {
+        const opcion = document.createElement("option");
+        opcion.value = String(persona.id);
+        opcion.textContent = persona.display_name || persona.username || String(persona.id);
+        input.appendChild(opcion);
+      });
+      if (elegido && ![...input.options].some((opcion) => opcion.value === elegido)) {
+        const suya = document.createElement("option");
+        suya.value = elegido;
+        suya.textContent = nombreDePersona(elegido) || elegido;
+        input.appendChild(suya);
+      }
+      input.value = elegido;
+    };
+    if (personasCache.size) {
+      pintarGente([...personasCache.values()]);
+    } else {
+      cargarPersonas().then(pintarGente).catch(() => {});
+    }
   } else {
     input = document.createElement("input");
     input.type = "text";
@@ -9351,8 +9815,11 @@ function repaintCell(td, database, row, prop, focus, hooks = null) {
  * `prop === null` es la celda del título. */
 function paintCell(td, database, row, prop, hooks = null) {
   const esRelacion = prop?.type === "relation";
+  const esPersona = prop?.type === "person";
   if (esRelacion) {
     pintarRelacionEnCelda(td, database, row, prop, hooks);
+  } else if (esPersona) {
+    pintarPersonaEnCelda(td, database, row, prop, hooks);
   } else {
     td.innerHTML = prop
       ? formatPropValueHtml(row.properties?.[prop.key], prop, row)
@@ -9364,9 +9831,12 @@ function paintCell(td, database, row, prop, hooks = null) {
   // `cell-rel` deja que los títulos salten de línea: el `td` recorta a 240 px
   // y un id (que ya no se enseña) salía siempre en una sola línea.
   td.classList.toggle("cell-rel", Boolean(esRelacion));
+  td.classList.toggle("cell-person", Boolean(esPersona));
   td.title = esRelacion
     ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
-    : "Clic para editar";
+    : esPersona
+      ? "Clic para asignar una persona · el lápiz edita"
+      : "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
   // Dentro de una nota, el widget del editor se lleva el `mousedown` del bloque
@@ -9509,6 +9979,14 @@ function editCell(td, database, row, prop, hooks = null) {
     );
     return;
   }
+  // Una persona tampoco se edita escribiendo: se elige de la lista (el valor es
+  // el id de un usuario, y el `.md` no admite texto libre).
+  if (prop?.type === "person") {
+    editarCeldaDePersona(td, database, row, prop, hooks).catch((e) =>
+      reportError("No se pudo abrir el selector de personas", e),
+    );
+    return;
+  }
   const isTitle = !prop;
   const def = isTitle ? { key: "title", name: "Título", type: "text" } : prop;
   const { input, read } = buildPropertyInput(def, isTitle ? row.title : row.properties?.[def.key]);
@@ -9625,6 +10103,45 @@ function renderBoard(database, rows, view, refresh) {
   // título, no por id (un id no se lee). Solo vale con una relación simple;
   // con `multiple` una fila caería en varias columnas y arrastrarla escribiría
   // un id suelto encima de la lista, así que se dice en vez de romper el dato.
+  // Una persona agrupa por su NOMBRE visible, como una relación por el título:
+  // una columna por persona, y el valor que se escribe al soltar una tarjeta es
+  // el id (lo que guarda el `.md`).
+  if (prop?.type === "person") {
+    const etiquetas = new Map();
+    rows.forEach((r) => {
+      const id = personaIdDeFila(r, groupKey);
+      if (id && !etiquetas.has(id)) {
+        etiquetas.set(id, nombreDePersona(id, r, groupKey) || "(ya no está)");
+      }
+    });
+    const grupos = new Map();
+    const sueltas = [];
+    rows.forEach((r) => {
+      const id = personaIdDeFila(r, groupKey);
+      if (!id) {
+        sueltas.push(r);
+        return;
+      }
+      if (!grupos.has(id)) grupos.set(id, []);
+      grupos.get(id).push(r);
+    });
+    grupos.forEach((filas, id) =>
+      board.appendChild(
+        renderBoardColumn(database, etiquetas.get(id) || "(ya no está)", filas, {
+          groupKey,
+          refresh,
+          value: id,
+        }),
+      ),
+    );
+    if (sueltas.length) {
+      board.appendChild(
+        renderBoardColumn(database, "Sin valor", sueltas, { groupKey, refresh, value: null }),
+      );
+    }
+    return board;
+  }
+
   if (prop?.type === "relation") {
     if (relacionMultiple(prop)) {
       return avisoDeVista(
@@ -10887,7 +11404,11 @@ async function openRowPage(
       campo.className = "row-page-prop";
       const label = document.createElement("label");
       label.textContent = prop.name;
-      const { input, read } = buildPropertyInput(prop, detalle.properties?.[prop.key]);
+      const { input, read } = buildPropertyInput(
+        prop,
+        detalle.properties?.[prop.key],
+        detalle.people?.[prop.key] || null,
+      );
       const inputId = idDeCampo(`fila-pagina-${ctx.seq}`, i, prop.key);
       input.id = inputId;
       label.htmlFor = inputId;
@@ -12152,6 +12673,9 @@ applyTheme(localStorage.getItem(THEME_KEY) || "dark");
 // api() manda al login. Los usuarios que este navegador ya conoce se leen antes
 // para que la autoría de las notas salga con su color desde el primer pintado.
 loadKnownUsers();
+// El directorio de personas (celdas `person`): una vez por sesión, para que el
+// selector y los formularios de alta lo tengan sin esperar.
+cargarPersonas().catch(() => {});
 initUserChip();
 loadCurrentUser();
 

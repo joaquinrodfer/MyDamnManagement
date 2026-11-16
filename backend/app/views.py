@@ -31,9 +31,15 @@ Los valores del frontmatter se leen como texto (el parser de `fm` no infiere
 tipos), así que los operadores comparan como número cuando los dos lados lo
 son y como texto en el resto de los casos: una fecha ISO se compara bien como
 texto.
+
+Una propiedad `person` guarda el **id** de un usuario, pero lo que se lee y se
+escribe es su nombre visible: `eq`/`neq` aceptan el nombre además del id y el
+orden va por nombre. Para eso hace falta `people` (`id -> display_name`), que
+resuelve quien llama; sin él se compara y se ordena por el id, que sigue siendo
+determinista.
 """
 
-from typing import Any
+from typing import Any, Mapping
 
 from app import hierarchy
 from app.repository import Page
@@ -51,6 +57,8 @@ def apply_view(
     *,
     parent_key: str | None = None,
     view_type: str | None = None,
+    people: Mapping[str, str] | None = None,
+    person_keys: frozenset[str] | set[str] = frozenset(),
 ) -> list[Page]:
     """Aplica los `filters`, el `sort` y el nivel de una vista sobre sus filas.
 
@@ -68,7 +76,13 @@ def apply_view(
     (la madre no lo cumple), porque una fila no se enseña «porque su hija
     cumple». Heredar el filtro hacia la madre es una decisión de producto aparte
     y hoy no se hace.
+
+    `people` e `person_keys` son para las propiedades `person`: el `.md` guarda
+    el id de un usuario y el nombre visible lo resuelve el servidor. Sin
+    `person_keys` todo se comporta como siempre.
     """
+    gente = people or {}
+    claves_persona = person_keys or frozenset()
     if parent_key and hierarchy.level(config, view_type) == hierarchy.LEVEL_ROOTS:
         rows = hierarchy.only_roots(rows, parent_key)
 
@@ -78,7 +92,14 @@ def apply_view(
         key, op, value = f.get("key"), f.get("op", "eq"), f.get("value")
         if not key:
             continue
-        rows = [r for r in rows if _match((r.properties or {}).get(key), op, value)]
+        es_persona = key in claves_persona
+        rows = [
+            r
+            for r in rows
+            if _match(
+                (r.properties or {}).get(key), op, value, persona=es_persona, people=gente
+            )
+        ]
 
     claves = _sort_clauses(config.get("sort"))
     # La PRIMERA clave es la que manda, así que se ordena de la menos
@@ -86,7 +107,13 @@ def apply_view(
     # conserva el orden de la anterior (así se hace un orden por varias claves
     # sin construir una tupla de longitud variable).
     for key, direccion in reversed(claves):
-        rows = _sort_rows(rows, key, direccion == "desc")
+        rows = _sort_rows(
+            rows,
+            key,
+            direccion == "desc",
+            persona=key in claves_persona,
+            people=gente,
+        )
 
     if parent_key:
         rows = hierarchy.arrange(rows, parent_key)
@@ -111,16 +138,35 @@ def _sort_clauses(raw: Any) -> list[tuple[str, str]]:
     ]
 
 
-def _sort_rows(rows: list[Page], key: str, descendente: bool) -> list[Page]:
+def _sort_rows(
+    rows: list[Page],
+    key: str,
+    descendente: bool,
+    *,
+    persona: bool = False,
+    people: Mapping[str, str] | None = None,
+) -> list[Page]:
     """Ordena por una clave, dejando SIEMPRE las filas sin valor al final.
 
     `reverse=True` pondría las vacías delante, así que se separan antes: un
     hueco no es «lo más pequeño», es la ausencia de dato, y en el panel se
     espera al final en las dos direcciones.
+
+    Una persona se ordena por su **nombre visible** (el id no se lee), y un id
+    que ya no resuelve por sí mismo, para que no se quede fuera del orden.
     """
     con_valor = [r for r in rows if _valor(r, key) is not None]
     sin_valor = [r for r in rows if _valor(r, key) is None]
-    con_valor.sort(key=lambda r: _sort_key(_valor(r, key)), reverse=descendente)
+
+    def clave(row: Page) -> tuple:
+        valor = _valor(row, key)
+        if persona and people:
+            nombre = people.get(str(valor).strip())
+            if nombre is not None:
+                return _sort_key(nombre)
+        return _sort_key(valor)
+
+    con_valor.sort(key=clave, reverse=descendente)
     return con_valor + sin_valor
 
 
@@ -128,7 +174,14 @@ def _valor(row: Page, key: str) -> Any:
     return (row.properties or {}).get(key)
 
 
-def _match(actual: Any, op: str, value: Any) -> bool:
+def _match(
+    actual: Any,
+    op: str,
+    value: Any,
+    *,
+    persona: bool = False,
+    people: Mapping[str, str] | None = None,
+) -> bool:
     """Una condición del filtro sobre el valor de una fila."""
     if op == "is_empty":
         return _vacio(actual)
@@ -139,8 +192,12 @@ def _match(actual: Any, op: str, value: Any) -> bool:
     if op == "unchecked":
         return not _marcado(actual)
     if op == "eq":
+        if persona:
+            return _igual_persona(actual, value, people)
         return _igual(actual, value)
     if op == "neq":
+        if persona:
+            return not _igual_persona(actual, value, people)
         return not _igual(actual, value)
     if op == "contains":
         return _contiene(actual, value)
@@ -203,6 +260,25 @@ def _igual(actual: Any, esperado: Any) -> bool:
             return {_texto(v) for v in actual} == {_texto(v) for v in esperado}
         return any(_texto_eq(v, esperado) for v in actual)
     return _texto_eq(actual, esperado)
+
+
+def _igual_persona(
+    actual: Any, esperado: Any, people: Mapping[str, str] | None
+) -> bool:
+    """`eq` de una persona: por id (`people` resuelto) o por nombre visible.
+
+    Un valor vacío pregunta por «está vacío», como en cualquier otro tipo: así
+    «Responsable es —» sirve, y el selector del filtro puede mandar el nombre
+    que el usuario lee en el chip sin saber el id.
+    """
+    if esperado is None or (isinstance(esperado, str) and not esperado.strip()):
+        return _vacio(actual)
+    if _vacio(actual):
+        return False
+    if _texto_eq(actual, esperado):
+        return True
+    nombre = (people or {}).get(str(actual).strip())
+    return nombre is not None and _texto(nombre) == _texto(esperado)
 
 
 def _texto(value: Any) -> str:

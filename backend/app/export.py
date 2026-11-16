@@ -35,6 +35,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from app.config import settings
+from app.properties import person_ids, person_keys
 from app.repository import Database, Page, Repository, View
 from app.vault import fm
 from app.hierarchy import parent_key
@@ -192,12 +193,23 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
     view = _resolve_view(repo, database, config.get("view"))
     columns = _visible_columns(database, view)
     rows = repo.list_rows(database.id)
+    # Una celda `person` guarda el id de un usuario; en el `.md` exportado tiene
+    # que salir su nombre, igual que en el panel (y el filtro/orden por nombre,
+    # como en la pantalla).
+    claves_persona = person_keys(database.schema_def)
+    users = (
+        repo.user_refs(person_ids(database.schema_def, [r.properties or {} for r in rows]))
+        if claves_persona
+        else {}
+    )
     if view is not None:
         rows = apply_view(
             rows,
             view.config or {},
             parent_key=parent_key(database.schema_def),
             view_type=getattr(view.type, "value", view.type),
+            people={key: datos[0] for key, datos in users.items()},
+            person_keys=claves_persona,
         )
 
     total = len(rows)
@@ -205,7 +217,7 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
     shown = rows[:limit]
 
     lines = [_caption(database, view, total), ""]
-    lines += _table(columns, shown, database)
+    lines += _table(columns, shown, database, users)
     if total > len(shown):
         lines += ["", f"_Mostrando {len(shown)} de {total} filas._"]
     return lines
@@ -298,7 +310,12 @@ def _row_count(total: int) -> str:
     return "1 fila" if total == 1 else f"{total} filas"
 
 
-def _table(columns: list[dict], rows: list[Page], database: Database) -> list[str]:
+def _table(
+    columns: list[dict],
+    rows: list[Page],
+    database: Database,
+    users: Optional[dict] = None,
+) -> list[str]:
     """La tabla de la base, con la columna del título como una columna más.
 
     Si la base ha renombrado esa columna (`title_name`) o la ha quitado
@@ -322,16 +339,22 @@ def _table(columns: list[dict], rows: list[Page], database: Database) -> list[st
     ]
     for row in rows:
         cells = [] if not muestra_titulo else [_escape(row.title or "Sin título")]
-        cells += [_cell((row.properties or {}).get(p["key"]), p) for p in columns]
+        cells += [
+            _cell((row.properties or {}).get(p["key"]), p, users or {}) for p in columns
+        ]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
 
 
-def _cell(value: Any, prop: dict) -> str:
+def _cell(value: Any, prop: dict, users: Optional[dict] = None) -> str:
     """Un valor de propiedad como celda de tabla. Vacío -> celda vacía."""
     if value is None or value == "" or value == []:
         return ""
     prop_type = prop.get("type")
+    if prop_type == "person":
+        # El nombre visible, no el id; un usuario borrado se dice, no se calla.
+        usuario = (users or {}).get(str(value).strip())
+        return _escape(usuario[0] if usuario else "(ya no está)")
     if prop_type == "checkbox":
         # El mismo vocabulario que la tabla del panel: ✓ marcado, — sin marcar.
         return "✓" if value else "—"

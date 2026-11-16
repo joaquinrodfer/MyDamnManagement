@@ -71,6 +71,11 @@ class UserCreateRequest(BaseModel):
     is_admin: bool = False
 
 
+class UserUpdateRequest(BaseModel):
+    display_name: Optional[str] = None
+    color: Optional[str] = None
+
+
 # ------------------------------------------------------------------ conexión
 
 
@@ -326,6 +331,31 @@ def list_users(
     if not user.is_admin:
         raise HTTPException(403, "solo un administrador puede listar los usuarios")
     return [u.as_dict() for u in auth.list_users(conn)]
+
+
+@router.patch("/users/{user_id}")
+def update_user(
+    user_id: str,
+    payload: UserUpdateRequest,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Renombra a un usuario o le cambia el color. Solo un admin.
+
+    El `id` no se toca (es a lo que apuntan las celdas `person`): cambia el
+    nombre visible, que es lo que se lee en las tablas, y no a quién apuntan.
+    """
+    if not user.is_admin:
+        raise HTTPException(403, "solo un administrador puede editar usuarios")
+    try:
+        actualizado = auth.update_user(
+            conn, user_id, display_name=payload.display_name, color=payload.color
+        )
+    except auth.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if actualizado is None:
+        raise HTTPException(404, "no hay ningún usuario con ese id")
+    return actualizado.as_dict()
 
 
 @router.post("/users", status_code=201)
