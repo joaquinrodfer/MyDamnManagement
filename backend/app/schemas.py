@@ -440,6 +440,19 @@ class RowRead(BaseModel):
             "cuenta el contador de su madre."
         ),
     )
+    # Claves de las propiedades de fecha cuyo día ya pasó, para que la tabla
+    # marque esa celda. Vacío cuando la base no declara regla de cierre (sin
+    # estado no hay «sin terminar») o la fila está cerrada (una tarea hecha
+    # tarde no está vencida): la comparación la hace el servidor contra su
+    # propio día, así que dos husos no pueden pintar cosas distintas.
+    overdue_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Claves de las propiedades `date` con una fecha anterior al día del "
+            "servidor, en una fila abierta de una base que declara regla de "
+            "cierre. La tabla marca esas celdas."
+        ),
+    )
     # `{clave_de_la_propiedad: [fila, ...]}` de las propiedades `relation`, con
     # el título ya resuelto por el servidor (una consulta por respuesta). Una
     # fila sin relaciones devuelve `{}`.
@@ -525,6 +538,23 @@ class MyTask(BaseModel):
     # La primera propiedad `date` de la base. `None` = sin fecha o base sin
     # ninguna propiedad de fecha.
     date: Optional[MyTaskCell] = None
+    # En qué bloque cae la fecha, contado contra el día del **servidor**
+    # (`app.due`): `overdue` (ya pasó), `today`, `week` (de mañana al domingo de
+    # esta semana) o `later`. `None` = sin fecha legible, que no es un bloque
+    # sino la ausencia de uno.
+    due: Optional[str] = None
+    # Días de calendario que faltan para la fecha (negativo = ya pasó), con la
+    # misma cuenta que `due`. `None` = sin fecha legible.
+    days: Optional[int] = None
+
+
+class MyTasksCounts(BaseModel):
+    """Los dos números de la barra lateral, con el día del servidor."""
+
+    # Ya vencidas: fecha anterior a hoy y fila abierta.
+    overdue: int = 0
+    # Vencen hoy.
+    today: int = 0
 
 
 class MyTasksRead(BaseModel):
@@ -532,10 +562,15 @@ class MyTasksRead(BaseModel):
 
     `closed_values` viaja con la respuesta para que la interfaz pueda explicar
     el criterio con la misma lista que se aplicó, y no con una copia que se
-    quede vieja.
+    quede vieja. `today` y `counts` viajan para que la barra lateral no tenga
+    que mirar el reloj del navegador: el día con el que se ha comparado y el
+    resultado de la comparación los dice el servidor.
     """
 
     count: int
+    # El día del servidor con el que se ha comparado (`YYYY-MM-DD`).
+    today: str
+    counts: MyTasksCounts = Field(default_factory=MyTasksCounts)
     closed_values: list[str]
     tasks: list[MyTask]
 
