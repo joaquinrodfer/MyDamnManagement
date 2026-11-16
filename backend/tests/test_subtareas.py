@@ -189,7 +189,12 @@ def test_un_done_imposible_se_rechaza_con_el_motivo(client):
         },
     )
     assert respuesta.status_code == 400, respuesta.text
-    assert "solo tiene sentido en una casilla o una selección" in respuesta.json()["detail"]
+    detalle = respuesta.json()["detail"]
+    assert "solo tiene sentido en una casilla o una selección" in detalle
+    # El tipo se nombra como lo lee quien usa la API, no como el repr de Python
+    # (`<PropertyType.text: 'text'>`).
+    assert "de tipo «text»" in detalle
+    assert "PropertyType" not in detalle
 
     respuesta = client.post(
         "/databases",
@@ -208,6 +213,81 @@ def test_un_done_imposible_se_rechaza_con_el_motivo(client):
     )
     assert respuesta.status_code == 400, respuesta.text
     assert "la lista de valores" in respuesta.json()["detail"]
+
+
+def test_un_done_fuera_de_las_opciones_es_un_400(client, vault_path):
+    """`done` son valores de la celda: uno que no es opción no cuenta nunca.
+
+    Un `done: [Terminado]` sobre unas opciones sin «Terminado» se guardaba con
+    200 y dejaba el contador en «0 de N» para siempre, sin aviso: la misma
+    trampa que el marcador que no cabe en el tipo, por la puerta de atrás.
+    """
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    respuesta = client.patch(
+        f"/databases/{base}",
+        json={
+            "schema_def": [
+                {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["Pendiente", "En curso", "Hecho"],
+                    "done": ["Terminado"],
+                },
+                {"key": "fecha", "name": "Fecha", "type": "date"},
+            ]
+        },
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    detalle = respuesta.json()["detail"]
+    # Nombra la propiedad como la ve el usuario, el valor que sobra y las
+    # opciones entre las que elegir.
+    assert "«Estado»" in detalle
+    assert "«Terminado»" in detalle
+    assert "Pendiente, En curso, Hecho" in detalle
+
+    # No se ha escrito nada: el marcador bueno sigue y el contador cuenta.
+    texto = (vault_path / "Bases" / "Plan.md").read_text(encoding="utf-8")
+    assert "done: [Hecho]" in texto
+    assert "Terminado" not in texto
+    leidas = {r["id"]: r for r in filas(client, base)}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 1}
+
+
+def test_un_done_heredado_que_ya_no_es_opcion_se_suelta(client, vault_path):
+    """Renombrar la opción que cerraba no puede romper el guardado de la base.
+
+    Misma regla que el marcador que no cabe en el tipo: si el `done` no viene
+    pedido en la petición, se suelta en vez de rechazar el guardado del resto
+    del schema (el `.md` es del usuario y puede haberlo cambiado a mano).
+    """
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    respuesta = client.patch(
+        f"/databases/{base}",
+        json={
+            "schema_def": [
+                {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["Pendiente", "En curso", "Terminada"],
+                },
+                {"key": "fecha", "name": "Fecha", "type": "date"},
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    estado = next(p for p in respuesta.json()["schema_def"] if p["key"] == "estado")
+    assert "done" not in estado
+    assert "done:" not in (vault_path / "Bases" / "Plan.md").read_text(encoding="utf-8")
+    # Sin marcador la base no sabe qué es estar cerrada: «0 de N», que es la
+    # verdad de lo que ha quedado escrito.
+    leidas = {r["id"]: r for r in filas(client, base)}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 0}
 
 
 def test_la_madre_tiene_que_ser_de_la_misma_base(client):

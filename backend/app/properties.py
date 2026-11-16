@@ -238,6 +238,12 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
     selección con `done: [Hecho]` y ahora pasa a texto— se suelta: el contador
     deja de contar cerradas, que es la verdad de esa base, y guardar el resto
     del schema no puede fallar por un marcador que el usuario no ha escrito.
+
+    Lo mismo con las opciones de la propiedad: un `done` que nombre un valor
+    que no está en `options` no puede contar ninguna fila —la celda nunca
+    valdría ese valor—, así que el contador se quedaría en «0 de N» para
+    siempre y sin aviso. Es un 400 si viene pedido; si venía heredado se suelta,
+    como el caso del tipo (renombrar una opción no puede romper el guardado).
     """
     pedido = item.get("done")
     crudo = pedido if pedido is not None else (origen or {}).get("done")
@@ -259,9 +265,12 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
 
     tipo = prop.get("type")
     if tipo not in ("checkbox", "select", "multiselect"):
+        # `type` llega como `PropertyType` (un `str`-enum): su `str()` es
+        # «PropertyType.text», que no es lo que puede leer quien usa la API.
+        etiqueta = getattr(tipo, "value", tipo)
         rechazar(
             "`done` solo tiene sentido en una casilla o una selección (es la "
-            f"propiedad que dice si una fila está cerrada), y esta es de tipo {tipo!r}"
+            f"propiedad que dice si una fila está cerrada), y esta es de tipo «{etiqueta}»"
         )
         return
     if tipo == "checkbox":
@@ -274,6 +283,20 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
         rechazar(
             "en una selección, `done` es la lista de valores que cuentan como "
             "cerrada (`done: [Hecho]`)"
+        )
+        return
+    # `done` son valores de la celda, así que tienen que ser opciones de la
+    # propiedad: uno que no esté nunca coincidirá con la celda y el contador se
+    # quedaría en «0 de N» sin decir nada.
+    opciones = [str(o).strip() for o in (prop.get("options") or [])]
+    fuera = [v for v in valores if v not in opciones] if opciones else []
+    if fuera:
+        sobran = ", ".join(f"«{v}»" for v in fuera)
+        rechazar(
+            f"{sobran} no {'está' if len(fuera) == 1 else 'están'} entre las "
+            "opciones de la propiedad, así que ninguna fila contaría como "
+            f"cerrada con {'él' if len(fuera) == 1 else 'ellos'}. Opciones: "
+            + ", ".join(opciones)
         )
         return
     prop["done"] = valores
