@@ -34,6 +34,12 @@ Decisiones que la respuesta hace explícitas:
   vuelo y se sirve como arista `source=base, target=fila, kind="row"`. Como no
   hay fila en `links`, `GET /pages/{id}/backlinks`, el recuento de enlaces
   rotos y el resto de vistas no cambian.
+- **Aristas `subtask`**: una subtarea cuelga de su fila madre, y eso tampoco
+  es un enlace escrito: vive en la celda `parent_row` de la fila (en su `.md`,
+  y por tanto en `properties_json` del índice). Se sirve como
+  `source=madre, target=hija, kind="subtask"`, también sin escribir nada en
+  `links`: los backlinks de la madre no tienen por qué listar sus subtareas (su
+  página ya las enseña). La vecindad local las recorre en los dos sentidos.
 - **Grado de las aristas `row`**: topado a `ROW_DEGREE_CAP`. Una base con 200
   filas tendría grado 200 y el tamaño del nodo (log topado en 12) la dejaría
   enorme; cuenta como mucho 5, y solo esa parte se topa: los wikilinks y los
@@ -58,9 +64,11 @@ import sqlite3
 import uuid
 from typing import Literal
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app import schemas
+from app import hierarchy, schemas
 from app.dependencies import get_repo
 from app.links import fold_title
 from app.repository import Repository
@@ -145,6 +153,101 @@ _ROW_DEGREE_BASES = (
     " WHERE d.page_id IN ({marks}) GROUP BY d.page_id"
 )
 _ROW_DEGREE_ROWS = "SELECT id AS id, 1 AS n FROM rows WHERE id IN ({marks})"
+
+# Jerarquía entre filas (subtareas). La arista no está en `links`: la celda
+# `parent_row` de la hija guarda el id de su madre, y el índice la tiene en
+# `properties_json`. Para leerla hace falta la clave de esa propiedad en la base
+# de cada fila (`schema_json`), así que las dos consultas van juntas y se
+# resuelven en Python: es una consulta por base implicada, no una por fila.
+SUBTASK_KIND = "subtask"
+_ROW_PROPS_IN = (
+    "SELECT r.id AS id, r.database_id AS database_id,"
+    " r.properties_json AS properties_json FROM rows r WHERE r.id IN ({marks})"
+)
+_ROW_PROPS_OF_DATABASES = (
+    "SELECT r.id AS id, r.database_id AS database_id,"
+    " r.properties_json AS properties_json FROM rows r"
+    " WHERE r.database_id IN ({marks})"
+)
+_PARENT_KEYS_OF_DATABASES = (
+    "SELECT id AS id, schema_json AS schema_json FROM databases WHERE id IN ({marks})"
+)
+
+
+def _props(raw) -> dict:
+    """`properties_json` como mapa; un valor ilegible es una fila sin celdas."""
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _parent_keys(conn: sqlite3.Connection, database_ids: set[str]) -> dict[str, str]:
+    """`{id de base: clave de su celda de subtarea}` de las bases pedidas."""
+    claves: dict[str, str] = {}
+    for chunk in _chunks(sorted(database_ids)):
+        marks = ",".join("?" for _ in chunk)
+        for row in conn.execute(_PARENT_KEYS_OF_DATABASES.format(marks=marks), chunk):
+            try:
+                schema = json.loads(row["schema_json"] or "[]")
+            except (TypeError, ValueError):
+                schema = []
+            key = hierarchy.parent_key(schema if isinstance(schema, list) else [])
+            if key:
+                claves[row["id"]] = key
+    return claves
+
+
+def _filas(conn: sqlite3.Connection, sql: str, ids: list[str]) -> list[sqlite3.Row]:
+    filas: list[sqlite3.Row] = []
+    for chunk in _chunks(ids):
+        marks = ",".join("?" for _ in chunk)
+        filas.extend(conn.execute(sql.format(marks=marks), chunk).fetchall())
+    return filas
+
+
+def _subtask_edges(conn: sqlite3.Connection, node_ids: list[str]) -> list[dict]:
+    """Aristas madre -> hija con los dos extremos dentro del conjunto."""
+    wanted = set(node_ids)
+    filas = _filas(conn, _ROW_PROPS_IN, node_ids)
+    if not filas:
+        return []
+    claves = _parent_keys(conn, {row["database_id"] for row in filas})
+    edges: list[dict] = []
+    for row in filas:
+        key = claves.get(row["database_id"])
+        madre = hierarchy.parent_of(_props(row["properties_json"]), key)
+        if madre in wanted and madre != row["id"]:
+            edges.append({"source": madre, "target": row["id"], "kind": SUBTASK_KIND})
+    return edges
+
+
+def _subtask_neighbors(conn: sqlite3.Connection, ids: list[str]) -> set[str]:
+    """Madres e hijas de esas filas, dentro de sus bases.
+
+    Se miran las filas de las bases implicadas (una consulta por base, no una
+    por fila): la vecindad de una fila incluye a su madre y a sus subtareas sin
+    tener que dar dos saltos por la base.
+    """
+    filas = _filas(conn, _ROW_PROPS_IN, ids)
+    if not filas:
+        return set()
+    claves = _parent_keys(conn, {row["database_id"] for row in filas})
+    buscadas = set(ids)
+    vecinas: set[str] = set()
+    for row in filas:
+        key = claves.get(row["database_id"])
+        madre = hierarchy.parent_of(_props(row["properties_json"]), key)
+        if madre:
+            vecinas.add(madre)
+    # Hijas: las filas de esas mismas bases cuya madre está en `ids`.
+    bases = {row["database_id"] for row in filas if row["database_id"] in claves}
+    for row in _filas(conn, _ROW_PROPS_OF_DATABASES, sorted(bases)):
+        madre = hierarchy.parent_of(_props(row["properties_json"]), claves[row["database_id"]])
+        if madre in buscadas:
+            vecinas.add(row["id"])
+    return vecinas
 _ROW_DEGREE_ALL_BASES = (
     "SELECT d.page_id AS id, count(*) AS n"
     " FROM rows r JOIN databases d ON d.id = r.database_id GROUP BY d.page_id"
@@ -249,6 +352,7 @@ def _neighbors(conn: sqlite3.Connection, ids: list[str]) -> set[str]:
         found.update(r["id"] for r in conn.execute(_NEIGHBORS_IN.format(marks=marks), chunk))
         found.update(r["id"] for r in conn.execute(_ROW_CHILDREN.format(marks=marks), chunk))
         found.update(r["id"] for r in conn.execute(_ROW_PARENT.format(marks=marks), chunk))
+    found.update(_subtask_neighbors(conn, ids))
     return found
 
 
@@ -328,6 +432,7 @@ def _edges_among(conn: sqlite3.Connection, node_ids: list[str]) -> list[dict]:
         ).fetchall()
         edges.extend(_as_edge(r) for r in rows if r["target"] in wanted)
     edges.extend(_row_edges_among(conn, node_ids))
+    edges.extend(_subtask_edges(conn, node_ids))
     edges.sort(key=lambda e: (e["source"], e["target"], e["kind"]))
     return edges
 

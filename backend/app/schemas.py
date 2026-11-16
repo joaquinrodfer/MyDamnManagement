@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.enums import PageType, ViewType
 from app.properties import DEFAULT_TITLE_NAME
@@ -106,6 +106,9 @@ class PropertyType(str, Enum):
     checkbox = "checkbox"
     relation = "relation"
     url = "url"
+    # `parent_row`: subtareas. La celda es el id de la fila madre, de la MISMA
+    # base, y una base tiene como mucho una propiedad de este tipo.
+    parent_row = "parent_row"
 
 
 class PropertyDef(BaseModel):
@@ -131,6 +134,11 @@ class PropertyDef(BaseModel):
     # ya tenía la propiedad, ver `app.properties.plan_schema`); `""` = bórralo.
     target_database: Optional[str] = None
     multiple: Optional[bool] = None
+    # Solo en la propiedad que dice si una fila está cerrada: `true` en un
+    # `checkbox` (marcado), o la lista de valores en un `select`/`multiselect`
+    # (la celda vale uno de ellos). Lo usa el contador de subtareas. `None` al
+    # editar = «no lo toco» (se conserva el que ya tenía).
+    done: Optional[Any] = None
 
     @field_validator("key")
     @classmethod
@@ -230,12 +238,32 @@ class RelatedRow(BaseModel):
     base_id: Optional[str] = None
 
 
+class RowChildren(BaseModel):
+    """El contador de la tarjeta: subtareas DIRECTAS de una fila.
+
+    `total` son las hijas y `closed` las que están cerradas según la regla de la
+    base (`app.hierarchy.is_closed`: la propiedad marcada con `done`). Se cuenta
+    sobre todas las filas de la base, no sobre las que deja pasar la vista: el
+    contador de una fila no puede cambiar porque la vista filtre por otra cosa.
+    """
+
+    total: int = 0
+    closed: int = 0
+
+
 class RowRead(BaseModel):
     id: uuid.UUID
     database_id: uuid.UUID
     title: str
     icon: Optional[str] = None
     properties: dict[str, Any]
+    # El id de su fila madre si la base tiene jerarquía y esta fila es una
+    # subtarea. Es el mismo id que hay en la celda `parent_row` de
+    # `properties`, resuelto aparte para que el cliente no tenga que saber cuál
+    # es la columna; `null` = no cuelga de nadie (o de una fila que ya no está).
+    parent_id: Optional[str] = None
+    # Cuántas subtareas tiene y cuántas están cerradas: el «1 de 3» de la fila.
+    children: RowChildren = Field(default_factory=RowChildren)
     # `{clave_de_la_propiedad: [fila, ...]}` de las propiedades `relation`, con
     # el título ya resuelto por el servidor (una consulta por respuesta). Una
     # fila sin relaciones devuelve `{}`.
@@ -254,6 +282,13 @@ class RowPageRead(RowRead):
     """
 
     body_markdown: str = ""
+    # Las subtareas de esta fila, como filas completas (título, estado y fecha
+    # salen de `properties` y de las fechas de la fila). Es la lista que la
+    # página de la fila enseña debajo de sus propiedades. Solo en la lectura de
+    # UNA fila: la tabla no arrastra las hijas de cada fila.
+    subtasks: list[RowRead] = []
+    # El id de su madre, si esta fila es una subtarea (para la miga de pan).
+    parent_id: Optional[str] = None
 
 
 class ViewCreate(BaseModel):

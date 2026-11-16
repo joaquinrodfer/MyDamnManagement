@@ -4,7 +4,7 @@ from typing import Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app import schemas
+from app import hierarchy, schemas
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -77,7 +77,12 @@ def _serialize_database(
 
 
 def _serialize_rows(
-    repo: Repository, db_def: Database, rows: List[Page]
+    repo: Repository,
+    db_def: Database,
+    rows: List[Page],
+    *,
+    parent_key: Optional[str] = None,
+    counts: Optional[dict[str, tuple[int, int]]] = None,
 ) -> List[schemas.RowRead]:
     """Serializa filas resolviendo sus relaciones **en una sola consulta**.
 
@@ -90,6 +95,7 @@ def _serialize_rows(
     properties = [row.properties or {} for row in rows]
     ids = relation_ids(db_def.schema_def, properties)
     refs = repo.row_refs(ids) if ids else {}
+    cuentas = counts or {}
     return [
         schemas.RowRead(
             id=row.id,
@@ -98,6 +104,15 @@ def _serialize_rows(
             icon=row.icon,
             properties=props,
             related=related_refs(db_def.schema_def, props, refs),
+            # La jerarquía viaja resuelta: la clave de la celda la sabe el
+            # servidor (una base puede llamarla «Subtarea de» o «Paso de»), y
+            # con `parent_id` el cliente no tiene que preguntarla para saber
+            # qué filas son hijas de cuál.
+            parent_id=hierarchy.parent_of(props, parent_key),
+            children=schemas.RowChildren(
+                total=cuentas.get(str(row.id), (0, 0))[0],
+                closed=cuentas.get(str(row.id), (0, 0))[1],
+            ),
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
         )
@@ -105,10 +120,29 @@ def _serialize_rows(
     ]
 
 
+def _hierarchy_counts(
+    repo: Repository, db_def: Database
+) -> tuple[Optional[str], dict[str, tuple[int, int]]]:
+    """La clave de la jerarquía y el contador de cada madre, sobre toda la base.
+
+    El contador se cuenta sobre TODAS las filas de la base (una consulta), no
+    sobre las que deja pasar la vista: «1 de 3» es la verdad de la fila y no
+    cambia porque la vista filtre por otra cosa.
+    """
+    key = hierarchy.parent_key(db_def.schema_def)
+    if not key:
+        return None, {}
+    return key, hierarchy.child_counts(
+        repo.list_rows(db_def.id), key, db_def.schema_def
+    )
+
+
 def _serialize_row(
     repo: Repository, db_def: Database, row: Page
 ) -> schemas.RowRead:
-    return _serialize_rows(repo, db_def, [row])[0]
+    """Una fila con su contador de subtareas (contado sobre toda la base)."""
+    key, counts = _hierarchy_counts(repo, db_def)
+    return _serialize_rows(repo, db_def, [row], parent_key=key, counts=counts)[0]
 
 
 def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schemas.RowPageRead:
@@ -120,7 +154,26 @@ def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schema
     porque lo leyó del `.md` al indexar: reindexar el vault devuelve lo mismo.
     """
     base = _serialize_row(repo, db_def, row)
-    return schemas.RowPageRead(**base.model_dump(), body_markdown=row.body_markdown or "")
+    key, counts = _hierarchy_counts(repo, db_def)
+    # Las subtareas van en orden de creación (el de `list_rows`): lo que se
+    # cuelga de una fila es un plan, y un plan se lee en el orden en que se
+    # escribió; el `sort` de una vista de la base no tiene por qué gobernarlo.
+    subtasks = (
+        _serialize_rows(
+            repo,
+            db_def,
+            [r for r in repo.list_rows(db_def.id) if hierarchy.parent_of(r, key) == str(row.id)],
+            parent_key=key,
+            counts=counts,
+        )
+        if key
+        else []
+    )
+    return schemas.RowPageRead(
+        **base.model_dump(),
+        body_markdown=row.body_markdown or "",
+        subtasks=subtasks,
+    )
 
 
 def _serialize_view(view: View) -> schemas.ViewRead:
@@ -245,6 +298,12 @@ def create_row(
     cleaned = validate_properties(
         db_def.schema_def, payload.properties, refs=repo.row_refs
     )
+    # La jerarquía no puede colgar de otra base. Una fila nueva todavía no
+    # existe, así que aquí solo se puede comprobar el destino; los ciclos se
+    # comprueban al editar (ahí la fila ya está).
+    hierarchy.validate_parent(
+        db_def.schema_def, cleaned, row_id=None, rows=repo.list_rows(database_id)
+    )
     with _vault_errors():
         row = repo.create_row(
             database_id, title=payload.title, icon=payload.icon, properties=cleaned
@@ -262,14 +321,22 @@ def list_rows(
 ):
     db_def = _get_database_or_404(repo, database_id)
     rows = repo.list_rows(database_id)
+    # El contador de una madre cuenta TODAS sus hijas, también las que la vista
+    # deja fuera: por eso se calcula antes de filtrar.
+    key, counts = _hierarchy_counts(repo, db_def)
 
     if view is not None:
         view_def = repo.get_view(database_id, view)
         if view_def is None:
             raise HTTPException(404, "Vista no encontrada")
-        rows = apply_view(rows, view_def.config or {})
+        rows = apply_view(
+            rows,
+            view_def.config or {},
+            parent_key=key,
+            view_type=getattr(view_def.type, "value", view_def.type),
+        )
 
-    return _serialize_rows(repo, db_def, rows)
+    return _serialize_rows(repo, db_def, rows, parent_key=key, counts=counts)
 
 
 @router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowPageRead)
@@ -299,6 +366,14 @@ def update_row(
     if payload.properties is not None:
         cleaned = validate_properties(
             db_def.schema_def, payload.properties, refs=repo.row_refs
+        )
+        # Con la fila delante, la comprobación completa: ni su propia madre ni
+        # una descendiente suya (ciclo).
+        hierarchy.validate_parent(
+            db_def.schema_def,
+            cleaned,
+            row_id=str(row_id),
+            rows=repo.list_rows(database_id),
         )
 
     # El cuerpo es del `.md` de la fila, como el de una nota: `""` lo vacía,

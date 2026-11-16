@@ -21,6 +21,11 @@ Forma del `config` de una vista (en el frontmatter de `Bases/<slug>.md`):
 - `sort: [{key, dir}]`: varias claves en orden de prioridad. También se acepta
   la forma de una sola clave que escribían las versiones anteriores
   (`sort: {key, dir}`); se sigue leyendo y no se reescribe al mirarla.
+- `parent_level: roots | all`: qué filas de una base con jerarquía se enseñan.
+  `roots` deja solo las que no son subtareas de nadie (por defecto en tabla y
+  tablero: una hija ya se ve debajo de su madre, y duplicarla es ruido); `all`
+  enseña todas, indentadas bajo su madre. Sin la clave manda el tipo de vista
+  (ver `app.hierarchy.level`), así que una base sin jerarquía no cambia nada.
 
 Los valores del frontmatter se leen como texto (el parser de `fm` no infiere
 tipos), así que los operadores comparan como número cuando los dos lados lo
@@ -30,6 +35,7 @@ texto.
 
 from typing import Any
 
+from app import hierarchy
 from app.repository import Page
 
 # Operadores que no llevan `value`: la condición es sobre el estado del valor.
@@ -39,8 +45,26 @@ SIN_VALOR = frozenset({"is_empty", "is_not_empty", "checked", "unchecked"})
 COMPARACIONES = frozenset({"gt", "gte", "lt", "lte", "before", "after"})
 
 
-def apply_view(rows: list[Page], config: dict) -> list[Page]:
-    """Aplica los `filters` y el `sort` de una vista sobre sus filas."""
+def apply_view(
+    rows: list[Page],
+    config: dict,
+    *,
+    parent_key: str | None = None,
+    view_type: str | None = None,
+) -> list[Page]:
+    """Aplica los `filters`, el `sort` y el nivel de una vista sobre sus filas.
+
+    `parent_key` es la clave de la propiedad `parent_row` de la base, si la
+    tiene. Con ella, la vista puede quedarse solo con las madres (el
+    `parent_level` de su `config`, por defecto `roots` en tabla y tablero) y las
+    hijas se colocan detrás de su madre en el resultado: el orden de las ramas
+    lo decide el `sort` de la vista, y dentro de una rama se repite la regla
+    (`app.hierarchy.arrange`). Sin `parent_key` —una base sin jerarquía— nada de
+    esto se aplica y el resultado es exactamente el de siempre.
+    """
+    if parent_key and hierarchy.level(config, view_type) == hierarchy.LEVEL_ROOTS:
+        rows = hierarchy.only_roots(rows, parent_key)
+
     for f in config.get("filters") or []:
         if not isinstance(f, dict):
             continue
@@ -57,6 +81,8 @@ def apply_view(rows: list[Page], config: dict) -> list[Page]:
     for key, direccion in reversed(claves):
         rows = _sort_rows(rows, key, direccion == "desc")
 
+    if parent_key:
+        rows = hierarchy.arrange(rows, parent_key)
     return rows
 
 
