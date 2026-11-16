@@ -119,6 +119,20 @@
        La fila mide siempre lo mismo (antes iba de 33 a 37 px según la celda
        llevara o no un lápiz) y el hover es un velo de tinta, no un color
        propio: se nota al pasar y no compite con la fila seleccionada. */
+    /* --- Etiquetas de los valores de selección ---
+       Siete tonos que se reparten por la posición del valor en sus opciones
+       (ver `htmlDeEtiqueta` en app.js). El primero es neutro a propósito: el
+       primer estado de una base suele ser «pendiente / abierta». La etiqueta
+       mezcla el tono con el fondo y con la tinta, así que solo hay que elegir
+       el color base de cada uno en cada tema. */
+    --tag-1: #949db3;
+    --tag-2: #5b9cf5;
+    --tag-3: #f5a623;
+    --tag-4: #3dd68c;
+    --tag-5: #a78bfa;
+    --tag-6: #f472b6;
+    --tag-7: #2dd4bf;
+
     --row-height: 36px;
     --row-hover: color-mix(in srgb, var(--ink) 5%, transparent);
     --cell-ring: color-mix(in srgb, var(--ink-muted) 55%, transparent);
@@ -151,6 +165,14 @@
     --shadow-card: 0 1px 2px rgba(17, 20, 28, 0.06);
     --shadow-float: 0 12px 32px rgba(17, 20, 28, 0.16);
     --shadow-toast: 0 6px 18px rgba(17, 20, 28, 0.14);
+
+    --tag-1: #525a6e;
+    --tag-2: #1d63c9;
+    --tag-3: #b45309;
+    --tag-4: #18794e;
+    --tag-5: #6d3fd1;
+    --tag-6: #c02678;
+    --tag-7: #0f7f73;
   }
 
   /* Utilidad de accesibilidad para texto solo visible a lectores de pantalla */
@@ -2470,6 +2492,33 @@
   /* Una celda sin valor: la raya está para que la fila no parezca rota, no
      para leerse. (La clase la pone `paintCell`.) */
   .rows-table td.cell-empty { color: color-mix(in srgb, var(--ink-muted) 55%, transparent); }
+  /* Un valor de selección («en curso», «alta») es una etiqueta, no texto
+     suelto: se reconoce por la forma antes de leerla y el estado se sigue de
+     un vistazo por la columna. El fondo es el tono al 16 % y el texto, el tono
+     mezclado con la tinta: se lee igual de bien en claro y en oscuro. */
+  .prop-tag {
+    --tag: var(--tag-1);
+    display: inline-block;
+    max-width: 100%;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--tag) 16%, transparent);
+    color: color-mix(in srgb, var(--tag) 45%, var(--ink));
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 20px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+  }
+  .prop-tag + .prop-tag { margin-left: 4px; }
+  .prop-tag-2 { --tag: var(--tag-2); }
+  .prop-tag-3 { --tag: var(--tag-3); }
+  .prop-tag-4 { --tag: var(--tag-4); }
+  .prop-tag-5 { --tag: var(--tag-5); }
+  .prop-tag-6 { --tag: var(--tag-6); }
+  .prop-tag-7 { --tag: var(--tag-7); }
   /* Una celda de relación enseña los TÍTULOS de las filas enlazadas, y saltan
      de línea dentro del ancho de la celda: un título largo no puede desbordar
      la tabla (el `td` recorta y a 375 px se perdería la mitad). */

@@ -7715,6 +7715,18 @@ function formatPropValue(value, prop) {
   return String(value);
 }
 
+/** Un valor de selección, como etiqueta. El tono sale de la POSICIÓN del valor
+ * en las opciones de la propiedad (`prop.options`), así que el mismo valor
+ * lleva el mismo color en la tabla, en la lista y en el tablero, y no hay nada
+ * que guardar: es presentación. Un valor que no está entre las opciones (texto
+ * libre heredado) va en el tono neutro. Los tonos son los `--tag-N` del CSS. */
+const TONOS_DE_ETIQUETA = 7;
+function htmlDeEtiqueta(valor, prop) {
+  const posicion = (prop.options || []).indexOf(valor);
+  const tono = posicion < 0 ? 1 : (posicion % TONOS_DE_ETIQUETA) + 1;
+  return `<span class="prop-tag prop-tag-${tono}">${escapeHtml(String(valor))}</span>`;
+}
+
 /** Igual que formatPropValue, pero listo para innerHTML: el "sí" de un
  * checkbox es el icono de check del sprite (con texto para lectores de
  * pantalla), una relación enseña el TÍTULO de sus filas (no el id: `row` es
@@ -7722,6 +7734,12 @@ function formatPropValue(value, prop) {
 function formatPropValueHtml(value, prop, row = null) {
   if (prop.type === "checkbox") {
     return value ? `${svgIcon("i-check")}<span class="sr-only">Sí</span>` : "—";
+  }
+  if (prop.type === "select" || prop.type === "multiselect") {
+    const valores = (Array.isArray(value) ? value : [value]).filter(
+      (v) => v !== undefined && v !== null && v !== "",
+    );
+    if (valores.length) return valores.map((v) => htmlDeEtiqueta(v, prop)).join("");
   }
   if (prop.type === "relation") return htmlDeRelacion(value, prop, row);
   if (prop.type === "person") return htmlDePersona(value, prop, row);
