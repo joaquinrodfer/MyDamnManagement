@@ -187,6 +187,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/auth/tokens/{id}` | DELETE | Revoca un token de captura (404 si no es del usuario) |
 | `/capture`     | POST   | Crea una nota en la bandeja (`Bandeja/`) desde un atajo o un script: `{text, title?, source}` → `{id, title, path}`. Sesión **o** token de captura |
 | `/inbox`       | GET    | La bandeja: `{dir, count, pages}` para la sección «Bandeja (N)». Solo sesión |
+| `/my-tasks`    | GET    | «Mis tareas»: las filas de **todas** las bases cuyo responsable (`person`) eres tú, en una llamada: `{count, closed_values, tasks:[{row_id, database_id, database_title, title, icon, status, date}]}`. Solo las abiertas (ver abajo) |
 | `/manifest.webmanifest` | GET | Manifiesto de la PWA (`application/manifest+json`) |
 
 Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest`, `/icons/*.png` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
@@ -230,6 +231,12 @@ ciclo —una fila colgando de sí misma o de una descendiente suya— es un **40
 con la ruta del círculo, y una madre de otra base también. El vínculo no se
 escribe en `links`: el grafo lo pinta como arista `kind: "subtask"`. Decisiones
 en [`docs/ADR-0006-subtareas.md`](docs/ADR-0006-subtareas.md).
+
+### Mis tareas (`GET /my-tasks`)
+
+Una llamada, no cuarenta: el servidor lee los `schema_def` de todas las bases en una consulta, se queda con las que tienen alguna propiedad `person` y pide las filas de esas bases en otra; el filtro por persona se hace en memoria sobre el JSON de la fila. Devuelve, por cada fila cuyo responsable eres tú, **de qué base viene** (`database_title`), el título, el estado y la fecha límite. La propiedad de estado es la de **selección** llamada «Estado» o con la clave `estado` (por clave primero: renombrarla no la pierde); la fecha es la **primera** propiedad `date` de la base. Si la base no tiene una u otra, ese campo viene `null` y la interfaz no enseña hueco. El panel agrupa por fecha (vencidas / hoy / esta semana / resto) con el reloj del navegador y abre cada fila como página.
+
+Solo salen las **abiertas**. Manda la regla de cada base: si el schema marca una propiedad con `done` (lo que ya usa el contador de subtareas — `done: true` en una casilla, `done: [Hecho, Cancelado]` en una selección), una fila cerrada según esa regla no sale, y **no se mezcla con la lista de respaldo** (si la base dice que «Hecho» no cierra, sus filas con «Hecho» salen: la regla es suya y es la misma que cuenta sus subtareas). Si la base no marca nada, se usa la lista de respaldo —`hecho, hecha, hechos, hechas, cerrado, cerrada, cerrados, cerradas, done, ganado, ganada, ganados, ganadas`, comparada sin acentos ni mayúsculas— sobre su propiedad de estado; y una base **sin** propiedad de estado y sin marcador entra entera (no hay nada que diga que sus filas están hechas). La lista de respaldo viaja en la respuesta (`closed_values`) y la vista la escribe en una nota, así que el criterio se lee en pantalla y no se puede quedar viejo.
 
 ### Agentes (`/agent/...`)
 

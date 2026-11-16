@@ -24,6 +24,7 @@ const state = {
   ownRemoteEvents: new Map(), // page_id -> ms: cambio en disco que ha hecho esta app (no es «de fuera»)
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
+  myTasks: { count: 0, tasks: [], closed_values: [] }, // «Mis tareas», de GET /my-tasks
 };
 
 // ---------------------------------------------------------------- helpers
@@ -1663,13 +1664,300 @@ document.getElementById("btn-do-procesar")?.addEventListener("click", procesarNo
 
 initInbox();
 
+// ------------------------------------------------- mis tareas (todas las bases)
+//
+// La pregunta «¿qué me toca hoy?», cruzando TODAS las bases: las filas de
+// cualquier base cuya propiedad de tipo `person` («Responsable») te contenga.
+// El cruce lo hace el servidor de una vez (`GET /my-tasks`: una consulta para
+// los schemas y otra para las filas de las bases que tienen responsables), así
+// que el panel no entra base por base ni pide cuarenta listas en serie.
+//
+// La sección de la barra lateral es un botón que abre la vista y solo existe
+// si hay algo, como la bandeja: quien no usa responsables no ve una sección
+// vacía. La vista agrupa por fecha (vencidas / hoy / esta semana / resto) y
+// cada fila se abre como página, que es el mecanismo que ya hay.
+//
+// Las filas **cerradas** no salen. Manda la regla de cada base (el marcador
+// `done` del schema, el mismo que cuenta las subtareas); si no marca ninguna,
+// el servidor aplica la lista de respaldo que manda en `closed_values` (hecho,
+// cerrada, done…). La vista lo dice en una nota: el criterio se lee, no se
+// adivina.
+
+const BLOQUES_DE_MIS_TAREAS = [
+  { key: "vencidas", title: "Vencidas" },
+  { key: "hoy", title: "Hoy" },
+  { key: "semana", title: "Esta semana" },
+  { key: "resto", title: "Resto" },
+];
+
+/** Refresco agrupado de «Mis tareas»: varios avisos seguidos (guardar tres
+ * celdas, una importación) se convierten en una sola consulta. */
+let myTasksRefreshTimer = null;
+function scheduleMyTasksRefresh() {
+  if (myTasksRefreshTimer !== null) return;
+  myTasksRefreshTimer = setTimeout(() => {
+    myTasksRefreshTimer = null;
+    loadMyTasks();
+  }, 200);
+}
+
+/** Pide «Mis tareas» y repinta la sección. La llama `loadTree()`, así que un
+ * evento del vigilante (o un guardado) la refresca sola. */
+async function loadMyTasks() {
+  let datos;
+  try {
+    datos = await api("/my-tasks");
+  } catch (e) {
+    if (e?.status === 401) return; // ya se está yendo al login
+    reportError("No se pudieron cargar tus tareas", e);
+    return;
+  }
+  state.myTasks = datos;
+  paintMyTasks();
+  // La vista abierta se repinta con lo que acaba de llegar: quitarse de una
+  // tarea o marcarla «Hecho» tiene que verse sin recargar la página. Con una
+  // fila abierta como página NO se toca nada: `clearMain()` la cerraría y el
+  // usuario estaría escribiendo en ella (el refresco llega por el vigilante).
+  if (state.current?.kind === "mytasks" && !rowPage) {
+    renderMisTareas(clearMain());
+  }
+}
+
+function paintMyTasks() {
+  const section = document.getElementById("mytasks-section");
+  const label = document.getElementById("mytasks-label");
+  const boton = document.getElementById("btn-mytasks");
+  if (!section || !label) return;
+
+  const count = state.myTasks?.count || 0;
+  // Sin nada asignado la sección no existe (ni un «Mis tareas (0)» que no dice
+  // nada): el mismo criterio que la bandeja.
+  section.hidden = count === 0;
+  label.textContent = count ? `Mis tareas (${count})` : "Mis tareas";
+  if (boton) {
+    boton.setAttribute("aria-current", state.current?.kind === "mytasks" ? "page" : "false");
+  }
+}
+
+/** «2026-11-16» -> `Date` local a medianoche, o `null` si no es una fecha. */
+function fechaLocalDe(iso) {
+  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || "").trim());
+  if (!partes) return null;
+  const fecha = new Date(Number(partes[1]), Number(partes[2]) - 1, Number(partes[3]));
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+}
+
+/** Días de calendario entre hoy y `fecha` (negativo = ya pasó).
+ *
+ * Se redondea porque el día de un cambio de hora no dura 24 h justas, y el
+ * día que cuenta es el del calendario de quien mira la pantalla, no el del
+ * servidor (que puede estar en otro huso). */
+function diasHastaHoy(fecha) {
+  const ahora = new Date();
+  const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+  return Math.round((fecha - hoy) / 86400000);
+}
+
+/** El domingo de esta semana (la semana empieza el lunes).
+ *
+ * «Esta semana» es de mañana al domingo: hoy tiene su bloque y lo de la
+ * semana que viene no es asunto de la vista de un vistazo. */
+function domingoDeEstaSemana() {
+  const ahora = new Date();
+  const dia = ahora.getDay() === 0 ? 7 : ahora.getDay(); // 1 = lunes … 7 = domingo
+  return new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + (7 - dia));
+}
+
+/** Reparte las tareas en los cuatro bloques, ordenadas por fecha ascendente
+ * (las que no tienen fecha, al final de «Resto»). */
+function bloquesDeMisTareas(tasks) {
+  const bloques = new Map(BLOQUES_DE_MIS_TAREAS.map((bloque) => [bloque.key, []]));
+  const domingo = domingoDeEstaSemana();
+
+  for (const tarea of tasks || []) {
+    const fecha = fechaLocalDe(tarea.date?.value);
+    let key = "resto";
+    if (fecha) {
+      const dias = diasHastaHoy(fecha);
+      if (dias < 0) key = "vencidas";
+      else if (dias === 0) key = "hoy";
+      else if (fecha <= domingo) key = "semana";
+    }
+    bloques.get(key).push({ tarea, fecha, dias: fecha ? diasHastaHoy(fecha) : null });
+  }
+
+  // `sort` es estable: lo que empata (misma fecha) conserva el orden del
+  // servidor, que es por base y título.
+  for (const lista of bloques.values()) {
+    lista.sort((a, b) => {
+      if (a.fecha && b.fecha) return a.fecha - b.fecha;
+      if (a.fecha) return -1;
+      if (b.fecha) return 1;
+      return 0;
+    });
+  }
+  return bloques;
+}
+
+/** «hoy», «mañana», «hace 3 días»… y la fecha a partir de una semana. */
+function etiquetaDeFecha({ fecha, dias }) {
+  if (!fecha) return "";
+  if (Math.abs(dias) <= 7) return formatDueLabel(dias);
+  return fecha.toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** La nota que explica el filtro, con la MISMA lista que aplicó el servidor. */
+function notaDeTareasAbiertas(closed) {
+  const valores = (closed || []).filter(Boolean);
+  const respaldo = valores.length
+    ? ` si no lo marca, no salen las que tienen el estado en ${valores.join(", ")}.`
+    : ".";
+  return `Solo tareas abiertas. Cada base manda: si marca qué valores cuentan como cerrada, no salen esos;${respaldo} Una base sin estado entra entera.`;
+}
+
+function itemDeMiTarea({ tarea, fecha, dias }, abrir) {
+  const item = document.createElement("div");
+  item.className = "dashboard-item";
+  item.title = `Abrir «${tarea.title || "Sin título"}» de «${tarea.database_title}»`;
+
+  const icono = document.createElement("span");
+  icono.className = "dashboard-item-icon";
+  paintPageIcon(icono, "note", tarea.icon);
+
+  const titulo = document.createElement("span");
+  titulo.className = "dashboard-item-title";
+  titulo.textContent = tarea.title || "Sin título";
+
+  // De qué base viene: la lista es mezclada y sin esto no se sabe qué se está
+  // mirando ni dónde está la fila.
+  const base = document.createElement("span");
+  base.className = "my-task-base";
+  base.textContent = tarea.database_title;
+
+  item.append(icono, titulo, base);
+
+  // El estado, solo si la base tiene una propiedad de selección que haga de
+  // estado (lo decide el servidor, que es quien lee el schema).
+  if (tarea.status?.value) {
+    const estado = document.createElement("span");
+    estado.className = "my-task-status";
+    estado.textContent = tarea.status.value;
+    estado.title = `${tarea.status.name}: ${tarea.status.value}`;
+    item.append(estado);
+  }
+
+  const meta = document.createElement("span");
+  meta.className = "dashboard-item-meta" + (fecha && dias < 0 ? " overdue" : "");
+  meta.textContent = etiquetaDeFecha({ fecha, dias });
+  item.append(meta);
+
+  item.addEventListener("click", () => abrir(item));
+  makeKeyboardActivatable(item, "button", 0);
+  return item;
+}
+
+/** Abre una tarea como página: el mecanismo de siempre (`openRowPage`), que
+ * necesita la base para pintar los tipos de sus propiedades. La base se pide al
+ * abrir y no viaja en `/my-tasks`: los schemas de cuarenta bases en cada carga
+ * de la vista serían un payload que casi nunca se usa. */
+async function abrirMiTarea(tarea, origen) {
+  if (!tarea?.row_id || !tarea.database_id) return;
+  try {
+    const base = await api(`/databases/${tarea.database_id}`);
+    await openRowPage(
+      base,
+      {
+        id: tarea.row_id,
+        database_id: tarea.database_id,
+        title: tarea.title || "Sin título",
+        properties: {},
+        related: {},
+        people: {},
+      },
+      { origin: origen, onClose: () => loadMyTasks() },
+    );
+  } catch (e) {
+    reportError("No se pudo abrir la tarea", e);
+  }
+}
+
+function renderMisTareas(main) {
+  const datos = state.myTasks || {};
+  const wrap = document.createElement("div");
+  wrap.className = "dashboard";
+
+  const cabeza = document.createElement("div");
+  cabeza.className = "my-tasks-head";
+  const titulo = document.createElement("h1");
+  titulo.className = "my-tasks-title";
+  titulo.textContent = datos.count ? `Mis tareas (${datos.count})` : "Mis tareas";
+  cabeza.appendChild(titulo);
+  const nota = notaDeTareasAbiertas(datos.closed_values);
+  if (nota) {
+    const parrafo = document.createElement("p");
+    parrafo.className = "my-tasks-note";
+    parrafo.textContent = nota;
+    cabeza.appendChild(parrafo);
+  }
+  wrap.appendChild(cabeza);
+
+  if (!datos.count) {
+    const vacio = document.createElement("div");
+    vacio.className = "my-tasks-empty";
+    vacio.textContent = "No tienes ninguna tarea asignada.";
+    wrap.appendChild(vacio);
+    main.appendChild(wrap);
+    return;
+  }
+
+  const bloques = bloquesDeMisTareas(datos.tasks);
+  for (const bloque of BLOQUES_DE_MIS_TAREAS) {
+    const lista = bloques.get(bloque.key) || [];
+    if (!lista.length) continue;
+    const seccion = document.createElement("section");
+    seccion.className = "dashboard-section";
+    const head = document.createElement("div");
+    head.className = "dashboard-section-head";
+    head.textContent = `${bloque.title} (${lista.length})`;
+    seccion.appendChild(head);
+    for (const entrada of lista) {
+      seccion.appendChild(
+        itemDeMiTarea(entrada, (origen) => abrirMiTarea(entrada.tarea, origen)),
+      );
+    }
+    wrap.appendChild(seccion);
+  }
+
+  main.appendChild(wrap);
+}
+
+async function showMisTareas() {
+  state.current = { kind: "mytasks", id: null };
+  markActive(null);
+  const main = clearMain();
+  updateNavButtons();
+  paintMyTasks();
+  renderMisTareas(main);
+}
+
+function initMyTasks() {
+  const boton = document.getElementById("btn-mytasks");
+  if (!boton) return;
+  boton.addEventListener("click", () => goTo("mytasks"));
+}
+
+initMyTasks();
+
 // ------------------------------------------------------------------ árbol
 
 async function loadTree() {
   try {
     // La bandeja (P13) se refresca con el árbol: es el mismo momento en el que
-    // puede haber cambiado (un `.md` nuevo, una captura desde un atajo).
+    // puede haber cambiado (un `.md` nuevo, una captura desde un atajo). «Mis
+    // tareas» también: asignar o quitar un responsable, o cerrar una fila,
+    // llega por aquí y el contador de la barra tiene que decir la verdad.
     await loadInbox();
+    await loadMyTasks();
     const tree = await api("/pages/tree");
     state.pagesById.clear();
     indexTree(tree);
@@ -3757,6 +4045,18 @@ function handleSuggestionEvent(data) {
  * cursor se queda donde estaba y el autoguardado no se entera. */
 function handleDatabaseEvent(data) {
   if (!data || data.type !== "database" || !data.database_id) return;
+
+  // «Mis tareas» cruza TODAS las bases, así que un cambio de filas en
+  // cualquiera de ellas puede cambiar lo que enseña y el contador de la barra:
+  // asignarte una tarea, cerrarla o quitarte de ella desde la tabla (esta
+  // pestaña) o desde otra ventana. Se refresca antes del «¿hay nota abierta?»
+  // de abajo, que no tiene nada que ver con esta vista. El aviso llega una vez
+  // por guardado; el retardo corto junta ráfagas (una importación, varias
+  // celdas seguidas) en una sola consulta.
+  if (data.action === "rows" || data.action === "updated" || data.action === "deleted") {
+    scheduleMyTasksRefresh();
+  }
+
   const session = state.noteSession;
   if (!session) return;
   // El id va dentro de la valla; si no está en esta nota, el aviso no es suyo.
@@ -3889,8 +4189,12 @@ async function goTo(kind, id, { fromHistory = false } = {}) {
   // plantilla) deja el foco en el primer campo del alta; volver con atrás o
   // adelante no, que el foco es del usuario, no del historial.
   if (kind === "database") await selectDatabase(id, { focus: fromHistory ? null : "addRow" });
+  else if (kind === "mytasks") await showMisTareas();
   else if (kind === "home") await showEmpty();
   else await selectNote(id);
+  // La sección de la barra lateral se marca (o se desmarca) como la actual con
+  // la misma navegación que todo lo demás.
+  paintMyTasks();
   updateNavButtons();
 }
 
@@ -12589,26 +12893,28 @@ function esMovil() {
 function cajonAbierto() {
   return layoutEl.classList.contains("sidebar-drawer-open");
 }
-/** Deja la sección de la bandeja dentro del cajón.
+/** Deja la primera sección de la barra lateral dentro del cajón.
  *
  * La barra lateral es la misma columna con o sin cajón: conserva el
- * `scrollTop` que tuviera, así que con el árbol desplazado la bandeja se
- * abría por encima del borde superior (y no se podía ni tocar). Al abrir se
- * corrige el scroll lo justo para que se vea; si ya se veía, no se mueve
- * (C2). */
-function mostrarBandejaEnElCajon() {
-  const section = document.getElementById("inbox-section");
-  if (!sidebarEl || !section || section.hidden) return;
+ * `scrollTop` que tuviera, así que con el árbol desplazado la bandeja (o «Mis
+ * tareas») se abría por encima del borde superior (y no se podía ni tocar). Al
+ * abrir se corrige el scroll lo justo para que se vea; si ya se veía, no se
+ * mueve (C2). */
+function mostrarSeccionesEnElCajon() {
+  const section = ["mytasks-section", "inbox-section"]
+    .map((id) => document.getElementById(id))
+    .find((el) => el && !el.hidden);
+  if (!sidebarEl || !section) return;
   const caja = sidebarEl.getBoundingClientRect();
-  const bandeja = section.getBoundingClientRect();
-  if (bandeja.top < caja.top) sidebarEl.scrollTop -= caja.top - bandeja.top;
-  else if (bandeja.bottom > caja.bottom) sidebarEl.scrollTop += bandeja.bottom - caja.bottom;
+  const seccion = section.getBoundingClientRect();
+  if (seccion.top < caja.top) sidebarEl.scrollTop -= caja.top - seccion.top;
+  else if (seccion.bottom > caja.bottom) sidebarEl.scrollTop += seccion.bottom - caja.bottom;
 }
 
 function setCajonAbierto(open) {
   const abierto = Boolean(open) && esMovil();
   layoutEl.classList.toggle("sidebar-drawer-open", abierto);
-  if (abierto) mostrarBandejaEnElCajon();
+  if (abierto) mostrarSeccionesEnElCajon();
   if (scrimEl) scrimEl.hidden = !abierto;
   if (!toggleSidebarBtn) return;
   // aria-expanded solo tiene sentido en el cajón: en escritorio el botón no
@@ -12622,7 +12928,7 @@ scrimEl?.addEventListener("click", () => setCajonAbierto(false));
 // Elegir una página (o procesar una captura) cierra el cajón: ya no hace falta.
 sidebarEl?.addEventListener("click", (e) => {
   if (!cajonAbierto()) return;
-  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process")) setCajonAbierto(false);
+  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process, #btn-mytasks")) setCajonAbierto(false);
 });
 
 // Escape cierra el cajón. En captura, porque el editor y los diálogos también

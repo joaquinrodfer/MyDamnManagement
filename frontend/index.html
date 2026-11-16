@@ -431,6 +431,60 @@
   }
   .inbox-process:hover,
   .inbox-process:focus-visible { color: var(--accent-ink); border-color: var(--accent); }
+  /* ---------- mis tareas (vista que cruza todas las bases) ----------
+     La sección de la barra lateral es un botón que navega, no una lista que se
+     despliega: lo que se enseña (bloques por fecha y de qué base viene cada
+     fila) no cabe en 248 px. Solo existe si hay algo, como la bandeja. */
+  #mytasks-section .sidebar-section-head { padding: 4px 8px 6px; }
+  #btn-mytasks[aria-current="page"],
+  #btn-mytasks[aria-current="page"]:hover { color: var(--accent-ink); }
+  .my-tasks-head { display: flex; flex-direction: column; gap: 4px; }
+  .my-tasks-title {
+    font-family: var(--font-body);
+    font-size: var(--text-db-title);
+    font-weight: 600;
+    letter-spacing: -0.011em;
+    line-height: 1.25;
+    color: var(--ink);
+    margin: 0;
+  }
+  .my-tasks-note {
+    margin: 0;
+    max-width: 620px;
+    color: var(--ink-muted);
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+  /* De qué base viene la fila: la lista es mezclada y sin esto no se sabe. */
+  .my-task-base {
+    flex-shrink: 0;
+    padding: 1px 7px;
+    border: 1px solid var(--panel-border);
+    border-radius: 999px;
+    color: var(--ink-muted);
+    font-family: var(--font-body);
+    font-size: 11px;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* El estado de la fila, si su base tiene una propiedad que haga de estado. */
+  .my-task-status {
+    flex-shrink: 0;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-family: var(--font-body);
+    font-size: 11px;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .my-tasks-empty { color: var(--ink-muted); font-size: 13.5px; }
+
   .sidebar-section-head {
     display: flex;
     align-items: center;
@@ -3878,6 +3932,19 @@
       <div id="search-results" class="search-results" hidden></div>
 
       <div id="nav-sections">
+        <!-- Mis tareas: las filas de TODAS las bases cuyo responsable eres tú.
+             La sección la enseña `paintMyTasks()` (app.js) y solo si hay algo,
+             igual que la bandeja: quien no usa responsables no ve una sección
+             vacía que no le dice nada. -->
+        <div class="sidebar-section" id="mytasks-section" hidden>
+          <div class="sidebar-section-head">
+            <button type="button" class="sidebar-section-toggle" id="btn-mytasks" aria-current="false">
+              <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
+              <span id="mytasks-label">Mis tareas</span>
+            </button>
+          </div>
+        </div>
+
         <!-- Bandeja de capturas (P13): arriba del todo y solo si hay algo. La
              sección la enseña `paintInbox()` (app.js); con 0 notas se queda
              oculta, que es lo que hay que hacer con un «Bandeja (0)». -->
