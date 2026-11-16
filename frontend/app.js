@@ -1677,11 +1677,11 @@ initInbox();
 // vacía. La vista agrupa por fecha (vencidas / hoy / esta semana / resto) y
 // cada fila se abre como página, que es el mecanismo que ya hay.
 //
-// Las filas **cerradas** no salen. Manda la regla de cada base (el marcador
-// `done` del schema, el mismo que cuenta las subtareas); si no marca ninguna,
-// el servidor aplica la lista de respaldo que manda en `closed_values` (hecho,
-// cerrada, done…). La vista lo dice en una nota: el criterio se lee, no se
-// adivina.
+// Las filas **cerradas** no salen. Manda la regla de cada base (`closed:
+// {property, values}` en su `.md`, la misma que cuenta las subtareas); una base
+// sin regla no tiene estado y entra entera. Los valores que las bases declaran
+// llegan en `closed_values` y la vista los dice en una nota: el criterio se lee,
+// no se adivina.
 
 const BLOQUES_DE_MIS_TAREAS = [
   { key: "vencidas", title: "Vencidas" },
@@ -1806,13 +1806,17 @@ function etiquetaDeFecha({ fecha, dias }) {
   return fecha.toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" });
 }
 
-/** La nota que explica el filtro, con la MISMA lista que aplicó el servidor. */
+/** La nota que explica el filtro, con los valores que declaran las bases.
+ *
+ * La lista la arma el servidor leyendo el `.md` de cada base: aquí no hay una
+ * copia del criterio que pueda contradecirlo. Si ninguna declara estado, la
+ * nota lo dice en vez de explicar una lista que no existe. */
 function notaDeTareasAbiertas(closed) {
   const valores = (closed || []).filter(Boolean);
-  const respaldo = valores.length
-    ? ` si no lo marca, no salen las que tienen el estado en ${valores.join(", ")}.`
-    : ".";
-  return `Solo tareas abiertas. Cada base manda: si marca qué valores cuentan como cerrada, no salen esos;${respaldo} Una base sin estado entra entera.`;
+  if (!valores.length) {
+    return "Solo tareas abiertas. Ninguna base declara qué cuenta como cerrada: no se esconde nada.";
+  }
+  return `Solo tareas abiertas. Cada base manda: no salen las filas cuyo estado sea ${valores.join(", ")}. Una base sin regla entra entera.`;
 }
 
 function itemDeMiTarea({ tarea, fecha, dias }, abrir) {
@@ -4714,22 +4718,29 @@ function claveDeJerarquia(database) {
   return prop ? String(prop.key) : null;
 }
 
-/** ¿La propiedad lleva el marcador `done` que dice qué cuenta como cerrada?
+/** La regla de qué cuenta como fila cerrada en esta base, o `null`.
  *
- * Un `checkbox` con `done: true` (marcado) o un `select`/`multiselect` con
- * `done: [valor, ...]`. La misma regla que `app.hierarchy.done_property`. */
-function tieneMarcadorDeCierre(prop) {
-  if (!prop || !prop.key) return false;
-  return Array.isArray(prop.done)
-    ? prop.done.length > 0
-    : prop.done === true || prop.done === "true";
+ * La resuelve el servidor (`closed: {property, values, source}`): el bloque
+ * `closed:` del `.md` o, si no lo hay, el marcador `done` viejo (`source:
+ * "done"`, compatibilidad de lectura). El cliente NO vuelve a interpretarlo:
+ * duplicar la regla sería tener dos verdades que pueden discrepar. */
+function reglaDeCierre(database) {
+  const regla = database?.closed;
+  if (!regla || !regla.property) return null;
+  return {
+    property: String(regla.property),
+    values: Array.isArray(regla.values) ? regla.values : [],
+    source: regla.source === "done" ? "done" : "base",
+  };
 }
 
-/** La propiedad que dice si una fila está cerrada (el `done` del schema), o
- * `null`. Solo sirve para enseñar el estado en la lista de subtareas: quien
- * cuenta las cerradas es el servidor. */
+/** La propiedad que dice si una fila está cerrada, o `null`. Solo sirve para
+ * enseñar el estado en la lista de subtareas: quien cuenta las cerradas es el
+ * servidor. */
 function propiedadDeCierre(database) {
-  return (database?.schema_def || []).find(tieneMarcadorDeCierre) || null;
+  const regla = reglaDeCierre(database);
+  if (!regla) return null;
+  return (database?.schema_def || []).find((p) => p.key === regla.property) || null;
 }
 
 /** El nivel de filas de una vista: `roots` (solo madres) o `all`.
@@ -5206,24 +5217,47 @@ const OPERADORES_FILTRO = {
 };
 
 /** Los operadores que no llevan valor: el estado lo dice el propio operador. */
-const OPS_SIN_VALOR = new Set(["is_empty", "is_not_empty", "checked", "unchecked"]);
+const OPS_SIN_VALOR = new Set([
+  "is_empty",
+  "is_not_empty",
+  "checked",
+  "unchecked",
+  "is_closed",
+  "is_open",
+]);
+
+/** Los operadores del estado de la base. No enumeran valores: la regla de la
+ * base (`closed: {property, values}`) es la que sabe qué está cerrado, así que
+ * el filtro no tiene que repetir la lista en cada condición. */
+const OPS_DE_ESTADO = [
+  ["is_closed", "está cerrada"],
+  ["is_open", "está abierta"],
+];
 
 // Los títulos de las filas de las bases destino de una relación, para que el
 // valor de «incluye» sea un nombre y no un id. Se cachea por clave de
 // propiedad; si la base destino no se puede leer, el control pide el id.
 const titulosDeRelacion = new Map();
 
-function operadoresDe(prop) {
-  return OPERADORES_FILTRO[prop?.type] || OPERADORES_TEXTO;
+/** Los operadores de una propiedad. `regla` es la regla de cierre de la base:
+ * solo la columna que la base declara como estado ofrece «está cerrada» y «está
+ * abierta» — en cualquier otra no habría nada que preguntar. */
+function operadoresDe(prop, regla = null) {
+  const ops = [...(OPERADORES_FILTRO[prop?.type] || OPERADORES_TEXTO)];
+  if (regla && prop?.key && String(regla.property) === String(prop.key)) {
+    ops.push(...OPS_DE_ESTADO);
+  }
+  return ops;
 }
 
-function etiquetaDeOperador(prop, op) {
-  const par = operadoresDe(prop).find(([valor]) => valor === op);
-  return par ? par[1] : op;
+function etiquetaDeOperador(prop, op, regla = null) {
+  const par = operadoresDe(prop, regla).find(([valor]) => valor === op);
+  if (par) return par[1];
+  return (OPS_DE_ESTADO.find(([valor]) => valor === op) || [op, op])[1];
 }
 
-function operadorPorDefecto(prop) {
-  return operadoresDe(prop)[0][0];
+function operadorPorDefecto(prop, regla = null) {
+  return operadoresDe(prop, regla)[0][0];
 }
 
 /** Los filtros de una vista, normalizados (una vista vieja puede no tener). */
@@ -5285,7 +5319,7 @@ function nombreDePropiedad(database, key) {
 function textoDeCondicion(cond, database) {
   const prop = database.schema_def.find((p) => p.key === cond.key);
   if (!prop) return `${cond.key} ${cond.op}`;
-  const operador = etiquetaDeOperador(prop, cond.op);
+  const operador = etiquetaDeOperador(prop, cond.op, reglaDeCierre(database));
   if (OPS_SIN_VALOR.has(cond.op)) return `${prop.name} ${operador}`;
   const valor =
     prop.type === "relation"
@@ -5627,11 +5661,12 @@ function filaDeCondicion(database, cond, indice) {
   });
   const propParaElControl = prop || { key: cond.key, name: cond.key, type: "text" };
   propSelect.value = propParaElControl.key;
+  const regla = reglaDeCierre(database);
   propSelect.addEventListener("change", () => {
     const nueva = database.schema_def.find((p) => p.key === propSelect.value);
     if (!nueva) return;
     cond.key = nueva.key;
-    cond.op = operadorPorDefecto(nueva);
+    cond.op = operadorPorDefecto(nueva, regla);
     cond.value = "";
     pintarFilasDeFiltro();
   });
@@ -5639,14 +5674,14 @@ function filaDeCondicion(database, cond, indice) {
   const opSelect = document.createElement("select");
   opSelect.className = "filter-op";
   opSelect.setAttribute("aria-label", `Operador de la condición ${indice + 1}`);
-  operadoresDe(propParaElControl).forEach(([valor, etiqueta]) => {
+  operadoresDe(propParaElControl, regla).forEach(([valor, etiqueta]) => {
     const opcion = document.createElement("option");
     opcion.value = valor;
     opcion.textContent = etiqueta;
     opSelect.appendChild(opcion);
   });
-  if (!operadoresDe(propParaElControl).some(([valor]) => valor === cond.op)) {
-    cond.op = operadorPorDefecto(propParaElControl);
+  if (!operadoresDe(propParaElControl, regla).some(([valor]) => valor === cond.op)) {
+    cond.op = operadorPorDefecto(propParaElControl, regla);
   }
   opSelect.value = cond.op;
   opSelect.addEventListener("change", () => {
@@ -5796,7 +5831,11 @@ document.getElementById("btn-add-filter").addEventListener("click", () => {
   const ctx = filterDialogCtx;
   const prop = ctx?.database.schema_def[0];
   if (!ctx || !prop) return;
-  ctx.condiciones.push({ key: prop.key, op: operadorPorDefecto(prop), value: "" });
+  ctx.condiciones.push({
+    key: prop.key,
+    op: operadorPorDefecto(prop, reglaDeCierre(ctx.database)),
+    value: "",
+  });
   filterStatusEl.textContent = "";
   pintarFilasDeFiltro();
 });
@@ -9249,6 +9288,132 @@ function mostrarTiposDeColumna(menu, contexto, anchor) {
   menu.querySelector('[role^="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
 }
 
+/** El submenú del estado de la base: «esta columna dice si está hecha», con
+ * sus valores marcables.
+ *
+ * La regla es de la BASE, no de la columna (`closed: {property, values}` en su
+ * `.md`): una sola por base, así que marcar otra columna mueve la regla y el
+ * menú lo dice. Aquí solo se elige; quién cuenta como cerrada lo decide el
+ * servidor con esa misma regla.
+ *
+ * El panel se queda abierto tras guardar (con las marcas nuevas y una nota) y
+ * repinta la tabla al cerrarse: los contadores de las madres cambian en cuanto
+ * la regla cambia, y el `.md` de ninguna fila se toca.
+ */
+function mostrarEstadoDeColumna(menu, contexto, anchor) {
+  pintarEstadoDeColumna(menu, contexto, anchor);
+  abrirPanelFlotante(anchor, menu, {
+    etiqueta: `Estado de la base según «${contexto.prop.name}»`,
+    alCerrar: () => contexto.onChanged?.(),
+  });
+}
+
+/** Pinta las opciones del estado sin abrir ni recolocar el panel: lo usan la
+ * primera apertura y cada guardado (para enseñar las marcas nuevas). */
+function pintarEstadoDeColumna(menu, contexto, anchor) {
+  const { database, prop } = contexto;
+  menu.textContent = "";
+  const cabecera = document.createElement("div");
+  cabecera.className = "db-col-menu-label";
+  cabecera.textContent = `«${prop.name}» dice si está hecha`;
+  menu.appendChild(cabecera);
+  menu.appendChild(
+    itemDeColumna("‹ Volver", { alElegir: () => abrirMenuDeColumna(contexto.th, contexto) }),
+  );
+
+  const regla = reglaDeCierre(database);
+  const activa = Boolean(regla && regla.property === prop.key);
+  const valores = activa ? regla.values : [];
+  const mismo = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
+  const avisar = (texto) => {
+    const nota = notaDeMenu(menu);
+    nota.textContent = texto;
+    nota.hidden = false;
+  };
+
+  const aplicar = async (nuevos) => {
+    const otra =
+      regla && regla.property !== prop.key ? nombreDePropiedad(database, regla.property) : null;
+    try {
+      const actualizada =
+        nuevos === null
+          ? await api(`/databases/${database.id}/closed`, { method: "DELETE" })
+          : await api(`/databases/${database.id}/closed`, {
+              method: "PUT",
+              body: JSON.stringify({ property: prop.key, values: nuevos }),
+            });
+      Object.assign(database, actualizada);
+      pintarEstadoDeColumna(menu, contexto, anchor);
+      colocarPanelFlotante(menu, anchor);
+      avisar(
+        nuevos === null
+          ? `«${prop.name}» deja de decir si una fila está hecha: la base no tiene estado y nada cuenta como cerrado.`
+          : otra
+            ? `«${prop.name}» pasa a ser el estado de la base y «${otra}» deja de decirlo: una base tiene un solo estado.`
+            : "Guardado en el `.md` de la base: no se ha tocado ninguna fila.",
+      );
+    } catch (e) {
+      reportError("No se pudo guardar el estado de la base", e);
+      avisar(describeError(e));
+    }
+  };
+
+  if (prop.type === "checkbox") {
+    menu.appendChild(
+      itemDeColumna("Marcada cuenta como hecha", {
+        radio: true,
+        marca: activa ? "✓" : "",
+        alElegir: () => aplicar(activa ? null : []),
+      }),
+    );
+  } else {
+    const opciones = Array.isArray(prop.options) ? prop.options : [];
+    if (!opciones.length) {
+      menu.appendChild(
+        itemDeColumna("Esta columna no tiene valores", {
+          motivo: "Añade opciones a la columna («Propiedades…») antes de usarla como estado.",
+          alElegir: () =>
+            avisar("Añade opciones a la columna («Propiedades…») antes de usarla como estado."),
+        }),
+      );
+    }
+    opciones.forEach((valor) => {
+      const marcada = activa && valores.some((v) => mismo(v, valor));
+      menu.appendChild(
+        itemDeColumna(valor, {
+          radio: true,
+          marca: marcada ? "✓" : "",
+          alElegir: () => {
+            const resto = activa ? valores.filter((v) => !mismo(v, valor)) : [];
+            const nuevos = marcada ? resto : [...resto, valor];
+            if (!nuevos.length) {
+              avisar("Marca al menos un valor: sin valores no hay nada que cuente como cerrado.");
+              return;
+            }
+            aplicar(nuevos);
+          },
+        }),
+      );
+    });
+    if (activa) {
+      menu.appendChild(separadorDeMenu());
+      menu.appendChild(
+        itemDeColumna("Esta columna deja de decir si está hecha", {
+          peligro: true,
+          alElegir: () => aplicar(null),
+        }),
+      );
+    }
+  }
+
+  if (activa && regla.source === "done") {
+    avisar(
+      "Esta base lo dice con el marcador «done» anterior. Se sigue leyendo; al marcar aquí se guarda como regla de la base.",
+    );
+  }
+}
+
 /** El menú de la cabecera: renombrar, ocultar (en la vista), tipo, borrar y el
  * acceso al diálogo de siempre. `prop` nulo es la columna del título, que
  * comparte el gesto pero no tiene tipo ni se borra. */
@@ -9351,6 +9516,16 @@ function abrirMenuDeColumna(anchor, contexto) {
         alElegir: () => mostrarTiposDeColumna(menu, contexto, anchor),
       }),
     );
+    if (["checkbox", "select", "multiselect"].includes(prop.type)) {
+      const regla = reglaDeCierre(database);
+      menu.appendChild(
+        itemDeColumna("Esta columna dice si está hecha", {
+          radio: true,
+          marca: regla && regla.property === prop.key ? "✓" : "",
+          alElegir: () => mostrarEstadoDeColumna(menu, contexto, anchor),
+        }),
+      );
+    }
     menu.appendChild(
       itemDeColumna("Borrar la propiedad", {
         peligro: true,
@@ -11748,8 +11923,8 @@ async function openRowPage(
   // trabajan aquí, no en la tabla (donde una hija es una línea más). La lista
   // la trae el servidor en la lectura de la fila (`subtasks`), en orden de
   // creación; el estado y la fecha salen de las propiedades de cada hija. Quién
-  // está cerrada lo dice el servidor (`closed`): la regla de `done` no se
-  // repite en el cliente.
+  // está cerrada lo dice el servidor (`closed`, con la regla de la base): esa
+  // regla no se repite en el cliente.
   const claveJerarquia = claveDeJerarquia(database);
   const propEstado = propiedadDeCierre(database);
   const propFecha =
@@ -12210,21 +12385,11 @@ function actualizarGuardadoDelDialogo() {
   const aviso = document.getElementById("db-save-hint");
   if (!guardar || !aviso) return;
   const sinDestino = [];
-  const sinValores = [];
   propRowsContainer.querySelectorAll(".prop-row-wrap:not(.prop-title-row)").forEach((wrap) => {
     const tipo = wrap.querySelector(".prop-type")?.value;
     const nombre = wrap.querySelector(".prop-name")?.value.trim() || "una propiedad";
     if (tipo === "relation" && !wrap.querySelector(".prop-target")?.value) {
       sinDestino.push(nombre);
-    }
-    // «Dice si está cerrada» en una selección necesita al menos un valor: sin
-    // él no hay nada que contar y el servidor rechazaría el guardado.
-    if (
-      ["select", "multiselect"].includes(tipo) &&
-      wrap.querySelector(".prop-done-check")?.checked &&
-      !(wrap.querySelector(".prop-done-values")?.value || "").trim()
-    ) {
-      sinValores.push(nombre);
     }
   });
   const avisos = [];
@@ -12235,15 +12400,6 @@ function actualizarGuardadoDelDialogo() {
         : `Elige la base destino de ${sinDestino
             .map((n) => `«${n}»`)
             .join(", ")} para poder guardar.`,
-    );
-  }
-  if (sinValores.length) {
-    avisos.push(
-      sinValores.length === 1
-        ? `Escribe qué valores cuentan como cerrada en «${sinValores[0]}» (separados por coma).`
-        : `Escribe qué valores cuentan como cerrada en ${sinValores
-            .map((n) => `«${n}»`)
-            .join(", ")} (separados por coma).`,
     );
   }
   if (!avisos.length) {
@@ -12386,32 +12542,10 @@ function addPropertyRow(prop = null) {
 
   relWrap.append(targetLabel, multipleLabel);
 
-  // Cierre: la propiedad que dice si una fila está cerrada (el `done` del
-  // schema). Es lo que cuenta el contador de subtareas de la madre: sin esta
-  // casilla, una base recién creada desde la interfaz no puede pasar de «0 de
-  // N». En una casilla basta con marcarla; en una selección hay que decir qué
-  // valores cierran (`done: [..]`), y se guardan en el `.md` de la base.
-  const doneWrap = document.createElement("div");
-  doneWrap.className = "prop-done";
-  doneWrap.hidden = true;
-
-  const doneLabel = document.createElement("label");
-  doneLabel.className = "prop-done-flag";
-  const doneBox = document.createElement("input");
-  doneBox.type = "checkbox";
-  doneBox.className = "prop-done-check";
-  const doneText = document.createElement("span");
-  doneText.className = "prop-done-text";
-  doneLabel.append(doneBox, doneText);
-
-  const doneValues = document.createElement("input");
-  doneValues.type = "text";
-  doneValues.className = "prop-done-values";
-  doneValues.placeholder = "valores que cuentan como cerrada, separados por coma (p. ej. Hecho)";
-  doneValues.setAttribute("aria-label", "Valores que cuentan como fila cerrada");
-
-  doneWrap.append(doneLabel, doneValues);
-
+  // El cierre NO se configura aquí: qué cuenta como fila cerrada es una regla
+  // de la BASE (`closed: {property, values}`) y se marca en el menú de la
+  // columna («Esta columna dice si está hecha»). Tenerlo en los dos sitios
+  // serían dos verdades sobre la misma pregunta.
   let destinoPedido = false;
   /** Rellena el `<select>` la primera vez que hace falta: una base sin
    * relaciones no pide la lista de bases. */
@@ -12450,27 +12584,8 @@ function addPropertyRow(prop = null) {
     const esRelacion = tipo === "relation";
     relWrap.hidden = !esRelacion;
     optionsInput.hidden = !["select", "multiselect"].includes(tipo);
-    // El cierre cabe donde hay algo que leer: una casilla (marcada) o una
-    // selección (uno de sus valores). En texto, fecha o número no hay estado.
-    doneWrap.hidden = !["checkbox", "select", "multiselect"].includes(tipo);
-    if (!doneWrap.hidden) {
-      const esCasilla = tipo === "checkbox";
-      doneText.textContent = esCasilla
-        ? "Marcada cuenta como cerrada"
-        : "Esta propiedad dice si la fila está cerrada";
-      doneValues.hidden = esCasilla;
-    }
     if (esRelacion) llenarDestino();
   };
-
-  // Lo que traía la propiedad. Si el usuario desmarca la casilla es que
-  // quiere quitar el marcador (`done: false`); si no la toca, el PATCH no
-  // manda la clave y el servidor conserva el `done` que ya tenía.
-  wrap.__doneAntes = tieneMarcadorDeCierre(prop);
-  if (wrap.__doneAntes) {
-    doneBox.checked = true;
-    if (Array.isArray(prop.done)) doneValues.value = prop.done.join(", ");
-  }
 
   if (prop) {
     nameInput.value = prop.name;
@@ -12485,26 +12600,6 @@ function addPropertyRow(prop = null) {
   });
   nameInput.addEventListener("input", () => actualizarGuardadoDelDialogo());
   targetSelect.addEventListener("change", () => actualizarGuardadoDelDialogo());
-  // Una sola propiedad marca el cierre: el servidor obedece a la primera
-  // marcada, y dos marcadores serían dos respuestas para la misma pregunta.
-  doneBox.addEventListener("change", () => {
-    if (doneBox.checked) {
-      propRowsContainer.querySelectorAll(".prop-done-check").forEach((otra) => {
-        if (otra !== doneBox) otra.checked = false;
-      });
-      // En una selección, el último valor es el de «hecho» por convenio
-      // (Pendiente, En curso, Hecho): se propone, y se puede cambiar.
-      if (typeSelect.value !== "checkbox" && !doneValues.value.trim()) {
-        const opciones = optionsInput.value
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        if (opciones.length) doneValues.value = opciones[opciones.length - 1];
-      }
-    }
-    actualizarGuardadoDelDialogo();
-  });
-  doneValues.addEventListener("input", () => actualizarGuardadoDelDialogo());
   // Al quitar una fila de propiedad, el aviso y el botón se recalculan: la
   // relación incompleta que bloqueaba puede ser justo la que se ha quitado.
   removeBtn.addEventListener("click", () => {
@@ -12512,7 +12607,7 @@ function addPropertyRow(prop = null) {
     actualizarGuardadoDelDialogo();
   });
 
-  wrap.append(row, optionsInput, relWrap, doneWrap);
+  wrap.append(row, optionsInput, relWrap);
   propRowsContainer.appendChild(wrap);
   aplicarVisibilidad();
 }
@@ -12563,25 +12658,6 @@ function readSchemaFromDialog() {
       // vale es lo que el usuario ve en el diálogo.
       prop.target_database = wrap.querySelector(".prop-target")?.value || "";
       prop.multiple = Boolean(wrap.querySelector(".prop-multiple")?.checked);
-    }
-    if (["checkbox", "select", "multiselect"].includes(type)) {
-      if (wrap.querySelector(".prop-done-check")?.checked) {
-        if (type === "checkbox") {
-          prop.done = true;
-        } else {
-          const valores = (wrap.querySelector(".prop-done-values")?.value || "")
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-          // Sin valores no se manda nada: «Guardar» está apagado con su
-          // motivo escrito (`actualizarGuardadoDelDialogo`).
-          if (valores.length) prop.done = valores;
-        }
-      } else if (wrap.__doneAntes) {
-        // Desmarcado a propósito: se quita el marcador. No mandar la clave la
-        // conservaría y no habría forma de apagar el contador desde aquí.
-        prop.done = false;
-      }
     }
     schema_def.push(prop);
   });

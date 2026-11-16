@@ -15,15 +15,15 @@ schema de cada base (`databases.schema_json`). La vista contesta a la pregunta
 - el nombre de la base sale del `JOIN` con su página, porque la fila sola no
   dice de dónde viene.
 
-**Qué es «abierta».** Manda la regla que declara cada base: si su schema marca
-una propiedad con `done` (lo mismo que usa el contador de subtareas — una
-casilla `done: true` o una selección con `done: [Hecho, ...]`), una fila cerrada
-según esa regla no sale. Si la base no marca nada, se aplica la lista de
-respaldo `CLOSED_STATES` (hecho, cerrada, done, ganado…) sobre su propiedad de
-estado; y una base **sin** estado ni marcador no filtra nada — sus filas entran
-todas, porque no hay nada que diga que están hechas. La lista de respaldo se
-devuelve con la respuesta (`closed_values`) para que la interfaz pueda
-explicarla sin repetirla a mano.
+**Qué es «abierta».** Manda la regla que declara cada base: su bloque
+`closed: {property, values}` en el frontmatter (`app.closed`), el mismo que
+decide el contador de subtareas y el filtro `is_closed`/`is_open`. Una fila
+cerrada según esa regla no sale. Una base **sin** regla no tiene estado y no
+filtra nada: sus filas entran todas, porque no hay nada que diga que están
+hechas. No hay lista de respaldo escondida en el código —era otra verdad, y la
+pantalla podía contradecir al `.md`—: los valores cerrados que viajan con la
+respuesta (`closed_values`) son la unión de los que declaran las bases, para que
+la interfaz explique el criterio sin repetirlo a mano.
 
 La propiedad de estado es la de **selección** llamada «Estado» o con la clave
 `estado`; si no la hay, no se enseña estado. La fecha límite es la **primera**
@@ -41,7 +41,7 @@ import unicodedata
 from datetime import date, datetime
 from typing import Any, Optional
 
-from app import hierarchy
+from app import closed
 from app.properties import person_keys
 
 # Lo que el schema marca como selección: `select` (un valor) y `multiselect`
@@ -55,26 +55,6 @@ DATE = "date"
 # clave la deriva la app del nombre al crear la propiedad (`plan_schema`), así
 # que «Estado» nace `estado` y renombrarla a «Situación» conserva la clave.
 STATUS_KEY = "estado"
-
-# Qué cuenta como «hecha». Es una lista cerrada y en minúsculas sin acentos
-# (`folded`): «Hecho», «HECHO» y «cerrada» casan; «en curso» y «bloqueada», no.
-# Mientras no exista la semántica del estado «cerrado» (función 5), esto es lo
-# que hay, y se dice en la interfaz.
-CLOSED_STATES: tuple[str, ...] = (
-    "hecho",
-    "hecha",
-    "hechos",
-    "hechas",
-    "cerrado",
-    "cerrada",
-    "cerrados",
-    "cerradas",
-    "done",
-    "ganado",
-    "ganada",
-    "ganados",
-    "ganadas",
-)
 
 # Cuántos ids de base caben en un `IN (...)`. El tope de parámetros de SQLite
 # es del motor (32766 en las versiones que la app soporta) y no queremos
@@ -90,40 +70,29 @@ def folded(value: Any) -> str:
     return unicodedata.normalize("NFC", plano).strip().casefold()
 
 
-_CLOSED_FOLDED = frozenset(folded(state) for state in CLOSED_STATES)
-
-
-def is_closed(value: Any) -> bool:
-    """¿El valor de estado de una fila la marca como hecha, por la lista de respaldo?
-
-    Un `multiselect` cuenta como cerrado si **alguno** de sus valores lo está:
-    «hecho, archivado» sigue siendo una tarea hecha. Un valor que no es texto
-    (o vacío) no cierra nada.
-    """
-    values = value if isinstance(value, list) else [value]
-    return any(
-        folded(one) in _CLOSED_FOLDED for one in values if isinstance(one, str) and one.strip()
-    )
-
-
-def closed_row(schema_def: list[dict], status: Optional[dict], props: dict) -> bool:
+def closed_row(rule: Optional[dict], props: dict) -> bool:
     """¿La fila cuenta como cerrada (y por tanto no sale en la vista)?
 
-    Manda la regla de la base. Si su schema marca una propiedad con `done` —lo
-    mismo que usa el contador de subtareas: `done: true` en una casilla,
-    `done: [Hecho, Cancelado]` en una selección— se aplica esa, tal cual, sobre
-    la celda que el marcador nombra (puede no ser la del estado visible: una
-    casilla «Terminada» cuenta igual).
-
-    Si la base no marca nada, se cae a la lista de respaldo `CLOSED_STATES`
-    sobre la propiedad de estado. Y si tampoco hay propiedad de estado, la fila
-    entra: no hay nada que diga que está hecha.
+    Lo decide la regla que declara la base (`closed: {property, values}`, ver
+    `app.closed`), la misma que usa el contador de subtareas y el filtro
+    `is_closed`. Sin regla no hay estado: la fila entra, porque no hay nada que
+    diga que está hecha.
     """
-    if hierarchy.done_property(schema_def) is not None:
-        return hierarchy.is_closed(schema_def, props)
-    if status is None:
-        return False
-    return is_closed(props.get(status["key"]))
+    return closed.is_closed(rule, props)
+
+
+def closed_values(bases: dict[str, dict]) -> list[str]:
+    """Los valores que alguna base declara como cerrados, sin repetir.
+
+    Es la lista que la interfaz necesita para explicar la vista, y sale de las
+    bases que se han leído (no de una constante): si ninguna declara estado, la
+    lista va vacía y la nota lo dice.
+    """
+    vistos: dict[str, str] = {}
+    for base in bases.values():
+        for valor in (base.get("closed") or {}).get(closed.VALUES_KEY) or []:
+            vistos.setdefault(str(valor).strip().casefold(), str(valor).strip())
+    return [vistos[clave] for clave in sorted(vistos) if vistos[clave]]
 
 
 def status_property(schema_def: list[dict]) -> Optional[dict]:
@@ -199,8 +168,10 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
     propiedad `person` no entran: no pueden tener nada mío.
     """
     rows = conn.execute(
-        "SELECT d.id AS id, d.schema_json AS schema_json, p.title AS title"
+        "SELECT d.id AS id, d.schema_json AS schema_json, c.rule_json AS rule_json,"
+        " p.title AS title"
         " FROM databases d JOIN pages p ON p.id = d.page_id"
+        " LEFT JOIN database_closed c ON c.database_id = d.id"
         " ORDER BY p.title COLLATE NOCASE, d.id"
     ).fetchall()
     bases: dict[str, dict] = {}
@@ -209,12 +180,16 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
         keys = person_keys(schema_def)
         if not keys:
             continue
+        # La regla de cada base, resuelta como en cualquier otra lectura: el
+        # bloque `closed:` o, si no lo hay, los `done` viejos del schema.
+        rule, _origen = closed.effective(json.loads(row["rule_json"] or "null"), schema_def)
         bases[row["id"]] = {
             "title": row["title"] or "Base de datos",
             "schema_def": schema_def,
             "person_keys": keys,
             "status": status_property(schema_def),
             "date": date_property(schema_def),
+            "closed": rule,
         }
     return bases
 
@@ -231,7 +206,7 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     user_id = str(user_id or "").strip()
     salida: dict[str, Any] = {
         "count": 0,
-        "closed_values": list(CLOSED_STATES),
+        "closed_values": [],
         "tasks": [],
     }
     if not user_id:
@@ -240,6 +215,9 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     bases = _bases(conn)
     if not bases:
         return salida
+    # Lo que el usuario tiene que saber: los valores que las bases declaran
+    # como cerrados. Es la verdad del `.md`, no una lista del servidor.
+    salida["closed_values"] = closed_values(bases)
 
     tasks: list[dict[str, Any]] = []
     ids = list(bases)
@@ -263,7 +241,7 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
             if not mine:
                 continue
             status = _cell(base["status"], props)
-            if closed_row(base["schema_def"], base["status"], props):
+            if closed_row(base["closed"], props):
                 continue
             tasks.append(
                 {

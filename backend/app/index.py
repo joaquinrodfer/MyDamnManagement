@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -157,6 +157,23 @@ MIGRATIONS: dict[int, list[str]] = {
     hidden      INTEGER NOT NULL DEFAULT 0
 )""",
     ],
+    # v7: qué cuenta como «fila cerrada» es una regla de la BASE (`closed:
+    # {property, values}` en el frontmatter de `Bases/<slug>.md`), no un
+    # marcador `done` suelto dentro del `schema`. Aquí se guarda la regla
+    # declarada; la que implicaban los `done` viejos no se copia al índice: se
+    # deriva del schema al leer (`app.closed.effective`), así que no hace falta
+    # migrar ningún fichero.
+    #
+    # Va en su propia tabla y no en una columna nueva de `databases`, igual que
+    # `database_titles`: `CREATE TABLE IF NOT EXISTS` es idempotente y así la
+    # migración es inocua en un fichero creado ya con `SCHEMA_SQL` (donde la
+    # tabla existe y el `user_version` del fichero de pruebas puede ser viejo).
+    7: [
+        """CREATE TABLE IF NOT EXISTS database_closed (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    rule_json   TEXT NOT NULL
+)""",
+    ],
 }
 
 SCHEMA_SQL = """
@@ -199,6 +216,14 @@ CREATE TABLE databases (
     id          TEXT PRIMARY KEY,
     page_id     TEXT NOT NULL UNIQUE REFERENCES pages(id) ON DELETE CASCADE,
     schema_json TEXT NOT NULL
+);
+
+-- Qué cuenta como fila cerrada (v7): la regla que declara el frontmatter de la
+-- base (`closed: {property, values}`), o nada si la base no declara estado. Los
+-- marcadores `done` viejos no se copian: se derivan del `schema` al leer.
+CREATE TABLE database_closed (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    rule_json   TEXT NOT NULL
 );
 
 -- Nombre visible y visibilidad de la columna del título (v6). El título no
@@ -304,7 +329,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")

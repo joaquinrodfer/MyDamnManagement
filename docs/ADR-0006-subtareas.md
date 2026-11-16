@@ -70,28 +70,21 @@ madre en la lista y las dos filas del círculo desaparecían de la tabla y del
 tablero por defecto, sin aviso; un dato raro del usuario no puede vaciar la
 vista.
 
-**D4 — «Cerrada» lo dice el schema, con un marcador `done` en la propiedad del
-estado.**
+**D4 — «Cerrada» lo decide una REGLA DE LA BASE** (revisado por la
+[ADR-0007](ADR-0007-estado-cerrado.md)).
 
-- `done: true` en un `checkbox` → cerrada cuando está marcado.
-- `done: [Hecho, Cancelado]` en un `select`/`multiselect` → cerrada cuando la
-  celda vale uno de esos valores.
+El contador no interpreta el schema: pide la regla de la base
+(`closed: {property, values}` en su frontmatter, o los marcadores `done` viejos
+como compatibilidad de lectura) y cuenta con ella. **Sin regla, ninguna hija
+cuenta como cerrada** (`0 de N`): la base no sabe qué es estar cerrada y el
+contador no se lo inventa.
 
-Se mira la **primera** propiedad marcada en el orden del schema, para que dos
-marcadores no puedan dar dos respuestas. **Sin ninguna propiedad marcada,
-ninguna hija cuenta como cerrada** (`0 de N`): la base no sabe qué es estar
-cerrada, y el contador no se lo inventa. Esto es la parte de la función 5 del
-backlog (estado «cerrado» con semántica) que el contador necesita; generalizarla
-a toda la app es otra tarjeta.
-
-El marcador se pone **desde la app**: en el diálogo de Propiedades de la base,
-cada propiedad de tipo casilla o selección lleva la casilla «esta propiedad dice
-si la fila está cerrada»; en una selección, el campo de valores que cuentan (con
-el último valor propuesto, que es el de «hecho» por convenio). Marcar una
-desmarca las demás —el servidor obedece a la primera—, desmarcarla manda
-`done: false` y guardar el resto del schema no lo pierde. Sin esa ruta, una base
-creada desde la interfaz se quedaba en «0 de N» con trabajo hecho: el contador
-era un adorno.
+Para el lector de esta ADR: el `done` por propiedad que describía la versión
+anterior de este apartado **ya no se escribe**. Se sigue leyendo para no romper
+las bases que lo tenían, y al marcar la regla desde la app se convierte en el
+bloque `closed:` y el marcador se retira. La interfaz ya no lo pregunta en el
+diálogo de Propiedades: se marca en el menú de la columna del estado, y el
+servidor lo valida contra las opciones reales de esa columna.
 
 **D5 — El contador cuenta las hijas DIRECTAS**, sobre **todas** las filas de la
 base: «1 de 3» es «una de sus tres hijas», no de toda la descendencia, y no
@@ -136,7 +129,7 @@ se lee en el orden de las filas y en el contador, no en una columna de uuids.
 - En el tablero, la tarjeta de una subtarea dice de quién es; las madres llevan
   su contador.
 - La fila madre se abre como página y ahí están sus subtareas: una mini-tabla
-  con título, estado (la propiedad `done`, si la hay) y fecha, con «+ Añadir
+  con título, estado (la propiedad que declara la regla `closed`, si la hay) y fecha, con «+ Añadir
   subtarea», que crea la fila **ya enlazada**. Es donde se trabaja un
   entregable.
 - La barra de la vista tiene el selector «Filas» (solo madres / todas) y lo
