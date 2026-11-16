@@ -624,9 +624,14 @@ def _inspect(path: str) -> IndexInfo:
             _migrate(conn, version)
             version = SCHEMA_VERSION
 
+        # Toda tabla que una consulta normal necesita va aquí: sin esta
+        # comprobación, un índice al que le falta una (p. ej. `database_closed`,
+        # la regla de estado de cada base) arranca y luego revienta con un 500
+        # en la primera lectura, en vez de decir que el fichero no es el suyo.
         missing = {"pages", "databases", "views", "rows", "links",
                    "workspaces", "meta", "users", "sessions",
-                   "database_titles", "database_row_templates"} - _table_names(conn)
+                   "database_titles", "database_closed",
+                   "database_row_templates"} - _table_names(conn)
         if missing:
             raise IndexSchemaError(
                 "al índice le faltan tablas: " + ", ".join(sorted(missing))

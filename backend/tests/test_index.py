@@ -144,6 +144,30 @@ def test_indice_sin_fts5_se_rechaza(index_path):
         open_index(str(index_path))
 
 
+def test_indice_sin_database_closed_se_rechaza(index_path):
+    """La tabla de la regla de estado es una más de las que se consultan.
+
+    Sin `database_closed` el índice se abría igual y la primera lectura de una
+    base (que trae su regla) reventaba con un 500. Falta la tabla, el fichero
+    no es el de esta app: `IndexSchemaError` y no se toca nada.
+    """
+    ensure_index(str(index_path))
+    conn = sqlite3.connect(index_path)
+    try:
+        conn.execute("DROP TABLE database_closed")
+        conn.commit()
+    finally:
+        conn.close()
+    import os
+
+    os.utime(index_path, None)  # fuerza a mirarlo otra vez
+
+    with pytest.raises(IndexSchemaError) as excinfo:
+        open_index(str(index_path))
+    assert "database_closed" in str(excinfo.value)
+    assert "le faltan tablas" in str(excinfo.value)
+
+
 def test_fts_query_escapa_sintaxis_del_usuario():
     # Solo pasan caracteres de palabra: los operadores de FTS5 no llegan.
     assert indice.fts_query('hola "mundo" OR NEAR(x)') == '"hola"* "mundo"* "OR"* "NEAR"* "x"*'

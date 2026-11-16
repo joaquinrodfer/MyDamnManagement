@@ -533,3 +533,48 @@ def test_el_frontmatter_escrito_a_mano_se_lee_al_reindexar(client, vault_path):
         "source": "base",
     }
     assert contador(client, base["id"], madre["id"]) == {"total": 3, "closed": 2}
+
+
+# --------------------------------------------------------------------------
+# 8. la regla NO se cambia por `PATCH /databases/{id}`
+# --------------------------------------------------------------------------
+
+def test_patch_de_la_base_con_closed_es_un_400_y_no_escribe_nada(client, vault_path):
+    """Sin el campo declarado, Pydantic lo descartaba y el 200 mentía.
+
+    Un cliente que se equivoque de ruta (mandar la regla en el `PATCH` de la
+    base en vez de en `PUT /databases/{id}/closed`) tiene que enterarse: 400
+    con la ruta buena en el mensaje, y el `.md` byte a byte como estaba.
+    """
+    base = crear_base(client)
+    assert cerrar(client, base["id"], valores=("hecha",)).status_code == 200
+    antes = md_base(vault_path)
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}",
+        json={"closed": {"property": "estado", "values": ["terminada"]}},
+    )
+
+    assert respuesta.status_code == 400, respuesta.text
+    detalle = respuesta.json()["detail"]
+    assert f"PUT /databases/{base['id']}/closed" in detalle
+    # El `.md` no cambia a medias y la regla sigue siendo la de antes.
+    assert md_base(vault_path) == antes
+    leida = client.get(f"/databases/{base['id']}").json()
+    assert leida["closed"]["values"] == ["hecha"]
+
+
+def test_patch_de_la_base_con_closed_null_tampoco_lo_borra(client, vault_path):
+    """`null` es «quita la regla» en un cliente que se equivoque de ruta.
+
+    Se rechaza igual: quitar el estado es `DELETE /databases/{id}/closed`.
+    """
+    base = crear_base(client)
+    assert cerrar(client, base["id"]).status_code == 200
+    antes = md_base(vault_path)
+
+    respuesta = client.patch(f"/databases/{base['id']}", json={"closed": None})
+
+    assert respuesta.status_code == 400, respuesta.text
+    assert md_base(vault_path) == antes
+    assert client.get(f"/databases/{base['id']}").json()["closed"] is not None

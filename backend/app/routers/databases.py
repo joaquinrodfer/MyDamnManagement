@@ -417,10 +417,35 @@ def set_row_templates(
     return _serialize_database(actualizada, repo.database_ids())
 
 
-@router.patch("/{database_id}", response_model=schemas.DatabaseRead)
+@router.patch(
+    "/{database_id}",
+    response_model=schemas.DatabaseRead,
+    responses={
+        400: {
+            "description": (
+                "La petición trae `closed`: la regla de fila cerrada no se "
+                "cambia por aquí, sino en `PUT /databases/{id}/closed`."
+            )
+        }
+    },
+)
 def update_database(
     database_id: uuid.UUID, payload: schemas.DatabaseUpdate, repo: Repository = Depends(get_repo)
 ):
+    """Actualiza el título, el icono y el schema de una base.
+
+    La regla de qué cuenta como fila cerrada NO se cambia por aquí: tiene su
+    ruta (`PUT /databases/{id}/closed`) y su validación contra las opciones de
+    la propiedad. Un `closed` en el cuerpo es un 400 que lo dice — antes se
+    descartaba en silencio y la respuesta era un 200 que no había guardado
+    nada, así que un cliente que se equivocaba de ruta creía haber guardado.
+    """
+    if "closed" in payload.model_fields_set:
+        raise HTTPException(
+            400,
+            "la regla de estado cerrado no se cambia con PATCH /databases/{id}: "
+            f"usa PUT /databases/{database_id}/closed (o DELETE para quitarla)",
+        )
     with _vault_errors():
         db_def = repo.update_database(
             database_id,
