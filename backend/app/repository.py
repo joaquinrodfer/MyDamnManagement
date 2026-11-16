@@ -891,10 +891,20 @@ class Repository:
         renames: dict[str, str] = {}
         deleted: list[str] = []
         final_schema: Optional[list[dict[str, Any]]] = None
-        conversiones: dict[str, str] = {}
+        conversiones: dict[str, tuple[str, str]] = {}
+        sustituciones: dict[str, dict[str, str]] = {}
         if schema_def is not None:
             final_schema, renames, deleted = plan_schema(current.schema_def, schema_def)
-            conversiones = self._person_conversions(current.schema_def, schema_def)
+            conversiones = self._person_conversions(
+                current.schema_def, schema_def, final_schema
+            )
+            # Validar **antes de la primera escritura**: la conversión puede
+            # rechazar el guardado entero (un valor que no casa con ningún
+            # usuario), y entonces ni las filas ni el schema se tocan. Si se
+            # comprobara después del renombrado, el `.md` quedaría con las
+            # claves nuevas mientras el schema sigue con las viejas.
+            if conversiones:
+                sustituciones = self._plan_person_conversion(database_id, conversiones)
 
         if renames:
             # Las filas primero: si una no se puede migrar, el `.md` de la base
@@ -927,14 +937,17 @@ class Repository:
                     {**p, "key": traducir.get(p.get("key"), p.get("key"))}
                     for p in (final_schema or [])
                 ]
+                sustituciones = {
+                    traducir.get(clave, clave): valores
+                    for clave, valores in sustituciones.items()
+                }
             renames = ajustados
 
-        if conversiones:
+        if sustituciones:
             # El `.md` de cada fila pasa a guardar el id del usuario **antes**
-            # de que el schema diga `person`: si una fila no casa con ningún
-            # usuario, `_convert_to_person` lanza y no se escribe nada (ni el
-            # schema ni la fila).
-            self._convert_to_person(database_id, conversiones)
+            # de que el schema diga `person`, y con la clave ya renombrada (la
+            # conversión se validó leyendo el `.md` con la clave vieja).
+            self.vault.rewrite_property_values(database_id, sustituciones)
 
         views: Optional[list[dict[str, Any]]] = None
         if renames or deleted:
@@ -966,64 +979,87 @@ class Repository:
         return self.get_database(database_id)
 
     def _person_conversions(
-        self, current: list[dict[str, Any]], requested: list[dict[str, Any]]
-    ) -> dict[str, str]:
+        self,
+        current: list[dict[str, Any]],
+        requested: list[dict[str, Any]],
+        final_schema: list[dict[str, Any]],
+    ) -> dict[str, tuple[str, str]]:
         """Claves que pasan de `text` a `person` en esta petición.
 
-        Devuelve `{clave: nombre visible}` (el nombre, para los mensajes: el
-        usuario no ve claves). Solo se admite desde `text`: convertir una
-        selección, una fecha o una relación a persona no es lo que pide la
-        tarjeta y no hay valores que casar. Los valores se comprueban en
-        `_convert_to_person`, contra los `.md`.
+        Devuelve `{clave_final: (clave_actual, nombre visible)}`. La clave final
+        es la que ha decidido `plan_schema` (puede ser un renombrado: el diálogo
+        manda el nombre nuevo y la clave vieja), y la actual es la que hay que
+        leer en los `.md` antes de escribir nada. El nombre va en los mensajes,
+        que el usuario no ve claves.
+
+        Solo se admite desde `text`: convertir una selección, una fecha o una
+        relación a persona no es lo que pide la tarjeta y no hay valores que
+        casar. Los valores se comprueban en `_plan_person_conversion`.
         """
         actuales = {
             str(prop.get("key")): prop
             for prop in current
             if isinstance(prop, dict) and prop.get("key")
         }
-        conversiones: dict[str, str] = {}
-        for item in requested:
-            if not isinstance(item, dict) or item.get("type") != PERSON:
+        conversiones: dict[str, tuple[str, str]] = {}
+        for item, final in zip(requested, final_schema):
+            if not isinstance(item, dict) or final.get("type") != PERSON:
                 # `type` llega como `PropertyType` (un `str`-Enum): se compara
                 # con el valor, no con `str(...)`, que daría «PropertyType.person».
                 continue
-            key = str(item.get("key") or "")
-            origen = actuales.get(key)
+            origen = actuales.get(str(item.get("key") or ""))
             if origen is None or origen.get("type") == PERSON:
                 continue
-            nombre = str(item.get("name") or origen.get("name") or key)
+            nombre = str(final.get("name") or origen.get("name") or final.get("key"))
             if origen.get("type") != "text":
                 raise VaultError(
                     f"«{nombre}»: solo se puede convertir a Persona una propiedad de "
                     "texto. Cambia antes su tipo a Texto, o créala nueva."
                 )
-            conversiones[key] = nombre
+            conversiones[str(final["key"])] = (str(origen["key"]), nombre)
         return conversiones
 
-    def _convert_to_person(
-        self, database_id: uuid.UUID, conversiones: dict[str, str]
-    ) -> None:
-        """Deja en las filas el **id** del usuario que corresponde a cada texto.
+    def _plan_person_conversion(
+        self, database_id: uuid.UUID, conversiones: dict[str, tuple[str, str]]
+    ) -> dict[str, dict[str, str]]:
+        """Valida la conversión y prepara las sustituciones, **sin escribir**.
+
+        `conversiones` va de clave final a `(clave actual, nombre visible)`.
+        Se leen los `.md` con la clave actual (el renombrado aún no ha
+        ocurrido) y se devuelve, por clave final, `{valor escrito: id de
+        usuario}`.
 
         Un valor casa con un usuario por su `display_name` o por su `username`,
         sin mayúsculas (el nombre visible lo escribe una persona; el @usuario,
-        no). Si **algún** valor de **alguna** fila no casa, se lanza
+        no). Si un texto casara con dos usuarios distintos, gana el **nombre
+        visible** y, entre iguales, el primero por nombre visible y @usuario
+        (el orden de `all_users`): el casado es determinista y no se adivina
+        nada más. Si **algún** valor de **alguna** fila no casa, se lanza
         `VaultError` con el nombre visible de la propiedad y los valores que
         sobran: no se convierte nada y el `.md` se queda como estaba.
+
+        La comprobación ocurre antes de la primera escritura de
+        `update_database` (renombrados incluidos), así que un rechazo no deja
+        el vault a medias entre dos esquemas.
         """
         usuarios = self.all_users()
         por_nombre: dict[str, str] = {}
-        for usuario in usuarios:
-            for nombre in (usuario.get("display_name"), usuario.get("username")):
-                if nombre:
-                    por_nombre.setdefault(_plegar(nombre), str(usuario["id"]))
+        # Dos pasadas para que el casado no dependa del orden: primero los
+        # nombres visibles (lo que el dueño escribió a mano) y después los
+        # @usuario de quien no haya casado ya por nombre.
+        for campo in ("display_name", "username"):
+            for usuario in usuarios:
+                if usuario.get(campo):
+                    por_nombre.setdefault(_plegar(usuario[campo]), str(usuario["id"]))
 
-        crudos = self.vault.row_property_values(database_id, conversiones)
+        crudos = self.vault.row_property_values(
+            database_id, {actual: nombre for actual, nombre in conversiones.values()}
+        )
         sustituciones: dict[str, dict[str, str]] = {}
-        for key, nombre in conversiones.items():
+        for clave, (actual, nombre) in conversiones.items():
             mapa: dict[str, str] = {}
             desconocidos: list[str] = []
-            for valor in crudos.get(key, []):
+            for valor in crudos.get(actual, []):
                 user_id = por_nombre.get(_plegar(valor))
                 if user_id is None:
                     desconocidos.append(valor)
@@ -1038,8 +1074,8 @@ class Repository:
                     "que no se convierte en Persona (no se ha tocado ninguna fila). "
                     "Crea esos usuarios o corrige los valores, y vuelve a intentarlo."
                 )
-            sustituciones[key] = mapa
-        self.vault.rewrite_property_values(database_id, sustituciones)
+            sustituciones[clave] = mapa
+        return sustituciones
 
     def _views_with_keys(
         self, database_id: uuid.UUID, mapping: dict[str, Optional[str]]

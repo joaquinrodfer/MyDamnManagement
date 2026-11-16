@@ -435,6 +435,117 @@ def test_no_convierte_si_un_valor_no_casa_con_ningun_usuario(client, personas, v
     assert ruta.read_text(encoding="utf-8") == antes
 
 
+def _base_de_texto_con_estado(client) -> dict:
+    return crear_base(
+        client,
+        "Tareas",
+        [
+            {"key": "responsable", "name": "Responsable", "type": "text"},
+            {"key": "estado", "name": "Estado", "type": "text"},
+        ],
+    )
+
+
+def _renombrar_y_convertir(client, base: dict):
+    """El guardado del diálogo «Propiedades»: renombrar y cambiar el tipo a la vez.
+
+    `estado` -> «Situación» (sigue texto) y `responsable` -> «Dueño» (persona),
+    en la **misma** petición: es el camino normal de la interfaz, no un caso de
+    laboratorio.
+    """
+    return client.patch(
+        f"/databases/{base['id']}",
+        json={
+            "schema_def": [
+                {"key": "responsable", "name": "Dueño", "type": "person"},
+                {"key": "estado", "name": "Situación", "type": "text"},
+            ]
+        },
+    )
+
+
+def test_convertir_y_renombrar_la_misma_propiedad_en_un_guardado(client, personas, vault_path):
+    """Convertir a persona no puede depender de que no renombres la propiedad.
+
+    La conversión se validaba con la clave vieja y el renombrado ya había
+    escrito la nueva en las filas: no encontraba ningún valor que casar y el
+    schema quedaba en `person` con texto libre en el `.md` (celdas «(ya no
+    está)»). Ahora se lee con la clave vieja y se escribe con la final.
+    """
+    base = _base_de_texto_con_estado(client)
+    por_nombre = crear_fila(
+        client,
+        base["id"],
+        title="Por nombre",
+        properties={"responsable": "Ana", "estado": "Abierto"},
+    )
+    por_usuario = crear_fila(
+        client,
+        base["id"],
+        title="Por @usuario",
+        properties={"responsable": "bea", "estado": "Abierto"},
+    )
+
+    respuesta = _renombrar_y_convertir(client, base)
+    assert respuesta.status_code == 200, respuesta.text
+    schema = {p["key"]: p for p in respuesta.json()["schema_def"]}
+    assert schema["dueno"]["type"] == "person"
+    assert schema["dueno"]["name"] == "Dueño"
+    assert "situacion" in schema, "la otra propiedad también se renombra"
+    assert "estado" not in schema
+
+    convertidas = {f["title"]: f for f in filas(client, base["id"])}
+    assert convertidas["Por nombre"]["properties"]["dueno"] == personas["ana"]["id"]
+    assert convertidas["Por @usuario"]["properties"]["dueno"] == personas["bea"]["id"]
+    assert convertidas["Por nombre"]["people"]["dueno"]["display_name"] == "Ana"
+    assert convertidas["Por nombre"]["properties"]["situacion"] == "Abierto"
+
+    # El `.md` guarda el id bajo la clave nueva; la clave vieja no sobrevive.
+    datos = frontmatter(fichero_fila(vault_path, "Tareas", por_nombre))
+    assert datos["dueno"] == personas["ana"]["id"]
+    assert datos["situacion"] == "Abierto"
+    assert "responsable" not in datos and "estado" not in datos
+    datos = frontmatter(fichero_fila(vault_path, "Tareas", por_usuario))
+    assert datos["dueno"] == personas["bea"]["id"]
+
+
+def test_un_400_de_la_conversion_no_deja_renombrada_otra_propiedad(client, personas, vault_path):
+    """Si la conversión rechaza, no se ha escrito NADA (ni el renombrado).
+
+    El renombrado de filas iba antes que la validación: un valor que no casaba
+    devolvía 400 con «no se ha tocado ninguna fila» mientras el `.md` ya tenía
+    la clave nueva y el schema seguía con la vieja (esa columna aparecía vacía
+    en la app).
+    """
+    base = _base_de_texto_con_estado(client)
+    fila = crear_fila(
+        client,
+        base["id"],
+        title="De nadie",
+        properties={"responsable": "Joaquín", "estado": "Abierto"},
+    )
+    ruta = fichero_fila(vault_path, "Tareas", fila)
+    antes = ruta.read_text(encoding="utf-8")
+
+    respuesta = _renombrar_y_convertir(client, base)
+    assert respuesta.status_code == 400, respuesta.text
+    detalle = respuesta.json()["detail"]
+    assert "Dueño" in detalle, "el mensaje nombra la propiedad, no la clave"
+    assert "Joaquín" in detalle
+
+    # El fichero de la fila está byte a byte como estaba: ni `situacion` ni id.
+    assert ruta.read_text(encoding="utf-8") == antes
+
+    # Y el schema de la base sigue siendo el viejo.
+    sigue = client.get(f"/databases/{base['id']}").json()
+    assert [p["key"] for p in sigue["schema_def"]] == ["responsable", "estado"]
+    assert all(p["type"] == "text" for p in sigue["schema_def"])
+
+    # La app sigue viendo los dos valores donde estaban.
+    actual = next(f for f in filas(client, base["id"]) if f["id"] == fila["id"])
+    assert actual["properties"] == {"responsable": "Joaquín", "estado": "Abierto"}
+
+
 def test_no_se_convierte_a_persona_desde_otro_tipo(client):
     base = crear_base(
         client,

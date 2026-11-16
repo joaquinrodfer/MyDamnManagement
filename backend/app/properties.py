@@ -38,7 +38,9 @@ from app.vault.reader import (
 RowRefs = Callable[[Iterable[str]], Mapping[str, tuple[str, str]]]
 
 # `users(ids)` devuelve `{id: (display_name, username, color)}` de los usuarios
-# que existan. Una consulta por respuesta, igual que `refs`.
+# que existan. Al serializar una respuesta se llama una vez con todos los ids;
+# al validar una fila se llama una vez por celda `person` (las filas se guardan
+# de una en una), que es una consulta por celda y no por respuesta.
 UserRefs = Callable[[Iterable[str]], Mapping[str, tuple[str, Optional[str], Optional[str]]]]
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -299,9 +301,10 @@ def validate_properties(
     se puede validar (el id podría ser de cualquier base) y se rechaza con un
     500 explícito en vez de guardar algo que no apunta a nada.
 
-    `users` hace lo mismo con los ids de usuario de una propiedad `person`: el
-    router siempre lo pasa (una consulta por respuesta); sin él la celda se
-    rechaza con un 500 explícito en vez de guardar un id que no existe.
+    `users` resuelve los ids de usuario de una propiedad `person`: el router
+    siempre lo pasa; sin él la celda se rechaza con un 500 explícito en vez de
+    guardar un id que no existe. Se consulta una vez por celda validada (al
+    guardar, las filas van de una en una); al serializar, una por respuesta.
     """
     allowed = {p["key"]: p for p in schema_def}
     unknown = set(properties) - set(allowed)
