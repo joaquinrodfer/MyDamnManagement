@@ -1976,7 +1976,11 @@
     background: var(--panel);
     color: var(--ink-muted);
   }
-  .view-tab:hover { border-color: var(--border-input); color: var(--ink); background: var(--code-bg); }
+  /* Solo donde hay ratón: en táctil el hover se queda pegado a la última
+     pestaña tocada y parecía que había dos activas. */
+  @media (hover: hover) {
+    .view-tab:hover { border-color: var(--border-input); color: var(--ink); background: var(--code-bg); }
+  }
   .view-tab.active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
   /* Por qué no se puede borrar la última vista: se escribe, no se esconde en
      un `title` (en táctil no hay hover y un botón apagado sin motivo es un
@@ -3417,6 +3421,8 @@
     font-family: var(--font-body);
     font-size: 12.5px;
     font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
     color: var(--ink);
   }
   .inline-form > .panel-head .svg-icon { color: var(--ink-muted); }

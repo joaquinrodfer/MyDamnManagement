@@ -5159,6 +5159,17 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // (repintar no es navegar, y el parpadeo se notaría a cada celda).
   content.className = "db-view" + (focus === "viewTab" ? " is-entering" : "");
   main.append(header, hint, tabs, content);
+  // En pantalla estrecha las pestañas van en una línea que se desplaza de lado
+  // (ver el bloque «móvil» del CSS): la activa tiene que quedar a la vista, o
+  // se mira el calendario con «Tabla» en pantalla. Solo se mueve esa línea.
+  const pestanaActiva = tabs.querySelector(".view-tab.active");
+  if (pestanaActiva && tabs.scrollWidth > tabs.clientWidth) {
+    const caja = tabs.getBoundingClientRect();
+    const r = pestanaActiva.getBoundingClientRect();
+    if (r.left < caja.left || r.right > caja.right) {
+      tabs.scrollLeft += r.left - caja.left - (caja.width - r.width) / 2;
+    }
+  }
 
   // El motivo escrito y no en un `title` escondido: un botón apagado sin
   // explicación a la vista es un estado mudo (y en táctil no hay hover).
