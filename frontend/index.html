@@ -2788,6 +2788,63 @@
   }
   .cal-event:hover { border-color: var(--accent); color: var(--accent-ink); }
   .cal-event:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* --- barras de varios días (calendario con rango) ---
+     La semana es una fila de la rejilla con su propia rejilla de siete columnas
+     y una capa encima para las barras: una barra cruza de día de una pieza (no
+     se parte en trozos por celda) y el recorte al borde de la semana es solo su
+     `left`/`width` en porcentaje de siete días, que es el ancho de las celdas.
+     El alto de la semana lo pone su número de carriles desde `app.js`, porque
+     dos barras que se pisan se reparten en alturas distintas. */
+  .cal-week {
+    position: relative;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--panel-border);
+  }
+  /* El alto lo manda la semana (carriles), no la celda. */
+  .cal-week .cal-day { min-height: 0; }
+  .cal-week-bars { position: absolute; inset: 0; pointer-events: none; }
+  .cal-bar {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    padding: 0 2px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-xs);
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-size: var(--text-xs);
+    line-height: 1;
+    cursor: grab;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+  }
+  /* Un trozo que viene de la semana anterior (o sigue en la siguiente): el
+     borde de ese lado no es el final de la tarea, así que no se redondea. */
+  .cal-bar.is-corta-izq { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
+  .cal-bar.is-corta-der { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-style: dashed; }
+  .cal-bar:hover { border-color: var(--accent-ink); color: var(--accent-ink); }
+  .cal-bar-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal-bar-handle {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: 5px;
+    border-radius: 2px;
+    background: var(--accent);
+    opacity: 0;
+    cursor: ew-resize;
+  }
+  .cal-bar:hover .cal-bar-handle, .cal-bar:focus-within .cal-bar-handle { opacity: 0.9; }
+  .cal-bar.is-dragging { opacity: 0.5; cursor: grabbing; }
+  .cal-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* Los días adonde caería el gesto que se está arrastrando. */
+  .cal-day.is-destino { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
+
   /* Agenda: el calendario en pantalla estrecha. Un bloque por día con sus
      filas en línea, sin rejilla de siete columnas (que a 375 px deja 45 px
      por día). Mismo contenido, misma navegación. */
@@ -4195,6 +4252,13 @@
     <div class="field" id="view-date-field" hidden>
       <label for="view-date">Fecha</label>
       <select id="view-date"></select>
+    </div>
+    <!-- El fin del rango: la fila se pinta como una barra del inicio al fin (los
+         dos incluidos). «—» deja el calendario de un evento por fila, como
+         siempre. Solo tiene sentido con al menos dos propiedades de fecha. -->
+    <div class="field" id="view-date-end-field" hidden>
+      <label for="view-date-end">Hasta (opcional)</label>
+      <select id="view-date-end"></select>
     </div>
     <div class="dialog-actions">
       <button class="btn" id="btn-cancel-view">Cancelar</button>
