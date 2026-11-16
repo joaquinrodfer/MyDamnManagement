@@ -86,6 +86,19 @@ bloque `closed:` y el marcador se retira. La interfaz ya no lo pregunta en el
 diálogo de Propiedades: se marca en el menú de la columna del estado, y el
 servidor lo valida contra las opciones reales de esa columna.
 
+`done` nombra **valores de la celda**, así que tienen que ser opciones de la
+propiedad: un valor que no esté en `options` nunca coincidiría con una celda y
+el contador se quedaría en «0 de N» para siempre, sin aviso. El servidor lo
+rechaza con **400** nombrando la propiedad, el valor que sobra y las opciones
+entre las que elegir. La comparación es la del lector —sin mayúsculas ni
+espacios de sobra—, y el valor se guarda con la grafía de la opción: un
+`done: [HECHA]` sobre `options: [hecha]` sí cuenta, así que aceptarlo con la
+grafía de la lista es la única respuesta que no miente ni deja en el `.md` un
+valor que la celda no puede tener. Si el marcador venía heredado y su valor ya
+no es ninguna opción (de verdad, no solo por la grafía), se suelta en vez de
+rechazar el guardado, como el que no cabe en el tipo: guardar el resto del
+schema no puede fallar por un marcador que nadie ha escrito en esa petición.
+
 **D5 — El contador cuenta las hijas DIRECTAS**, sobre **todas** las filas de la
 base: «1 de 3» es «una de sus tres hijas», no de toda la descendencia, y no
 cambia porque la vista esté filtrando por otra cosa. Las nietas se ven al abrir
@@ -125,7 +138,8 @@ se lee en el orden de las filas y en el contador, no en una columna de uuids.
 - En la tabla y la lista, la hija va sangrada bajo su madre (`↳`) y la madre
   lleva su contador («1 de 3», cerradas). La sangría de la tabla se pinta solo
   cuando la vista **no agrupa** por otra cosa: en una vista agrupada la fila cae
-  donde la pone su grupo y la sangría mentiría.
+  donde la pone su grupo y la sangría mentiría. El contador **sí** se pinta en
+  una vista agrupada: es un dato de la fila, no una posición.
 - En el tablero, la tarjeta de una subtarea dice de quién es; las madres llevan
   su contador.
 - La fila madre se abre como página y ahí están sus subtareas: una mini-tabla
@@ -134,8 +148,11 @@ se lee en el orden de las filas y en el contador, no en una columna de uuids.
   entregable.
 - La barra de la vista tiene el selector «Filas» (solo madres / todas) y lo
   guarda en el `.md`.
-- El diálogo de Propiedades marca cuál es la propiedad que dice si una fila
-  está cerrada (D4), que es lo que alimenta el contador.
+- El estado de la base («esta columna dice si está hecha») se marca en el menú
+  de la columna del estado (D4), que es lo que alimenta el contador: una sola
+  regla por base, y el servidor valida sus valores contra las opciones reales de
+  esa columna antes de guardarlos (un valor que no existe es un 400 que dice
+  cuáles hay).
 
 ## Consecuencias
 
