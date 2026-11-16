@@ -177,16 +177,16 @@ def title_key(title: str) -> str:
 # propiedad llamada `id`. Ver HALLAZGOS §9.3.
 RESERVED_ROW_KEYS = frozenset({"title", "id", "icon", "description", "created", "updated", "type"})
 
-# Tipo de propiedad cuyas celdas apuntan a filas de otra base (`target_database`
-# en su `schema`). El valor es el **`id`** de la fila, nunca su título: los
-# títulos cambian y una relación guardada por título se rompe al renombrar.
-#   simple:    contacto: 7f3a91c2-...
-#   múltiple:  contacto: [7f3a91c2-..., 91be02dd-...]
 # Tipos de propiedad cuyos valores salen de una lista cerrada (`options`) y que
 # por tanto pueden declarar en qué orden se leen (`sort_order`). Ver
 # `sort_order_property`.
 SORTABLE_TYPES = ("select", "multiselect")
 
+# Tipo de propiedad cuyas celdas apuntan a filas de otra base (`target_database`
+# en su `schema`). El valor es el **`id`** de la fila, nunca su título: los
+# títulos cambian y una relación guardada por título se rompe al renombrar.
+#   simple:    contacto: 7f3a91c2-...
+#   múltiple:  contacto: [7f3a91c2-..., 91be02dd-...]
 RELATION = "relation"
 
 # Tipo de propiedad cuyo valor es el **`id`** de la fila madre, de la MISMA base
