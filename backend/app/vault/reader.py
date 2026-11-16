@@ -444,7 +444,7 @@ def row_templates_from_frontmatter(
     es un mapa— se avisa y se queda fuera, como una vista inválida.
 
     El nombre identifica la plantilla en la interfaz y en
-    `POST /databases/{id}/rows/from-template`: dos con el mismo nombre serían
+    `POST /databases/{id}/rows` (el campo `template`): dos con el mismo nombre serían
     ambiguas, así que la segunda se descarta con aviso.
     """
     if raw in (None, ""):

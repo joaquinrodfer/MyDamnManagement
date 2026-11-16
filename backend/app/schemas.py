@@ -284,17 +284,6 @@ class RowTemplatesUpdate(BaseModel):
     row_templates: list[RowTemplate] = []
 
 
-class RowFromTemplate(BaseModel):
-    """Crear una fila con una de las plantillas de su base.
-
-    `template` es el **nombre** de la plantilla (el que se lee en el diálogo) y
-    `title` el título de la fila nueva; sin él, el de la plantilla.
-    """
-
-    template: str
-    title: Optional[str] = None
-
-
 class DatabaseUpdate(BaseModel):
     title: Optional[str] = None
     icon: Optional[str] = None
@@ -346,7 +335,8 @@ class RowCreate(BaseModel):
     # servidor la valida contra el schema actual —una plantilla que miente es un
     # 400 con el motivo, no una fila a medias— y rellena con sus valores las
     # propiedades que el cuerpo no traiga. `properties` manda sobre la plantilla:
-    # lo que el usuario cambió en el alta se respeta.
+    # lo que el usuario cambió en el alta se respeta. En blanco (o solo espacios)
+    # es «sin plantilla»: no se busca una plantilla llamada «».
     template: Optional[str] = None
     # Cuerpo markdown inicial de la fila (lo usa la plantilla de fila: una fila
     # nueva puede nacer con su «## Qué revisar»). Ausente = cuerpo vacío.

@@ -13365,6 +13365,43 @@ function campoDeValorPorDefecto(prop, valor, indice) {
   return { campo, prop, read };
 }
 
+/** Lo que una tarjeta del editor de plantillas de fila manda al guardar: su
+ * nombre, su cuerpo y los valores por defecto que sus controles pueden
+ * representar. Es el único sitio que decide qué viaja —el guardado y la lista
+ * de lo que se descarta usan esto mismo—, para que el aviso y lo que se escribe
+ * no puedan decir cosas distintas. */
+function leerPlantillaDeTarjeta(card) {
+  const properties = {};
+  for (const { prop, read } of card.__lectores) {
+    const valor = read();
+    if (valor === null || valor === undefined || valor === "") continue;
+    if (Array.isArray(valor) && valor.length === 0) continue;
+    // Un checkbox sin marcar que nadie ha tocado no se guarda como `false`:
+    // sería inventarle un valor por defecto a una propiedad que la plantilla
+    // no mencionaba. Si estaba declarado, el `false` es del usuario.
+    if (prop.type === "checkbox" && valor === false && !card.__previos.has(prop.key)) {
+      continue;
+    }
+    properties[prop.key] = valor;
+  }
+  return { name: card.__nombre.value.trim(), properties, body: card.__cuerpo.value };
+}
+
+/** Los valores que el `.md` de la base declara y el editor no puede pintar: una
+ * opción que ya no existe en la columna, una columna que se borró. Al guardar
+ * no se reenvían —el servidor los rechazaría, y son del fichero del usuario, no
+ * de este diálogo—, así que se pierden: se nombran aquí, antes de Guardar, en
+ * vez de desaparecer porque alguien estaba renombrando otra tarjeta. */
+function valoresQueSeDescartan(card, schema) {
+  const { properties } = leerPlantillaDeTarjeta(card);
+  return Object.entries(card.__declarados)
+    .filter(([key]) => !(key in properties))
+    .map(([key, valor]) => {
+      const nombre = schema.find((p) => p.key === key)?.name || key;
+      return `${nombre} = «${valor}»`;
+    });
+}
+
 /** Una tarjeta del editor de plantillas de fila: nombre, valores por defecto
  * de las propiedades que admiten literal y cuerpo inicial. */
 function plantillaDeFilaEditable(template, indice, schema, alQuitar) {
@@ -13443,17 +13480,43 @@ function plantillaDeFilaEditable(template, indice, schema, alQuitar) {
     ...Object.keys(template?.values || {}),
     ...Object.keys(template?.properties || {}),
   ]);
+  // Lo que el `.md` declara tal cual, que es lo que se compara con lo que los
+  // controles pueden devolver para saber qué se queda fuera al guardar.
+  card.__declarados = template?.properties || {};
+
+  // Un valor que la plantilla declara y ningún control de aquí puede pintar se
+  // pierde al guardar (el `.md` se reescribe con lo que el diálogo enseña). Se
+  // dice en la tarjeta, con su propiedad y su valor, y se recalcula mientras se
+  // edita: si el usuario lo arregla —o vacía el control— la línea se va.
+  const descartes = document.createElement("p");
+  descartes.className = "db-save-hint row-template-warning row-template-dropped";
+  descartes.setAttribute("role", "status");
+  descartes.hidden = true;
+  card.__pintarDescartes = () => {
+    // Sin nombre la tarjeta no se guarda: no hay nada que perder que decir.
+    const perdidos = card.__nombre.value.trim()
+      ? valoresQueSeDescartan(card, schema)
+      : [];
+    descartes.textContent = perdidos.length
+      ? `Guardar quitará de «${card.__nombre.value.trim()}»: ${perdidos.join(", ")}.`
+      : "";
+    descartes.hidden = !perdidos.length;
+  };
+  card.addEventListener("input", card.__pintarDescartes);
+  card.addEventListener("change", card.__pintarDescartes);
+  card.insertBefore(descartes, head.nextSibling);
 
   // Una plantilla que ya no encaja con la base se edita igual, pero con el
-  // motivo a la vista: en el formulario, una clave que ya no está en el schema
-  // es invisible y se perdería al guardar sin que nadie se enterara.
+  // motivo a la vista: lo que el formulario no puede pintar no se arregla desde
+  // aquí, y lo que se queda fuera al guardar lo dice la línea de arriba.
   if (template?.error) {
     const aviso = document.createElement("p");
     aviso.className = "db-save-hint row-template-warning";
     aviso.setAttribute("role", "status");
     aviso.textContent = "Esta plantilla ya no encaja con la base: " + template.error;
-    card.insertBefore(aviso, head.nextSibling);
+    card.insertBefore(aviso, descartes);
   }
+  card.__pintarDescartes();
   return card;
 }
 
@@ -13475,6 +13538,10 @@ function openRowTemplatesDialog(database, refresh = null) {
   // reutilizaba el índice y las etiquetas de la nueva apuntaban a los controles
   // de la primera (`id` repetidos en el documento).
   let siguiente = 0;
+  // Lo que la última pulsación de Guardar avisó que se perdería: la siguiente
+  // pulsación guarda solo si el descarte es exactamente el mismo (si se toca
+  // algo, cambia la firma y se vuelve a avisar).
+  let descarteAvisado = null;
   const anadir = (template) => {
     lista.appendChild(
       plantillaDeFilaEditable(template, siguiente++, schema, alQuitar),
@@ -13492,18 +13559,7 @@ function openRowTemplatesDialog(database, refresh = null) {
   guardar.onclick = async () => {
     const row_templates = [];
     for (const card of [...lista.querySelectorAll(".row-template-card")]) {
-      const name = card.__nombre.value.trim();
-      const body = card.__cuerpo.value;
-      const properties = {};
-      for (const { prop, read } of card.__lectores) {
-        const valor = read();
-        if (valor === null || valor === undefined || valor === "") continue;
-        if (Array.isArray(valor) && valor.length === 0) continue;
-        if (prop.type === "checkbox" && valor === false && !card.__previos.has(prop.key)) {
-          continue;
-        }
-        properties[prop.key] = valor;
-      }
+      const { name, properties, body } = leerPlantillaDeTarjeta(card);
       if (!name) {
         // Una tarjeta vacía no es una plantilla; una con contenido y sin nombre
         // no se puede elegir en el alta, así que se dice y no se guarda.
@@ -13517,8 +13573,31 @@ function openRowTemplatesDialog(database, refresh = null) {
       }
       row_templates.push({ name, properties, body });
     }
-    guardar.disabled = true;
+    // Las plantillas que van a perder valores lo avisan en su tarjeta, pero la
+    // tarjeta puede haberse quedado fuera de la vista del scroll: perder un
+    // dato no puede depender de haberlo leído, así que la primera pulsación de
+    // Guardar no escribe nada y lo dice aquí, pegado al botón. La segunda, con
+    // el mismo descarte, guarda.
+    const sePierden = [...lista.querySelectorAll(".row-template-card")]
+      .filter((card) => card.__nombre.value.trim())
+      .map((card) => {
+        const perdidos = valoresQueSeDescartan(card, schema);
+        return perdidos.length
+          ? `«${card.__nombre.value.trim()}»: ${perdidos.join(", ")}`
+          : null;
+      })
+      .filter(Boolean);
+    const descarte = sePierden.join(" · ");
+    if (descarte && descarte !== descarteAvisado) {
+      descarteAvisado = descarte;
+      hint.textContent = `Guardar quitará ${descarte}. Pulsa Guardar otra vez para confirmar.`;
+      hint.hidden = false;
+      return;
+    }
+    descarteAvisado = null;
     hint.hidden = true;
+    hint.textContent = "";
+    guardar.disabled = true;
     try {
       const actualizada = await api(`/databases/${database.id}/row-templates`, {
         method: "PUT",
