@@ -1810,9 +1810,9 @@ function etiquetaDeFecha({ fecha, dias }) {
 function notaDeTareasAbiertas(closed) {
   const valores = (closed || []).filter(Boolean);
   const respaldo = valores.length
-    ? ` Si la base no marca ninguna, no salen las que tienen el estado en ${valores.join(", ")}.`
-    : "";
-  return `Solo tareas abiertas: manda la regla de cada base.${respaldo} Una base sin estado entra entera.`;
+    ? ` si no lo marca, no salen las que tienen el estado en ${valores.join(", ")}.`
+    : ".";
+  return `Solo tareas abiertas. Cada base manda: si marca qué valores cuentan como cerrada, no salen esos;${respaldo} Una base sin estado entra entera.`;
 }
 
 function itemDeMiTarea({ tarea, fecha, dias }, abrir) {
