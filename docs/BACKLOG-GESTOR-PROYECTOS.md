@@ -27,7 +27,7 @@ Reglas de este backlog:
 
 | # | Función | Coste | Estado |
 |---|---|---|---|
-| 5 | Estado «cerrado» con semántica (deja de contar en todas partes) | bajo | en tarjeta (`t_bb986a26`) |
+| 5 | Estado «cerrado» con semántica (deja de contar en todas partes) | bajo | hecha (`feat/estado-cerrado`) |
 | 3 | Prioridad con orden semántico | bajo | en tarjeta (`t_d3b55d4e`) |
 | 29 | Plantilla de tarea y de proyecto completo | bajo | en tarjeta (`t_d5ed2de0`, espera a 5) |
 

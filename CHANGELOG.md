@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## [Sin publicar]
+
+### Añadido
+
+- **El estado «cerrada» es una regla de la base.** Una base declara en su frontmatter qué columna dice si una fila está hecha y con qué valores (`closed: {property: estado, values: [hecha, cerrada]}`), y esa regla —una sola por base— decide todo lo que antes adivinaba cada pantalla por su cuenta: el contador de subtareas («2 de 3»), el campo `closed` de cada fila, «Mis tareas» y los filtros. Se marca desde el **menú de la columna** («esta columna dice si está hecha», con sus valores marcables) y el servidor lo valida contra las opciones reales de la columna: un valor que no existe es un **400** que dice cuáles hay, en vez de un contador que nunca cuenta. Marcar otra columna **mueve** la regla y el menú lo avisa. Filtros nuevos **`is_closed` / `is_open`**, que no obligan a enumerar valores, y la nota de «Mis tareas» explica los valores que declaran las bases. Las bases que tenían el marcador `done` se siguen leyendo (compatibilidad de lectura, sin migración masiva); al guardar la regla se escribe el formato nuevo y el `done` viejo se retira. Quitar la regla no cierra nada y cambiar los valores recalcula contadores sin tocar el `.md` de ninguna fila. La lista de respaldo que «Mis tareas» llevaba cableada (`CLOSED_STATES`) se retira: era una segunda verdad que podía esconder filas que el `.md` de la base no declaraba cerradas. Índice v7 (`database_closed`). Decisiones en [`docs/ADR-0007-estado-cerrado.md`](docs/ADR-0007-estado-cerrado.md).
+
 ## [2.5.0] — 2026-11-12
 
 ### Añadido
