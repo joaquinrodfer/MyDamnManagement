@@ -671,6 +671,30 @@ def test_el_alta_con_plantilla_revalida_y_respeta_lo_editado(client):
     assert inexistente.status_code == 404
 
 
+def test_el_alta_puede_vaciar_un_valor_de_la_plantilla(client, vault_path):
+    """Un `null` explícito es «no quiero ese valor», no «pon el de la plantilla».
+
+    El alta manda así las claves de la plantilla que el usuario ha vaciado; si
+    el servidor las rellenara, desharía el cambio sin decir nada.
+    """
+    base = crear_desde(client, "proyecto", title="Vacíos").json()
+    respuesta = client.post(
+        f"/databases/{base['id']}/rows",
+        json={
+            "title": "Sin estado",
+            "template": "Revisión semanal",
+            "properties": {"estado": None},
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    fila = respuesta.json()
+    datos = frontmatter(
+        vault_path / "Bases" / "Vacíos" / f"{fila['id'][:8]}.md"
+    )
+    assert "estado" not in datos
+    assert datos["prioridad"] == "media"
+
+
 def test_cambiar_el_schema_ajusta_las_plantillas_de_fila(client, vault_path):
     base = crear_desde(client, "proyecto", title="Ajuste").json()
     schema = []

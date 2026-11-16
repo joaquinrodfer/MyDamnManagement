@@ -12472,6 +12472,13 @@ function renderAddRowForm(database) {
       return;
     }
     const properties = {};
+    // Las claves que la plantilla rellena se mandan siempre, aunque el usuario
+    // las haya vaciado: un `null` es «no quiero este valor» y sin él el
+    // servidor volvería a poner el de la plantilla, deshaciendo el cambio en
+    // silencio (`properties` manda sobre la plantilla, y el vacío también).
+    const declaradas = plantillaElegida
+      ? Object.keys(plantillaElegida.values || {})
+      : [];
     for (const { prop, input, read } of propInputs) {
       // Al crear se guarda también un checkbox desmarcado; el resto de tipos
       // sin valor no se escriben (no hay que dejar `null` en el fichero).
@@ -12480,6 +12487,7 @@ function renderAddRowForm(database) {
       } else {
         const value = read();
         if (value !== null) properties[prop.key] = value;
+        else if (declaradas.includes(prop.key)) properties[prop.key] = null;
       }
     }
     try {
