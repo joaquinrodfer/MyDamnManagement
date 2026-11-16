@@ -280,7 +280,14 @@ class DatabaseUpdate(BaseModel):
     # Solo para rechazarlo: `PATCH` no cambia la regla de estado cerrado. El
     # router contesta 400 si la petición trae la clave (aunque venga a `null`),
     # porque un 200 que no ha guardado nada es peor que un error que lo dice.
-    closed: Optional[dict[str, Any]] = None
+    closed: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "No se cambia por aquí: la regla de fila cerrada se declara en "
+            "`PUT /databases/{id}/closed` (y se quita con `DELETE`). Un `closed` "
+            "en este cuerpo es un 400 que lo dice."
+        ),
+    )
 
 
 class DatabaseRead(BaseModel):
@@ -394,10 +401,18 @@ class RowRead(BaseModel):
     # Cuántas subtareas tiene y cuántas están cerradas: el «1 de 3» de la fila.
     children: RowChildren = Field(default_factory=RowChildren)
     # Si ESTA fila está cerrada, con la misma regla que cuenta el contador de su
-    # madre (`app.closed.is_closed`: el bloque `closed: {property, values}` de
-    # la base). Lo calcula el servidor para que el cliente no tenga que repetir
-    # la regla y las dos no puedan discrepar.
-    closed: bool = False
+    # madre (`app.closed.is_closed`). Lo calcula el servidor para que el cliente
+    # no tenga que repetir la regla y las dos no puedan discrepar. Va como
+    # `description` (y no solo como comentario) porque es de lo que lee quien
+    # consume la API en el OpenAPI.
+    closed: bool = Field(
+        default=False,
+        description=(
+            "La fila está cerrada según la regla de la base "
+            "(`closed: {property, values}` en el `.md`), la misma con la que se "
+            "cuenta el contador de su madre."
+        ),
+    )
     # `{clave_de_la_propiedad: [fila, ...]}` de las propiedades `relation`, con
     # el título ya resuelto por el servidor (una consulta por respuesta). Una
     # fila sin relaciones devuelve `{}`.

@@ -415,7 +415,18 @@ def set_row_templates(
     return _serialize_database(actualizada, repo.database_ids())
 
 
-@router.patch("/{database_id}", response_model=schemas.DatabaseRead)
+@router.patch(
+    "/{database_id}",
+    response_model=schemas.DatabaseRead,
+    responses={
+        400: {
+            "description": (
+                "La petición trae `closed`: la regla de fila cerrada no se "
+                "cambia por aquí, sino en `PUT /databases/{id}/closed`."
+            )
+        }
+    },
+)
 def update_database(
     database_id: uuid.UUID, payload: schemas.DatabaseUpdate, repo: Repository = Depends(get_repo)
 ):
