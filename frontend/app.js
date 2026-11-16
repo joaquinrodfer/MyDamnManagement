@@ -394,7 +394,9 @@ async function renderDashboard(main) {
   recentSection.appendChild(recentHead);
 
   if (data.recent_pages.length === 0) {
-    recentSection.innerHTML += '<div class="search-empty">Elige una página o crea una nueva.</div>';
+    recentSection.innerHTML +=
+      '<div class="empty-hint"><p class="empty-hint-title">Aquí saldrán las últimas páginas que toques.</p>' +
+      '<p class="empty-hint-note">Para empezar, crea una nota con «+» en la barra lateral, o una base desde el botón de plantilla que tiene al lado.</p></div>';
   } else {
     data.recent_pages.forEach((p) => {
       recentSection.appendChild(
@@ -2025,7 +2027,8 @@ function renderMisTareas(main) {
   if (!datos.count) {
     const vacio = document.createElement("div");
     vacio.className = "my-tasks-empty";
-    vacio.textContent = "No tienes ninguna tarea asignada.";
+    vacio.textContent =
+      "No tienes ninguna tarea asignada. Ponte como responsable en una fila de cualquier base y aparecerá aquí.";
     wrap.appendChild(vacio);
     main.appendChild(wrap);
     return;
@@ -2098,7 +2101,11 @@ async function loadTree() {
     const treeContainer = document.getElementById("tree-container");
     treeContainer.innerHTML = "";
 
-    if (notes.length === 0) treeContainer.innerHTML = '<div class="search-empty">Sin páginas aún.</div>';
+    if (notes.length === 0) {
+      treeContainer.innerHTML =
+        '<div class="empty-hint empty-hint--side"><p class="empty-hint-title">Todavía no hay páginas.</p>' +
+        '<p class="empty-hint-note">Pulsa «+» aquí arriba para escribir la primera nota.</p></div>';
+    }
     notes.forEach((n) => treeContainer.appendChild(renderTreeNode(n)));
 
     if (state.current) markActive(state.current.id);
@@ -2419,10 +2426,20 @@ function openEmojiPicker(anchorEl, onSelect) {
 
 // ------------------------------------------------------------------ notas
 
+/** Mientras llega una página: una línea fina bajo la cabecera (`.is-loading`
+ * en el CSS, que espera 150 ms antes de enseñarla: una carga rápida no
+ * parpadea). Se cuenta, porque dos navegaciones pueden solaparse. */
+let cargasEnCurso = 0;
+function marcarCarga(empieza) {
+  cargasEnCurso = Math.max(0, cargasEnCurso + (empieza ? 1 : -1));
+  document.body.classList.toggle("is-loading", cargasEnCurso > 0);
+}
+
 async function selectNote(id) {
   const previous = state.current;
   state.current = { kind: "note", id };
   markActive(id);
+  marcarCarga(true);
   try {
     const [page, backlinks] = await Promise.all([api(`/pages/${id}`), api(`/pages/${id}/backlinks`)]);
     renderNote(page, backlinks);
@@ -2433,6 +2450,8 @@ async function selectNote(id) {
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la nota", e);
+  } finally {
+    marcarCarga(false);
   }
 }
 
@@ -4756,6 +4775,7 @@ async function selectDatabase(id, { focus = null } = {}) {
   const previous = state.current;
   state.current = { kind: "database", id };
   markActive(id);
+  marcarCarga(true);
   try {
     const [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
     await renderDatabase(database, views, views[0]?.id ?? null, { focus });
@@ -4765,6 +4785,8 @@ async function selectDatabase(id, { focus = null } = {}) {
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la base de datos", e);
+  } finally {
+    marcarCarga(false);
   }
 }
 
@@ -5137,6 +5159,17 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // (repintar no es navegar, y el parpadeo se notaría a cada celda).
   content.className = "db-view" + (focus === "viewTab" ? " is-entering" : "");
   main.append(header, hint, tabs, content);
+  // En pantalla estrecha las pestañas van en una línea que se desplaza de lado
+  // (ver el bloque «móvil» del CSS): la activa tiene que quedar a la vista, o
+  // se mira el calendario con «Tabla» en pantalla. Solo se mueve esa línea.
+  const pestanaActiva = tabs.querySelector(".view-tab.active");
+  if (pestanaActiva && tabs.scrollWidth > tabs.clientWidth) {
+    const caja = tabs.getBoundingClientRect();
+    const r = pestanaActiva.getBoundingClientRect();
+    if (r.left < caja.left || r.right > caja.right) {
+      tabs.scrollLeft += r.left - caja.left - (caja.width - r.width) / 2;
+    }
+  }
 
   // El motivo escrito y no en un `title` escondido: un botón apagado sin
   // explicación a la vista es un estado mudo (y en táctil no hay hover).
@@ -6663,9 +6696,19 @@ function avisoDeFilaOculta(titulo, nombreVista) {
 /** El foco, en el nombre de la fila que se acaba de crear: el `<tr>` de la
  * tabla, la línea de la lista o el chip del calendario (los tres llevan
  * `data-row-id`). Devuelve si la encontró. */
+/** La fila recién creada entra con un fundido (`.is-new` en el CSS) para que se
+ * vea DÓNDE ha caído: el orden de la vista puede dejarla en medio. Solo
+ * presentación; la clase se quita sola. */
+function marcarComoNueva(el) {
+  if (!el) return;
+  el.classList.add("is-new");
+  setTimeout(() => el.classList.remove("is-new"), 400);
+}
+
 function enfocarFila(container, rowId) {
   const el = container.querySelector(`[data-row-id="${rowId}"]`);
   if (!el) return false;
+  marcarComoNueva(el);
   if (el.tagName === "TR") {
     // La tabla no tiene filas enfocables: el nombre es la primera celda, que ya
     // es editable (también en la incrustada). Si por lo que sea no lo es, la
@@ -7715,6 +7758,18 @@ function formatPropValue(value, prop) {
   return String(value);
 }
 
+/** Un valor de selección, como etiqueta. El tono sale de la POSICIÓN del valor
+ * en las opciones de la propiedad (`prop.options`), así que el mismo valor
+ * lleva el mismo color en la tabla, en la lista y en el tablero, y no hay nada
+ * que guardar: es presentación. Un valor que no está entre las opciones (texto
+ * libre heredado) va en el tono neutro. Los tonos son los `--tag-N` del CSS. */
+const TONOS_DE_ETIQUETA = 7;
+function htmlDeEtiqueta(valor, prop) {
+  const posicion = (prop.options || []).indexOf(valor);
+  const tono = posicion < 0 ? 1 : (posicion % TONOS_DE_ETIQUETA) + 1;
+  return `<span class="prop-tag prop-tag-${tono}">${escapeHtml(String(valor))}</span>`;
+}
+
 /** Igual que formatPropValue, pero listo para innerHTML: el "sí" de un
  * checkbox es el icono de check del sprite (con texto para lectores de
  * pantalla), una relación enseña el TÍTULO de sus filas (no el id: `row` es
@@ -7722,6 +7777,12 @@ function formatPropValue(value, prop) {
 function formatPropValueHtml(value, prop, row = null) {
   if (prop.type === "checkbox") {
     return value ? `${svgIcon("i-check")}<span class="sr-only">Sí</span>` : "—";
+  }
+  if (prop.type === "select" || prop.type === "multiselect") {
+    const valores = (Array.isArray(value) ? value : [value]).filter(
+      (v) => v !== undefined && v !== null && v !== "",
+    );
+    if (valores.length) return valores.map((v) => htmlDeEtiqueta(v, prop)).join("");
   }
   if (prop.type === "relation") return htmlDeRelacion(value, prop, row);
   if (prop.type === "person") return htmlDePersona(value, prop, row);
@@ -10312,8 +10373,18 @@ function renderTable(
     // repintar) + la columna de acciones, que ahora está siempre.
     td.colSpan =
       propiedades.length + (muestraTitulo ? 1 : 0) + 2 + (onChanged ? 1 : 0);
-    td.className = "search-empty";
-    td.textContent = vacio || "Sin filas todavía.";
+    // Un vacío dice qué hacer: con filtro, que es el filtro; sin él, dónde se
+    // añade la primera fila (el alta está justo debajo de la tabla).
+    td.className = "search-empty rows-empty";
+    const tituloVacio = document.createElement("span");
+    tituloVacio.className = "empty-hint-title";
+    tituloVacio.textContent = vacio || "Esta base aún no tiene filas.";
+    const notaVacio = document.createElement("span");
+    notaVacio.className = "empty-hint-note";
+    notaVacio.textContent = vacio
+      ? "Cambia o quita una condición en «Filtrar» para ver más."
+      : "Añade la primera en «Nueva fila», aquí debajo.";
+    td.append(tituloVacio, notaVacio);
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
@@ -10624,6 +10695,17 @@ function paintCell(td, database, row, prop, hooks = null) {
     prop?.type === "date" && (row.overdue_keys || []).includes(prop.key),
   );
   td.classList.toggle("cell-overdue", vencida);
+  // Sin valor: la raya se pinta apagada (solo presentación, ver `.cell-empty`).
+  const valorDeCelda = prop ? row.properties?.[prop.key] : row.title;
+  td.classList.toggle(
+    "cell-empty",
+    Boolean(prop) &&
+      prop.type !== "checkbox" &&
+      (valorDeCelda === undefined ||
+        valorDeCelda === null ||
+        valorDeCelda === "" ||
+        (Array.isArray(valorDeCelda) && valorDeCelda.length === 0)),
+  );
   // La columna del título se lee como jerarquía (la regla CSS va por clase:
   // la primera columna de la tabla es la de abrir la fila).
   td.classList.toggle("cell-title", !prop);
@@ -11196,8 +11278,18 @@ function renderBoardColumn(
   const head = document.createElement("div");
   head.className = "board-col-head";
   const labelSpan = document.createElement("span");
+  labelSpan.className = "board-col-label";
   labelSpan.textContent = String(label);
+  // El punto de la cabecera lleva el mismo tono que la etiqueta de ese valor
+  // en la tabla (ver `htmlDeEtiqueta`). Solo presentación: sin opción que
+  // coincida («(sin valor)», un texto libre) se queda en el tono neutro.
+  const propDeGrupo = groupKey ? database.schema_def.find((p) => p.key === groupKey) : null;
+  const posicionDeTono = (propDeGrupo?.options || []).indexOf(value);
+  if (posicionDeTono >= 0) {
+    labelSpan.classList.add(`prop-tag-${(posicionDeTono % TONOS_DE_ETIQUETA) + 1}`);
+  }
   const countSpan = document.createElement("span");
+  countSpan.className = "board-col-count";
   countSpan.textContent = String(rows.length);
   head.append(labelSpan, countSpan);
   col.appendChild(head);
@@ -11309,8 +11401,13 @@ function renderBoardColumn(
       if (!propDef || propDef.type === "parent_row") return;
       if (v === null || v === "" || v === undefined) return;
       const line = document.createElement("div");
-      line.className = "board-card-prop";
-      line.innerHTML = `${escapeHtml(propDef.name)}: ${formatPropValueHtml(v, propDef, row)}`;
+      // La propiedad por la que agrupa el tablero ya la dice la columna: en la
+      // tarjeta se marca para que el CSS no la repita.
+      line.className = "board-card-prop" + (k === groupKey ? " is-group-key" : "");
+      line.innerHTML =
+        `<span class="board-card-key">${escapeHtml(propDef.name)}</span>` +
+        `<span class="sr-only">: </span>` +
+        `<span class="board-card-val">${formatPropValueHtml(v, propDef, row)}</span>`;
       card.appendChild(line);
     });
 
@@ -12496,7 +12593,11 @@ function renderList(database, rows, view, refresh) {
     return item;
   };
 
-  const avisoVacio = () => avisoDeVista("Sin filas todavía.", null);
+  const avisoVacio = () =>
+    avisoDeVista(
+      "Aquí no hay filas todavía.",
+      "Añade una con «Nueva fila», aquí debajo. Si la base ya tiene filas, las está dejando fuera el filtro de la vista.",
+    );
   rows.forEach((row) => wrap.appendChild(lineaDeFila(row)));
   if (rows.length === 0) wrap.appendChild(avisoVacio());
 
@@ -12614,6 +12715,14 @@ function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
   stopLinkPreview();
   ctx.caja.remove();
   const main = document.getElementById("main");
+  // La vuelta se nota: lo que queda a la vista (la fila de debajo o la vista de
+  // la que se vino) reaparece con un fundido corto (`.is-returning` en el CSS).
+  // Solo presentación; la clase se quita sola al acabar.
+  for (const el of rowPage ? [rowPage.caja] : ctx.debajo.map((d) => d.el)) {
+    if (!(el instanceof HTMLElement)) continue;
+    el.classList.add("is-returning");
+    setTimeout(() => el.classList.remove("is-returning"), 200);
+  }
   if (rowPage) {
     // Debajo hay otra fila: vuelve a estar disponible y se queda a la vista
     // (está justo debajo en #main, que no se ha desplazado mientras tanto).
@@ -13599,7 +13708,7 @@ function renderAddRowForm(database) {
       }
     }
     try {
-      await api(`/databases/${database.id}/rows`, {
+      const nueva = await api(`/databases/${database.id}/rows`, {
         method: "POST",
         body: JSON.stringify({
           title: titulo,
@@ -13613,7 +13722,11 @@ function renderAddRowForm(database) {
           ...(cuerpoDePlantilla ? { body_markdown: cuerpoDePlantilla } : {}),
         }),
       });
-      selectDatabase(database.id, { focus: "addRow" });
+      // Al repintar, la fila nueva entra marcada (si la vista la enseña).
+      Promise.resolve(selectDatabase(database.id, { focus: "addRow" })).then(() => {
+        if (!nueva?.id) return;
+        marcarComoNueva(document.querySelector(`#main tr[data-row-id="${nueva.id}"]`));
+      });
     } catch (e) {
       alert("Error al crear la fila: " + e.message);
     }
@@ -14851,14 +14964,51 @@ document.addEventListener("keydown", (e) => {
 const SIDEBAR_COLLAPSED_KEY = "mdm_sidebar_collapsed";
 const layoutEl = document.querySelector(".layout");
 
-function setSidebarCollapsed(collapsed) {
-  layoutEl.classList.toggle("sidebar-collapsed", collapsed);
+// Lo que dura la salida de la barra (`mdm-side-out` en el CSS) más un margen:
+// el hueco se cierra al acabar la animación y, si el evento no llega, a este
+// plazo. Con «reducir movimiento» no hay animación que esperar.
+const SIDEBAR_SALIDA_MS = 180;
+const sinMovimiento = window.matchMedia("(prefers-reduced-motion: reduce)");
+let sidebarSaliendo = null; // el temporizador de una salida en curso
+
+/** `animar` solo lo pide el botón: al cargar la página la barra se pinta en su
+ * estado, sin entrar ni salir. La preferencia se guarda en el acto; lo único
+ * que se retrasa (lo que dura la salida) es quitar la columna. */
+function setSidebarCollapsed(collapsed, { animar = false } = {}) {
   localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  clearTimeout(sidebarSaliendo);
+  sidebarSaliendo = null;
+  layoutEl.classList.remove("sidebar-entering", "sidebar-leaving");
+  if (!animar || sinMovimiento.matches || esMovil()) {
+    layoutEl.classList.toggle("sidebar-collapsed", collapsed);
+    return;
+  }
+  if (!collapsed) {
+    layoutEl.classList.remove("sidebar-collapsed");
+    layoutEl.classList.add("sidebar-entering");
+    sidebarSaliendo = setTimeout(() => layoutEl.classList.remove("sidebar-entering"), SIDEBAR_SALIDA_MS + 40);
+    return;
+  }
+  layoutEl.classList.add("sidebar-leaving");
+  sidebarSaliendo = setTimeout(() => {
+    sidebarSaliendo = null;
+    layoutEl.classList.remove("sidebar-leaving");
+    layoutEl.classList.add("sidebar-collapsed");
+  }, SIDEBAR_SALIDA_MS - 40);
+}
+
+/** ¿La barra está (o va camino de estar) oculta? Durante la salida todavía no
+ * lleva `sidebar-collapsed`, y un segundo clic tiene que volver a mostrarla. */
+function sidebarOculta() {
+  return (
+    layoutEl.classList.contains("sidebar-collapsed") ||
+    layoutEl.classList.contains("sidebar-leaving")
+  );
 }
 
 document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
   if (esMovil()) return setCajonAbierto(!cajonAbierto());
-  setSidebarCollapsed(!layoutEl.classList.contains("sidebar-collapsed"));
+  setSidebarCollapsed(!sidebarOculta(), { animar: true });
 });
 
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
