@@ -21,6 +21,13 @@ visible de una propiedad y la clave se deriva detrás. La clave no se enseña
 nunca, así que el cliente no tiene que saber snake_case; y cuando el nombre de
 una propiedad existente cambia, el plan dice qué claves hay que migrar en las
 filas y en las vistas.
+
+Y vive la **lectura del orden declarado** de una selección (`sort_order`): una
+propiedad `select`/`multiselect` puede decir en el `schema` en qué orden se
+leen y se agrupan sus valores (`alta, media, baja`), que no es el alfabético ni
+el de creación. Lo leen la ordenación de las vistas (`app.views`) y el tablero
+del panel; el valor que no está declarado va al final, porque uno que apareció
+después no es «el más importante».
 """
 
 import re
@@ -34,8 +41,10 @@ from app.vault.reader import (
     PERSON,
     RELATION,
     RESERVED_ROW_KEYS,
+    SORTABLE_TYPES,
     relation_id,
     relation_multiple,
+    sort_values,
 )
 
 # `refs(ids)` devuelve `{id: (título, id de su base)}` de las filas que existan.
@@ -53,6 +62,63 @@ KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Nombre visible de la columna del título cuando la base no la ha renombrado.
 DEFAULT_TITLE_NAME = "Título"
+
+
+# Tipos de propiedad cuyo valor sale de una lista cerrada (`options`) y que por
+# tanto pueden declarar en qué orden se leen sus valores (`sort_order`). Los
+# mismos que limpia el lector: una sola lista de tipos, o el guardado y la
+# lectura discreparían en qué propiedad puede declarar un orden.
+SELECT_TYPES = SORTABLE_TYPES
+
+
+def option_key(value: Any) -> str:
+    """La forma en que se compara un valor de selección con su orden declarado.
+
+    Sin distinguir mayúsculas ni espacios de sobra, como el filtro `eq`: `Alta`
+    y `alta` son la misma opción escrita de dos maneras, y una fila escrita a
+    mano en el `.md` tiene que caer en su sitio y no al final por una mayúscula.
+    """
+    if value is None or isinstance(value, (list, dict)):
+        return ""
+    return str(value).strip().casefold()
+
+
+def declared_order(prop: dict) -> list[str]:
+    """Los valores de una selección en su orden semántico, o `[]` si no declara.
+
+    `sort_order` es opcional y vive en el `schema` de la base. Una base que no
+    lo declara se ordena como siempre (alfabético): el orden semántico es
+    opt-in, para que añadir esta función no cambie el orden de las bases que ya
+    existían sin que nadie lo haya pedido.
+
+    Solo vale en `select`/`multiselect`: en un texto el orden de una lista de
+    valores no significa nada. Lo leído se limpia igual que al guardarlo (sin
+    vacíos, sin repetir), así que un `.md` escrito a mano se comporta como uno
+    guardado desde la app.
+    """
+    if not isinstance(prop, dict) or prop.get("type") not in SELECT_TYPES:
+        return []
+    return sort_values(prop.get("sort_order"))
+
+
+def order_ranks(schema_def: list[dict]) -> dict[str, dict[str, int]]:
+    """`{clave: {valor: puesto}}` de las propiedades que declaran orden.
+
+    Es lo que consume la ordenación de una vista (`app.views.apply_view`): el
+    puesto de cada valor declarado, ya normalizado. Una propiedad sin
+    `sort_order` no aparece en el mapa, y una clave que no está en el mapa se
+    ordena como siempre.
+    """
+    ranks: dict[str, dict[str, int]] = {}
+    for prop in schema_def or []:
+        if not isinstance(prop, dict) or not prop.get("key"):
+            continue
+        orden = declared_order(prop)
+        if orden:
+            ranks[str(prop["key"])] = {
+                option_key(valor): puesto for puesto, valor in enumerate(orden)
+            }
+    return ranks
 
 
 def slug_key(name: str, taken: set[str]) -> str:
@@ -181,6 +247,7 @@ def plan_schema(
                     "o quita una de las dos: la jerarquía de la base es una.",
                 )
         _plan_done(prop, item, origen, name)
+        _plan_sort_order(prop, item, origen, name)
         finales.append(prop)
 
     claves_finales = {p["key"] for p in finales}
@@ -277,6 +344,48 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
         )
         return
     prop["done"] = valores
+
+
+def _plan_sort_order(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
+    """El `sort_order` de una selección: en qué orden se leen sus valores.
+
+    Es lo que hace que `alta / media / baja` se ordene por importancia y no por
+    alfabeto. Se guarda en el `schema` de la base (el `.md` es la verdad) y no
+    en la vista: el orden de los valores es de la propiedad, igual que sus
+    `options`, así que dos vistas de la misma base no pueden discrepar.
+
+    Si la petición no lo trae se conserva el que ya tenía: el diálogo de
+    propiedades de la interfaz todavía no pregunta por él, y guardar el resto
+    de la base no puede borrar el orden sin que nadie lo haya pedido. `[]` lo
+    quita (la clave no se escribe). Un orden en una propiedad que no es una
+    selección es un 400 si viene pedido, y si venía heredado —la propiedad era
+    una selección y ahora es un texto— se suelta: en un texto no significa
+    nada, y guardar el resto del schema no puede fallar por eso.
+
+    Se limpia: sin vacíos, sin repetir y sin espacios de sobra. Un valor
+    declarado que ya no está en `options` se queda: puede seguir en filas
+    escritas a mano en el `.md`, y ahí tiene su sitio.
+    """
+    pedido = item.get("sort_order")
+    crudo = pedido if pedido is not None else (origen or {}).get("sort_order")
+    if crudo is None:
+        return
+    if not isinstance(crudo, (list, str)):
+        if pedido is None:      # heredado ilegible: se suelta
+            return
+        raise HTTPException(400, f"«{name}»: `sort_order` es una lista de valores")
+    valores = sort_values(crudo)
+    if not valores:
+        return                  # `[]` = quitar (no se escribe la clave)
+    if prop.get("type") not in SELECT_TYPES:
+        if pedido is None:
+            return
+        raise HTTPException(
+            400,
+            f"«{name}»: `sort_order` solo tiene sentido en una selección "
+            f"(el orden de sus valores), y esta es de tipo {prop.get('type')!r}",
+        )
+    prop["sort_order"] = valores
 
 
 def relation_properties(schema_def: list[dict]) -> list[dict]:

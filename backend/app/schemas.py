@@ -131,6 +131,12 @@ class PropertyDef(BaseModel):
     name: str
     type: PropertyType
     options: Optional[list[str]] = None  # para select / multiselect
+    # Orden semántico de esos valores: `[alta, media, baja]` es como se leen (y
+    # el orden de las columnas del tablero), no el alfabético. Es opt-in: una
+    # base que no lo declara se ordena como siempre. `None` al editar = «no lo
+    # toco» (se conserva el que ya tenía, ver `app.properties.plan_schema`);
+    # `[]` = bórralo.
+    sort_order: Optional[list[str]] = None
     # Solo en `relation`. `None` al editar = «no lo toco» (se conserva el que
     # ya tenía la propiedad, ver `app.properties.plan_schema`); `""` = bórralo.
     target_database: Optional[str] = None
@@ -147,6 +153,21 @@ class PropertyDef(BaseModel):
         # Vacía = «derívala del nombre». Con valor, el contrato de siempre.
         if v and not KEY_RE.match(v):
             raise ValueError("key debe ser snake_case (minúsculas, dígitos, _), empezando por letra")
+        return v
+
+    @field_validator("sort_order", mode="before")
+    @classmethod
+    def sort_order_is_a_list(cls, v):
+        """El orden puede llegar escrito a mano como texto (`alta, media`).
+
+        La interfaz manda una lista; aceptar el texto con comas evita un 422
+        por un detalle de forma, igual que hace el lector del `.md`. Lo que no
+        sea texto ni lista lo rechaza la validación normal (`list[str]`).
+        """
+        if v is None or isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            return v.split(",")
         return v
 
     @field_validator("multiple", mode="before")

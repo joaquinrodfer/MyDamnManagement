@@ -35,7 +35,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from app.config import settings
-from app.properties import person_ids, person_keys
+from app.properties import order_ranks, person_ids, person_keys
 from app.repository import Database, Page, Repository, View
 from app.vault import fm
 from app.hierarchy import parent_key
@@ -211,6 +211,9 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
             people={key: datos[0] for key, datos in users.items()},
             person_keys=claves_persona,
             closed_rule=database.closed,
+            # La tabla exportada es la misma que se ve en el panel, también en
+            # el orden: el `sort_order` de una selección manda aquí igual.
+            orders=order_ranks(database.schema_def),
         )
 
     total = len(rows)
