@@ -4395,7 +4395,10 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // El selector de una celda de persona necesita el directorio: se pide al
   // abrir una base que tenga alguna, antes de que nadie pinte una celda.
   if ((database.schema_def || []).some((p) => p.type === "person")) {
-    cargarPersonas().catch(() => {});
+    // `forzar`: el nombre visible de una persona puede haber cambiado desde el
+    // último pintado (la celda lo lee del servidor, pero los desplegables de
+    // alta y de la ficha salen del directorio cacheado).
+    cargarPersonas({ forzar: true }).catch(() => {});
   }
   const main = clearMain();
   // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
@@ -6766,9 +6769,12 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
   let gente = [];
   let error = "";
   try {
-    gente = await cargarPersonas();
+    gente = await cargarPersonas({ forzar: true });
   } catch (e) {
-    error = `No se pudo leer la lista de personas: ${describeError(e)}`;
+    // Con una lista ya cargada, se sigue con ella: elegir a alguien de un
+    // directorio de hace un rato es mejor que no poder elegir.
+    gente = [...personasCache.values()];
+    if (!gente.length) error = `No se pudo leer la lista de personas: ${describeError(e)}`;
   }
   // La tabla pudo repintarse mientras llegaba la respuesta.
   if (!td.isConnected) return;
@@ -7017,7 +7023,7 @@ function readPropertyValue(prop, input) {
  * que decide qué control usa cada tipo: lo comparten el alta de fila, la
  * edición de una celda y el panel de fila del tablero. Devuelve también
  * `read()`, que traduce el control a valor (`null` = sin valor). */
-function buildPropertyInput(prop, value) {
+function buildPropertyInput(prop, value, ref = null) {
   let input;
   if (prop.type === "select") {
     input = document.createElement("select");
@@ -7064,7 +7070,9 @@ function buildPropertyInput(prop, value) {
     if (sembrado) {
       const suya = document.createElement("option");
       suya.value = sembrado;
-      suya.textContent = nombreDePersona(sembrado) || sembrado;
+      // El nombre que trae la fila (`people`, resuelto por el servidor) manda
+      // sobre el directorio: es el que se acaba de leer.
+      suya.textContent = ref?.display_name || nombreDePersona(sembrado) || sembrado;
       input.appendChild(suya);
     }
     input.value = sembrado;
@@ -11181,7 +11189,11 @@ async function openRowPage(
       campo.className = "row-page-prop";
       const label = document.createElement("label");
       label.textContent = prop.name;
-      const { input, read } = buildPropertyInput(prop, detalle.properties?.[prop.key]);
+      const { input, read } = buildPropertyInput(
+        prop,
+        detalle.properties?.[prop.key],
+        detalle.people?.[prop.key] || null,
+      );
       const inputId = idDeCampo(`fila-pagina-${ctx.seq}`, i, prop.key);
       input.id = inputId;
       label.htmlFor = inputId;

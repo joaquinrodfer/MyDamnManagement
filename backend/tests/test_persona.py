@@ -309,6 +309,35 @@ def test_renombrar_al_usuario_cambia_la_celda_y_no_a_quien_apunta(
     assert frontmatter(fichero_fila(vault_path, "Proyectos", fila))["responsable"] == ana["id"]
 
 
+def test_solo_un_admin_renombra_usuarios(client, personas, acceso):
+    """Renombrar es de administración; la celda no depende de eso."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as ajena:
+        acceso(ajena)  # ya hay usuarios: entra como «prueba» (admin)
+        ajena.post("/auth/logout")
+        respuesta = ajena.post(
+            "/auth/login", json={"username": "ana", "password": "contrasena-de-prueba"}
+        )
+        assert respuesta.status_code == 200, respuesta.text
+        # `ana` no es admin: ni listar ni renombrar.
+        assert ajena.get("/auth/users").status_code == 403
+        cambio = ajena.patch(
+            f"/auth/users/{personas['bea']['id']}", json={"display_name": "Bea 2"}
+        )
+        assert cambio.status_code == 403, cambio.text
+
+
+def test_renombrar_a_un_nombre_vacio_es_un_400(client, personas):
+    respuesta = client.patch(
+        f"/auth/users/{personas['ana']['id']}", json={"display_name": "   "}
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    assert "nombre visible" in respuesta.json()["detail"]
+
+
 def test_un_usuario_borrado_no_revienta_la_celda(client, personas, filas_repartidas, vault_path):
     """Borrar usuarios no existe en la API; el modelo de lectura lo soporta igual.
 
