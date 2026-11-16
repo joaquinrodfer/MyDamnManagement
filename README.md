@@ -18,7 +18,7 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas (con selección múltiple y borrado en lote), editor de notas con formato en vivo y **edición por bloques** al estilo Notion (párrafo/H1-H5/listas/código/línea horizontal, seleccionables, convertibles entre sí —también con el comando `/`—, borrables en lote), tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3).
+Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas (con selección múltiple y borrado en lote), editor de notas con formato en vivo y **edición por bloques** al estilo Notion (párrafo/H1-H5/listas/código/línea horizontal, seleccionables, convertibles entre sí —también con el comando `/`—, borrables en lote), tablas/tableros para las bases de datos, y «Crear desde plantilla» con cuatro plantillas de serie —**Proyecto**, **Tareas sueltas**, **CRM** y **Reuniones**— que crean su base ya configurada y con **el nombre de la plantilla** (`Bases/CRM.md`, `Bases/Proyecto.md`…) (Fase 3).
 
 El resto del frontend sigue siendo HTML/CSS/JS plano sin build (`frontend/index.html` + `frontend/app.js`, servidos por la propia API); la única pieza compilada es el editor, vendorizado como un único archivo (`frontend/vendor/editor.bundle.js`, generado una vez con esbuild desde `frontend/editor-src/` — ver más abajo).
 
@@ -206,8 +206,8 @@ Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]
 | `/databases/{id}/rows/{id}` | GET / PATCH / DELETE | Leer, editar (merge parcial de `properties`) o borrar una fila |
 | `/databases/{id}/views` | POST / GET | Crear o listar vistas (`table`\|`board`\|`calendar`\|`list`) |
 | `/databases/{id}/views/{id}` | PATCH / DELETE | Editar o borrar una vista |
-| `/databases/templates` | GET | Lista las plantillas disponibles (`crm`, `tasks`) |
-| `/databases/from-template` | POST | Crea una `database` desde una plantilla: schema + vistas por defecto en una llamada |
+| `/databases/templates` | GET | Lista las plantillas disponibles (`proyecto`, `tasks`, `crm`, `reuniones`) con el `title` que llevará la base |
+| `/databases/from-template` | POST | Crea una `database` desde una plantilla (`template` + `title` opcional): schema + vistas por defecto en una llamada; sin `title`, la base se llama como la plantilla |
 
 Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": [{"key":"valor","dir":"desc"}], "group_by": "fase", "visible_properties": ["fase","valor"], "parent_level": "roots"}`. `filters` y `sort` los aplica el backend (`app/views.py`) sobre las filas de la vista, y son **de esa vista**: dos pestañas de la misma base pueden filtrar distinto y la base sin vista no filtra. `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
 

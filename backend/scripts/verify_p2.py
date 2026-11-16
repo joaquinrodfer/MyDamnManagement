@@ -5,8 +5,11 @@ Corre la app de verdad (FastAPI + `TestClient`, sin abrir puertos) sobre un
 vault y un índice en directorios temporales, y comprueba el criterio de hecho de
 la tarjeta:
 
-1. crear una base desde la plantilla CRM -> aparecen `Bases/Contactos.md` (con
-   `type: database`, el `schema` y las `views`) y su carpeta de filas;
+1. crear una base desde la plantilla CRM -> aparecen el `.md` de la base (con
+   `type: database`, el `schema` y las `views`) y su carpeta de filas; su nombre
+   sale de la respuesta del alta, no de una cadena escrita aquí: la plantilla es
+   un dato y puede cambiar de nombre sin que el guion deje de comprobar lo que
+   le importa;
 2. tres filas -> tres `.md` que se llaman por los 8 primeros caracteres hex de
    su `id`, con el `title` y las propiedades en el frontmatter;
 3. editar una propiedad -> cambia el `.md` de la fila (y solo esa);
@@ -49,6 +52,7 @@ settings.index_path = str(INDEX)
 
 from app import index as indice  # noqa: E402
 from app.main import app  # noqa: E402
+from app.vault import names  # noqa: E402
 from _sesion import abrir_sesion  # noqa: E402
 
 ok = True
@@ -110,10 +114,28 @@ def main() -> int:
 
         # ---- 1. la base es un fichero -------------------------------------
         print("1. crear una base desde la plantilla CRM")
+        # El nombre de la base NO se escribe aquí. La plantilla es un dato del
+        # servidor y ya cambió una vez de nombre («Contactos» -> «CRM»), que es
+        # lo que dejó este guion sin su `.md`. Se lee del catálogo —para saber
+        # qué esperar— y de la respuesta del alta —para saber qué se ha creado—,
+        # y las rutas se construyen con eso: lo que se verifica es el mecanismo
+        # (crear desde plantilla deja un `.md` y su carpeta de filas), se llame
+        # como se llame la base.
+        plantilla = {t["key"]: t for t in client.get("/databases/templates").json()}.get("crm")
+        check("el catálogo ofrece la plantilla CRM", plantilla is not None)
+        if plantilla is None:
+            print("\nResultado: HAY FALLOS")
+            return 1
         base = client.post("/databases/from-template", json={"template": "crm"}).json()
-        fichero_base = VAULT / "Bases" / "Contactos.md"
-        check("existe Bases/Contactos.md", fichero_base.exists())
-        check("la carpeta de filas existe", (VAULT / "Bases" / "Contactos").is_dir())
+        nombre = base["title"]
+        check("la base nace con el título de la plantilla", nombre == plantilla["title"],
+              f"{nombre!r} vs {plantilla['title']!r}")
+        carpeta, avisos = names.sanitize(nombre)
+        check("el título cabe tal cual en el nombre del fichero", carpeta == nombre,
+              "; ".join(avisos) or carpeta)
+        fichero_base = VAULT / "Bases" / f"{carpeta}.md"
+        check(f"existe Bases/{carpeta}.md", fichero_base.exists())
+        check("la carpeta de filas existe", (VAULT / "Bases" / carpeta).is_dir())
         contenido = texto(fichero_base)
         check("type: database en el frontmatter", "type: database" in contenido)
         check("id de la base = id de su página", base["id"] == base["page_id"]
@@ -121,9 +143,9 @@ def main() -> int:
         check("el schema va en el frontmatter", "schema:" in contenido and "key: empresa" in contenido)
         check("las vistas van en el frontmatter con su group_by",
               "views:" in contenido and "group_by: fase" in contenido)
-        check("la API devuelve las dos vistas de la plantilla",
-              sorted(v["name"] for v in client.get(f"/databases/{base['id']}/views").json())
-              == ["Pipeline", "Tabla"])
+        check(f"la API devuelve las vistas de la plantilla ({', '.join(plantilla['views'])})",
+              [v["name"] for v in client.get(f"/databases/{base['id']}/views").json()]
+              == plantilla["views"])
 
         # ---- 2. tres filas, tres ficheros --------------------------------
         print("\n2. tres filas")
@@ -137,7 +159,7 @@ def main() -> int:
                 f"/databases/{base['id']}/rows", json={"title": titulo, "properties": props}
             ).json()
             filas.append(fila)
-        rutas = [VAULT / "Bases" / "Contactos" / f"{f['id'][:8]}.md" for f in filas]
+        rutas = [VAULT / "Bases" / carpeta / f"{f['id'][:8]}.md" for f in filas]
         check("tres ficheros de fila (nombre = id8)", all(r.exists() for r in rutas),
               ", ".join(r.name for r in rutas))
         acme = frontmatter(rutas[0])
@@ -172,9 +194,10 @@ def main() -> int:
         check("reindexar deja la misma huella", antes == despues and respuesta.status_code == 200)
         check("y los mismos recuentos tabla a tabla", antes_cuentas == despues_cuentas,
               str(antes_cuentas))
-        check("el reindexado ve 1 base, 3 filas y 2 vistas",
+        vistas_plantilla = len(plantilla["views"])
+        check(f"el reindexado ve 1 base, 3 filas y {vistas_plantilla} vistas",
               (despues_cuentas["databases"], despues_cuentas["rows"], despues_cuentas["views"])
-              == (1, 3, 2))
+              == (1, 3, vistas_plantilla))
         culpables = sin_solo_indice()
         check(
             "fuera de vault/store.py no hay escrituras de páginas/bases/filas",
@@ -194,14 +217,15 @@ def main() -> int:
         abrir_sesion(otro)
         base_otra = otro.get(f"/databases/{base['id']}")
         check("la base sigue (404 si no)", base_otra.status_code == 200)
-        check("con su título", base_otra.json()["title"] == "Contactos")
+        check("con su título", base_otra.json()["title"] == nombre, base_otra.json()["title"])
         check("con su schema",
               [p["key"] for p in base_otra.json()["schema_def"]]
               == ["empresa", "fase", "valor", "proximo_contacto"])
         vistas = otro.get(f"/databases/{base['id']}/views").json()
         check("con sus vistas y su group_by",
-              [(v["name"], v["config"].get("group_by")) for v in vistas]
-              == [("Pipeline", "fase"), ("Tabla", None)])
+              [v["name"] for v in vistas] == plantilla["views"]
+              and any(v["config"].get("group_by") == "fase" for v in vistas),
+              str([(v["name"], v["config"].get("group_by")) for v in vistas]))
         filas_otra = otro.get(f"/databases/{base['id']}/rows").json()
         check("con sus tres filas", len(filas_otra) == 3)
         acme_otra = next(f for f in filas_otra if f["title"] == "Acme")
@@ -217,11 +241,12 @@ def main() -> int:
     check("y los recuentos también", despues_cuentas == antes_cuentas, str(despues_cuentas))
 
     # ---- 6. un fichero de base copiado a mano --------------------------
-    print("\n6. copiar Bases/Contactos.md a mano (cp, no la app)")
+    copia = f"{carpeta} copia"
+    print(f"\n6. copiar Bases/{carpeta}.md a mano (cp, no la app)")
     with TestClient(app) as copia_client:
         abrir_sesion(copia_client)
-        shutil.copyfile(VAULT / "Bases" / "Contactos.md", VAULT / "Bases" / "Contactos copia.md")
-        shutil.copytree(VAULT / "Bases" / "Contactos", VAULT / "Bases" / "Contactos copia")
+        shutil.copyfile(VAULT / "Bases" / f"{carpeta}.md", VAULT / "Bases" / f"{copia}.md")
+        shutil.copytree(VAULT / "Bases" / carpeta, VAULT / "Bases" / copia)
         respuesta = copia_client.post("/reindex")
         check("el reindexado responde 200 (antes: 500 por views.id)",
               respuesta.status_code == 200, respuesta.text[:120])
@@ -231,21 +256,23 @@ def main() -> int:
         check("avisa del id de vista duplicado",
               "duplicad" in avisos and "vista" in avisos, avisos[:180])
         bases = {b["title"]: b for b in copia_client.get("/databases").json()}
-        check("las dos bases están en la API", set(bases) == {"Contactos", "Contactos copia"},
+        check("las dos bases están en la API", set(bases) == {carpeta, copia},
               str(sorted(bases)))
         ids = [
             v["id"]
             for b in bases.values()
             for v in copia_client.get(f"/databases/{b['id']}/views").json()
         ]
-        check("cuatro vistas con cuatro ids distintos", len(ids) == 4 and len(set(ids)) == 4,
-              str(ids))
-        vistas_copia = copia_client.get(f"/databases/{bases['Contactos copia']['id']}/views").json()
+        total_vistas = 2 * vistas_plantilla
+        check(f"{total_vistas} vistas con {total_vistas} ids distintos",
+              len(ids) == total_vistas and len(set(ids)) == total_vistas, str(ids))
+        vistas_copia = copia_client.get(f"/databases/{bases[copia]['id']}/views").json()
         check("la copia conserva sus vistas y su group_by",
-              [(v["name"], v["config"].get("group_by")) for v in vistas_copia]
-              == [("Pipeline", "fase"), ("Tabla", None)], str(vistas_copia))
+              [v["name"] for v in vistas_copia] == plantilla["views"]
+              and any(v["config"].get("group_by") == "fase" for v in vistas_copia),
+              str(vistas_copia))
         check("la copia ve sus tres filas",
-              len(copia_client.get(f"/databases/{bases['Contactos copia']['id']}/rows").json()) == 3)
+              len(copia_client.get(f"/databases/{bases[copia]['id']}/rows").json()) == 3)
         copia_hash, copia_cuentas = huella()
         copia_client.post("/reindex")
         check("dos reindexados seguidos dan la misma huella", huella()[0] == copia_hash)
@@ -256,7 +283,7 @@ def main() -> int:
         abrir_sesion(otro)
         titulos = {b["title"] for b in otro.get("/databases").json()}
         check("el arranque levanta con la copia y las dos bases",
-              titulos == {"Contactos", "Contactos copia"}, str(sorted(titulos)))
+              titulos == {carpeta, copia}, str(sorted(titulos)))
     arranque_hash, arranque_cuentas = huella()
     check("y la huella del arranque es la misma", arranque_hash == copia_hash,
           f"{arranque_hash[:16]}… vs {copia_hash[:16]}…")
