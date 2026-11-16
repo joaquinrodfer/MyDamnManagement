@@ -128,11 +128,16 @@ def main() -> int:
             return 1
         base = client.post("/databases/from-template", json={"template": "crm"}).json()
         nombre = base["title"]
-        check("la base nace con el título de la plantilla", nombre == plantilla["title"],
-              f"{nombre!r} vs {plantilla['title']!r}")
-        carpeta, avisos = names.sanitize(nombre)
-        check("el título cabe tal cual en el nombre del fichero", carpeta == nombre,
-              "; ".join(avisos) or carpeta)
+        # El título de la base no es la cadena del catálogo tal cual: el vault la
+        # pasa por `names.sanitize` antes de nombrar el `.md`, y con ese stem
+        # titula la base (`writer.create_database`). Se compara contra eso, que es
+        # lo que el producto garantiza; contra `plantilla["title"]` a pelo, un
+        # título que el saneado toque («CRM: ventas» -> «CRM ventas») pondría el
+        # guion en rojo con la base perfectamente creada.
+        esperado, _ = names.sanitize(plantilla["title"])
+        check("la base nace con el nombre saneado de la plantilla", nombre == esperado,
+              f"{nombre!r} vs {esperado!r}")
+        carpeta, _ = names.sanitize(nombre)
         fichero_base = VAULT / "Bases" / f"{carpeta}.md"
         check(f"existe Bases/{carpeta}.md", fichero_base.exists())
         check("la carpeta de filas existe", (VAULT / "Bases" / carpeta).is_dir())
