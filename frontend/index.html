@@ -210,7 +210,38 @@
     font-size: 13.5px;
     color: var(--ink);
   }
+  /* ---------- foco de teclado: un solo anillo en toda la app ----------
+     Siempre el mismo trazo (2 px del color de acento) y solo cambia DÓNDE va:
+     - por fuera, a 2 px, en lo que es una pieza suelta (botones, pestañas,
+       tarjetas, casillas);
+     - a ras del borde en los campos de texto, para que no parezca un campo
+       dentro de otro;
+     - por dentro en lo que llena su contenedor o vive en una caja que recorta
+       (filas del árbol y de la lista, opciones de menú, eventos del
+       calendario, celdas): por fuera se cortaba y no se veía dónde estabas.
+     Nunca el contorno azul del navegador, y nunca sin anillo salvo donde el
+     propio cursor de texto dice dónde estás (los títulos de página). */
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"])):focus-visible,
+  select:focus-visible,
+  textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  [role="menuitem"]:focus-visible,
+  [role="option"]:focus-visible,
+  .mdm-context-menu-item:focus-visible,
+  .mdm-slash-menu-item:focus-visible,
+  .rel-picker-option:focus-visible,
+  .search-hit:focus-visible,
+  .dashboard-item:focus-visible,
+  .inbox-open:focus-visible,
+  .cal-event:focus-visible,
+  .note-outline-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* Los títulos (de nota, de base, de fila) son campos sin caja: el cursor de
+     texto ya dice dónde estás y un anillo alrededor de un título de 30 px se
+     recortaba contra su fila y parecía un subrayado roto. */
+  .note-title:focus-visible,
+  .db-title:focus-visible,
+  .row-page-title:focus-visible,
+  .note-description:focus-visible { outline: none; }
 
   /* ---------- movimiento (corto y sin rebotes) ----------
      Lo que reacciona al ratón o al foco se anima con la misma duración corta
@@ -3220,7 +3251,6 @@
     white-space: nowrap;
   }
   .cal-event:hover { background: color-mix(in srgb, var(--accent) 30%, transparent); }
-  .cal-event:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   /* Agenda: el calendario en pantalla estrecha. Un bloque por día con sus
      filas en línea, sin rejilla de siete columnas (que a 375 px deja 45 px
      por día). Mismo contenido, misma navegación. */
