@@ -3135,6 +3135,55 @@
   /* Quitada en el diálogo: el nombre queda apagado y se puede volver a poner. */
   .prop-title-row.is-off .prop-name { opacity: 0.55; }
   .prop-options-input { width: 100%; margin-top: 6px; }
+  /* Orden de los valores de una selección: el modo y, en manual, la lista que
+     se arrastra para cambiar el orden (también con ↑/↓, para el teclado). */
+  .prop-sort { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+  .prop-sort[hidden] { display: none; }
+  .prop-sort-mode { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-muted); }
+  .prop-sort-mode select {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 5px 8px;
+    min-height: var(--control-size);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-input);
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 12.5px;
+  }
+  .prop-sort-hint { margin: 0; font-size: 11.5px; line-height: 1.35; color: var(--ink-muted); }
+  .prop-sort-hint[hidden] { display: none; }
+  .prop-sort-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .prop-sort-list[hidden] { display: none; }
+  .prop-sort-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    font-size: 12.5px;
+    cursor: grab;
+  }
+  .prop-sort-item.is-dragging { opacity: .55; }
+  .prop-sort-item.is-dragover { border-color: var(--accent); }
+  .prop-sort-grip { color: var(--ink-muted); cursor: grab; }
+  .prop-sort-value { flex: 1 1 auto; overflow-wrap: anywhere; }
+  .prop-sort-move {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .prop-sort-move:hover:not(:disabled) { border-color: var(--panel-border); color: var(--ink); }
+  .prop-sort-move:disabled { opacity: .35; cursor: default; }
   /* Las listas de propiedades de los diálogos hacen su propio scroll: con
      muchas filas el diálogo crecía más que la ventana y los botones de
      acción se quedaban fuera de la pantalla. */
@@ -3328,6 +3377,8 @@
     animation: mdm-toast-in 0.16s ease-out;
   }
   @keyframes mdm-toast-in { from { opacity: 0; transform: translateY(4px); } }
+  /* Un aviso informativo no es un fallo: el filo va en el color de acento. */
+  .error-toast.is-info { border-left-color: var(--accent); }
   .error-toast-text { flex: 1 1 auto; overflow-wrap: anywhere; }
   .error-toast-close {
     flex: 0 0 auto;
@@ -3562,6 +3613,7 @@
     .db-add-row-input { min-height: 44px; font-size: 16px; }
     .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
     .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed { font-size: 16px; min-height: 44px; }
+    .prop-sort-mode select, .prop-sort-item { font-size: 16px; min-height: 44px; }
     #prop-rows { max-height: 50dvh; }
 
     /* --- panel de sugerencias: hoja inferior a todo el ancho --- */

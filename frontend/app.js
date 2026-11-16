@@ -121,7 +121,7 @@ const MAX_ERROR_TOASTS = 3;
  * si llegan varios y se va solo a los ~6s. El nodo se crea desde aquí (el
  * HTML no lleva nada) y cuelga de body, no de #main, para seguir visible
  * mientras se navega. */
-function showError(message) {
+function showError(message, kind = "error") {
   let stack = document.getElementById("error-toasts");
   if (!stack) {
     stack = document.createElement("div");
@@ -148,7 +148,10 @@ function showError(message) {
   }
 
   const toast = document.createElement("div");
-  toast.className = "error-toast";
+  // `is-info` es el mismo aviso con el filo de otro color: no es un fallo, es
+  // algo que el usuario tiene que saber (por ejemplo, que su arrastre ha
+  // cambiado el modo de una propiedad).
+  toast.className = kind === "info" ? "error-toast is-info" : "error-toast";
   toast.setAttribute("role", "status"); // los lectores de pantalla lo anuncian sin robar el foco
 
   const text = document.createElement("span");
@@ -184,6 +187,14 @@ function showError(message) {
   toast.append(text, close);
   stack.appendChild(toast);
   return toast;
+}
+
+/** Un aviso informativo (no es un fallo): mismo sitio y misma pila que los
+ * errores, con el filo de color de acento. Se usa cuando algo ha salido bien
+ * pero el usuario tiene que saber que ha cambiado (el modo de orden de una
+ * propiedad, por ejemplo). */
+function showNotice(message) {
+  return showError(message, "info");
 }
 
 /** Deja el detalle técnico en la consola (para depurar) y avisa al usuario
@@ -8798,8 +8809,9 @@ function esquemaConPropiedad(database, key, cambios) {
     if (p.key !== key) return { ...p };
     const nueva = { ...p, ...cambios };
     if (nueva.type !== "select" && nueva.type !== "multiselect") {
-      // El orden declarado y las opciones solo existen en una selección.
+      // El orden declarado, su modo y las opciones solo existen en una selección.
       delete nueva.options;
+      delete nueva.sort_mode;
       delete nueva.sort_order;
     }
     if (nueva.type !== "relation") {
@@ -10602,21 +10614,46 @@ function moverEnLista(lista, movido, destino) {
   return [...resto.slice(0, posicion), lista[desde], ...resto.slice(posicion)];
 }
 
-/** Guarda el orden de las columnas en la PROPIEDAD (`sort_order`), no en la
- * vista: es el mismo PATCH del `schema_def` que usa el menú de una columna, con
- * la lista limpia de valores vacíos («Sin valor» no es un valor de la
- * propiedad). El `.md` de la base es la verdad, así que recargar lo mantiene.
+/** En qué modo ordena una selección: `manual` (el orden declarado, que se
+ * arrastra) o `auto` (alfabético natural). Es la misma regla que el backend
+ * (`app.properties.sort_mode`): sin `sort_mode`, una propiedad que declara
+ * `sort_order` está en manual y una que no declara nada en automático. */
+function modoDeOrden(prop) {
+  const modo = String(prop?.sort_mode || "").trim().toLowerCase();
+  if (modo === "manual" || modo === "auto") return modo;
+  return (prop?.sort_order || []).length ? "manual" : "auto";
+}
+
+/** Guarda el orden de las columnas en la PROPIEDAD (`sort_mode: manual` y
+ * `sort_order`), no en la vista: es el mismo PATCH del `schema_def` que usa el
+ * menú de una columna, con la lista limpia de valores vacíos («Sin valor» no es
+ * un valor de la propiedad). El `.md` de la base es la verdad, así que recargar
+ * lo mantiene.
+ *
+ * Si la propiedad estaba en **automático**, arrastrar una columna la pasa a
+ * manual con el orden que el usuario acaba de poner, y se le dice: un arrastre
+ * que no hace nada (porque el modo sigue ordenando por alfabeto) sería peor.
  */
 async function guardarOrdenDeColumnas(database, groupKey, orden, refresh) {
   const limpio = (orden || []).filter(
     (v) => v !== null && v !== undefined && String(v).trim() !== "",
   );
+  const prop = (database.schema_def || []).find((p) => p.key === groupKey);
+  const eraAuto = modoDeOrden(prop) === "auto";
   try {
     await guardarEsquemaDeColumnas(
       database,
-      esquemaConPropiedad(database, groupKey, { sort_order: limpio }),
+      esquemaConPropiedad(database, groupKey, {
+        sort_mode: "manual",
+        sort_order: limpio,
+      }),
     );
     refresh?.();
+    if (eraAuto) {
+      showNotice(
+        `«${prop?.name || "Esta propiedad"}» pasa a orden manual: se guarda el orden de columnas que acabas de poner.`,
+      );
+    }
   } catch (e) {
     reportError("No se pudo guardar el orden de las columnas", e);
   }
@@ -10723,7 +10760,8 @@ function renderBoard(database, rows, view, refresh) {
   // `schema` de la base): `[alta, media, baja]` se lee por importancia y no por
   // alfabeto, y el tablero es donde eso se ve. Sin orden declarado, el de
   // `options` (el de siempre) y después los valores que solo están en filas.
-  const columnas = columnasDelTablero(prop, rows, groupKey);
+  const modo = modoDeOrden(prop);
+  const columnas = columnasDelTablero(prop, rows, groupKey, modo);
   // Solo los valores de la propiedad: recolocar escribe el orden de esos (un
   // valor que solo está en una fila no pasa a estar declarado por arrastrar).
   const valoresDeColumnas = columnas.filter((c) => c.declarada).map((c) => c.valor);
@@ -10732,18 +10770,23 @@ function renderBoard(database, rows, view, refresh) {
   // PROPIEDAD (no en la vista) para que lo vean todas las vistas del tablero.
   const reordenable = prop?.type === "select" || prop?.type === "multiselect";
 
-  const grouped = new Map(columnas.map((c) => [c.valor, []]));
+  // Las filas se agrupan por la MISMA clave normalizada con la que se
+  // construyen las columnas (sin mayúsculas ni espacios). Antes se hacía con
+  // igualdad exacta: un `sort_order: [Baja, ...]` escrito a mano dejaba todas
+  // las columnas vacías y las filas en «Sin valor», mientras la tabla de la
+  // misma base ordenaba bien.
+  const grouped = new Map(columnas.map((c) => [claveDeColumna(c.valor), []]));
   const other = [];
   rows.forEach((r) => {
-    const v = r.properties?.[groupKey];
-    if (grouped.has(v)) grouped.get(v).push(r);
+    const clave = claveDeColumna(r.properties?.[groupKey]);
+    if (clave && grouped.has(clave)) grouped.get(clave).push(r);
     else other.push(r);
   });
 
   const options = { groupKey, refresh, porId };
   columnas.forEach((columna) =>
     board.appendChild(
-      renderBoardColumn(database, columna.valor, grouped.get(columna.valor) || [], {
+      renderBoardColumn(database, columna.valor, grouped.get(claveDeColumna(columna.valor)) || [], {
         ...options,
         soltar: columna.soltar,
         // Solo las columnas de un valor de la propiedad se recolocan: un valor
@@ -10793,7 +10836,7 @@ function uniqueValues(rows, key) {
  * declaradas: un valor que nadie declaró no se queda escrito en el `schema` por
  * haber arrastrado otra columna (seguirá al final por la regla de siempre).
  */
-function columnasDelTablero(prop, rows, groupKey) {
+function columnasDelTablero(prop, rows, groupKey, modo = modoDeOrden(prop)) {
   const opciones = new Set((prop?.options || []).map((v) => String(v).trim().toLowerCase()));
   const conOpciones = opciones.size > 0;
   const vistas = new Set();
@@ -10811,10 +10854,21 @@ function columnasDelTablero(prop, rows, groupKey) {
       declarada,
     });
   };
-  (prop?.sort_order || []).forEach((v) => anadir(v, true));
+  // En manual manda el orden declarado; en automático, el de `options` (el de
+  // creación), que es lo de siempre. Después, los valores que solo están en
+  // las filas.
+  if (modo === "manual") (prop?.sort_order || []).forEach((v) => anadir(v, true));
   (prop?.options || []).forEach((v) => anadir(v, true));
   uniqueValues(rows, groupKey).forEach((v) => anadir(v, false));
   return columnas;
+}
+
+/** La clave con la que se comparan una columna y el valor de una fila: sin
+ * mayúsculas ni espacios, como `option_key` en el backend. Una lista (una
+ * multiselección) no es un valor de columna: devuelve `""`. */
+function claveDeColumna(valor) {
+  if (typeof valor !== "string" && typeof valor !== "number") return "";
+  return String(valor).trim().toLowerCase();
 }
 
 /** Dos valores de columna son el mismo si lo son sin mayúsculas ni espacios:
@@ -12701,6 +12755,151 @@ function addPropertyRow(prop = null) {
   optionsInput.className = "prop-options-input";
   optionsInput.hidden = true;
 
+  // Orden de los valores de una selección: `auto` (alfabético natural) o
+  // `manual` (la lista de abajo, que se arrastra). Es la misma decisión que se
+  // guarda en el `schema` (`sort_mode`/`sort_order`) y la que usa el tablero
+  // para poner sus columnas, así que no hay dos verdades sobre el orden.
+  const sortWrap = document.createElement("div");
+  sortWrap.className = "prop-sort";
+  sortWrap.hidden = true;
+
+  const sortModeLabel = document.createElement("label");
+  sortModeLabel.className = "prop-sort-mode";
+  const sortModeText = document.createElement("span");
+  sortModeText.textContent = "Orden de los valores";
+  const sortModeSelect = document.createElement("select");
+  sortModeSelect.className = "prop-sort-mode-select";
+  sortModeSelect.setAttribute("aria-label", "Modo de orden de los valores");
+  [
+    ["auto", "Automático (alfabético)"],
+    ["manual", "Manual (arrastra los valores)"],
+  ].forEach(([valor, texto]) => {
+    const opcion = document.createElement("option");
+    opcion.value = valor;
+    opcion.textContent = texto;
+    sortModeSelect.appendChild(opcion);
+  });
+  sortModeLabel.append(sortModeText, sortModeSelect);
+
+  const sortHint = document.createElement("p");
+  sortHint.className = "prop-sort-hint";
+  const sortList = document.createElement("ul");
+  sortList.className = "prop-sort-list";
+  sortList.setAttribute("aria-label", "Orden manual de los valores");
+  sortWrap.append(sortModeLabel, sortHint, sortList);
+
+  // El orden manual que se está editando y lo que ya venía declarado en el
+  // `.md` (puede nombrar valores que ya no están en `options`: no se pierden).
+  wrap.__orden = [];
+  wrap.__sortOrder = [...(prop?.sort_order || [])];
+  let arrastrandoValor = null;
+
+  /** Los valores de `options` como están ahora en el campo de texto, sin
+   * repetir y con la grafía del primero. */
+  const valoresDeOpciones = () => {
+    const vistos = new Set();
+    const valores = [];
+    optionsInput.value
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((valor) => {
+        const clave = valor.toLowerCase();
+        if (vistos.has(clave)) return;
+        vistos.add(clave);
+        valores.push(valor);
+      });
+    return valores;
+  };
+
+  /** El orden vigente de los valores de `options`: primero los que ya estaban
+   * ordenados y luego los nuevos, al final. */
+  const ordenVigente = () => {
+    const valores = valoresDeOpciones();
+    const claves = new Set(valores.map((v) => v.toLowerCase()));
+    const previos = (wrap.__orden || []).filter((v) => claves.has(String(v).toLowerCase()));
+    const ya = new Set(previos.map((v) => String(v).toLowerCase()));
+    return [...previos, ...valores.filter((v) => !ya.has(v.toLowerCase()))];
+  };
+
+  const pintarOrden = () => {
+    const manual = sortModeSelect.value === "manual";
+    sortList.hidden = !manual;
+    sortHint.hidden = !manual;
+    sortHint.textContent = manual
+      ? "Arrastra una fila (o usa ↑ / ↓) para cambiar el orden en que se leen y se agrupan los valores."
+      : "Se ordenan alfabéticamente, sin distinguir mayúsculas ni tildes.";
+    sortList.textContent = "";
+    if (!manual) return;
+    wrap.__orden = ordenVigente();
+    wrap.__orden.forEach((valor, indice) => {
+      const item = document.createElement("li");
+      item.className = "prop-sort-item";
+      item.draggable = true;
+      const asa = document.createElement("span");
+      asa.className = "prop-sort-grip";
+      asa.textContent = "⠿";
+      asa.setAttribute("aria-hidden", "true");
+      const etiqueta = document.createElement("span");
+      etiqueta.className = "prop-sort-value";
+      etiqueta.textContent = valor;
+      item.append(asa, etiqueta);
+      const mover = (direccion, texto) => {
+        const boton = document.createElement("button");
+        boton.type = "button";
+        boton.className = "prop-sort-move";
+        boton.textContent = direccion < 0 ? "↑" : "↓";
+        boton.title = texto;
+        boton.setAttribute("aria-label", texto);
+        boton.disabled = direccion < 0 ? indice === 0 : indice === wrap.__orden.length - 1;
+        boton.addEventListener("click", () => {
+          const destino = wrap.__orden[indice + direccion];
+          if (destino === undefined) return;
+          wrap.__orden = moverEnLista(wrap.__orden, valor, destino);
+          pintarOrden();
+          actualizarGuardadoDelDialogo();
+        });
+        return boton;
+      };
+      item.append(mover(-1, `Subir «${valor}»`), mover(1, `Bajar «${valor}»`));
+      item.addEventListener("dragstart", (e) => {
+        arrastrandoValor = valor;
+        item.classList.add("is-dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          try {
+            e.dataTransfer.setData("text/plain", valor);
+          } catch {
+            // hay navegadores que no dejan tocar dataTransfer en dragstart
+          }
+        }
+      });
+      item.addEventListener("dragend", () => {
+        arrastrandoValor = null;
+        sortList.querySelectorAll(".is-dragging, .is-dragover").forEach((n) => {
+          n.classList.remove("is-dragging", "is-dragover");
+        });
+      });
+      item.addEventListener("dragover", (e) => {
+        if (arrastrandoValor === null) return;
+        e.preventDefault();
+        item.classList.add("is-dragover");
+      });
+      item.addEventListener("dragleave", () => item.classList.remove("is-dragover"));
+      item.addEventListener("drop", (e) => {
+        if (arrastrandoValor === null) return;
+        e.preventDefault();
+        const movido = arrastrandoValor;
+        arrastrandoValor = null;
+        if (mismoValorDeColumna(movido, valor)) return;
+        wrap.__orden = moverEnLista(wrap.__orden, movido, valor);
+        pintarOrden();
+        actualizarGuardadoDelDialogo();
+      });
+      sortList.appendChild(item);
+    });
+  };
+
   // Relación: a qué base apunta (`target_database`) y si enlaza una fila o
   // varias (`multiple`). Solo se enseña con el tipo Relación.
   const relWrap = document.createElement("div");
@@ -12766,9 +12965,12 @@ function addPropertyRow(prop = null) {
   const aplicarVisibilidad = () => {
     const tipo = typeSelect.value;
     const esRelacion = tipo === "relation";
+    const esSeleccion = ["select", "multiselect"].includes(tipo);
     relWrap.hidden = !esRelacion;
-    optionsInput.hidden = !["select", "multiselect"].includes(tipo);
+    optionsInput.hidden = !esSeleccion;
+    sortWrap.hidden = !esSeleccion;
     if (esRelacion) llenarDestino();
+    if (esSeleccion) pintarOrden();
   };
 
   if (prop) {
@@ -12776,6 +12978,7 @@ function addPropertyRow(prop = null) {
     typeSelect.value = prop.type;
     optionsInput.value = (prop.options || []).join(", ");
     optionsInput.hidden = !["select", "multiselect"].includes(prop.type);
+    sortModeSelect.value = modoDeOrden(prop);
   }
 
   typeSelect.addEventListener("change", () => {
@@ -12791,7 +12994,15 @@ function addPropertyRow(prop = null) {
     actualizarGuardadoDelDialogo();
   });
 
-  wrap.append(row, optionsInput, relWrap);
+  optionsInput.addEventListener("input", () => {
+    wrap.__orden = ordenVigente();
+    pintarOrden();
+  });
+  sortModeSelect.addEventListener("change", () => {
+    pintarOrden();
+    actualizarGuardadoDelDialogo();
+  });
+  wrap.append(row, optionsInput, sortWrap, relWrap);
   propRowsContainer.appendChild(wrap);
   aplicarVisibilidad();
 }
@@ -12828,13 +13039,28 @@ function readSchemaFromDialog() {
     const name = wrap.querySelector(".prop-name").value.trim();
     const type = wrap.querySelector(".prop-type").value;
     const optionsRaw = wrap.querySelector(".prop-options-input").value.trim();
+    const sortMode = wrap.querySelector(".prop-sort-mode-select")?.value || "auto";
     // Una fila sin nombre no es una propiedad: no se inventa una clave con el
     // tipo por nombre (y así el botón «Propiedad» puede quedarse vacío).
     if (!name) return;
     const prop = { name, type };
     if (wrap.__propKey) prop.key = wrap.__propKey;
-    if (["select", "multiselect"].includes(type) && optionsRaw) {
-      prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (["select", "multiselect"].includes(type)) {
+      if (optionsRaw) {
+        prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+      // El modo SIEMPRE viaja: en `auto` el servidor suelta el `sort_order`
+      // (en automático el orden es el alfabético) y en `manual` guarda la
+      // lista en el orden en que se ha quedado. Un valor declarado que ya no
+      // está en `options` se conserva al final: puede seguir en las filas.
+      prop.sort_mode = sortMode === "manual" ? "manual" : "auto";
+      if (sortMode === "manual") {
+        const enOpciones = new Set((prop.options || []).map((v) => v.toLowerCase()));
+        const sobrantes = (wrap.__sortOrder || []).filter(
+          (v) => !enOpciones.has(String(v).toLowerCase()),
+        );
+        prop.sort_order = [...(wrap.__orden || []), ...sobrantes];
+      }
     }
     if (type === "relation") {
       // Se manda SIEMPRE lo que dice el `<select>`, también vacío: el servidor
