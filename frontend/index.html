@@ -3165,43 +3165,6 @@
     margin: 0;
     accent-color: var(--accent);
   }
-  /* Cierre: la casilla que marca esta propiedad como «la que dice si la fila
-     está cerrada», con sus valores cuando es una selección. El `[hidden]`
-     explícito hace falta por el `display: flex`. */
-  .prop-done {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 14px;
-    margin-top: 6px;
-    padding-left: 2px;
-  }
-  .prop-done[hidden] { display: none; }
-  .prop-done-flag {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
-    color: var(--ink);
-  }
-  .prop-done-flag input {
-    width: 15px;
-    height: 15px;
-    margin: 0;
-    accent-color: var(--accent);
-  }
-  .prop-done-values {
-    flex: 1 1 220px;
-    min-width: 0;
-    padding: 5px 8px;
-    min-height: var(--control-size);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-input);
-    background: var(--panel);
-    color: var(--ink);
-    font-size: 12.5px;
-  }
-  .prop-done-values[hidden] { display: none; }
   /* Por qué «Guardar» está apagado: una línea, no un párrafo. */
   .db-save-hint {
     margin: 10px 0 0;
@@ -3579,7 +3542,7 @@
        ya mide 44 por la regla general de `.btn`. */
     .db-add-row-input { min-height: 44px; font-size: 16px; }
     .prop-row { grid-template-columns: minmax(0, 1fr) 104px 44px; }
-    .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed, .prop-done-values { font-size: 16px; min-height: 44px; }
+    .prop-row input, .prop-row select, .prop-options-input, .prop-type-fixed { font-size: 16px; min-height: 44px; }
     #prop-rows { max-height: 50dvh; }
 
     /* --- panel de sugerencias: hoja inferior a todo el ancho --- */
