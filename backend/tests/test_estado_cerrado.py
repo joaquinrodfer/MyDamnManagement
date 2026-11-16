@@ -473,6 +473,26 @@ def test_renombrar_la_propiedad_del_estado_mueve_la_regla(client, vault_path):
     assert "property: estado" not in texto
 
 
+def test_cambiar_las_opciones_ajusta_los_valores_a_su_grafia(client, vault_path):
+    base = crear_base(client)
+    assert cerrar(client, base["id"]).status_code == 200
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}",
+        json={
+            "schema_def": [
+                PASO_DE,
+                {**ESTADO, "options": ["abierta", "en curso", "Hecha", "Cerrada"]},
+                PRIORIDAD,
+            ]
+        },
+    )
+
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["closed"]["values"] == ["Hecha", "Cerrada"]
+    assert "values: [Hecha, Cerrada]" in md_base(vault_path)
+
+
 def test_borrar_la_propiedad_del_estado_quita_la_regla(client, vault_path):
     base = crear_base(client)
     assert cerrar(client, base["id"]).status_code == 200

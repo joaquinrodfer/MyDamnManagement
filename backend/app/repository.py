@@ -1038,14 +1038,19 @@ class Repository:
                 elif tipo == "checkbox":
                     closed_update = {closed.PROPERTY_KEY: clave, closed.VALUES_KEY: []}
                 else:
-                    opciones = {
-                        str(o).strip().casefold() for o in (prop.get("options") or [])
+                    # La grafía manda la opción, no la regla: si «Hecho» pasa a
+                    # «hecho», el valor que se guarda es el nuevo o el `.md`
+                    # quedaría con un valor que la celda ya no puede tener.
+                    canonica = {
+                        str(o).strip().casefold(): str(o).strip()
+                        for o in (prop.get("options") or [])
+                        if str(o).strip()
                     }
-                    valores = [
-                        v
-                        for v in (current.closed.get(closed.VALUES_KEY) or [])
-                        if str(v).strip().casefold() in opciones
-                    ]
+                    valores: list[str] = []
+                    for v in current.closed.get(closed.VALUES_KEY) or []:
+                        real = canonica.get(str(v).strip().casefold())
+                        if real and real not in valores:
+                            valores.append(real)
                     closed_update = (
                         {closed.PROPERTY_KEY: clave, closed.VALUES_KEY: valores}
                         if valores
