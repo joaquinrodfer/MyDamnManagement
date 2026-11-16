@@ -10572,9 +10572,33 @@ function repaintCell(td, database, row, prop, focus, hooks = null) {
   const ownedFocus = td.contains(document.activeElement);
   paintCell(td, database, row, prop, hooks);
   if (!td.isConnected) return;
+  repintarFechasDeLaFila(td, database, row, hooks);
   setRovingCell(td);
   const shouldFocus = focus === undefined ? ownedFocus || document.activeElement === document.body : focus;
   if (shouldFocus) td.focus();
+}
+
+/** Repinta las celdas de fecha de la fila, menos la que se acaba de guardar.
+ *
+ * La marca de «fecha vencida» depende de si la **fila** está cerrada —una tarea
+ * hecha tarde no está vencida—, así que guardar el estado cambia celdas que no
+ * se han tocado. Sin esto, cerrar una tarea desde la tabla dejaba su fecha en
+ * tono de aviso hasta el siguiente repintado de la vista: el servidor ya había
+ * dicho que no estaba vencida y la fila decía que sí. Solo se hace en bases que
+ * declaran regla de cierre (en las demás no hay marca que cambiar) y solo con
+ * las propiedades de tipo `date` de esa fila. */
+function repintarFechasDeLaFila(td, database, row, hooks = null) {
+  if (!reglaDeCierre(database)) return;
+  const tr = td?.closest("tr");
+  if (!tr) return;
+  for (const otra of tr.querySelectorAll("td[data-col-key]")) {
+    if (otra === td) continue;
+    const clave = otra.dataset.colKey;
+    if (!clave || clave === "@title") continue;
+    const prop = (database.schema_def || []).find((p) => p && p.key === clave);
+    if (prop?.type !== "date") continue;
+    paintCell(otra, database, row, prop, hooks);
+  }
 }
 
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
