@@ -259,6 +259,15 @@ class RowFromTemplate(BaseModel):
 
 
 class DatabaseUpdate(BaseModel):
+    """El cuerpo de `PATCH /databases/{id}`: título, icono y schema.
+
+    La **regla de fila cerrada** no se cambia por esta ruta: tiene la suya
+    (`PUT /databases/{id}/closed`, con la validación contra las opciones reales
+    de la propiedad). El campo `closed` se declara solo para poder rechazarlo
+    con un 400 que diga dónde está: sin declararlo, Pydantic lo descartaba y el
+    cliente recibía un 200 de algo que no se había guardado.
+    """
+
     title: Optional[str] = None
     icon: Optional[str] = None
     schema_def: Optional[list[PropertyDef]] = None
@@ -268,6 +277,10 @@ class DatabaseUpdate(BaseModel):
     # `True` = la tabla deja de enseñar la columna del título. La fila se sigue
     # llamando por su `id` (el fichero), y su `title` sigue en el `.md`.
     title_hidden: Optional[bool] = None
+    # Solo para rechazarlo: `PATCH` no cambia la regla de estado cerrado. El
+    # router contesta 400 si la petición trae la clave (aunque venga a `null`),
+    # porque un 200 que no ha guardado nada es peor que un error que lo dice.
+    closed: Optional[dict[str, Any]] = None
 
 
 class DatabaseRead(BaseModel):
@@ -345,7 +358,8 @@ class RowChildren(BaseModel):
     """El contador de la tarjeta: subtareas DIRECTAS de una fila.
 
     `total` son las hijas y `closed` las que están cerradas según la regla de la
-    base (`app.hierarchy.is_closed`: la propiedad marcada con `done`). Se cuenta
+    base (`app.closed.is_closed`: el bloque `closed: {property, values}` de su
+    `.md`). Se cuenta
     sobre todas las filas de la base, no sobre las que deja pasar la vista: el
     contador de una fila no puede cambiar porque la vista filtre por otra cosa.
     """
@@ -380,9 +394,9 @@ class RowRead(BaseModel):
     # Cuántas subtareas tiene y cuántas están cerradas: el «1 de 3» de la fila.
     children: RowChildren = Field(default_factory=RowChildren)
     # Si ESTA fila está cerrada, con la misma regla que cuenta el contador de su
-    # madre (`app.hierarchy.is_closed`). Lo calcula el servidor para que el
-    # cliente no tenga que repetir la regla de `done` y las dos no puedan
-    # discrepar.
+    # madre (`app.closed.is_closed`: el bloque `closed: {property, values}` de
+    # la base). Lo calcula el servidor para que el cliente no tenga que repetir
+    # la regla y las dos no puedan discrepar.
     closed: bool = False
     # `{clave_de_la_propiedad: [fila, ...]}` de las propiedades `relation`, con
     # el título ya resuelto por el servidor (una consulta por respuesta). Una

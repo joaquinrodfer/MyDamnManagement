@@ -222,11 +222,15 @@ def _plan_relation(prop: dict, item: dict, origen: Optional[dict]) -> None:
 
 
 def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
-    """El marcador `done` de una propiedad, que dice qué cuenta como «cerrada».
+    """El marcador `done` de una propiedad, heredado de cuando lo cerrado lo
+    decía la columna.
 
-    Es lo que usa el contador de subtareas (`app.hierarchy.is_closed`): un
-    `checkbox` con `done: true` (marcado = cerrada) o un `select`/`multiselect`
-    con `done: [valor, ...]` (la celda vale uno de ellos = cerrada).
+    Ya no es la verdad por sí solo: la base declara su regla en `closed:
+    {property, values}`, y mientras no la declare esto es lo que se lee como
+    regla (`app.closed.effective`, con `source: done`). La forma es la de
+    siempre: un `checkbox` con `done: true` (marcado = cerrada) o un
+    `select`/`multiselect` con `done: [valor, ...]` (la celda vale uno de ellos
+    = cerrada).
 
     Si la petición no lo trae se conserva el que ya tenía la propiedad: el
     diálogo de propiedades no pregunta por él, y guardar el resto de la base no
