@@ -17,6 +17,7 @@ from app.properties import (
     plan_schema,
     related_refs,
     relation_ids,
+    schema_types,
     schema_with_relation_warnings,
     validate_properties,
 )
@@ -24,7 +25,7 @@ from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app.templates import TEMPLATES
 from app.vault.store import UNSET, VaultError
-from app.views import apply_view
+from app.views import apply_view, sort_keys
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
@@ -426,6 +427,16 @@ def list_rows(
         view_def = repo.get_view(database_id, view)
         if view_def is None:
             raise HTTPException(404, "Vista no encontrada")
+        # El orden por tipo: el mapa de tipos siempre, y los títulos de las
+        # relaciones solo cuando la vista ordena por una (no se paga una
+        # consulta que la vista no va a mirar).
+        tipos = schema_types(db_def.schema_def)
+        refs_de_orden: dict[str, tuple[str, str]] = {}
+        if any(tipos.get(clave) == "relation" for clave in sort_keys(view_def.config or {})):
+            ids_relacion = relation_ids(
+                db_def.schema_def, [row.properties or {} for row in rows]
+            )
+            refs_de_orden = repo.row_refs(ids_relacion) if ids_relacion else {}
         rows = apply_view(
             rows,
             view_def.config or {},
@@ -434,10 +445,17 @@ def list_rows(
             people={key: datos[0] for key, datos in (users or {}).items()},
             person_keys=claves_persona,
             closed_rule=db_def.closed,
-            # El orden declarado de cada selección (`sort_order`): ordenar por
-            # `prioridad` da alta, media, baja y no el alfabeto. Las bases que
-            # no lo declaran no aparecen en el mapa y ordenan como siempre.
+            # El orden declarado de cada selección en modo `manual`: ordenar
+            # por `prioridad` da alta, media, baja y no el alfabeto. Las bases
+            # que no lo declaran ordenan por el texto natural de su tipo.
             orders=order_ranks(db_def.schema_def),
+            # El tipo de cada propiedad: cada clave ordena según el suyo
+            # (número, fecha, casilla, persona por nombre, relación por
+            # título...). Sin esto todo se ordenaba como texto.
+            types=tipos,
+            # Los títulos de las filas enlazadas, solo si alguna clave de
+            # orden es una relación (una consulta, no una por fila).
+            refs=refs_de_orden,
         )
     elif key:
         # «Todas» no tiene vista que diga el nivel, así que se ven todas las

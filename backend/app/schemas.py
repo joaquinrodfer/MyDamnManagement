@@ -137,6 +137,11 @@ class PropertyDef(BaseModel):
     # toco» (se conserva el que ya tenía, ver `app.properties.plan_schema`);
     # `[]` = bórralo.
     sort_order: Optional[list[str]] = None
+    # Modo de orden de la misma selección: `manual` (manda `sort_order`, y el
+    # tablero agrupa en ese orden) o `auto` (alfabético natural). `None` al
+    # editar = «no lo toco»; sin ninguna de las dos claves la base ordena en
+    # `auto`, salvo que declare `sort_order`, que entonces se lee en manual.
+    sort_mode: Optional[str] = None
     # Solo en `relation`. `None` al editar = «no lo toco» (se conserva el que
     # ya tenía la propiedad, ver `app.properties.plan_schema`); `""` = bórralo.
     target_database: Optional[str] = None
@@ -169,6 +174,17 @@ class PropertyDef(BaseModel):
         if isinstance(v, str):
             return v.split(",")
         return v
+
+    @field_validator("sort_mode")
+    @classmethod
+    def sort_mode_is_known(cls, v):
+        """El modo de orden es `manual` o `auto`; se normaliza lo escrito."""
+        if v is None:
+            return v
+        modo = str(v).strip().lower()
+        if modo not in ("manual", "auto"):
+            raise ValueError("sort_mode es `manual` o `auto`")
+        return modo
 
     @field_validator("multiple", mode="before")
     @classmethod

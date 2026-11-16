@@ -22,12 +22,14 @@ nunca, así que el cliente no tiene que saber snake_case; y cuando el nombre de
 una propiedad existente cambia, el plan dice qué claves hay que migrar en las
 filas y en las vistas.
 
-Y vive la **lectura del orden declarado** de una selección (`sort_order`): una
-propiedad `select`/`multiselect` puede decir en el `schema` en qué orden se
-leen y se agrupan sus valores (`alta, media, baja`), que no es el alfabético ni
-el de creación. Lo leen la ordenación de las vistas (`app.views`) y el tablero
-del panel; el valor que no está declarado va al final, porque uno que apareció
-después no es «el más importante».
+Y vive la **lectura del orden de una selección**: una propiedad
+`select`/`multiselect` elige modo (`sort_mode: manual | auto`) y, en manual, en
+qué orden se leen y se agrupan sus valores (`sort_order`: `alta, media, baja`),
+que no es el alfabético ni el de creación. Lo leen la ordenación de las vistas
+(`app.views`) y el tablero del panel; el valor que no está declarado va al
+final, porque uno que apareció después no es «el más importante». En `auto`
+manda el texto natural, y una base que no declara nada se comporta así. De aquí
+sale también `schema_types`, el mapa de tipos que necesita el orden por tipo.
 """
 
 import re
@@ -70,6 +72,13 @@ DEFAULT_TITLE_NAME = "Título"
 # lectura discreparían en qué propiedad puede declarar un orden.
 SELECT_TYPES = SORTABLE_TYPES
 
+# En qué modo ordena una selección: `manual` (el orden declarado en
+# `sort_order`) o `auto` (alfabético, con la regla natural de `app.views`).
+# Una base sin `sort_mode` ordena en `auto`; si declara `sort_order` sin modo se
+# lee en `manual`, que es lo que escribe una persona que pone la lista de
+# valores ordenada a mano (y lo que escribía la primera versión de esto).
+SORT_MODES = ("manual", "auto")
+
 
 def option_key(value: Any) -> str:
     """La forma en que se compara un valor de selección con su orden declarado.
@@ -83,13 +92,35 @@ def option_key(value: Any) -> str:
     return str(value).strip().casefold()
 
 
-def declared_order(prop: dict) -> list[str]:
-    """Los valores de una selección en su orden semántico, o `[]` si no declara.
+def sort_mode(prop: dict) -> str:
+    """En qué modo ordena una selección: `manual` o `auto`.
 
-    `sort_order` es opcional y vive en el `schema` de la base. Una base que no
-    lo declara se ordena como siempre (alfabético): el orden semántico es
-    opt-in, para que añadir esta función no cambie el orden de las bases que ya
-    existían sin que nadie lo haya pedido.
+    - `manual`: el orden es el declarado en `sort_order` (y, si no lo hay, el de
+      `options`, que es como se crearon las columnas); se puede arrastrar en el
+      editor de la propiedad y en el tablero.
+    - `auto`: alfabético con la regla natural (sin mayúsculas ni tildes y con
+      los números como números), que es lo de siempre.
+
+    Sin `sort_mode` manda `sort_order`: si la propiedad declara un orden se lee
+    en `manual` (es lo que escribía la primera versión de esta función, y tirar
+    ese orden sin avisar sería romper un `.md` que ya lo tenía); si no declara
+    nada, en `auto`, que es el modo de las bases que no han pedido nada.
+    """
+    if not isinstance(prop, dict) or prop.get("type") not in SELECT_TYPES:
+        return "auto"
+    modo = str(prop.get("sort_mode") or "").strip().lower()
+    if modo in SORT_MODES:
+        return modo
+    return "manual" if sort_values(prop.get("sort_order")) else "auto"
+
+
+def declared_order(prop: dict) -> list[str]:
+    """Los valores de una selección en su orden manual, o `[]` si no lo tiene.
+
+    Solo una propiedad en modo `manual` declara orden: en `auto` el orden es el
+    alfabético y una lista de valores no pinta nada. En manual manda
+    `sort_order` y, si la propiedad no lo escribe, el orden de `options` (que es
+    el de las columnas del tablero y el que se ve al pasar a manual).
 
     Solo vale en `select`/`multiselect`: en un texto el orden de una lista de
     valores no significa nada. Lo leído se limpia igual que al guardarlo (sin
@@ -98,16 +129,32 @@ def declared_order(prop: dict) -> list[str]:
     """
     if not isinstance(prop, dict) or prop.get("type") not in SELECT_TYPES:
         return []
-    return sort_values(prop.get("sort_order"))
+    if sort_mode(prop) != "manual":
+        return []
+    return sort_values(prop.get("sort_order")) or sort_values(prop.get("options"))
+
+
+def schema_types(schema_def: list[dict]) -> dict[str, str]:
+    """`{clave: tipo}` de una base: lo que necesita el orden por tipo.
+
+    `app.views.apply_view` no mira el schema (solo filas y la configuración de
+    la vista); quien lo llama le pasa este mapa para que cada clave se ordene
+    por la regla de su tipo y no toda como texto.
+    """
+    return {
+        str(prop["key"]): str(prop.get("type"))
+        for prop in schema_def or []
+        if isinstance(prop, dict) and prop.get("key") and prop.get("type")
+    }
 
 
 def order_ranks(schema_def: list[dict]) -> dict[str, dict[str, int]]:
-    """`{clave: {valor: puesto}}` de las propiedades que declaran orden.
+    """`{clave: {valor: puesto}}` de las propiedades que ordenan en manual.
 
     Es lo que consume la ordenación de una vista (`app.views.apply_view`): el
-    puesto de cada valor declarado, ya normalizado. Una propiedad sin
-    `sort_order` no aparece en el mapa, y una clave que no está en el mapa se
-    ordena como siempre.
+    puesto de cada valor declarado, ya normalizado. Una propiedad en `auto` (o
+    sin orden declarado) no aparece en el mapa y se ordena por el texto natural,
+    como una base que no ha pedido nada.
     """
     ranks: dict[str, dict[str, int]] = {}
     for prop in schema_def or []:
@@ -247,7 +294,7 @@ def plan_schema(
                     "o quita una de las dos: la jerarquía de la base es una.",
                 )
         _plan_done(prop, item, origen, name)
-        _plan_sort_order(prop, item, origen, name)
+        _plan_order(prop, item, origen, name)
         finales.append(prop)
 
     claves_finales = {p["key"] for p in finales}
@@ -346,46 +393,81 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
     prop["done"] = valores
 
 
-def _plan_sort_order(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
-    """El `sort_order` de una selección: en qué orden se leen sus valores.
+def _plan_order(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
+    """El modo de orden de una selección y, si es manual, su orden de valores.
 
-    Es lo que hace que `alta / media / baja` se ordene por importancia y no por
-    alfabeto. Se guarda en el `schema` de la base (el `.md` es la verdad) y no
-    en la vista: el orden de los valores es de la propiedad, igual que sus
-    `options`, así que dos vistas de la misma base no pueden discrepar.
+    Se guarda en el `schema` de la base (el `.md` es la verdad), no en la vista:
+    el orden de los valores es de la propiedad, igual que sus `options`, así que
+    dos vistas de la misma base no pueden discrepar.
 
-    Si la petición no lo trae se conserva el que ya tenía: el diálogo de
-    propiedades de la interfaz todavía no pregunta por él, y guardar el resto
-    de la base no puede borrar el orden sin que nadie lo haya pedido. `[]` lo
-    quita (la clave no se escribe). Un orden en una propiedad que no es una
-    selección es un 400 si viene pedido, y si venía heredado —la propiedad era
-    una selección y ahora es un texto— se suelta: en un texto no significa
-    nada, y guardar el resto del schema no puede fallar por eso.
-
-    Se limpia: sin vacíos, sin repetir y sin espacios de sobra. Un valor
-    declarado que ya no está en `options` se queda: puede seguir en filas
-    escritas a mano en el `.md`, y ahí tiene su sitio.
+    - `sort_mode: manual` escribe `sort_order` (limpio: sin vacíos, sin repetir,
+      sin espacios de sobra). Un valor declarado que ya no está en `options` se
+      queda: puede seguir en filas escritas a mano y ahí tiene su sitio.
+    - `sort_mode: auto` suelta `sort_order`: en automático el orden es el
+      alfabético y guardar una lista de puestos solo confundiría a quien lea el
+      `.md`. Es lo que hace el arrastre del tablero al pasar una columna de
+      automático a manual: manda el modo nuevo y el orden que el usuario acaba
+      de poner.
+    - Sin `sort_mode` en la petición se conserva el que ya tenía (el diálogo de
+      propiedades no siempre lo manda). Un `sort_order` nuevo sin modo es una
+      petición de orden manual: nadie escribe la lista para que se ignore.
+    - Un modo u orden en una propiedad que no es una selección es un 400 si
+      viene pedido; si venía heredado —la propiedad era una selección y ahora es
+      un texto— se suelta, para que guardar el resto del schema no falle.
     """
-    pedido = item.get("sort_order")
-    crudo = pedido if pedido is not None else (origen or {}).get("sort_order")
-    if crudo is None:
-        return
-    if not isinstance(crudo, (list, str)):
-        if pedido is None:      # heredado ilegible: se suelta
-            return
+    tipo = prop.get("type")
+    pedido_modo = item.get("sort_mode")
+    pedido_orden = item.get("sort_order")
+
+    modo: Optional[str] = None
+    if pedido_modo is not None:
+        texto = str(pedido_modo).strip().lower()
+        if texto not in SORT_MODES:
+            raise HTTPException(
+                400, f"«{name}»: `sort_mode` es `manual` o `auto`, no {pedido_modo!r}"
+            )
+        if tipo not in SELECT_TYPES:
+            raise HTTPException(
+                400,
+                f"«{name}»: `sort_mode` solo tiene sentido en una selección "
+                f"(ahí elige entre el orden declarado y el alfabético), y esta "
+                f"es de tipo {tipo!r}",
+            )
+        modo = texto
+    elif origen is not None:
+        heredado = str(origen.get("sort_mode") or "").strip().lower()
+        modo = heredado if heredado in SORT_MODES else None
+
+    if pedido_orden is not None and not isinstance(pedido_orden, (list, str)):
         raise HTTPException(400, f"«{name}»: `sort_order` es una lista de valores")
-    valores = sort_values(crudo)
-    if not valores:
-        return                  # `[]` = quitar (no se escribe la clave)
-    if prop.get("type") not in SELECT_TYPES:
-        if pedido is None:
-            return
-        raise HTTPException(
-            400,
-            f"«{name}»: `sort_order` solo tiene sentido en una selección "
-            f"(el orden de sus valores), y esta es de tipo {prop.get('type')!r}",
-        )
-    prop["sort_order"] = valores
+    crudo = pedido_orden if pedido_orden is not None else (origen or {}).get("sort_order")
+    valores = sort_values(crudo) if crudo is not None else []
+
+    if valores and tipo not in SELECT_TYPES:
+        if pedido_orden is None:
+            valores = []          # heredado: se suelta sin romper el guardado
+        else:
+            raise HTTPException(
+                400,
+                f"«{name}»: `sort_order` solo tiene sentido en una selección "
+                f"(el orden de sus valores), y esta es de tipo {tipo!r}",
+            )
+
+    if modo is None:
+        modo = "manual" if valores else None
+
+    if modo == "auto":
+        # El modo manda: un orden guardado en automático no se aplica. Se
+        # escribe `auto` solo si lo pidió alguien (no se ensucia el `.md` de las
+        # bases que nunca han hablado del orden).
+        if pedido_modo is not None:
+            prop["sort_mode"] = "auto"
+        return
+
+    if modo == "manual":
+        prop["sort_mode"] = "manual"
+        if valores:
+            prop["sort_order"] = valores
 
 
 def relation_properties(schema_def: list[dict]) -> list[dict]:
