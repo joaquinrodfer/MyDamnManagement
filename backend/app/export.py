@@ -35,12 +35,12 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from app.config import settings
-from app.properties import person_ids, person_keys
+from app.properties import order_ranks, person_ids, person_keys, relation_ids, schema_types
 from app.repository import Database, Page, Repository, View
 from app.vault import fm
 from app.hierarchy import parent_key
 from app.vault.reader import PARENT_ROW
-from app.views import apply_view
+from app.views import apply_view, sort_keys
 
 # El `info string` de la valla que marca un bloque de base.
 DATABASE_FENCE = "mdm-database"
@@ -203,6 +203,13 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
         else {}
     )
     if view is not None:
+        tipos = schema_types(database.schema_def)
+        refs_de_orden: dict[str, tuple[str, str]] = {}
+        if any(tipos.get(clave) == "relation" for clave in sort_keys(view.config or {})):
+            ids_relacion = relation_ids(
+                database.schema_def, [row.properties or {} for row in rows]
+            )
+            refs_de_orden = repo.row_refs(ids_relacion) if ids_relacion else {}
         rows = apply_view(
             rows,
             view.config or {},
@@ -211,6 +218,12 @@ def _render_block(repo: Repository, fence_lines: list[str], raw: str) -> list[st
             people={key: datos[0] for key, datos in users.items()},
             person_keys=claves_persona,
             closed_rule=database.closed,
+            # La tabla exportada es la misma que se ve en el panel, también en
+            # el orden: el `sort_order` de una selección manda aquí igual, y
+            # cada tipo ordena según el suyo (texto natural, número, fecha...).
+            orders=order_ranks(database.schema_def),
+            types=tipos,
+            refs=refs_de_orden,
         )
 
     total = len(rows)

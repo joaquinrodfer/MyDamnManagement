@@ -35,6 +35,23 @@ tipos), así que los operadores comparan como número cuando los dos lados lo
 son y como texto en el resto de los casos: una fecha ISO se compara bien como
 texto.
 
+El orden es **por tipo de propiedad**, y el tipo lo pasa quien llama
+(`types`, de `app.properties.schema_types`): el texto se ordena natural (sin
+mayúsculas ni tildes, y «Tarea 2» antes que «Tarea 10»), el número como número,
+la fecha cronológicamente, la casilla por su valor, la persona por su nombre
+visible y la relación por el título de la fila enlazada. Una fecha imposible
+(`31-nov`) y una relación rota no tienen sitio en el orden y van al final, como
+los vacíos.
+
+Una propiedad `select`/`multiselect` puede declarar el **orden de sus valores**
+(`sort_order` en el `schema` de la base, ver `app.properties.order_ranks`).
+Entonces ordenar por ella usa ese orden y no el alfabético, en `asc` y en
+`desc`, y como clave secundaria de un orden de varias claves. El valor que no
+está declarado —el que apareció después, o el que alguien escribió a mano en un
+`.md`— va **al final en las dos direcciones**: no tener sitio no es «ser el
+primero». En modo `auto` (o sin `sort_order`) se ordena por el texto natural,
+como el resto de una base que no declara nada.
+
 Una propiedad `person` guarda el **id** de un usuario, pero lo que se lee y se
 escribe es su nombre visible: `eq`/`neq` aceptan el nombre además del id y el
 orden va por nombre. Para eso hace falta `people` (`id -> display_name`), que
@@ -42,9 +59,13 @@ resuelve quien llama; sin él se compara y se ordena por el id, que sigue siendo
 determinista.
 """
 
+import re
+import unicodedata
+from datetime import datetime
 from typing import Any, Mapping
 
 from app import closed, hierarchy
+from app.properties import option_key
 from app.repository import Page
 
 # Operadores que no llevan `value`: la condición es sobre el estado del valor.
@@ -67,6 +88,9 @@ def apply_view(
     people: Mapping[str, str] | None = None,
     person_keys: frozenset[str] | set[str] = frozenset(),
     closed_rule: Mapping[str, Any] | None = None,
+    orders: Mapping[str, Mapping[str, int]] | None = None,
+    types: Mapping[str, str] | None = None,
+    refs: Mapping[str, tuple[str, str]] | None = None,
 ) -> list[Page]:
     """Aplica los `filters`, el `sort` y el nivel de una vista sobre sus filas.
 
@@ -93,6 +117,19 @@ def apply_view(
     (`Database.closed`). Solo la usan los filtros `is_closed`/`is_open`; sin
     regla, nada está cerrado y `is_open` deja pasar todo, que es la verdad de
     una base que no declara estado.
+
+    `orders` es `{clave: {valor: puesto}}` de las propiedades que declaran el
+    orden de sus valores (`app.properties.order_ranks`). Sin `orders`, o con
+    una clave que no está, el orden es el de siempre (alfabético o numérico):
+    las bases que no declaran nada no cambian.
+
+    `types` es `{clave: tipo}` del `schema` de la base (`app.properties.
+    schema_types`) y `refs` es `{id: (título, base)}` de las filas que
+    enlazan las relaciones. Con ellos cada clave ordena **según su tipo**:
+    texto natural sin mayúsculas ni tildes, número, fecha, casilla, persona
+    por su nombre visible y relación por el título de la fila enlazada. Sin
+    `types` todo se ordena como antes (texto/número), que es lo que necesitan
+    las pruebas de la regla sin pasar por un servidor.
     """
     gente = people or {}
     claves_persona = person_keys or frozenset()
@@ -131,18 +168,36 @@ def apply_view(
     # significativa a la más significativa: `sorted` es estable y cada pasada
     # conserva el orden de la anterior (así se hace un orden por varias claves
     # sin construir una tupla de longitud variable).
+    puestos = orders or {}
+    tipos = types or {}
     for key, direccion in reversed(claves):
+        tipo = tipos.get(key)
+        if tipo is None and key in claves_persona:
+            tipo = "person"
         rows = _sort_rows(
             rows,
             key,
             direccion == "desc",
-            persona=key in claves_persona,
+            tipo=tipo,
+            persona=tipo == "person",
             people=gente,
+            orden=puestos.get(key),
+            refs=refs,
         )
 
     if parent_key:
         rows = hierarchy.arrange(rows, parent_key)
     return rows
+
+
+def sort_keys(config: Mapping[str, Any] | None) -> list[str]:
+    """Las claves de orden de una vista, en orden de prioridad.
+
+    La usa quien prepara `apply_view` para resolver solo lo que el orden
+    necesita: si ninguna clave es una relación, no hay que ir a buscar los
+    títulos de las filas enlazadas.
+    """
+    return [key for key, _ in _sort_clauses((config or {}).get("sort"))]
 
 
 def _sort_clauses(raw: Any) -> list[tuple[str, str]]:
@@ -168,31 +223,176 @@ def _sort_rows(
     key: str,
     descendente: bool,
     *,
+    tipo: str | None = None,
     persona: bool = False,
     people: Mapping[str, str] | None = None,
+    orden: Mapping[str, int] | None = None,
+    refs: Mapping[str, tuple[str, str]] | None = None,
 ) -> list[Page]:
-    """Ordena por una clave, dejando SIEMPRE las filas sin valor al final.
+    """Ordena por una clave **según el tipo de la propiedad**.
+
+    Cada tipo ordena lo suyo (`tipo` sale del `schema` de la base):
+
+    - `text`, `url` y el título: natural, sin distinguir mayúsculas ni tildes y
+      con los números como números («Tarea 2» antes que «Tarea 10»).
+    - `number`: numérico, aunque el valor llegue como texto del `.md`.
+    - `date`: cronológico; una fecha imposible (`31-nov`) no tiene sitio.
+    - `checkbox`: en `asc` van primero las sin marcar y en `desc` las marcadas
+      (es un booleano: `false < true`), y se decide así para que la dirección
+      diga algo en vez de dejarlo al azar.
+    - `select`/`multiselect`: con orden declarado (`orden`), por su puesto; una
+      multiselección por su valor **más importante** (el puesto más bajo). Sin
+      orden declarado (modo `auto`), por el texto natural y, en una
+      multiselección, por el valor **alfabéticamente menor**.
+    - `person`: por el **nombre visible** de la persona, no por su id.
+    - `relation`: por el **título** de la fila enlazada, no por su id; una
+      relación rota (el destino ya no existe) no tiene sitio.
+
+    Las filas **sin valor** van SIEMPRE al final, en las dos direcciones, y
+    también las que tienen un valor que no se puede ordenar en su tipo (fecha
+    imposible, relación rota, valor fuera del orden declarado). Entre esas se
+    ordena por su texto, para que el resultado no dependa de cómo llegaron.
 
     `reverse=True` pondría las vacías delante, así que se separan antes: un
-    hueco no es «lo más pequeño», es la ausencia de dato, y en el panel se
-    espera al final en las dos direcciones.
-
-    Una persona se ordena por su **nombre visible** (el id no se lee), y un id
-    que ya no resuelve por sí mismo, para que no se quede fuera del orden.
+    hueco no es «lo más pequeño», es la ausencia de dato.
     """
-    con_valor = [r for r in rows if _valor(r, key) is not None]
-    sin_valor = [r for r in rows if _valor(r, key) is None]
+    con_sitio: list[tuple[tuple, Page]] = []
+    sin_sitio: list[tuple[tuple, Page]] = []
+    vacias: list[Page] = []
+    for row in rows:
+        valor = row.title if key == "title" else _valor(row, key)
+        if _vacio(valor):
+            vacias.append(row)
+            continue
+        clave = _clave_de_orden(
+            valor, tipo, persona=persona, people=people, orden=orden, refs=refs
+        )
+        if clave is None:
+            sin_sitio.append(((_natural(_texto_de_valor(valor)),), row))
+        else:
+            con_sitio.append((clave, row))
 
-    def clave(row: Page) -> tuple:
-        valor = _valor(row, key)
-        if persona and people:
-            nombre = people.get(str(valor).strip())
-            if nombre is not None:
-                return _sort_key(nombre)
-        return _sort_key(valor)
+    con_sitio.sort(key=lambda par: par[0], reverse=descendente)
+    sin_sitio.sort(key=lambda par: par[0], reverse=descendente)
+    return [row for _, row in con_sitio] + [row for _, row in sin_sitio] + vacias
 
-    con_valor.sort(key=clave, reverse=descendente)
-    return con_valor + sin_valor
+
+def _clave_de_orden(
+    valor: Any,
+    tipo: str | None,
+    *,
+    persona: bool = False,
+    people: Mapping[str, str] | None = None,
+    orden: Mapping[str, int] | None = None,
+    refs: Mapping[str, tuple[str, str]] | None = None,
+) -> tuple | None:
+    """La clave de orden de un valor, o `None` si no se puede ordenar en su tipo.
+
+    El primer elemento de la tupla separa los tramos cuando el tipo no basta
+    (por ejemplo, el número de una fecha): así un `int` nunca se compara con un
+    `tuple` y el orden no revienta con un `.md` escrito a mano.
+    """
+    if orden:
+        # Un orden declarado manda sobre el tipo: es el usuario quien ha dicho
+        # en qué orden van sus valores (y quien llama sin `types` —una prueba
+        # de la regla, o una base sin schema— también lo recibe).
+        puesto = _puesto(valor, orden)
+        return None if puesto is None else (0, puesto)
+    if tipo == "number":
+        numero = _numero(valor)
+        return None if numero is None else (0, numero)
+    if tipo == "date":
+        fecha = _fecha(valor)
+        return None if fecha is None else (0, fecha)
+    if tipo == "checkbox":
+        # `False < True`: en asc, primero las sin marcar; en desc, las marcadas.
+        return (0, 1 if _marcado(valor) else 0)
+    if tipo == "person" or persona:
+        nombre = (people or {}).get(str(valor).strip())
+        return (0, _natural(nombre if nombre is not None else valor))
+    if tipo == "relation":
+        titulos = _titulos_enlazados(valor, refs or {})
+        return None if not titulos else (0, min(_natural(t) for t in titulos))
+    # Texto, url, título y los valores de una selección en modo `auto`. Una
+    # multiselección se ordena por su valor alfabéticamente menor.
+    if isinstance(valor, list):
+        textos = [_texto_de_valor(v) for v in valor if not _vacio(v)]
+        return None if not textos else (0, min(_natural(t) for t in textos))
+    return (0, _natural(valor))
+
+
+def _texto_de_valor(valor: Any) -> str:
+    """El valor como texto para el orden natural (una lista, por su primero)."""
+    if isinstance(valor, list):
+        return " ".join(_texto_de_valor(v) for v in valor)
+    return str(valor)
+
+
+def _natural(valor: Any) -> tuple:
+    """Clave de orden natural, sin mayúsculas ni tildes.
+
+    Los tramos de dígitos se comparan como números: «Tarea 2» antes que
+    «Tarea 10», que es lo que espera quien numera. Cada trozo va etiquetado
+    (`0` texto, `1` número) para que dos tramos distintos nunca se comparen
+    entre sí como tipos incompatibles.
+    """
+    plano = unicodedata.normalize("NFKD", str(valor))
+    plano = "".join(c for c in plano if not unicodedata.combining(c)).casefold().strip()
+    partes: list[tuple[int, Any]] = []
+    for trozo in re.split(r"(\d+)", plano):
+        if not trozo:
+            continue
+        partes.append((1, int(trozo)) if trozo.isdigit() else (0, trozo))
+    return tuple(partes) or ((0, ""),)
+
+
+def _fecha(valor: Any) -> tuple | None:
+    """Una fecha ISO como clave cronológica, o `None` si no es una fecha válida.
+
+    Un `2026-02-31` no existe y `fromisoformat` lo rechaza: esa fila no tiene
+    sitio en el orden y va al final, como una vacía. Se acepta la fecha suelta
+    (`2026-01-15`) y también el instante completo (`2026-01-15T10:30:00`).
+    """
+    texto = str(valor).strip()
+    if not texto:
+        return None
+    try:
+        momento = datetime.fromisoformat(texto.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (momento.toordinal(), momento.hour * 3600 + momento.minute * 60 + momento.second)
+
+
+def _titulos_enlazados(
+    valor: Any, refs: Mapping[str, tuple[str, str]]
+) -> list[str]:
+    """Los títulos de las filas que enlaza una relación, saltando las rotas.
+
+    Una relación rota (el destino se borró) no aporta título: si no queda
+    ninguno, la fila no tiene sitio y va al final «en las dos direcciones»,
+    igual que el resto de valores que no se pueden ordenar.
+    """
+    ids = valor if isinstance(valor, list) else [valor]
+    titulos: list[str] = []
+    for uno in ids:
+        ref = refs.get(str(uno).strip())
+        if ref is not None:
+            titulos.append(ref[0] or "")
+    return titulos
+
+
+def _puesto(value: Any, orden: Mapping[str, int]) -> int | None:
+    """El puesto de un valor en el orden declarado, o `None` si no tiene sitio.
+
+    Una multiselección se ordena por su valor **más importante** (el puesto más
+    bajo): una fila con `[media, alta]` es una fila de alta, y es lo que se
+    espera al mirar la columna. Si ninguno de sus valores está declarado, la
+    fila no tiene sitio.
+    """
+    if isinstance(value, list):
+        puestos = [orden[option_key(v)] for v in value if option_key(v) in orden]
+        return min(puestos) if puestos else None
+    return orden.get(option_key(value))
 
 
 def _valor(row: Page, key: str) -> Any:
@@ -356,20 +556,3 @@ def _compara(actual: Any, op: str, esperado: Any) -> bool:
     if op in ("lt", "before"):
         return a < b
     return a <= b
-
-
-def _sort_key(value: Any) -> tuple:
-    """Clave de orden total, sin `TypeError` al mezclar tipos.
-
-    Los booleanos van primero, luego los números (también los que llegan como
-    texto del `.md`, como `"12000"`) y al final el texto; dentro de cada grupo
-    se compara lo suyo, y el texto sin distinguir mayúsculas.
-    """
-    if isinstance(value, bool):
-        return (0, float(value), "")
-    if isinstance(value, (list, dict)):
-        return (2, 0.0, str(value).casefold())
-    numero = _numero(value)
-    if numero is not None:
-        return (1, numero, "")
-    return (2, 0.0, str(value).casefold())
