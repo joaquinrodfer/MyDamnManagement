@@ -36,7 +36,7 @@
 graph LR
     ENGINE["Motor genérico<br/>page · database · view<br/>properties: JSON"]
     NOTES["Notas / Wiki<br/>type = note<br/>body_markdown + wikilinks"]
-    CRM["CRM<br/>database 'Contactos' · vista board<br/>schema: Empresa, Fase, Valor"]
+    CRM["CRM<br/>database 'CRM' · vista board<br/>schema: Empresa, Fase, Valor"]
     TASKS["Tareas / Proyectos<br/>database 'Tareas' · vista board+calendar<br/>schema: Estado, Prioridad, Fecha"]
 
     ENGINE --> NOTES
@@ -187,7 +187,7 @@ Esto es lo que hace innecesario tener código de "CRM" o de "Tareas": el mismo e
 ```mermaid
 graph TD
     ENGINE["POST /databases<br/>{title, schema_def}"]
-    CRM_DEF["Contactos<br/>schema_def: empresa(text), fase(select), valor(number)"]
+    CRM_DEF["CRM<br/>schema_def: empresa(text), fase(select), valor(number)"]
     TASK_DEF["Tareas<br/>schema_def: estado(select), prioridad(select), hecha(checkbox)"]
 
     ENGINE --> CRM_DEF
@@ -204,7 +204,7 @@ graph TD
 
 ### Fase 3: las plantillas son datos, no motor nuevo
 
-`POST /databases/from-template` no añade capacidades al motor — llama exactamente a lo mismo que `POST /databases` + `POST /databases/{id}/views`, varias veces, con el `schema_def` y las `views` que trae `backend/app/templates.py` en vez de escritos a mano. Si en algún momento hiciera falta lógica propia para "crear un CRM" que no fuera reducible a datos sobre el motor genérico, sería la señal de que el motor no es tan genérico como parece.
+`POST /databases/from-template` no añade capacidades al motor — llama exactamente a lo mismo que `POST /databases` + `POST /databases/{id}/views`, varias veces, con el `schema_def` y las `views` que trae `backend/app/templates.py` en vez de escritos a mano. Las plantillas de serie son **«Proyecto»**, **«Tareas sueltas»**, **«CRM»** y **«Reuniones»** y nombran la base que crean con su propio `title` (`Bases/CRM.md`): el nombre no está escrito en ningún otro sitio. Si en algún momento hiciera falta lógica propia para "crear un CRM" que no fuera reducible a datos sobre el motor genérico, sería la señal de que el motor no es tan genérico como parece.
 
 ## 8. Panel visual: cliente puro sobre la misma API
 
