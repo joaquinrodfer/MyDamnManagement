@@ -11,6 +11,11 @@ destino y el número de ids cuadra con `multiple`). Al leer se sigue siendo
 laxo: un `.md` con texto libre donde ahora hay una relación se lee como «sin
 valor» y no se reescribe (ver `app.vault.reader._relation_value`).
 
+Lo mismo vale para **`parent_row`** (subtareas): la celda es el `id` de una
+fila de la **misma** base. Aquí solo se valida su forma —un id, no una lista ni
+un título—; que la fila exista, que sea de esta base y que el vínculo no cierre
+un ciclo lo comprueba `app.hierarchy`, que es quien tiene las filas.
+
 Aquí vive también el **plan** del schema: la interfaz solo pide el nombre
 visible de una propiedad y la clave se deriva detrás. La clave no se enseña
 nunca, así que el cliente no tiene que saber snake_case; y cuando el nombre de
@@ -25,6 +30,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from fastapi import HTTPException
 
 from app.vault.reader import (
+    PARENT_ROW,
     PERSON,
     RELATION,
     RESERVED_ROW_KEYS,
@@ -165,6 +171,16 @@ def plan_schema(
             prop["options"] = list(item["options"])
         if item.get("type") == RELATION:
             _plan_relation(prop, item, origen)
+        if item.get("type") == PARENT_ROW:
+            if any(otra.get("type") == PARENT_ROW for otra in finales):
+                otra = next(p for p in finales if p.get("type") == PARENT_ROW)
+                raise HTTPException(
+                    400,
+                    f"Una base solo puede tener una propiedad de subtareas: "
+                    f"«{otra.get('name')}» ya lo es. Cambia el tipo de «{name}» "
+                    "o quita una de las dos: la jerarquía de la base es una.",
+                )
+        _plan_done(prop, item, origen, name)
         finales.append(prop)
 
     claves_finales = {p["key"] for p in finales}
@@ -203,6 +219,64 @@ def _plan_relation(prop: dict, item: dict, origen: Optional[dict]) -> None:
         multiple = (origen or {}).get("multiple")
     if relation_multiple({"multiple": multiple}):
         prop["multiple"] = True
+
+
+def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
+    """El marcador `done` de una propiedad, que dice qué cuenta como «cerrada».
+
+    Es lo que usa el contador de subtareas (`app.hierarchy.is_closed`): un
+    `checkbox` con `done: true` (marcado = cerrada) o un `select`/`multiselect`
+    con `done: [valor, ...]` (la celda vale uno de ellos = cerrada).
+
+    Si la petición no lo trae se conserva el que ya tenía la propiedad: el
+    diálogo de propiedades no pregunta por él, y guardar el resto de la base no
+    puede desactivar el contador sin que nadie lo haya pedido. `done: false`
+    (o una lista vacía) lo quita.
+
+    Un marcador que no cabe en el tipo **pedido en esta petición** es un 400
+    (quien llama se ha equivocado). Si venía heredado —la propiedad era una
+    selección con `done: [Hecho]` y ahora pasa a texto— se suelta: el contador
+    deja de contar cerradas, que es la verdad de esa base, y guardar el resto
+    del schema no puede fallar por un marcador que el usuario no ha escrito.
+    """
+    pedido = item.get("done")
+    crudo = pedido if pedido is not None else (origen or {}).get("done")
+    if crudo is None:
+        return
+
+    valores: list[str] = []
+    if isinstance(crudo, list):
+        valores = [str(v).strip() for v in crudo if str(v).strip()]
+        if not valores:
+            return
+    elif str(crudo).strip().lower() in ("false", "0", "no", "off", "") or crudo is False:
+        return
+
+    def rechazar(motivo: str) -> None:
+        if pedido is None:      # heredado: se suelta, no se rompe el guardado
+            return
+        raise HTTPException(400, f"«{name}»: {motivo}")
+
+    tipo = prop.get("type")
+    if tipo not in ("checkbox", "select", "multiselect"):
+        rechazar(
+            "`done` solo tiene sentido en una casilla o una selección (es la "
+            f"propiedad que dice si una fila está cerrada), y esta es de tipo {tipo!r}"
+        )
+        return
+    if tipo == "checkbox":
+        if valores:
+            rechazar("en una casilla basta `done: true`: se cierra cuando está marcada")
+            return
+        prop["done"] = True
+        return
+    if not valores:
+        rechazar(
+            "en una selección, `done` es la lista de valores que cuentan como "
+            "cerrada (`done: [Hecho]`)"
+        )
+        return
+    prop["done"] = valores
 
 
 def relation_properties(schema_def: list[dict]) -> list[dict]:
@@ -328,6 +402,8 @@ def _coerce(
     if ptype == RELATION:
         return _coerce_relation(prop, value, refs)
 
+    if ptype == PARENT_ROW:
+        return _coerce_parent(prop, value)
     if ptype == PERSON:
         return _coerce_person(prop, value, users)
 
@@ -359,6 +435,31 @@ def _coerce(
         return value
 
     return value  # text, date, url: sin validar formato en v1
+
+
+def _coerce_parent(prop: dict, value: Any) -> Any:
+    """Valida la FORMA de una celda `parent_row`: el id de una fila, y nada más.
+
+    Que la fila exista, que sea de esta misma base y que el vínculo no cierre un
+    ciclo lo comprueba `app.hierarchy.validate_parent` al guardar, que es quien
+    tiene delante las filas de la base. Aquí se rechaza lo que no puede ser un
+    id: una lista (la jerarquía es una madre, no varias), un mapa o un título.
+    Un valor vacío es «sin madre» (`None`), como en cualquier celda vacía.
+    """
+    nombre = f"«{prop.get('name') or prop.get('key')}»"
+    if isinstance(value, (list, dict)):
+        raise HTTPException(
+            400,
+            f"{nombre} guarda UNA fila madre: manda el id de una fila, no una lista",
+        )
+    pid = relation_id(value)
+    if pid is None:
+        raise HTTPException(
+            400,
+            f"{nombre}: {value!r} no es el id de una fila. Una subtarea guarda el "
+            "id de su fila madre, no su título.",
+        )
+    return pid
 
 
 def _coerce_person(prop: dict, value: Any, users: Optional[UserRefs]) -> Any:
