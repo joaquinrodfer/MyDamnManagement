@@ -5251,6 +5251,49 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     main.insertBefore(notaTodas, content);
   }
 
+  // La tabla de la vista y su «+ Nueva fila». La tabla se pinta a demanda
+  // porque con un filtro que no deja pasar nada no se enseña (ver abajo) y
+  // aun así hay que poder añadir una fila.
+  const esTabla = !activeView || !["board", "calendar", "list"].includes(activeView.type) ||
+    (activeView.type === "board" && !activeView.config?.group_by);
+  let tablaPintada = null;
+  let alPedirTabla = null;
+  const alta = renderAltaEnTabla({
+    database,
+    vista: activeView,
+    tabla: () => {
+      alPedirTabla?.();
+      return tablaPintada;
+    },
+  });
+  // La cabecera de cada columna es su menú (renombrar, ocultar en ESTA vista,
+  // tipo, borrar) y el «+» añade una columna: `recargarVistas` relee base y
+  // vistas después, que el servidor puede haber migrado claves y la lista de
+  // columnas de la vista. Y sigue ordenando al pincharla (`filtros-vista`):
+  // el menú es el botón de tres puntos, el rótulo ordena.
+  const pintarTabla = () =>
+    (tablaPintada = renderTable(database, rows, {
+      sort: clavesOrden,
+      onToggleSort: activeView
+        ? (key) => aplicarConfig({ sort: alternarOrden(clavesOrden, key) })
+        : null,
+      vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
+      // El ancho y el orden de las columnas se guardan en la vista activa:
+      // sin vista no hay entrada en el `.md` donde escribirlos.
+      view: activeView,
+      onCambioColumnas: activeView ? aplicarConfig : null,
+      onChanged: recargarVistas,
+      // Tras borrar o cambiar una propiedad en bloque, la tabla se repinta
+      // con lo que diga el servidor: nada de ir tocando filas a mano.
+      onRepintar: refresh,
+      // La fila nueva ya está en su sitio: el contador de la vista y el aviso
+      // (si el filtro la deja fuera, lo dice).
+      onAlta: (res) => {
+        if (res.visibles !== null) refrescarRecuentoDeVista(content, res.visibles, res.total);
+        alta.avisar(res);
+      },
+    }));
+
   // Vacío honesto: no una tabla en blanco, sino el motivo escrito y la salida.
   if (filtros.length && rows.length === 0) {
     // Sin filas no hay tabla, pero la selección de antes sigue viva: la barra
@@ -5261,6 +5304,14 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     const sel = crearSeleccionDeFilas({ database, rows: [], onRepintar: refresh });
     hueco.append(sel.barra, sel.informes, avisoDeFiltroVacio(() => aplicarConfig({ filters: [] })));
     content.appendChild(hueco);
+    // Sin filas no hay tabla donde escribir la nueva: «+ Nueva fila» cambia el
+    // aviso por la tabla vacía y pinta ahí la fila fantasma. Vale para
+    // cualquier tipo de vista: sin filas, ni el tablero ni la lista tienen
+    // dónde escribirla.
+    alPedirTabla = () => {
+      alPedirTabla = null;
+      hueco.replaceWith(pintarTabla());
+    };
   } else if (activeView && activeView.type === "board" && activeView.config?.group_by) {
     content.appendChild(renderBoard(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "calendar") {
@@ -5268,33 +5319,12 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   } else if (activeView && activeView.type === "list") {
     content.appendChild(renderList(database, rows, activeView, refresh));
   } else {
-    // La cabecera de cada columna es su menú (renombrar, ocultar en ESTA
-    // vista, tipo, borrar) y el «+» añade una columna: `recargarVistas`
-    // relee base y vistas después, que el servidor puede haber migrado
-    // claves y la lista de columnas de la vista. Y sigue ordenando al
-    // pincharla (`filtros-vista`): el menú es el botón de tres puntos, el
-    // rótulo ordena.
-    content.appendChild(
-      renderTable(database, rows, {
-        sort: clavesOrden,
-        onToggleSort: activeView
-          ? (key) => aplicarConfig({ sort: alternarOrden(clavesOrden, key) })
-          : null,
-        vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
-        // El ancho y el orden de las columnas se guardan en la vista activa:
-        // sin vista no hay entrada en el `.md` donde escribirlos.
-        view: activeView,
-        onCambioColumnas: activeView ? aplicarConfig : null,
-        onChanged: recargarVistas,
-        // Tras borrar o cambiar una propiedad en bloque, la tabla se repinta
-        // con lo que diga el servidor: nada de ir tocando filas a mano.
-        onRepintar: refresh,
-      }),
-    );
+    content.appendChild(pintarTabla());
   }
 
-  const addRowForm = renderAddRowForm(database);
-  content.appendChild(addRowForm);
+  // «+ Nueva fila» bajo la tabla: la fila se escribe en la propia tabla. La
+  // lista y el calendario traen su alta dentro y el tablero, una por columna.
+  if (esTabla || alPedirTabla) content.appendChild(alta);
   // El foco se mueve solo cuando hay un motivo, no en cada repintado: abrir la
   // base (el primer campo del alta, que si no hay que recorrer la tabla entera
   // para llegar a «Nueva fila») o cambiar de vista (la pestaña, que acaba de
@@ -5303,7 +5333,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // contenido, y el siguiente Tab seguía desde ahí. `preventScroll` porque si
   // el destino cae bajo el pliegue no queremos dar un salto.
   if (focus === "addRow") {
-    addRowForm.querySelector("#nueva-fila-titulo")?.focus({ preventScroll: true });
+    alta.querySelector(".db-add-row-btn")?.focus({ preventScroll: true });
   } else if (focus === "viewTab") {
     tabButtons.get(activeViewId)?.focus({ preventScroll: true });
   }
@@ -6388,6 +6418,11 @@ async function renderDatabaseEmbed(block, container) {
     onSaved: () => refrescarOtrosEmbeds(database.id, container),
   };
 
+  // La tabla que hay pintada ahora (se rehace en cada `pintar`) y el «+ Nueva
+  // fila», que no: su aviso sobrevive al repintado de las filas.
+  let tablaPintada = null;
+  const alta = renderAltaEnTabla({ database, vista: activeView, tabla: () => tablaPintada });
+
   const pintar = (filas, totalBase = null) => {
     // Si en ESTE bloque hay una celda abierta, el repintado no puede llevársela
     // por delante: un guardado en OTRO bloque de la misma base pide aquí filas
@@ -6401,13 +6436,28 @@ async function renderDatabaseEmbed(block, container) {
     )}`;
     body.textContent = "";
     body.append(
-      renderTable(database, filas, {
+      (tablaPintada = renderTable(database, filas, {
         deletable: false,
         hooks,
         sort: clavesOrden,
         vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
         view: activeView,
         onChanged: recargar,
+        // La fila nueva ya está en su sitio (o fuera, si el filtro no la
+        // enseña): contador, aviso y los demás bloques de esta base. El eco
+        // de este POST se descarta (ver `handleDatabaseEvent`), así que si no
+        // se piden aquí se quedan con las filas de antes.
+        onAlta: (res) => {
+          if (res.visibles !== null) {
+            meta.textContent = `${activeView ? activeView.name : "Todas"} · ${textoDeRecuento(
+              res.visibles,
+              // Mismo criterio que al pintar el bloque: «de M» solo con filtro.
+              filtros.length ? res.total : null,
+            )}`;
+          }
+          alta.avisar(res);
+          refrescarOtrosEmbeds(database.id, container);
+        },
         // Tras una acción en bloque, este bloque se repinta con lo que diga el
         // servidor y los demás bloques de la misma base se enteran igual que
         // tras guardar una celda.
@@ -6422,7 +6472,7 @@ async function renderDatabaseEmbed(block, container) {
           }
           refrescarOtrosEmbeds(database.id, container);
         },
-      }),
+      })),
     );
     if (enEdicion) {
       reabrirCeldaEnEdicion(
@@ -6489,32 +6539,9 @@ async function renderDatabaseEmbed(block, container) {
   container.append(
     head,
     body,
-    // Sin recargar la nota ni la página: POST de siempre y repintado de la
-    // tabla. El aviso de «el filtro la deja fuera» vive dentro del control.
-    renderAddRowControl({
-      vista: activeView,
-      plantillas: database.row_templates || [],
-      onCreate: (titulo, plantilla) =>
-        crearFilaEnVista(
-          database,
-          activeView,
-          titulo,
-          plantilla?.properties || {},
-          plantilla?.body || "",
-        ),
-      onDone: (res) => {
-        // Con el total de la base: si la vista filtra, el contador sigue
-        // diciendo «N de M» en vez de perder el «de M» al crear la fila.
-        pintar(res.filas, res.total);
-        if (res.visible) enfocarFila(body, res.fila.id);
-        // Y los DEMÁS bloques de esta misma base, con los datos del servidor:
-        // el eco de este POST se descarta entero (ver `handleDatabaseEvent`),
-        // así que si no se piden aquí se quedan con el contador y las filas de
-        // antes. Este bloque no entra: ya está repintado con `res.filas` y el
-        // aviso y el foco están puestos.
-        refrescarOtrosEmbeds(database.id, container);
-      },
-    }),
+    // La fila se escribe en la propia tabla (fila fantasma): sin recargar la
+    // nota ni la página.
+    alta,
   );
 }
 
@@ -6725,8 +6752,235 @@ function enfocarFila(container, rowId) {
   return true;
 }
 
-/** El «+ Nueva fila» de una vista (tabla incrustada en una nota, lista y
- * agenda del calendario).
+/** El comportamiento del campo de una fila FANTASMA (la de la tabla y la
+ * tarjeta del tablero): la fila no existe hasta que se escribe algo.
+ *
+ * - Con la primera letra se crea (el POST de siempre, con `extra` como
+ *   propiedades) y a partir de ahí el título se guarda como cualquier celda:
+ *   al confirmar (Enter, Tab) o al salir del campo.
+ * - Abandonado vacío (Esc, clic fuera, Tab) no se crea nada: `alAbandonar`.
+ * - Si se escribió y se borró todo antes de salir, la fila que nació con la
+ *   primera letra se retira (DELETE): el resultado es el mismo, ninguna fila.
+ * - Esc con texto NO lo tira: la fila ya existe, así que se queda con lo
+ *   escrito.
+ *
+ * `alAbandonar(foco)` y `alCrearse(fila, {foco, aLaSiguiente})`: `foco` dice si
+ * el usuario sigue ahí (tecla) o ya se fue a otro sitio (blur), y
+ * `aLaSiguiente` que salió con Tab.
+ */
+function armarCampoFantasma(input, { database, extra = {}, hooks = null, alAbandonar, alCrearse }) {
+  let alta = null; // la promesa del POST, desde la primera letra
+  let cerrada = false;
+
+  const crear = () => {
+    // El eco de este POST no debe repintar el bloque de la nota (se llevaría
+    // el campo por delante): mismo apunte que `crearFilaEnVista`.
+    ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+    const intento = api(`/databases/${database.id}/rows`, {
+      method: "POST",
+      body: JSON.stringify({ title: input.value.trim(), properties: extra }),
+    });
+    alta = intento;
+    intento.catch((e) => {
+      // No se pierde lo escrito: el campo sigue abierto y la siguiente letra
+      // lo vuelve a intentar.
+      if (cerrada) return;
+      if (alta === intento) alta = null;
+      reportError("No se pudo añadir la fila", e);
+    });
+  };
+
+  const cerrar = async ({ foco = false, aLaSiguiente = false } = {}) => {
+    if (cerrada) return;
+    cerrada = true;
+    if (!alta) {
+      alAbandonar(foco); // vacía: no se ha creado nada y no se crea
+      return;
+    }
+    input.readOnly = true;
+    let row;
+    try {
+      row = await alta;
+    } catch (e) {
+      reportError("No se pudo añadir la fila", e);
+      alAbandonar(foco);
+      return;
+    }
+    const titulo = input.value.trim();
+    if (!titulo) {
+      try {
+        ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+        await api(`/databases/${database.id}/rows/${row.id}`, { method: "DELETE" });
+      } catch (e) {
+        reportError("No se pudo retirar la fila vacía", e);
+      }
+      alAbandonar(foco);
+      return;
+    }
+    if (titulo !== row.title) {
+      try {
+        ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+        await saveRow(database, row, { title: titulo }, hooks);
+      } catch (e) {
+        reportError("No se pudo guardar el título", e);
+      }
+    }
+    await alCrearse(row, { foco, aLaSiguiente });
+  };
+
+  input.addEventListener("input", () => {
+    if (!alta && !cerrada && input.value.trim()) crear();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === "Escape" || (e.key === "Tab" && !e.shiftKey)) {
+      if (e.key === "Tab" && !alta) return; // vacía: Tab sigue su camino y el blur la quita
+      e.preventDefault();
+      e.stopPropagation();
+      cerrar({ foco: true, aLaSiguiente: e.key === "Tab" });
+      return;
+    }
+    // Lo que no se pare aquí lo recibe quien haya encima: el editor de la
+    // nota (la tabla incrustada) o los atajos de la tarjeta del tablero.
+    e.stopPropagation();
+  });
+  input.addEventListener("blur", () => cerrar());
+}
+
+/** El botón de alta: «+ Nueva fila» y, si la base tiene plantillas de fila, un
+ * desplegable discreto al lado con «Nueva fila» arriba y una entrada por
+ * plantilla debajo.
+ *
+ * No crea nada por sí mismo: `alCrear()` pinta la fila fantasma (o la tarjeta)
+ * y `alElegirPlantilla(plantilla)` crea la fila ya rellena. Una plantilla que
+ * ya no encaja con la base (`error`, lo dice el servidor) sale apagada con su
+ * motivo, en vez de crear una fila a medias.
+ */
+function botonDeAlta({
+  plantillas = [],
+  alCrear,
+  alElegirPlantilla,
+  etiqueta = "Nueva fila",
+  soloIcono = false,
+}) {
+  const grupo = document.createElement("span");
+  grupo.className = "db-new-row";
+  // Dentro de una nota: sin esto el widget del editor se queda el clic.
+  grupo.dataset.dbAction = "add-row";
+
+  // El keymap del editor consume Enter/Espacio dentro del widget: se paran
+  // aquí para que el botón reciba su `click` de siempre.
+  const noPropagar = (e) => {
+    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+  };
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn db-add-row-btn";
+  btn.innerHTML = soloIcono ? svgIcon("i-plus") : `${svgIcon("i-plus")}${escapeHtml(etiqueta)}`;
+  if (soloIcono) {
+    btn.title = etiqueta;
+    btn.setAttribute("aria-label", etiqueta);
+  }
+  btn.addEventListener("keydown", noPropagar);
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    alCrear(btn);
+  });
+  grupo.appendChild(btn);
+
+  if (plantillas.length) {
+    const mas = document.createElement("button");
+    mas.type = "button";
+    mas.className = "btn db-new-row-more";
+    mas.textContent = "▾";
+    mas.title = "Nueva fila desde una plantilla";
+    mas.setAttribute("aria-label", `${etiqueta}: elegir plantilla`);
+    mas.setAttribute("aria-haspopup", "menu");
+    mas.setAttribute("aria-expanded", "false");
+    mas.addEventListener("keydown", noPropagar);
+    mas.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const menu = document.createElement("div");
+      menu.className = "db-col-menu";
+      menu.appendChild(
+        itemDeColumna("+ Nueva fila", {
+          alElegir: () => {
+            cerrarPanelDeColumna();
+            alCrear(btn);
+          },
+        }),
+      );
+      menu.appendChild(separadorDeMenu());
+      const cabecera = document.createElement("div");
+      cabecera.className = "db-col-menu-label";
+      cabecera.textContent = "Desde una plantilla";
+      menu.appendChild(cabecera);
+      plantillas.forEach((plantilla) => {
+        const motivo = plantilla.error
+          ? `Esta plantilla ya no encaja con la base: ${plantilla.error}`
+          : "";
+        menu.appendChild(
+          itemDeColumna(plantilla.name, {
+            motivo,
+            alElegir: motivo
+              ? () => {
+                  notaDeMenu(menu).textContent = motivo;
+                }
+              : () => {
+                  cerrarPanelDeColumna();
+                  alElegirPlantilla(plantilla, btn);
+                },
+          }),
+        );
+      });
+      abrirPanelFlotante(mas, menu, { etiqueta: "Nueva fila" });
+    });
+    grupo.classList.add("has-templates");
+    grupo.appendChild(mas);
+  }
+  return grupo;
+}
+
+/** El «+ Nueva fila» de una TABLA (la página de la base y la incrustada en una
+ * nota): el botón de alta y, debajo, el aviso (`role=status`) de lo que pasó
+ * con la fila --añadida, o añadida pero fuera del filtro de la vista--. La
+ * fila se escribe en la propia tabla (`shell.nuevaFila`, la fila fantasma).
+ *
+ * `tabla()` devuelve el `shell` de `renderTable` que hay pintado AHORA: la
+ * tabla se rehace con cada repintado y este control no.
+ */
+function renderAltaEnTabla({ database, vista, tabla }) {
+  const wrap = document.createElement("div");
+  wrap.className = "db-add-row";
+  const status = document.createElement("p");
+  status.className = "db-add-row-status";
+  status.setAttribute("role", "status");
+  const boton = botonDeAlta({
+    plantillas: database.row_templates || [],
+    alCrear: (btn) => {
+      status.textContent = "";
+      tabla()?.nuevaFila({ volverA: btn });
+    },
+    alElegirPlantilla: (plantilla, btn) => {
+      status.textContent = "";
+      tabla()?.filaDePlantilla(plantilla, { volverA: btn });
+    },
+  });
+  wrap.append(boton, status);
+  /** Lo llama la tabla (`onAlta`) cuando la fila ya está en su sitio. */
+  wrap.avisar = ({ fila, visible }) => {
+    const titulo = fila.title || "Sin título";
+    status.textContent = visible
+      ? `Fila «${titulo}» añadida.`
+      : avisoDeFilaOculta(titulo, vista?.name || "");
+  };
+  return wrap;
+}
+
+/** El «+ Nueva fila» de la lista y de la agenda del calendario.
+ *
+ * (La tabla no usa este: ahí la fila se escribe en la propia tabla, ver
+ * `renderAltaEnTabla`.)
  *
  * Al pulsarlo no se crea nada todavía: aparece el campo con el nombre de la
  * fila y el foco dentro, y la fila nace al pulsar Enter. Así el nombre se
@@ -10194,6 +10448,7 @@ function renderTable(
     onChanged = null,
     onRepintar = null,
     onCambioColumnas = null,
+    onAlta = null,
   } = {},
 ) {
   // La selección múltiple envuelve la tabla (barra e informe encima), pero
@@ -10366,8 +10621,12 @@ function renderTable(
   // Cómo repintar cada fila cuando la vista de fila guarda algo (se rellena
   // en el bucle): lo usa también la puerta de teclado del final.
   const refrescadores = new Map();
+  // La línea de «no hay filas»: se aparta mientras hay una fila fantasma y
+  // vuelve si la fantasma se abandona vacía.
+  let filaVacia = null;
   if (rows.length === 0) {
     const tr = document.createElement("tr");
+    filaVacia = tr;
     const td = document.createElement("td");
     // Abrir + título + propiedades visibles + hueco del «+» (si hay dónde
     // repintar) + la columna de acciones, que ahora está siempre.
@@ -10383,7 +10642,7 @@ function renderTable(
     notaVacio.className = "empty-hint-note";
     notaVacio.textContent = vacio
       ? "Cambia o quita una condición en «Filtrar» para ver más."
-      : "Añade la primera en «Nueva fila», aquí debajo.";
+      : "Pulsa «Nueva fila», aquí debajo, y escribe su nombre.";
     td.append(tituloVacio, notaVacio);
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -10398,7 +10657,7 @@ function renderTable(
   // ahí la sangría mentiría sobre dónde está la jerarquía. El contador sí se
   // pinta igual (es un dato de la fila, no una posición).
   const indenta = Boolean(claveJerarquia) && !view?.config?.group_by;
-  rows.forEach((row) => {
+  const pintarFila = (row) => {
     const tr = document.createElement("tr");
     // `data-row-id`: el «+ Nueva fila» de la vista deja el foco en el nombre de
     // la fila que acaba de crear (ver `enfocarFila`).
@@ -10534,8 +10793,7 @@ function renderTable(
     if (!deletable) {
       // Sin botón de borrar: la fila se borra desde la página de la base (en
       // una nota, borrar filas es demasiado fácil de hacer sin querer).
-      tbody.appendChild(tr);
-      return;
+      return tr;
     }
 
     const delBtn = document.createElement("button");
@@ -10550,8 +10808,9 @@ function renderTable(
     });
     accTd.appendChild(delBtn);
 
-    tbody.appendChild(tr);
-  });
+    return tr;
+  };
+  rows.forEach((row) => tbody.appendChild(pintarFila(row)));
 
   // Ctrl/Cmd+Enter en cualquier celda de la fila abre la fila como página. En
   // captura: el `keydown` de la celda (Enter edita) no llega a ver la
@@ -10609,6 +10868,199 @@ function renderTable(
     queueMicrotask(() => congelarAnchos(table, cols, anchos));
   }
   shell.append(sel.barra, sel.informes, wrap);
+
+  // ------------------------------------------------ alta en el sitio
+  // «+ Nueva fila» no abre un formulario: pinta una fila FANTASMA al final de
+  // la tabla con el título en edición. La fantasma no existe en el `.md`: nace
+  // (POST de siempre) con la primera letra y, desde ahí, el título se guarda
+  // como cualquier celda. Abandonada vacía, se quita y no se ha creado nada.
+
+  /** Añade al final una fila que ya existe en el servidor. */
+  const colgarFila = (row, en = null) => {
+    filaVacia?.remove();
+    rows.push(row);
+    const tr = pintarFila(row);
+    if (en && en.parentNode === tbody) tbody.replaceChild(tr, en);
+    else tbody.appendChild(tr);
+    sel.fijarVisibles(rows);
+    marcarComoNueva(tr);
+    return tr;
+  };
+
+  /** Quita de la tabla una fila que el servidor ya no enseña en esta vista. */
+  const descolgarFila = (row, tr) => {
+    const i = rows.indexOf(row);
+    if (i >= 0) rows.splice(i, 1);
+    refrescadores.delete(String(row.id));
+    tr.remove();
+    sel.fijarVisibles(rows);
+    if (rows.length === 0 && filaVacia) tbody.appendChild(filaVacia);
+    const primera = tbody.querySelector('td[data-editable="1"]');
+    if (primera && !tbody.querySelector('td[data-editable="1"][tabindex="0"]')) {
+      setRovingCell(primera);
+    }
+  };
+
+  /** La fila ya está en el `.md`: se le pregunta al servidor dónde cae en ESTA
+   * vista (su filtro y su orden son suyos, ver `crearFilaEnVista`). Si la vista
+   * no la enseña se quita y se avisa; si la ordena en otro sitio, se mueve ahí.
+   * No se repinta la tabla: lo que el usuario esté haciendo se queda como está. */
+  const asentar = async (row, tr) => {
+    let filas;
+    let total = null;
+    try {
+      filas = await api(`/databases/${database.id}/rows` + (view ? `?view=${view.id}` : ""));
+      if (filtrosDeVista(view).length || (view && nivelDeVista(view, database) === "roots")) {
+        total = (await api(`/databases/${database.id}/rows`)).length;
+      }
+    } catch (e) {
+      reportError("No se pudo comprobar dónde cae la fila nueva", e);
+      return { visible: true };
+    }
+    const visible = filas.some((r) => String(r.id) === String(row.id));
+    if (tr.isConnected) {
+      if (!visible) {
+        descolgarFila(row, tr);
+      } else {
+        // Detrás de la que el servidor pone justo antes; si no está pintada
+        // (otra ventana la acaba de crear), la fila se queda donde está.
+        const i = filas.findIndex((r) => String(r.id) === String(row.id));
+        const anterior = i > 0 ? String(filas[i - 1].id) : null;
+        const trAnterior = anterior
+          ? tbody.querySelector(`tr[data-row-id="${CSS.escape(anterior)}"]`)
+          : null;
+        const sitio = anterior ? trAnterior?.nextElementSibling : tbody.firstElementChild;
+        const activo = document.activeElement;
+        const editando = tr.querySelector("td[data-editable] input, td[data-editable] select");
+        if ((trAnterior || !anterior) && sitio !== tr && !editando) {
+          tbody.insertBefore(tr, sitio || null);
+          // Mover un nodo le quita el foco: se le devuelve.
+          if (activo && tr.contains(activo)) activo.focus({ preventScroll: true });
+          const pos = filas.map((r) => String(r.id));
+          rows.sort((a, b) => pos.indexOf(String(a.id)) - pos.indexOf(String(b.id)));
+        }
+      }
+    }
+    onAlta?.({ fila: row, visible, visibles: filas.length, total });
+    return { visible };
+  };
+
+  let fantasma = null; // { tr, input } mientras hay una fila fantasma abierta
+
+  /** Pinta la fila fantasma con el foco en el título. `extra` son propiedades
+   * con las que nace la fila; `volverA`, a dónde va el foco si se abandona. */
+  shell.nuevaFila = ({ extra = {}, volverA = null } = {}) => {
+    if (fantasma) {
+      fantasma.input.focus();
+      return;
+    }
+    const tr = document.createElement("tr");
+    tr.className = "row-ghost";
+    const abrirTd = document.createElement("td");
+    abrirTd.className = "row-open-cell";
+    const td = document.createElement("td");
+    td.className = "cell-title row-ghost-title";
+    // Con el título oculto (`title_hidden`) la fila sigue necesitando nombre:
+    // el campo ocupa el ancho de las propiedades.
+    if (!muestraTitulo) td.colSpan = Math.max(1, propiedades.length);
+    // Dentro de una nota, sin esto el widget del editor se queda el clic.
+    if (hooks?.embed) td.dataset.dbAction = "editar";
+    const { input } = buildPropertyInput({ key: "title", name: "Título", type: "text" }, "");
+    input.style.width = "100%";
+    input.style.boxSizing = "border-box";
+    input.placeholder = "Nombre de la fila";
+    input.setAttribute("aria-label", "Título de la fila nueva");
+    td.appendChild(input);
+    tr.append(abrirTd, td);
+    if (muestraTitulo) propiedades.forEach(() => tr.appendChild(document.createElement("td")));
+    if (onChanged) {
+      const addTd = document.createElement("td");
+      addTd.className = "db-col-add-cell";
+      tr.appendChild(addTd);
+    }
+    const accTd = document.createElement("td");
+    accTd.className = "row-sel-cell";
+    tr.appendChild(accTd);
+
+    filaVacia?.remove();
+    tbody.appendChild(tr);
+    fantasma = { tr, input };
+
+    const quitar = (foco) => {
+      fantasma = null;
+      tr.remove();
+      if (rows.length === 0 && filaVacia && tbody.isConnected) tbody.appendChild(filaVacia);
+      if (foco) volverA?.focus?.({ preventScroll: true });
+    };
+    armarCampoFantasma(input, {
+      database,
+      extra,
+      hooks,
+      alAbandonar: quitar,
+      alCrearse: async (row, { foco, aLaSiguiente }) => {
+        fantasma = null;
+        if (!tr.isConnected) {
+          // La tabla se repintó mientras se guardaba: la fila está en el `.md`
+          // y el repintado siguiente la enseña.
+          onAlta?.({ fila: row, visible: true, visibles: null, total: null });
+          return;
+        }
+        const real = colgarFila(row, tr);
+        if (foco) {
+          const celdas = celdasEditables(real);
+          const destino = (aLaSiguiente && celdas[1]) || celdas[0];
+          if (destino) enfocarCelda(destino);
+        }
+        await asentar(row, real);
+      },
+    });
+
+    wrap.scrollLeft = 0;
+    input.focus();
+    tr.scrollIntoView?.({ block: "nearest" });
+  };
+
+  /** Crea una fila desde una plantilla de fila: nace ya rellena (los valores y
+   * el cuerpo los pone el servidor, que valida la plantilla) y con el nombre de
+   * la plantilla, listo para cambiarlo. Con cuerpo, se abre como página. */
+  shell.filaDePlantilla = async (plantilla, { extra = {}, volverA = null } = {}) => {
+    ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+    let row;
+    try {
+      row = await api(`/databases/${database.id}/rows`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: plantilla.name,
+          template: plantilla.name,
+          properties: extra,
+        }),
+      });
+    } catch (e) {
+      reportError("No se pudo crear la fila desde la plantilla", e);
+      return;
+    }
+    const tr = colgarFila(row);
+    const { visible } = await asentar(row, tr);
+    const conCuerpo = Boolean((plantilla.body || "").trim());
+    if (conCuerpo) {
+      openRowPage(database, row, {
+        origin: (visible && tr.querySelector(".row-open")) || volverA,
+        rows,
+        index: rows.indexOf(row),
+        onSaved: refrescadores.get(String(row.id)) || null,
+      });
+      return;
+    }
+    if (!visible) return;
+    // Sin cuerpo: la fila queda con el título en edición y seleccionado, para
+    // escribir el suyo encima.
+    const celda = celdasEditables(tr)[0];
+    if (!celda) return;
+    setRovingCell(celda);
+    if (muestraTitulo) celda.click();
+    else celda.focus();
+  };
+
   return shell;
 }
 
@@ -11379,6 +11831,7 @@ function renderBoardColumn(
   rows.forEach((row) => {
     const card = document.createElement("div");
     card.className = "board-card";
+    card.dataset.rowId = row.id;
 
     const t = document.createElement("div");
     t.className = "board-card-title";
@@ -11454,7 +11907,94 @@ function renderBoardColumn(
     col.appendChild(card);
   });
 
+  // «+ Nueva fila» de la columna: la fila nace con el valor de ESTA columna en
+  // la propiedad que agrupa. Se escribe en una tarjeta fantasma, igual que en
+  // la tabla: nada existe hasta la primera letra. Donde soltar una tarjeta no
+  // está permitido (una relación múltiple) tampoco se crea con valor: solo la
+  // columna «Sin valor» lo ofrece.
+  if (soltar || value === null) {
+    const extra =
+      groupKey && soltar && value !== null && value !== undefined ? { [groupKey]: value } : {};
+    let abierta = null;
+    const alta = botonDeAlta({
+      plantillas: database.row_templates || [],
+      alCrear: (btn) => {
+        if (abierta) {
+          abierta.focus();
+          return;
+        }
+        const card = document.createElement("div");
+        card.className = "board-card board-card-ghost";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "board-card-input";
+        input.placeholder = "Nombre de la fila";
+        input.setAttribute("aria-label", `Título de la fila nueva en «${label}»`);
+        card.appendChild(input);
+        col.insertBefore(card, alta);
+        abierta = input;
+        armarCampoFantasma(input, {
+          database,
+          extra,
+          alAbandonar: (foco) => {
+            abierta = null;
+            card.remove();
+            if (foco) btn.focus({ preventScroll: true });
+          },
+          // El tablero se repinta con lo que diga el servidor: la tarjeta cae
+          // en su columna y en su orden (o no sale, si el filtro la deja fuera).
+          alCrearse: async (row) => {
+            abierta = null;
+            await refresh?.();
+            avisarAltaEnTablero(database, row);
+          },
+        });
+        input.focus();
+      },
+      alElegirPlantilla: async (plantilla, btn) => {
+        let row;
+        try {
+          row = await api(`/databases/${database.id}/rows`, {
+            method: "POST",
+            body: JSON.stringify({
+              title: plantilla.name,
+              template: plantilla.name,
+              properties: extra,
+            }),
+          });
+        } catch (e) {
+          reportError("No se pudo crear la fila desde la plantilla", e);
+          return;
+        }
+        if ((plantilla.body || "").trim()) {
+          openRowPage(database, row, { origin: btn, onClose: () => refresh?.() });
+          return;
+        }
+        await refresh?.();
+        avisarAltaEnTablero(database, row);
+      },
+    });
+    alta.classList.add("board-col-add");
+    col.appendChild(alta);
+  }
+
   return col;
+}
+
+/** Tras un alta desde el tablero (ya repintado): la tarjeta nueva entra
+ * marcada y con el foco; si no está, es que el filtro de la vista la deja
+ * fuera, y se dice (misma frase que en la tabla). */
+function avisarAltaEnTablero(database, row) {
+  const card = document.querySelector(`#main .board-card[data-row-id="${CSS.escape(String(row.id))}"]`);
+  if (card) {
+    marcarComoNueva(card);
+    card.focus({ preventScroll: true });
+    card.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    return;
+  }
+  const pestana = document.querySelector("#main .view-tab.active");
+  const vista = (pestana?.textContent || "").replace(/\s*\([^)]*\)\s*$/, "");
+  showNotice(avisoDeFilaOculta(row.title || "Sin título", vista));
 }
 
 /** Mover una tarjeta = escribir la propiedad de agrupación de la vista con el
@@ -13542,198 +14082,6 @@ async function openRowPage(
   }
   if (rowPage !== ctx) return; // se cerró mientras llegaba la respuesta
   montar(detalle);
-}
-
-function renderAddRowForm(database) {
-  const wrap = document.createElement("div");
-  wrap.className = "inline-form";
-
-  const head = document.createElement("div");
-  head.className = "panel-head";
-  head.innerHTML = `${svgIcon("i-plus")}Nueva fila`;
-  wrap.appendChild(head);
-
-  const titleField = document.createElement("div");
-  titleField.className = "field";
-  const titleLabel = document.createElement("label");
-  titleLabel.textContent = "Título";
-  titleLabel.htmlFor = "nueva-fila-titulo";
-  const titleInput = document.createElement("input");
-  titleInput.type = "text";
-  titleInput.id = "nueva-fila-titulo";
-  titleField.append(titleLabel, titleInput);
-  wrap.appendChild(titleField);
-
-  const propInputs = [];
-  // La celda de subtareas no se pide en el alta: una fila nueva de la base es
-  // una raíz, y una hija se crea desde la página de su madre («+ Añadir
-  // subtarea»), donde el vínculo lo pone la app y no un id tecleado.
-  (database.schema_def || [])
-    .filter((p) => p && p.type !== "parent_row")
-    .forEach((p, index) => {
-    const field = document.createElement("div");
-    field.className = "field";
-    const label = document.createElement("label");
-    label.textContent = `${p.name} (${tipoVisible(p.type)})`;
-    const { input, read } = buildPropertyInput(p, undefined);
-    // Sin `for`/`id` un lector anuncia seis «cuadro de edición» iguales y la
-    // etiqueta no enfoca nada al pulsarla (M5).
-    const inputId = idDeCampo("nueva-fila", index, p.key);
-    input.id = inputId;
-    label.htmlFor = inputId;
-    field.append(label, input);
-    wrap.appendChild(field);
-    propInputs.push({ prop: p, input, read });
-    });
-
-  // Plantillas de fila de ESTA base (función 29). Elegir una rellena los
-  // valores por defecto y el cuerpo con el que nace la fila. El título no se
-  // rellena: la plantilla es una forma de empezar, no un nombre en serie (dos
-  // «Revisión semanal» acabarían compartiendo carpeta y nombre).
-  //
-  // Los valores llegan **ya coaccionados por el servidor** (`values`): el `.md`
-  // no infiere tipos y `Boolean("false")` marcaba la casilla de una plantilla
-  // que decía `false`. Si la plantilla ya no encaja con la base (`error`), el
-  // alta lo dice con el motivo y no deja crear la fila a medias.
-  const plantillas = Array.isArray(database.row_templates) ? database.row_templates : [];
-  let plantillaElegida = null;
-  let cuerpoDePlantilla = "";
-  let avisoDePlantilla = null;
-  if (plantillas.length) {
-    const templateField = document.createElement("div");
-    templateField.className = "field";
-    const templateLabel = document.createElement("label");
-    templateLabel.textContent = "Plantilla";
-    templateLabel.htmlFor = "nueva-fila-plantilla";
-    const templateSelect = document.createElement("select");
-    templateSelect.id = "nueva-fila-plantilla";
-    const vacia = document.createElement("option");
-    vacia.value = "";
-    vacia.textContent = "Sin plantilla";
-    templateSelect.appendChild(vacia);
-    plantillas.forEach((plantilla) => {
-      const opcion = document.createElement("option");
-      opcion.value = plantilla.name;
-      opcion.textContent = plantilla.name;
-      templateSelect.appendChild(opcion);
-    });
-    templateSelect.addEventListener("change", () => {
-      plantillaElegida =
-        plantillas.find((plantilla) => plantilla.name === templateSelect.value) || null;
-      // Al volver a «Sin plantilla» no se borra lo que ya hay escrito: solo se
-      // deja de enviar el cuerpo. Deshacer lo tecleado sin avisar sería peor.
-      cuerpoDePlantilla = "";
-      avisoDePlantilla.hidden = true;
-      avisoDePlantilla.textContent = "";
-      if (!plantillaElegida) {
-        refrescarBoton();
-        return;
-      }
-      if (plantillaElegida.error) {
-        // El servidor dice qué valor o qué columna ya no existe. Pintarlo en un
-        // control que no lo puede representar lo perdería en silencio, así que
-        // no se rellena nada y se explica por qué no se puede usar.
-        avisoDePlantilla.textContent =
-          "Esta plantilla ya no encaja con la base: " + plantillaElegida.error;
-        avisoDePlantilla.hidden = false;
-        refrescarBoton();
-        return;
-      }
-      cuerpoDePlantilla = plantillaElegida.body || "";
-      const valores = plantillaElegida.values || {};
-      propInputs.forEach(({ prop, input }) => {
-        if (!Object.prototype.hasOwnProperty.call(valores, prop.key)) return;
-        const valor = valores[prop.key];
-        if (prop.type === "checkbox") input.checked = Boolean(valor);
-        else if (Array.isArray(valor)) input.value = valor.join(", ");
-        else input.value = valor === null || valor === undefined ? "" : String(valor);
-      });
-      refrescarBoton();
-    });
-    templateField.append(templateLabel, templateSelect);
-    // El motivo va a lo ancho de la rejilla, no en la celda del desplegable: a
-    // 375 px la columna mide ~150 px y el aviso quedaba en un hilo vertical.
-    avisoDePlantilla = document.createElement("p");
-    avisoDePlantilla.className = "db-save-hint inline-form-hint";
-    avisoDePlantilla.setAttribute("role", "status");
-    avisoDePlantilla.hidden = true;
-    // Justo debajo del título: es lo primero que se elige al añadir una fila.
-    wrap.insertBefore(templateField, titleField.nextSibling);
-    wrap.insertBefore(avisoDePlantilla, templateField.nextSibling);
-  }
-
-  const submitBtn = document.createElement("button");
-  submitBtn.className = "btn btn-primary";
-  submitBtn.textContent = "Añadir fila";
-  // El título de la fila ES el nombre del fichero (`Bases/<base>/<título>.md`):
-  // una fila sin título no tiene identidad, y crearla dejaba un «Sin título.md»
-  // de frontmatter y nada más que había que borrar a mano (M4).
-  const SIN_TITULO = "Escribe un título: es el nombre del fichero de la fila.";
-  const refrescarBoton = () => {
-    const bloqueada = Boolean(plantillaElegida && plantillaElegida.error);
-    submitBtn.disabled = bloqueada || !titleInput.value.trim();
-    submitBtn.title = bloqueada
-      ? "Esa plantilla ya no encaja con la base: elige otra o «Sin plantilla»."
-      : submitBtn.disabled
-        ? SIN_TITULO
-        : "";
-  };
-  submitBtn.disabled = true;
-  submitBtn.title = SIN_TITULO;
-  titleInput.addEventListener("input", refrescarBoton);
-  submitBtn.addEventListener("click", async () => {
-    const titulo = titleInput.value.trim();
-    if (!titulo) {
-      refrescarBoton();
-      titleInput.focus();
-      return;
-    }
-    const properties = {};
-    // Las claves que la plantilla rellena se mandan siempre, aunque el usuario
-    // las haya vaciado: un `null` es «no quiero este valor» y sin él el
-    // servidor volvería a poner el de la plantilla, deshaciendo el cambio en
-    // silencio (`properties` manda sobre la plantilla, y el vacío también).
-    const declaradas = plantillaElegida
-      ? Object.keys(plantillaElegida.values || {})
-      : [];
-    for (const { prop, input, read } of propInputs) {
-      // Al crear se guarda también un checkbox desmarcado; el resto de tipos
-      // sin valor no se escriben (no hay que dejar `null` en el fichero).
-      if (prop.type === "checkbox") {
-        properties[prop.key] = input.checked;
-      } else {
-        const value = read();
-        if (value !== null) properties[prop.key] = value;
-        else if (declaradas.includes(prop.key)) properties[prop.key] = null;
-      }
-    }
-    try {
-      const nueva = await api(`/databases/${database.id}/rows`, {
-        method: "POST",
-        body: JSON.stringify({
-          title: titulo,
-          properties,
-          // La plantilla viaja por su nombre: el servidor la valida otra vez
-          // (última puerta antes de escribir) y rellena lo que el formulario no
-          // haya mandado. Lo editado aquí manda sobre el valor por defecto.
-          ...(plantillaElegida && !plantillaElegida.error
-            ? { template: plantillaElegida.name }
-            : {}),
-          ...(cuerpoDePlantilla ? { body_markdown: cuerpoDePlantilla } : {}),
-        }),
-      });
-      // Al repintar, la fila nueva entra marcada (si la vista la enseña).
-      Promise.resolve(selectDatabase(database.id, { focus: "addRow" })).then(() => {
-        if (!nueva?.id) return;
-        marcarComoNueva(document.querySelector(`#main tr[data-row-id="${nueva.id}"]`));
-      });
-    } catch (e) {
-      alert("Error al crear la fila: " + e.message);
-    }
-  });
-  wrap.appendChild(submitBtn);
-
-  return wrap;
 }
 
 // ------------------------------------------------ diálogo: base de datos
