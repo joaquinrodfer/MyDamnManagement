@@ -11225,8 +11225,18 @@ function renderBoardColumn(
   const head = document.createElement("div");
   head.className = "board-col-head";
   const labelSpan = document.createElement("span");
+  labelSpan.className = "board-col-label";
   labelSpan.textContent = String(label);
+  // El punto de la cabecera lleva el mismo tono que la etiqueta de ese valor
+  // en la tabla (ver `htmlDeEtiqueta`). Solo presentación: sin opción que
+  // coincida («(sin valor)», un texto libre) se queda en el tono neutro.
+  const propDeGrupo = groupKey ? database.schema_def.find((p) => p.key === groupKey) : null;
+  const posicionDeTono = (propDeGrupo?.options || []).indexOf(value);
+  if (posicionDeTono >= 0) {
+    labelSpan.classList.add(`prop-tag-${(posicionDeTono % TONOS_DE_ETIQUETA) + 1}`);
+  }
   const countSpan = document.createElement("span");
+  countSpan.className = "board-col-count";
   countSpan.textContent = String(rows.length);
   head.append(labelSpan, countSpan);
   col.appendChild(head);
@@ -11338,8 +11348,13 @@ function renderBoardColumn(
       if (!propDef || propDef.type === "parent_row") return;
       if (v === null || v === "" || v === undefined) return;
       const line = document.createElement("div");
-      line.className = "board-card-prop";
-      line.innerHTML = `${escapeHtml(propDef.name)}: ${formatPropValueHtml(v, propDef, row)}`;
+      // La propiedad por la que agrupa el tablero ya la dice la columna: en la
+      // tarjeta se marca para que el CSS no la repita.
+      line.className = "board-card-prop" + (k === groupKey ? " is-group-key" : "");
+      line.innerHTML =
+        `<span class="board-card-key">${escapeHtml(propDef.name)}</span>` +
+        `<span class="sr-only">: </span>` +
+        `<span class="board-card-val">${formatPropValueHtml(v, propDef, row)}</span>`;
       card.appendChild(line);
     });
 

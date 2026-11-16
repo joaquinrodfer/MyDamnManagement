@@ -2829,18 +2829,18 @@
     line-height: 1.5;
   }
 
-  .board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; }
+  .board { display: flex; align-items: flex-start; gap: 10px; overflow-x: auto; padding-bottom: 10px; }
   /* Cada carril es un contenedor visual propio (--bg sobre el --panel del
      lienzo): así se ve dónde empieza y acaba la columna, no solo el hueco. */
   .board-col {
-    flex: 0 0 256px;
+    flex: 0 0 272px;
     background: var(--bg);
-    border: 1px solid var(--panel-border);
-    border-radius: var(--radius-md);
-    padding: 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-lg);
+    padding: 8px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     transition: border-color var(--dur-fast) var(--ease-std), background-color var(--dur-fast) var(--ease-std);
   }
   /* Destino del arrastre: se marca la columna entera (SPEC-B §3.7). */
@@ -2852,15 +2852,47 @@
   }
   .board-col-head {
     font-family: var(--font-body);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 600;
-    color: var(--ink-muted);
-    padding: 2px 4px 6px;
+    color: var(--ink);
+    padding: 4px 6px 6px;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    gap: 8px;
+  }
+  /* El nombre de la columna con el punto de su tono (el de su etiqueta en la
+     tabla) y, pegado a él, cuántas tarjetas tiene: el número es de la columna,
+     no un dato suelto en la otra esquina. */
+  .board-col-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  :where(.board-col-label) { --tag: var(--tag-1); }
+  .board-col-label::before {
+    content: "";
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--tag);
+  }
+  .board-col-count {
+    flex: none;
+    min-width: 20px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--row-hover);
+    color: var(--ink-muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 18px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
   /* Asa de la cabecera: recoloca la columna. El orden se guarda en la
      propiedad (`sort_order` en el `.md` de la base), no en la vista. */
@@ -2870,8 +2902,9 @@
     color: var(--ink-muted);
     font-size: 12px;
     letter-spacing: 0;
-    margin-right: 6px;
-    opacity: 0.5;
+    margin-right: -2px;
+    opacity: 0.4;
+    transition: opacity var(--dur-fast) var(--ease-std);
   }
   .board-col-head.is-reorderable:hover .board-col-grip { opacity: 1; }
   .board-col.is-col-dragging { opacity: 0.5; border-style: dashed; }
@@ -2884,18 +2917,52 @@
   .board-card {
     background: var(--surface-elevated);
     border: 1px solid var(--panel-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     padding: 10px 12px;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     cursor: pointer;
     box-shadow: var(--shadow-card);
-    transition: border-color var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-std),
+                box-shadow var(--dur-fast) var(--ease-std),
+                transform var(--dur-fast) var(--ease-out);
   }
-  .board-card:hover { border-color: var(--accent); }
+  /* Al pasar, la tarjeta se levanta un píxel: se nota que se puede coger sin
+     pintarla del color de acento (ese queda para el foco y para el destino
+     del arrastre). */
+  .board-card:hover {
+    border-color: var(--cell-ring);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+    transform: translateY(-1px);
+  }
+  .board-card:active { transform: none; }
+  .board-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   /* La tarjeta que se está arrastrando se queda "fantasma" en su sitio. */
   .board-card.is-dragging { opacity: 0.45; border-style: dashed; }
-  .board-card-title { font-weight: 600; margin-bottom: 6px; color: var(--ink); line-height: 1.35; }
-  .board-card-prop { color: var(--ink-muted); font-size: var(--text-sm); font-family: var(--font-body); font-variant-numeric: tabular-nums; }
+  .board-card-title { font-weight: 600; margin-bottom: 8px; color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
+  .board-card-title:last-child { margin-bottom: 0; }
+  /* Cada propiedad, en dos columnas: el nombre apagado y a ancho fijo, el
+     valor a su derecha. Antes era «Nombre: valor» en una línea gris y había
+     que leer cada tarjeta entera para encontrar la fecha. */
+  .board-card-prop {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+    color: var(--ink);
+    font-size: 12px;
+    font-family: var(--font-body);
+    font-variant-numeric: tabular-nums;
+  }
+  .board-card-key {
+    flex: 0 0 82px;
+    color: var(--ink-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .board-card-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Lo que ya dice la columna no se repite en cada una de sus tarjetas. */
+  .board-card-prop.is-group-key { display: none; }
 
   /* --- calendario (vista de base) ---
      La rejilla es de siete columnas que se reparten el ancho (1fr): no hay
@@ -2904,7 +2971,7 @@
      queda como red de seguridad. La página no se mueve en ningún caso. */
   .calendar-wrap {
     border: 1px solid var(--panel-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--panel);
     overflow-x: auto;
   }
@@ -4102,9 +4169,14 @@
     white-space: nowrap;
   }
   .board-card-subtasks {
-    margin-top: 6px;
+    display: inline-block;
+    margin-top: 8px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--row-hover);
     color: var(--ink-muted);
     font-size: 11px;
+    line-height: 18px;
     font-variant-numeric: tabular-nums;
   }
   /* El nivel de filas de la vista (solo madres / todas). */
