@@ -154,8 +154,15 @@ def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schema
     camino de serialización. `body_markdown` sale del índice, que lo tiene
     porque lo leyó del `.md` al indexar: reindexar el vault devuelve lo mismo.
     """
-    base = _serialize_row(repo, db_def, row)
-    key, counts = _hierarchy_counts(repo, db_def)
+    key = hierarchy.parent_key(db_def.schema_def)
+    # Una sola pasada por la base: de la misma lista salen el contador de la
+    # fila y sus subtareas (ver `_serialize_row`, que hace lo propio cuando la
+    # fila va sola).
+    todas = repo.list_rows(db_def.id)
+    counts = (
+        hierarchy.child_counts(todas, key, db_def.schema_def) if key else {}
+    )
+    base = _serialize_rows(repo, db_def, [row], parent_key=key, counts=counts)[0]
     # Las subtareas van en orden de creación (el de `list_rows`): lo que se
     # cuelga de una fila es un plan, y un plan se lee en el orden en que se
     # escribió; el `sort` de una vista de la base no tiene por qué gobernarlo.
@@ -163,7 +170,7 @@ def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schema
         _serialize_rows(
             repo,
             db_def,
-            [r for r in repo.list_rows(db_def.id) if hierarchy.parent_of(r, key) == str(row.id)],
+            [r for r in todas if hierarchy.parent_of(r, key) == str(row.id)],
             parent_key=key,
             counts=counts,
         )

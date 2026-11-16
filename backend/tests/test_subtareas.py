@@ -15,9 +15,17 @@ Lo que se fija aquí, que es lo que la tarjeta pide:
    madre -> hija sin escribir nada en `links`.
 """
 
+import re
 from pathlib import Path
 
 from app.vault import fm
+
+# La base tal y como sale del diálogo de Propiedades cuando nadie ha marcado
+# todavía qué cuenta como «cerrada»: es el estado del que arranca el usuario.
+SCHEMA_SIN_CIERRE = [
+    {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+    {"key": "estado", "name": "Estado", "type": "select", "options": ["abierta", "hecha"]},
+]
 
 SCHEMA = [
     {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
@@ -565,3 +573,118 @@ def test_la_exportacion_no_pone_el_id_de_la_madre_como_columna(client):
     exportado = client.get(f"/pages/{nota.json()['id']}/export.md").text
     assert "Lanzar la web" in exportado
     assert plan["madre"]["id"] not in exportado
+
+
+# ---------------------------------------------- el cierre desde la interfaz
+
+def test_el_dialogo_puede_marcar_la_propiedad_que_cierra(client, vault_path):
+    """Lo que manda el diálogo de Propiedades al marcar «dice si está cerrada».
+
+    Sin esa ruta el contador se quedaba en «0 de N» con trabajo hecho: era el
+    cambio bloqueante de la revisión. Aquí se fija el PATCH con la misma forma
+    que arma `readSchemaFromDialog` (nombre, tipo, clave, opciones y `done`).
+    """
+    base = crear_base(client, SCHEMA_SIN_CIERRE, title="Proyecto")
+    madre = crear_fila(client, base["id"], "Entregable")
+    crear_fila(client, base["id"], "Paso 1", {"paso_de": madre["id"], "estado": "hecha"})
+    crear_fila(client, base["id"], "Paso 2", {"paso_de": madre["id"], "estado": "abierta"})
+    crear_fila(client, base["id"], "Paso 3", {"paso_de": madre["id"], "estado": "abierta"})
+
+    # Sin marcador, la base no sabe qué es estar cerrada.
+    leidas = {r["id"]: r for r in filas(client, base["id"])}
+    assert leidas[madre["id"]]["children"] == {"total": 3, "closed": 0}
+
+    respuesta = client.patch(
+        f"/databases/{base['id']}",
+        json={
+            "title": "Proyecto",
+            "schema_def": [
+                {"name": "Subtarea de", "type": "parent_row", "key": "paso_de"},
+                {
+                    "name": "Estado",
+                    "type": "select",
+                    "key": "estado",
+                    "options": ["abierta", "hecha"],
+                    "done": ["hecha"],
+                },
+            ],
+            "title_name": "Título",
+            "title_hidden": False,
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    estado = next(p for p in respuesta.json()["schema_def"] if p["key"] == "estado")
+    assert estado["done"] == ["hecha"]
+    assert "done: [hecha]" in (vault_path / "Bases" / "Proyecto.md").read_text(encoding="utf-8")
+
+    leidas = {r["id"]: r for r in filas(client, base["id"])}
+    assert leidas[madre["id"]]["children"] == {"total": 3, "closed": 1}
+    paso1 = next(r for r in leidas.values() if r["title"] == "Paso 1")
+    assert paso1["closed"] is True
+
+
+def test_desmarcar_el_cierre_en_el_dialogo_lo_quita(client, vault_path):
+    """Desmarcar la casilla manda `done: false`: el contador deja de contar."""
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    respuesta = client.patch(
+        f"/databases/{base}",
+        json={
+            "schema_def": [
+                {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["Pendiente", "En curso", "Hecho"],
+                    "done": False,
+                },
+                {"key": "fecha", "name": "Fecha", "type": "date"},
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    estado = next(p for p in respuesta.json()["schema_def"] if p["key"] == "estado")
+    assert "done" not in estado
+    assert "done:" not in (vault_path / "Bases" / "Plan.md").read_text(encoding="utf-8")
+    leidas = {r["id"]: r for r in filas(client, base)}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 0}
+
+
+# ------------------------------------------------- ciclos escritos a mano
+
+def _poner_madre(vault_path, row_id, madre_id, base="Plan"):
+    """Reescribe `paso_de` en el `.md`, como haría el usuario a mano."""
+    fichero = next((vault_path / "Bases" / base).glob(f"{row_id[:8]}*.md"))
+    texto = fichero.read_text(encoding="utf-8")
+    nuevo = re.sub(r"(?m)^paso_de:.*$", f"paso_de: {madre_id}", texto)
+    assert nuevo != texto, "la fila no tenía celda de subtarea"
+    fichero.write_text(nuevo, encoding="utf-8")
+
+
+def test_un_ciclo_escrito_a_mano_no_esconde_las_filas(client, vault_path):
+    """El 400 impide el ciclo por API; el `.md` es del usuario.
+
+    Con la vista por defecto («solo madres»), una cadena de madres que solo da
+    vueltas no puede hacer desaparecer las filas: se tratan como raíces y se
+    ven, igual que `arrange` no visita dos veces una fila.
+    """
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    tabla = crear_vista(client, base, "Tabla", tipo="table")   # roots por defecto
+
+    _poner_madre(vault_path, plan["hija"]["id"], plan["otra"]["id"])
+    _poner_madre(vault_path, plan["otra"]["id"], plan["hija"]["id"])
+    assert client.post("/reindex").status_code == 200
+
+    titulos = [r["title"] for r in filas(client, base, tabla["id"])]
+    assert "Textos" in titulos
+    assert "Diseño" in titulos
+    # Y la vista sin nivel no cuelga ni pierde filas por el ciclo.
+    todas = filas(client, base)
+    assert {r["title"] for r in todas} == {
+        "Lanzar la web",
+        "Textos",
+        "Diseño",
+        "Dominio",
+    }

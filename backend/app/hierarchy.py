@@ -93,23 +93,6 @@ def parent_key(schema_def: Iterable[dict]) -> Optional[str]:
     return str(prop["key"]) if prop else None
 
 
-def parent_ids(schema_def: Iterable[dict], properties: Iterable[dict]) -> list[str]:
-    """Los ids de madre que referencian las celdas `parent_row`, sin repetir.
-
-    Misma idea que `relation_ids`: al serializar una respuesta se resuelven de
-    una vez los títulos de las madres que hacen falta, en una consulta.
-    """
-    key = parent_key(schema_def)
-    if not key:
-        return []
-    ids: dict[str, None] = {}
-    for row in properties:
-        pid = parent_of(row, key)
-        if pid:
-            ids.setdefault(pid, None)
-    return list(ids)
-
-
 def parent_of(row: "Page | dict", key: Optional[str]) -> Optional[str]:
     """El id de la madre de `row` (canónico), o `None` si no tiene.
 
@@ -214,16 +197,34 @@ def level(config: dict, view_type: Optional[str]) -> str:
 
 
 def only_roots(rows: list["Page"], key: Optional[str]) -> list["Page"]:
-    """Las filas que no son hijas de ninguna otra fila DE ESTA lista.
+    """Las filas que no cuelgan de otra fila DE ESTA lista.
 
     Una fila cuya madre no está en la lista (la filtró la vista, o su `.md`
     apunta a un id que ya no existe) cuenta como raíz: esconderla sería perder
     un dato que el filtro no excluyó.
+
+    Un ciclo escrito a mano —el 400 lo impide por API, el `.md` es del
+    usuario— tampoco esconde nada: si la cadena de madres solo da vueltas no
+    hay raíz de la que colgar, así que las filas que lo forman se tratan como
+    raíces y se ven. Es la misma tolerancia de `arrange`: un dato raro no deja
+    la vista vacía ni cuelga la petición.
     """
     if not key:
         return list(rows)
-    ids = {str(row.id) for row in rows}
-    return [row for row in rows if parent_of(row, key) not in ids]
+    por_id = {str(row.id): row for row in rows}
+
+    def es_raiz(row: "Page") -> bool:
+        actual = parent_of(row, key)
+        if actual is None or actual not in por_id:
+            return True            # sin madre en la lista: es raíz
+        vistas = {str(row.id)}
+        while actual in por_id and actual not in vistas:
+            vistas.add(actual)
+            actual = parent_of(por_id[actual], key)
+        # Termina en una raíz de la lista -> no es raíz; da vueltas -> sí.
+        return actual in vistas
+
+    return [row for row in rows if es_raiz(row)]
 
 
 def arrange(rows: list["Page"], key: Optional[str]) -> list["Page"]:
