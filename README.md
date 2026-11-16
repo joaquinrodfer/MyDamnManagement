@@ -227,7 +227,7 @@ trae sus `subtasks` (título, estado y fecha) y crea una nueva ya enlazada. Un
 ciclo —una fila colgando de sí misma o de una descendiente suya— es un **400**
 con la ruta del círculo, y una madre de otra base también. El vínculo no se
 escribe en `links`: el grafo lo pinta como arista `kind: "subtask"`. Decisiones
-en [`docs/ADR-0005-subtareas.md`](docs/ADR-0005-subtareas.md).
+en [`docs/ADR-0006-subtareas.md`](docs/ADR-0006-subtareas.md).
 
 ### Agentes (`/agent/...`)
 

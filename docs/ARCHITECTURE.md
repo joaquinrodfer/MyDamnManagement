@@ -17,7 +17,7 @@
 > valor es el `id` de la madre, y la vista elige su nivel con `parent_level`
 > (`roots` en tabla y tablero, `all` en lista y calendario). La fila madre lleva
 > el contador de sus hijas cerradas. Decisiones en
-> [`ADR-0005-subtareas.md`](ADR-0005-subtareas.md).
+> [`ADR-0006-subtareas.md`](ADR-0006-subtareas.md).
 >
 > Lo que sigue describe el diseño funcional (motor, rutas, flujos) y sigue
 > vigente en eso; el diagrama ER de §2 y el detalle de §4 conservan la forma del modelo

@@ -1,4 +1,4 @@
-# ADR 0005 — Subtareas: una fila hija de otra
+# ADR 0006 — Subtareas: una fila hija de otra
 
 - **Estado:** aceptado (2026-11-16)
 - **Contexto:** MyDamnManagement, gestor de proyectos en ficheros `.md`. Hasta
@@ -7,8 +7,11 @@
   [backlog](BACKLOG-GESTOR-PROYECTOS.md): «subtareas con estado propio y
   recuento en la tarjeta», y sin el recuento no se usa.
 - **Relacionado:** [ADR-0001](ADR-0001-formato-del-vault.md) (el `.md` es la
-  verdad), y [ADR-0002](ADR-0002-indice-sqlite.md) (índice derivado, sin otra
-  fuente de verdad).
+  verdad) y [ADR-0002](ADR-0002-indice-sqlite.md) (índice derivado, sin otra
+  fuente de verdad). La [ADR-0005](ADR-0005-verdad-en-base-de-datos.md) aplaza
+  el cambio de fuente de la verdad a una versión mayor; esto se implementa con
+  la arquitectura de hoy (ficheros), que es lo que la ADR-0005 mantiene
+  mientras tanto.
 
 ## Decisiones
 
