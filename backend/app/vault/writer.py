@@ -236,6 +236,31 @@ def schema_entries(schema: list[dict]) -> list[dict]:
     return [_sin_vacios(prop) for prop in schema if isinstance(prop, dict)]
 
 
+def row_template_entries(templates: list[dict] | None) -> list[dict]:
+    """Las plantillas de fila tal y como se escriben en el frontmatter.
+
+    Sin claves vacías: una plantilla sin valores por defecto no lleva
+    `properties: {}` (un mapa vacío en bloque no existe en este subconjunto) y
+    una sin cuerpo no lleva `body: ""`. `name` va siempre.
+    """
+    out: list[dict] = []
+    for template in templates or []:
+        if not isinstance(template, dict):
+            continue
+        name = str(template.get("name") or "").strip()
+        if not name:
+            continue
+        entry: dict = {"name": name}
+        properties = _sin_vacios(dict(template.get("properties") or {}))
+        if properties:
+            entry["properties"] = properties
+        body = template.get("body")
+        if isinstance(body, str) and body:
+            entry["body"] = body
+        out.append(entry)
+    return out
+
+
 def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
                       views: list[dict], created: str | None = None,
                       updated: str | None = None,
@@ -244,7 +269,8 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
                       header_image: str | None = None,
                       title_name: str | None = None,
                       title_hidden: bool = False,
-                      closed: dict | None = None) -> str:
+                      closed: dict | None = None,
+                      row_templates: list[dict] | None = None) -> str:
     """`Bases/<slug>.md`: `type: database`, `schema` y `views` en el frontmatter.
 
     Cada vista se escribe con `id`, `name`, `type` y su `config` **al mismo
@@ -282,6 +308,11 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
         updates["title_hidden"] = True
     if closed:
         updates["closed"] = closed
+    # Las plantillas de fila son parte de la base: se copian aquí al crear y se
+    # reescriben al configurarlas. Sin plantillas no se escribe la clave (un
+    # `row_templates: []` no dice nada).
+    if row_templates:
+        updates["row_templates"] = row_template_entries(row_templates)
     raw, _ = fm.update("", updates)
     return fm.compose(raw, "\n")
 
@@ -291,7 +322,8 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
                     db_id: str | None = None, description: str | None = None,
                     created_by: str | None = None,
                     title_name: str | None = None, title_hidden: bool = False,
-                    closed: dict | None = None
+                    closed: dict | None = None,
+                    row_templates: list[dict] | None = None
                     ) -> tuple[reader.Page, list[str]]:
     """Crea `folder/title.md` y su carpeta de filas (mismo nombre sin .md)."""
     stem, notes = names.sanitize(title)
@@ -305,7 +337,8 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
     text = database_markdown(id_=db_id or new_id(), icon=icon, schema=schema,
                              views=views or [], description=description,
                              created_by=created_by, title_name=title_name,
-                             title_hidden=title_hidden, closed=closed)
+                             title_hidden=title_hidden, closed=closed,
+                             row_templates=row_templates)
     vaultfs.atomic_write(os.path.join(vault_root, rel), text)
     os.makedirs(os.path.join(vault_root, rel[:-3]), exist_ok=True)
     return reader.read_file(os.path.join(vault_root, rel), rel), notes

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
-from app import closed, index as index_mod
+from app import closed, index as index_mod, templates as template_defs
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
@@ -105,6 +105,10 @@ class Database:
     # sin estas claves en su `.md` sale con «Título» y visible.
     title_name: str = DEFAULT_TITLE_NAME
     title_hidden: bool = False
+    # Plantillas de fila de la base (`row_templates:` del `.md`): nombre,
+    # valores por defecto y cuerpo inicial. Se copian al índice al leer el
+    # fichero, así que una base escrita a mano también las trae.
+    row_templates: list[dict[str, Any]] = field(default_factory=list)
     # Qué cuenta como «fila cerrada»: `{property, values}`, o `None` si la base
     # no declara estado. Es la regla EFECTIVA: el bloque `closed:` del `.md` o,
     # si no lo hay, la que implican los marcadores `done` viejos
@@ -177,6 +181,10 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         _load(declared["rule_json"], None) if declared is not None else None,
         schema_def,
     )
+    plantillas = conn.execute(
+        "SELECT templates_json FROM database_row_templates WHERE database_id = ?",
+        (row["id"],),
+    ).fetchone()
     return Database(
         id=uuid.UUID(row["id"]),
         page_id=uuid.UUID(row["page_id"]),
@@ -189,6 +197,7 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         title_hidden=bool(title["hidden"]) if title else False,
         closed=rule,
         closed_from_done=source == closed.SOURCE_DONE,
+        row_templates=_load(plantillas["templates_json"], []) if plantillas else [],
     )
 
 
@@ -869,12 +878,15 @@ class Repository:
         created_by: Optional[str] = None,
         views: Optional[list[dict[str, Any]]] = None,
         closed_rule: Optional[dict[str, Any]] = None,
+        row_templates: Optional[list[dict[str, Any]]] = None,
     ) -> Database:
         """Crea `Bases/<slug>.md` (y sus vistas en el frontmatter) y la indexa.
 
         `closed_rule` es la regla de qué cuenta como fila cerrada, ya validada
         contra el schema (`app.closed.validate`); se escribe como bloque
-        `closed:` y no como marcadores `done`.
+        `closed:` y no como marcadores `done`. `row_templates` son las
+        plantillas de fila que trae la base (ya validadas contra el schema), y
+        se escriben en su frontmatter: la plantilla es parte de la base.
         """
         return self.get_database(uuid.UUID(self.vault.create_database(
             title=title,
@@ -884,6 +896,7 @@ class Repository:
             icon=icon,
             created_by=created_by,
             closed=closed_rule,
+            row_templates=row_templates,
         )))
 
     def set_closed(
@@ -909,6 +922,22 @@ class Repository:
             schema=closed.without_legacy(current.schema_def),
             closed=rule,
         )
+        return self.get_database(database_id)
+
+    def set_row_templates(
+        self, database_id: uuid.UUID, templates: list[dict[str, Any]]
+    ) -> Optional[Database]:
+        """Reescribe las plantillas de fila de la base en su `.md`.
+
+        `templates` llega ya validado contra el schema (`app.templates`): aquí
+        solo se escribe. Una lista vacía retira la clave del frontmatter. No
+        toca ninguna fila: las plantillas no son datos, son valores por defecto
+        para el alta.
+        """
+        current = self.get_database(database_id)
+        if current is None:
+            return None
+        self.vault.save_database(current.page_id, row_templates=list(templates))
         return self.get_database(database_id)
 
     def update_database(
@@ -1057,6 +1086,22 @@ class Repository:
                         else None
                     )
 
+        # Las plantillas de fila siguen al schema igual que las vistas: un
+        # rename traduce sus claves, una propiedad borrada deja de aparecer y un
+        # valor que el tipo nuevo ya no admite se retira. En silencio, como la
+        # regla `closed`: nadie está editando la plantilla en esta petición, y
+        # guardar el resto de la base no puede fallar por ella. Sin esto el `.md`
+        # se queda con plantillas que mienten, que en el editor son invisibles
+        # (su clave ya no está en el schema) y que el alta rechazaría sin decir
+        # por qué.
+        row_templates_update: Any = UNSET
+        if schema_def is not None and current.row_templates:
+            ajustadas = template_defs.adapt_row_templates(
+                current.row_templates, final_schema or [], renames
+            )
+            if ajustadas != current.row_templates:
+                row_templates_update = ajustadas
+
         self.vault.save_database(
             current.page_id,
             title=UNSET if title is None else title,
@@ -1066,6 +1111,7 @@ class Repository:
             title_name=UNSET if title_name is None else title_name,
             title_hidden=UNSET if title_hidden is None else title_hidden,
             closed=closed_update,
+            row_templates=row_templates_update,
         )
         if schema_def is not None:
             # El índice de una fila se filtra contra el schema de su base: si
@@ -1347,9 +1393,12 @@ class Repository:
         title: str,
         icon: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
+        body: str = "",
     ) -> Page:
+        """Crea la fila. `body` es su cuerpo markdown inicial (plantilla de fila)."""
         row_id = self.vault.create_row(
-            database_id, title=title, properties=properties or {}, icon=icon
+            database_id, title=title, properties=properties or {}, icon=icon,
+            body=body,
         )
         return self.get_row(database_id, uuid.UUID(row_id))
 

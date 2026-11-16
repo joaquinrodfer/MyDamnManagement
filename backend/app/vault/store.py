@@ -716,6 +716,21 @@ class VaultStore:
                 " VALUES (?, ?, ?, ?, ?)",
                 (view["id"], record.id, view["name"], view["type"], _dump(view["config"])),
             )
+        # Las plantillas de fila (v8) también son parte de la base y el índice
+        # tiene que decir lo mismo que el `.md`: se reescriben siempre, como las
+        # vistas, para que una plantilla quitada del fichero no sobreviva.
+        templates = reader.row_templates_from_frontmatter(
+            page.frontmatter.get("row_templates"), page.path, warnings
+        )
+        self.conn.execute(
+            "DELETE FROM database_row_templates WHERE database_id = ?", (record.id,)
+        )
+        if templates:
+            self.conn.execute(
+                "INSERT INTO database_row_templates (database_id, templates_json)"
+                " VALUES (?, ?)",
+                (record.id, _dump(templates)),
+            )
 
     def _index_row(self, page: reader.Page, record: _PageRecord, database_id: str) -> None:
         """La tabla `rows`: la base, las propiedades coaccionadas y la ruta."""
@@ -1232,6 +1247,7 @@ class VaultStore:
         title_name: Optional[str] = None,
         title_hidden: bool = False,
         closed: Optional[dict] = None,
+        row_templates: Optional[list[dict]] = None,
     ) -> str:
         """Escribe `Bases/<slug>.md` (y su carpeta de filas) e indexa. Devuelve su id."""
         self.ensure_structure()
@@ -1245,6 +1261,7 @@ class VaultStore:
             self.root, folder, title, schema, entries,
             icon=icon, db_id=page_id, description=description, created_by=created_by,
             title_name=title_name, title_hidden=title_hidden, closed=closed,
+            row_templates=row_templates,
         )
         with self._tx():
             self._index_file(page.path, self._parent_str(parent_id))
@@ -1267,6 +1284,7 @@ class VaultStore:
         title_name: Any = UNSET,
         title_hidden: Any = UNSET,
         closed: Any = UNSET,
+        row_templates: Any = UNSET,
     ) -> None:
         """Reescribe la base (y la renombra con sus filas si toca) y la indexa.
 
@@ -1356,6 +1374,11 @@ class VaultStore:
             # El bloque `closed:` del frontmatter. `None` lo borra: la base deja
             # de declarar estado y nada se considera cerrado.
             updates["closed"] = closed
+        if row_templates is not UNSET:
+            # `row_templates:` del frontmatter. `None` (o una lista vacía) borra
+            # la clave: una base sin plantillas no lleva `row_templates: []`.
+            entries = writer.row_template_entries(row_templates)
+            updates["row_templates"] = entries or None
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)

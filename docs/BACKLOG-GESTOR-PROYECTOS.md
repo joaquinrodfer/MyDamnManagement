@@ -29,7 +29,7 @@ Reglas de este backlog:
 |---|---|---|---|
 | 5 | Estado «cerrado» con semántica (deja de contar en todas partes) | bajo | hecha (`feat/estado-cerrado`) |
 | 3 | Prioridad con orden semántico | bajo | en tarjeta (`t_d3b55d4e`) |
-| 29 | Plantilla de tarea y de proyecto completo | bajo | en tarjeta (`t_d5ed2de0`, espera a 5) |
+| 29 | Plantilla de tarea y de proyecto completo | bajo | hecha (`feat/plantillas`) |
 
 ## Lote 3 — «el día a día»
 
