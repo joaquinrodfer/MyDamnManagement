@@ -328,7 +328,6 @@ def create_from_template(
             closed_rule=closed_rule,
             row_templates=cuerpo["row_templates"],
         )
-    publish_database(db_def.id, "created")
     return _serialize_database(db_def, repo.database_ids())
 
 
