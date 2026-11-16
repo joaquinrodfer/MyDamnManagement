@@ -6663,9 +6663,19 @@ function avisoDeFilaOculta(titulo, nombreVista) {
 /** El foco, en el nombre de la fila que se acaba de crear: el `<tr>` de la
  * tabla, la línea de la lista o el chip del calendario (los tres llevan
  * `data-row-id`). Devuelve si la encontró. */
+/** La fila recién creada entra con un fundido (`.is-new` en el CSS) para que se
+ * vea DÓNDE ha caído: el orden de la vista puede dejarla en medio. Solo
+ * presentación; la clase se quita sola. */
+function marcarComoNueva(el) {
+  if (!el) return;
+  el.classList.add("is-new");
+  setTimeout(() => el.classList.remove("is-new"), 400);
+}
+
 function enfocarFila(container, rowId) {
   const el = container.querySelector(`[data-row-id="${rowId}"]`);
   if (!el) return false;
+  marcarComoNueva(el);
   if (el.tagName === "TR") {
     // La tabla no tiene filas enfocables: el nombre es la primera celda, que ya
     // es editable (también en la incrustada). Si por lo que sea no lo es, la
@@ -12033,6 +12043,14 @@ function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
   stopLinkPreview();
   ctx.caja.remove();
   const main = document.getElementById("main");
+  // La vuelta se nota: lo que queda a la vista (la fila de debajo o la vista de
+  // la que se vino) reaparece con un fundido corto (`.is-returning` en el CSS).
+  // Solo presentación; la clase se quita sola al acabar.
+  for (const el of rowPage ? [rowPage.caja] : ctx.debajo.map((d) => d.el)) {
+    if (!(el instanceof HTMLElement)) continue;
+    el.classList.add("is-returning");
+    setTimeout(() => el.classList.remove("is-returning"), 200);
+  }
   if (rowPage) {
     // Debajo hay otra fila: vuelve a estar disponible y se queda a la vista
     // (está justo debajo en #main, que no se ha desplazado mientras tanto).
@@ -13018,7 +13036,7 @@ function renderAddRowForm(database) {
       }
     }
     try {
-      await api(`/databases/${database.id}/rows`, {
+      const nueva = await api(`/databases/${database.id}/rows`, {
         method: "POST",
         body: JSON.stringify({
           title: titulo,
@@ -13032,7 +13050,11 @@ function renderAddRowForm(database) {
           ...(cuerpoDePlantilla ? { body_markdown: cuerpoDePlantilla } : {}),
         }),
       });
-      selectDatabase(database.id, { focus: "addRow" });
+      // Al repintar, la fila nueva entra marcada (si la vista la enseña).
+      Promise.resolve(selectDatabase(database.id, { focus: "addRow" })).then(() => {
+        if (!nueva?.id) return;
+        marcarComoNueva(document.querySelector(`#main tr[data-row-id="${nueva.id}"]`));
+      });
     } catch (e) {
       alert("Error al crear la fila: " + e.message);
     }
@@ -14242,14 +14264,51 @@ document.addEventListener("keydown", (e) => {
 const SIDEBAR_COLLAPSED_KEY = "mdm_sidebar_collapsed";
 const layoutEl = document.querySelector(".layout");
 
-function setSidebarCollapsed(collapsed) {
-  layoutEl.classList.toggle("sidebar-collapsed", collapsed);
+// Lo que dura la salida de la barra (`mdm-side-out` en el CSS) más un margen:
+// el hueco se cierra al acabar la animación y, si el evento no llega, a este
+// plazo. Con «reducir movimiento» no hay animación que esperar.
+const SIDEBAR_SALIDA_MS = 180;
+const sinMovimiento = window.matchMedia("(prefers-reduced-motion: reduce)");
+let sidebarSaliendo = null; // el temporizador de una salida en curso
+
+/** `animar` solo lo pide el botón: al cargar la página la barra se pinta en su
+ * estado, sin entrar ni salir. La preferencia se guarda en el acto; lo único
+ * que se retrasa (lo que dura la salida) es quitar la columna. */
+function setSidebarCollapsed(collapsed, { animar = false } = {}) {
   localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  clearTimeout(sidebarSaliendo);
+  sidebarSaliendo = null;
+  layoutEl.classList.remove("sidebar-entering", "sidebar-leaving");
+  if (!animar || sinMovimiento.matches || esMovil()) {
+    layoutEl.classList.toggle("sidebar-collapsed", collapsed);
+    return;
+  }
+  if (!collapsed) {
+    layoutEl.classList.remove("sidebar-collapsed");
+    layoutEl.classList.add("sidebar-entering");
+    sidebarSaliendo = setTimeout(() => layoutEl.classList.remove("sidebar-entering"), SIDEBAR_SALIDA_MS + 40);
+    return;
+  }
+  layoutEl.classList.add("sidebar-leaving");
+  sidebarSaliendo = setTimeout(() => {
+    sidebarSaliendo = null;
+    layoutEl.classList.remove("sidebar-leaving");
+    layoutEl.classList.add("sidebar-collapsed");
+  }, SIDEBAR_SALIDA_MS - 40);
+}
+
+/** ¿La barra está (o va camino de estar) oculta? Durante la salida todavía no
+ * lleva `sidebar-collapsed`, y un segundo clic tiene que volver a mostrarla. */
+function sidebarOculta() {
+  return (
+    layoutEl.classList.contains("sidebar-collapsed") ||
+    layoutEl.classList.contains("sidebar-leaving")
+  );
 }
 
 document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
   if (esMovil()) return setCajonAbierto(!cajonAbierto());
-  setSidebarCollapsed(!layoutEl.classList.contains("sidebar-collapsed"));
+  setSidebarCollapsed(!sidebarOculta(), { animar: true });
 });
 
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");

@@ -2020,7 +2020,47 @@
      160 ms y nada más: sin transform, para que el layout no se mueva ni un
      píxel mientras se cambia de pestaña. Ver `is-entering` en renderDatabase. */
   .db-view.is-entering { animation: mdm-view-in var(--dur-normal) var(--ease-out); }
-  @keyframes mdm-view-in { from { opacity: 0; } }
+  @keyframes mdm-view-in { from { opacity: 0; transform: translateY(4px); } }
+
+  /* ---------- movimiento de lo que entra y sale ----------
+     Todo con `opacity` y `transform` (no fuerzan layout), entre 120 y 180 ms y
+     con la curva --ease-out: lo que aparece llega desde 4-8 px, lo que se va
+     se desvanece más rápido de lo que entró. El bloque de
+     `prefers-reduced-motion` del final lo apaga entero; el JS que espera a que
+     acabe una salida (la barra lateral) no espera nada en ese caso. */
+  /* Abrir una fila como página: sube 6 px mientras aparece. */
+  .row-page-view { animation: mdm-page-in 180ms var(--ease-out); }
+  @keyframes mdm-page-in { from { opacity: 0; transform: translateY(6px); } }
+  /* Volver de la fila: la vista de debajo reaparece con un fundido corto. No
+     es la página la que se desvanece (su editor ya está destruido cuando se
+     cierra), es el sitio al que se vuelve el que entra. */
+  .is-returning { animation: mdm-return-in 140ms var(--ease-out); }
+  @keyframes mdm-return-in { from { opacity: 0.4; } }
+  /* Una fila recién creada: aparece con el tinte de acento, que se va solo. */
+  .rows-table tr.is-new td,
+  .list-row-item.is-new,
+  .list-row.is-new,
+  .board-card.is-new,
+  .cal-event.is-new { animation: mdm-new-in 180ms var(--ease-out); }
+  @keyframes mdm-new-in { from { opacity: 0; background-color: var(--accent-soft); } }
+  /* Menús y selectores flotantes: 120 ms. Solo se desplazan (sin escala): su
+     posición se calcula midiendo la caja al abrir, y una escala falsearía esa
+     medida en el primer fotograma. */
+  .db-col-floating { animation: mdm-pop-in var(--dur-fast) var(--ease-out); }
+  .mdm-context-menu,
+  .mdm-slash-menu,
+  .rel-picker,
+  .user-menu:not([hidden]) { animation: mdm-fade-in var(--dur-fast) var(--ease-out); }
+  @keyframes mdm-pop-in { from { opacity: 0; transform: translateY(-4px); } }
+  @keyframes mdm-fade-in { from { opacity: 0; } }
+  /* La barra lateral en escritorio: entra desde la izquierda al mostrarla y
+     sale igual al ocultarla. Las clases las pone `setSidebarCollapsed` solo
+     cuando el usuario pulsa el botón (al cargar la página no se anima nada);
+     al salir, el hueco se cierra cuando la animación ha terminado. */
+  .layout.sidebar-entering > aside:not(.note-suggestions-panel) { animation: mdm-side-in var(--dur-normal) var(--ease-out); }
+  .layout.sidebar-leaving > aside:not(.note-suggestions-panel) { animation: mdm-side-out 140ms var(--ease-std) forwards; }
+  @keyframes mdm-side-in { from { opacity: 0; transform: translateX(-16px); } }
+  @keyframes mdm-side-out { to { opacity: 0; transform: translateX(-16px); } }
 
   /* min-width: max-content: la tabla nunca se comprime por debajo del ancho
      natural de sus columnas. Sin esto, a 1024 px `width: 100%` la estrechaba
@@ -3403,13 +3443,13 @@
     color: var(--ink);
     width: min(520px, 92vw);
     box-shadow: var(--shadow-float);
-    /* Apertura y cierre: 160 ms de opacidad y 4 px de desplazamiento hacia
-       arriba. `allow-discrete` + `@starting-style` son lo que permiten animar
+    /* Apertura y cierre: 160 ms de opacidad, 6 px de desplazamiento y un 2 %
+       de escala (el diálogo «llega» en vez de encenderse). `allow-discrete` + `@starting-style` son lo que permiten animar
        también el cierre y el `display` del <dialog> sin tocar el JS de
        showModal()/close(); sin soporte, el diálogo simplemente aparece y
        desaparece como antes. */
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(6px) scale(0.98);
     transition: opacity var(--dur-normal) var(--ease-out),
                 transform var(--dur-normal) var(--ease-out),
                 overlay var(--dur-normal) allow-discrete,
@@ -3417,7 +3457,7 @@
   }
   dialog[open] { opacity: 1; transform: none; }
   @starting-style {
-    dialog[open] { opacity: 0; transform: translateY(-4px); }
+    dialog[open] { opacity: 0; transform: translateY(6px) scale(0.98); }
   }
   dialog::backdrop {
     background-color: rgba(0, 0, 0, 0);
@@ -3875,6 +3915,7 @@
       inset: var(--header-height) 0 0 0;
       z-index: 55;
       background: rgba(0, 0, 0, 0.55);
+      animation: mdm-fade-in var(--dur-normal) var(--ease-std);
     }
     .sidebar-scrim[hidden] { display: none; }
     .sidebar-search { padding: 10px 12px; }
