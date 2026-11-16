@@ -5268,6 +5268,11 @@ function esOperadorDeEstado(op) {
   return OPS_DE_ESTADO.some(([valor]) => valor === op);
 }
 
+/** Si la condición es la de la vista: un operador de estado y ninguna columna. */
+function esCondicionDeEstadoSinColumna(cond) {
+  return !cond?.key && esOperadorDeEstado(cond?.op);
+}
+
 // Los títulos de las filas de las bases destino de una relación, para que el
 // valor de «incluye» sea un nombre y no un id. Se cachea por clave de
 // propiedad; si la base destino no se puede leer, el control pide el id.
@@ -5322,7 +5327,7 @@ function filtrosDeVista(view) {
   const filtros = view?.config?.filters;
   if (!Array.isArray(filtros)) return [];
   return filtros.filter(
-    (f) => f && typeof f === "object" && f.op && (f.key || esOperadorDeEstado(f.op)),
+    (f) => f && typeof f === "object" && f.op && (f.key || esCondicionDeEstadoSinColumna(f)),
   );
 }
 
@@ -5729,20 +5734,28 @@ function filaDeCondicion(database, cond, indice) {
     opcion.textContent = p.name;
     propSelect.appendChild(opcion);
   });
+  const regla = reglaDeCierre(database);
   // «Estado de la base»: la condición de la vista, sin columna. Es la forma que
   // trae un `.md` escrito a mano (`filters: [{op: is_open}]`) y la que sobrevive
   // a que la regla se mueva de columna: el filtro se abre y se guarda igual.
-  const sinColumna = document.createElement("option");
-  sinColumna.value = "";
-  sinColumna.textContent = "Estado de la base";
-  propSelect.appendChild(sinColumna);
+  // Solo se ofrece si la base declara la regla de cierre: sin ella nada está
+  // cerrado, así que «está cerrada» dejaría la vista en 0 filas sin explicación
+  // (`app.views.apply_view` no deja pasar ninguna fila). Una condición de estado
+  // que YA viene guardada se sigue abriendo aunque no haya regla, para no
+  // convertirla en un `eq` con el valor vacío al aplicar.
+  if (regla || esCondicionDeEstadoSinColumna(cond)) {
+    const sinColumna = document.createElement("option");
+    sinColumna.value = "";
+    sinColumna.textContent = "Estado de la base";
+    propSelect.appendChild(sinColumna);
+  }
   const propParaElControl = prop || {
     key: cond.key || "",
     name: cond.key || "Estado de la base",
     type: "text",
   };
   propSelect.value = cond.key || "";
-  const regla = reglaDeCierre(database);
+  if (propSelect.selectedIndex < 0 && prop) propSelect.value = prop.key;
   propSelect.addEventListener("change", () => {
     if (propSelect.value === "") {
       cond.key = "";
