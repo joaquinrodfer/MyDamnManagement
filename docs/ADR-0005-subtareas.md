@@ -1,0 +1,141 @@
+# ADR 0005 — Subtareas: una fila hija de otra
+
+- **Estado:** aceptado (2026-11-16)
+- **Contexto:** MyDamnManagement, gestor de proyectos en ficheros `.md`. Hasta
+  ahora todas las filas de una base están al mismo nivel: un proyecto es una
+  lista de cosas, no un plan. Esta es la función 2 del
+  [backlog](BACKLOG-GESTOR-PROYECTOS.md): «subtareas con estado propio y
+  recuento en la tarjeta», y sin el recuento no se usa.
+- **Relacionado:** [ADR-0001](ADR-0001-formato-del-vault.md) (el `.md` es la
+  verdad), y [ADR-0002](ADR-0002-indice-sqlite.md) (índice derivado, sin otra
+  fuente de verdad).
+
+## Decisiones
+
+**D1 — La jerarquía es una PROPIEDAD de tipo `parent_row`, no un campo del
+esquema.** La celda guarda el `id` de la fila madre y vive en el frontmatter de
+la hija, como una `relation`:
+
+```yaml
+# Bases/Plan.md
+schema:
+  - key: paso_de
+    name: "Subtarea de"
+    type: parent_row
+  - key: estado
+    name: Estado
+    type: select
+    options: [Pendiente, "En curso", Hecho]
+    done: [Hecho]
+```
+
+```yaml
+# Bases/Plan/9f3c1a2b.md   (la hija)
+id: 9f3c1a2b-...
+title: Escribir el capítulo 2
+paso_de: 7a1b4c5d-...      # id de la fila madre, no su título
+estado: Pendiente
+```
+
+El motivo: la celda tiene que estar en el `.md` de la fila, y todo lo que hace
+falta para que una celda funcione —lectura con coacción por tipo, escritura
+byte a byte, migración de claves al renombrar la propiedad, índice, filtros,
+orden, exportación— ya existe y es exactamente la maquinaria de una propiedad.
+Un campo aparte (`hierarchy: {parent: paso_de}`) obligaría a duplicarla y a
+mantener dos caminos de lectura en paralelo. **Una sola por base**: la
+jerarquía es una, no una por columna; el servidor rechaza con 400 la segunda.
+
+**D2 — El id, nunca el título**, igual que `relation`: los títulos cambian y un
+vínculo guardado por título se rompería al renombrar la madre.
+
+**D3 — Madre e hija son de la MISMA base, y no hay ciclos.** Al guardar se
+comprueba que la fila madre existe y es de esa base, que la fila no es su propia
+madre y que la madre no es una descendiente suya (subiendo por la cadena de
+madres). El rechazo es un **400 con el motivo y la ruta del círculo**:
+
+```
+«Subtarea de»: no se puede colgar «Lanzar la web» de «Diseño» porque ya cuelga
+de ella (Diseño → Textos → Lanzar la web): sería un ciclo. Elige otra fila madre.
+```
+
+Un ciclo solo podría entrar editando el `.md` a mano; el resto del código
+(`app.hierarchy.arrange`) no se cuelga si lo encuentra: cada fila se emite una
+vez.
+
+**D4 — «Cerrada» lo dice el schema, con un marcador `done` en la propiedad del
+estado.**
+
+- `done: true` en un `checkbox` → cerrada cuando está marcado.
+- `done: [Hecho, Cancelado]` en un `select`/`multiselect` → cerrada cuando la
+  celda vale uno de esos valores.
+
+Se mira la **primera** propiedad marcada en el orden del schema, para que dos
+marcadores no puedan dar dos respuestas. **Sin ninguna propiedad marcada,
+ninguna hija cuenta como cerrada** (`0 de N`): la base no sabe qué es estar
+cerrada, y el contador no se lo inventa. Esto es la parte de la función 5 del
+backlog (estado «cerrado» con semántica) que el contador necesita; generalizarla
+a toda la app es otra tarjeta.
+
+**D5 — El contador cuenta las hijas DIRECTAS**, sobre **todas** las filas de la
+base: «1 de 3» es «una de sus tres hijas», no de toda la descendencia, y no
+cambia porque la vista esté filtrando por otra cosa. Las nietas se ven al abrir
+la hija, que es madre a su vez.
+
+**D6 — El nivel de filas es de la VISTA**, `parent_level: roots | all` en su
+`config` (el frontmatter de la base, como `filters` o `sort`):
+
+- `roots`: solo las filas que no son hijas de ninguna de la base. Es el
+  **defecto en tabla y tablero**: una hija ya se ve bajo su madre, y repetirla
+  es ruido.
+- `all`: todas, con las hijas detrás de su madre (en la tabla y la lista, con
+  sangría y flecha; en el tablero, la tarjeta dice «↳ madre»).
+- Sin la clave manda el tipo de vista: `roots` en tabla y tablero, `all` en
+  lista y calendario. **Una base sin jerarquía no cambia en nada**: sin
+  propiedad `parent_row` no hay nivel que aplicar.
+
+«Todas (sin vista)» no tiene dónde guardar un nivel y las enseña todas, pero en
+orden de jerarquía.
+
+**D7 — Orden: la hija va detrás de su madre; entre ramas manda la vista.** El
+`sort` de la vista decide el orden de las ramas (y cuál va primero), y dentro de
+una rama se repite la regla. Una hija cuya madre no está en la lista (la filtró
+la vista, o apunta a un id que ya no existe) se queda como fila suelta en su
+sitio: nada de lo que el filtro dejó pasar se esconde.
+
+**D8 — El grafo dibuja madre → hija como arista `kind: "subtask"`**, no como un
+enlace (`links`): los backlinks de una madre no tienen por qué listar sus
+subtareas. Se deduce de la celda en cada petición, y la vecindad local la
+recorre en los dos sentidos.
+
+**D9 — La exportación no pinta la celda como columna** (es un id): la jerarquía
+se lee en el orden de las filas y en el contador, no en una columna de uuids.
+
+## Lo que ve quien usa la app
+
+- En la tabla y la lista, la hija va sangrada bajo su madre (`↳`) y la madre
+  lleva su contador («1 de 3», cerradas).
+- En el tablero, la tarjeta de una subtarea dice de quién es; las madres llevan
+  su contador.
+- La fila madre se abre como página y ahí están sus subtareas: una mini-tabla
+  con título, estado (la propiedad `done`, si la hay) y fecha, con «+ Añadir
+  subtarea», que crea la fila **ya enlazada**. Es donde se trabaja un
+  entregable.
+- La barra de la vista tiene el selector «Filas» (solo madres / todas) y lo
+  guarda en el `.md`.
+
+## Consecuencias
+
+- El `.md` de una hija gana una clave más (`paso_de: <uuid>`), con el mismo
+  criterio que una relación. Un vault sin subtareas se lee igual que antes, y
+  una base sin la propiedad se comporta exactamente como antes (lo fija
+  `test_una_base_sin_jerarquia_responde_igual_que_antes`).
+- El contador y el nivel se calculan en Python sobre las filas de la base: la
+  base se sirve entera en cada lectura de filas, así que no hay consulta nueva
+  por fila. Una base de miles de filas con jerarquía no cambia el orden de
+  magnitud.
+- Borrar una madre no borra sus hijas: quedan con un `parent_id` que ya no
+  resuelve y se leen como raíces (no se esconden). Si se quiere borrar el
+  subárbol, es una tarjeta aparte (borrado en cascada, con confirmación).
+- La página de la fila trae sus subtareas en la misma respuesta (`subtasks`): la
+  tabla no las arrastra, para no convertir una respuesta de cien filas en cien
+  árboles.
