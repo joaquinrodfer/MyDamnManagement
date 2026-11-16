@@ -24,7 +24,7 @@ const state = {
   ownRemoteEvents: new Map(), // page_id -> ms: cambio en disco que ha hecho esta app (no es «de fuera»)
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
-  myTasks: { count: 0, tasks: [], closed_values: [] }, // «Mis tareas», de GET /my-tasks
+  myTasks: { count: 0, today: null, counts: { overdue: 0, today: 0 }, tasks: [], closed_values: [] }, // «Mis tareas», de GET /my-tasks
 };
 
 // ---------------------------------------------------------------- helpers
@@ -120,8 +120,13 @@ const MAX_ERROR_TOASTS = 3;
 /** Aviso discreto abajo a la derecha, descartable con su aspa, que se apila
  * si llegan varios y se va solo a los ~6s. El nodo se crea desde aquí (el
  * HTML no lleva nada) y cuelga de body, no de #main, para seguir visible
- * mientras se navega. */
-function showError(message, kind = "error") {
+ * mientras se navega.
+ *
+ * `options.sticky` lo deja hasta que se cierre (para un aviso que hay que
+ * poder leer con calma, como el de las tareas vencidas) y
+ * `options.onDismiss` se llama al cerrarlo, venga del aspa o del temporizador:
+ * quien lo pinta puede apuntar que ya se ha visto. */
+function showError(message, kind = "error", options = {}) {
   let stack = document.getElementById("error-toasts");
   if (!stack) {
     stack = document.createElement("div");
@@ -167,20 +172,22 @@ function showError(message, kind = "error") {
   close.setAttribute("aria-label", "Descartar aviso");
   close.innerHTML = svgIcon("i-x");
 
-  let timer = setTimeout(dismiss, ERROR_TOAST_MS);
+  let timer = options.sticky ? null : setTimeout(dismiss, ERROR_TOAST_MS);
   function dismiss() {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
     toast.remove();
     // Sin toasts no hay nada que apilar: se va también el contenedor, para no
     // ir dejando nodos vacíos colgando de body.
     if (stack.childElementCount === 0) stack.remove();
+    if (typeof options.onDismiss === "function") options.onDismiss();
   }
   // Retirar sin tocar el contenedor: lo usa el tope de apilado, que va a
   // añadir otro aviso justo después (dismiss() borraría el contenedor vacío
   // y el aviso nuevo se quedaría colgando de un nodo suelto).
   toast.retireToast = () => {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
     toast.remove();
+    if (typeof options.onDismiss === "function") options.onDismiss();
   };
   close.addEventListener("click", dismiss);
 
@@ -192,9 +199,10 @@ function showError(message, kind = "error") {
 /** Un aviso informativo (no es un fallo): mismo sitio y misma pila que los
  * errores, con el filo de color de acento. Se usa cuando algo ha salido bien
  * pero el usuario tiene que saber que ha cambiado (el modo de orden de una
- * propiedad, por ejemplo). */
-function showNotice(message) {
-  return showError(message, "info");
+ * propiedad, por ejemplo) o cuando hay algo que mirar al entrar («tienes 3
+ * tareas vencidas»). */
+function showNotice(message, options = {}) {
+  return showError(message, "info", options);
 }
 
 /** Deja el detalle técnico en la consola (para depurar) y avisa al usuario
@@ -1685,8 +1693,21 @@ initInbox();
 //
 // La sección de la barra lateral es un botón que abre la vista y solo existe
 // si hay algo, como la bandeja: quien no usa responsables no ve una sección
-// vacía. La vista agrupa por fecha (vencidas / hoy / esta semana / resto) y
-// cada fila se abre como página, que es el mecanismo que ya hay.
+// vacía. A su lado, un contador con lo que **ya se pasó** y lo que **se pasa
+// hoy**, que es la única parte de la vista que hay que ver sin abrirla. La
+// vista agrupa por fecha (vencidas / hoy / esta semana / resto) y cada fila se
+// abre como página, que es el mecanismo que ya hay.
+//
+// **Qué está vencido lo dice el servidor.** La respuesta trae `today` (el día
+// con el que comparó), `counts` (los dos números de la barra) y, por tarea, su
+// bloque (`due`) y los días que le quedan (`days`). Aquí no se mira el reloj ni
+// se repite la resta: con dos portátiles en husos distintos el contador y la
+// lista tendrían dos «hoy» y se contradirían. Lo mismo hace la tabla con
+// `overdue_keys` (ver `paintCell`).
+//
+// Al entrar, si hay algo vencido se avisa una vez por sesión con un aviso
+// discreto y descartable (`avisarDeVencidas`): ni modal ni nada que bloquee, y
+// nada fuera de la app —sin correo, sin push, sin nada en segundo plano—.
 //
 // Las filas **cerradas** no salen. Manda la regla de cada base (`closed:
 // {property, values}` en su `.md`, la misma que cuenta las subtareas); una base
@@ -1725,6 +1746,7 @@ async function loadMyTasks() {
   }
   state.myTasks = datos;
   paintMyTasks();
+  avisarDeVencidas(datos);
   // La vista abierta se repinta con lo que acaba de llegar: quitarse de una
   // tarea o marcarla «Hecho» tiene que verse sin recargar la página. Con una
   // fila abierta como página NO se toca nada: `clearMain()` la cerraría y el
@@ -1734,23 +1756,115 @@ async function loadMyTasks() {
   }
 }
 
+/** La clave con la que se recuerda, **en esta sesión**, que el aviso de
+ * vencidas ya salió. `sessionStorage` y no `localStorage`: cerrar la pestaña
+ * vuelve a empezar, y mañana el aviso tiene que volver a decir la verdad de
+ * mañana. */
+const AVISO_VENCIDAS_KEY = "mdm_aviso_vencidas";
+
+/** Aviso de «tienes N tareas vencidas» al entrar, una vez por sesión.
+ *
+ * Discreto y descartable (el aviso informativo de siempre): no es un modal ni
+ * bloquea nada, y si se cierra no vuelve a salir hasta la próxima sesión. La
+ * cuenta la trae el servidor (`counts.overdue`), así que lo que dice el aviso
+ * es exactamente lo que cuenta la barra lateral. Sin nada vencido no se pinta.
+ *
+ * `sticky` porque no se va solo: un aviso que hay que poder leer con calma no
+ * debería desaparecer a los seis segundos. La marca de «ya salió» se pone al
+ * pintarlo —no al cerrarlo— para que un refresco del árbol (que llega cada vez
+ * que cambia algo en el vault) no lo repita tres veces seguidas. */
+function avisarDeVencidas(datos) {
+  const vencidas = Number(datos?.counts?.overdue) || 0;
+  if (vencidas <= 0) return;
+  try {
+    if (sessionStorage.getItem(AVISO_VENCIDAS_KEY)) return;
+    sessionStorage.setItem(AVISO_VENCIDAS_KEY, "1");
+  } catch {
+    // Sin almacenamiento (modo privado estricto) el aviso sale igual: lo que
+    // se pierde es que no se repita, no el aviso.
+  }
+  showNotice(
+    vencidas === 1 ? "Tienes 1 tarea vencida" : `Tienes ${vencidas} tareas vencidas`,
+    { sticky: true },
+  );
+}
+
 function paintMyTasks() {
   const section = document.getElementById("mytasks-section");
   const label = document.getElementById("mytasks-label");
   const boton = document.getElementById("btn-mytasks");
+  const badges = document.getElementById("mytasks-badges");
   if (!section || !label) return;
 
   const count = state.myTasks?.count || 0;
+  const vencidas = Number(state.myTasks?.counts?.overdue) || 0;
+  const paraHoy = Number(state.myTasks?.counts?.today) || 0;
   // Sin nada asignado la sección no existe (ni un «Mis tareas (0)» que no dice
   // nada): el mismo criterio que la bandeja.
   section.hidden = count === 0;
-  label.textContent = count ? `Mis tareas (${count})` : "Mis tareas";
+  label.textContent = "Mis tareas";
+  // El total no va en la etiqueta: lo urgente es lo que se ve, y el total está
+  // al abrir la vista. Va en el `title` y en el `aria-label`, para quien no ve
+  // los números o pasa el ratón.
+  const total = count === 1 ? "1 tarea abierta" : `${count} tareas abiertas`;
+  if (badges) {
+    badges.replaceChildren();
+    const piezas = [];
+    if (vencidas > 0) {
+      const texto = vencidas === 1 ? "1 vencida" : `${vencidas} vencidas`;
+      piezas.push(texto);
+      badges.appendChild(
+        badgeDeMisTareas(
+          "is-overdue",
+          texto,
+          vencidas === 1
+            ? "1 tarea vencida (fecha anterior a hoy)"
+            : `${vencidas} tareas vencidas (fecha anterior a hoy)`,
+        ),
+      );
+    }
+    if (paraHoy > 0) {
+      const texto = paraHoy === 1 ? "1 hoy" : `${paraHoy} hoy`;
+      piezas.push(texto);
+      badges.appendChild(
+        badgeDeMisTareas(
+          "is-today",
+          texto,
+          paraHoy === 1 ? "1 tarea vence hoy" : `${paraHoy} tareas vencen hoy`,
+        ),
+      );
+    }
+    badges.hidden = piezas.length === 0;
+    if (boton) {
+      boton.title = piezas.length
+        ? `Mis tareas: ${total} · ${piezas.join(" · ")}`
+        : `Mis tareas: ${total}`;
+      boton.setAttribute(
+        "aria-label",
+        piezas.length ? `Mis tareas, ${piezas.join(" y ")}` : "Mis tareas",
+      );
+    }
+  }
   if (boton) {
     boton.setAttribute("aria-current", state.current?.kind === "mytasks" ? "page" : "false");
   }
 }
 
-/** «2026-11-16» -> `Date` local a medianoche, o `null` si no es una fecha. */
+/** Una insignia del contador de la barra lateral. El texto visible es corto
+ * («3 vencidas», «1 hoy») y el `title` dice lo mismo con todas las palabras. */
+function badgeDeMisTareas(clase, texto, descripcion) {
+  const badge = document.createElement("span");
+  badge.className = `mytasks-badge ${clase}`;
+  badge.textContent = texto;
+  badge.title = descripcion;
+  return badge;
+}
+
+/** «2026-11-16» -> `Date` local a medianoche, o `null` si no es una fecha.
+ *
+ * Solo para pintar el texto de la fecha (el `toLocaleDateString` de un día
+ * lejano) y para ordenar dentro del bloque: qué bloque es cada tarea y cuántos
+ * días le quedan lo dice el servidor (`due` / `days`), no esta resta. */
 function fechaLocalDe(iso) {
   const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || "").trim());
   if (!partes) return null;
@@ -1758,43 +1872,34 @@ function fechaLocalDe(iso) {
   return Number.isNaN(fecha.getTime()) ? null : fecha;
 }
 
-/** Días de calendario entre hoy y `fecha` (negativo = ya pasó).
- *
- * Se redondea porque el día de un cambio de hora no dura 24 h justas, y el
- * día que cuenta es el del calendario de quien mira la pantalla, no el del
- * servidor (que puede estar en otro huso). */
-function diasHastaHoy(fecha) {
-  const ahora = new Date();
-  const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
-  return Math.round((fecha - hoy) / 86400000);
-}
-
-/** El domingo de esta semana (la semana empieza el lunes).
- *
- * «Esta semana» es de mañana al domingo: hoy tiene su bloque y lo de la
- * semana que viene no es asunto de la vista de un vistazo. */
-function domingoDeEstaSemana() {
-  const ahora = new Date();
-  const dia = ahora.getDay() === 0 ? 7 : ahora.getDay(); // 1 = lunes … 7 = domingo
-  return new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + (7 - dia));
-}
+/** El bloque de la vista para cada bloque del servidor (`due` en la respuesta).
+ * El servidor dice `overdue`/`today`/`week`/`later` comparando contra su día;
+ * aquí solo se traduce al nombre que se pinta, y `null` (sin fecha legible) cae
+ * en el «Resto», que es lo que es: una tarea sin fecha no está ni vencida ni
+ * para hoy. */
+const BLOQUE_DEL_SERVIDOR = {
+  overdue: "vencidas",
+  today: "hoy",
+  week: "semana",
+  later: "resto",
+};
 
 /** Reparte las tareas en los cuatro bloques, ordenadas por fecha ascendente
- * (las que no tienen fecha, al final de «Resto»). */
+ * (las que no tienen fecha, al final de «Resto»).
+ *
+ * El reparto NO vuelve a restar fechas: usa `due` (el bloque) y `days` (los
+ * días) que calculó el servidor contra su propio día. Con un portátil en otro
+ * huso, la lista y el contador de la barra lateral seguirían diciendo lo mismo,
+ * porque los dos leen la misma resta; si el cliente la repitiera con su reloj,
+ * un contador de «2 vencidas» podría abrir una lista de «Vencidas: 0». */
 function bloquesDeMisTareas(tasks) {
   const bloques = new Map(BLOQUES_DE_MIS_TAREAS.map((bloque) => [bloque.key, []]));
-  const domingo = domingoDeEstaSemana();
 
   for (const tarea of tasks || []) {
+    const key = BLOQUE_DEL_SERVIDOR[tarea.due] || "resto";
     const fecha = fechaLocalDe(tarea.date?.value);
-    let key = "resto";
-    if (fecha) {
-      const dias = diasHastaHoy(fecha);
-      if (dias < 0) key = "vencidas";
-      else if (dias === 0) key = "hoy";
-      else if (fecha <= domingo) key = "semana";
-    }
-    bloques.get(key).push({ tarea, fecha, dias: fecha ? diasHastaHoy(fecha) : null });
+    const dias = Number.isInteger(tarea.days) ? tarea.days : null;
+    bloques.get(key).push({ tarea, fecha, dias });
   }
 
   // `sort` es estable: lo que empata (misma fecha) conserva el orden del
@@ -1862,7 +1967,8 @@ function itemDeMiTarea({ tarea, fecha, dias }, abrir) {
   }
 
   const meta = document.createElement("span");
-  meta.className = "dashboard-item-meta" + (fecha && dias < 0 ? " overdue" : "");
+  // El tono de vencida lo dice el servidor (`due`), no se deduce de `dias`.
+  meta.className = "dashboard-item-meta" + (tarea.due === "overdue" ? " overdue" : "");
   meta.textContent = etiquetaDeFecha({ fecha, dias });
   item.append(meta);
 
@@ -10485,6 +10591,15 @@ function paintCell(td, database, row, prop, hooks = null) {
       ? formatPropValueHtml(row.properties?.[prop.key], prop, row)
       : escapeHtml(row.title || "Sin título");
   }
+  // Una fecha que ya pasó se marca con el tono de aviso del panel. Qué fechas
+  // son lo dice el servidor en `overdue_keys`, que ya aplicó las dos reglas: la
+  // base tiene que declarar regla de cierre (sin estado no hay «sin terminar») y
+  // la fila no puede estar cerrada (una tarea hecha tarde no está vencida). Aquí
+  // no se compara ninguna fecha con el reloj del navegador.
+  const vencida = Boolean(
+    prop?.type === "date" && (row.overdue_keys || []).includes(prop.key),
+  );
+  td.classList.toggle("cell-overdue", vencida);
   // La columna del título se lee como jerarquía (la regla CSS va por clase:
   // la primera columna de la tabla es la de abrir la fila).
   td.classList.toggle("cell-title", !prop);
@@ -10492,11 +10607,13 @@ function paintCell(td, database, row, prop, hooks = null) {
   // y un id (que ya no se enseña) salía siempre en una sola línea.
   td.classList.toggle("cell-rel", Boolean(esRelacion));
   td.classList.toggle("cell-person", Boolean(esPersona));
-  td.title = esRelacion
-    ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
-    : esPersona
-      ? "Clic para asignar una persona · el lápiz edita"
-      : "Clic para editar";
+  td.title = vencida
+    ? "Fecha vencida (la fila sigue abierta) · clic para editar"
+    : esRelacion
+      ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
+      : esPersona
+        ? "Clic para asignar una persona · el lápiz edita"
+        : "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
   // Dentro de una nota, el widget del editor se lleva el `mousedown` del bloque

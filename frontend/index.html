@@ -438,6 +438,41 @@
   #mytasks-section .sidebar-section-head { padding: 4px 8px 6px; }
   #btn-mytasks[aria-current="page"],
   #btn-mytasks[aria-current="page"]:hover { color: var(--accent-ink); }
+  /* El contador de lo urgente, pegado a «Mis tareas» y a la derecha.
+     Dos números porque son dos preguntas distintas —lo que ya se pasó y lo que
+     se pasa hoy— y una sola cifra sumada las confundiría; se leen sin leyenda
+     («3 vencidas · 1 hoy») y no aparecen si no hay nada. El texto del botón se
+     recorta antes que los números: la etiqueta ya se sabe, la cifra no. */
+  #mytasks-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mytasks-badges { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+  .mytasks-badges[hidden] { display: none; }
+  .mytasks-badge {
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  /* Los mismos dos colores de siempre: --down es «vencido» en el resto del
+     panel (la fecha de una tarea vencida en la landing) y --warn es «hoy / en
+     curso». El fondo es el mismo tono al 16 %, para que se lea como una
+     insignia y no como texto suelto. */
+  .mytasks-badge.is-overdue {
+    color: var(--down);
+    background: color-mix(in srgb, var(--down) 16%, transparent);
+  }
+  .mytasks-badge.is-today {
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+  }
   .my-tasks-head { display: flex; flex-direction: column; gap: 4px; }
   .my-tasks-title {
     font-family: var(--font-body);
@@ -2380,6 +2415,16 @@
      (`renderTable`), y con el título oculto (`title_hidden`) no hay ninguna
      que destacar. */
   .rows-table td.cell-title { font-weight: 600; color: var(--ink); }
+  /* Fecha vencida de una fila abierta: la marca la dice el servidor
+     (`overdue_keys`), no una cuenta del navegador. No es solo negrita —el tono
+     de «peligro» que el panel ya usa para lo vencido— porque en una tabla de
+     números una negrita más no se distingue de una columna que ya va en
+     semibold. Se pinta el texto y un fondo del mismo tono al 10 %: la celda se
+     ve de un vistazo sin que parezca un error de la página. */
+  .rows-table td.cell-overdue {
+    color: var(--down);
+    background: color-mix(in srgb, var(--down) 10%, transparent);
+  }
   /* Una celda de relación enseña los TÍTULOS de las filas enlazadas, y saltan
      de línea dentro del ancho de la celda: un título largo no puede desbordar
      la tabla (el `td` recorta y a 375 px se perdería la mitad). */
@@ -4070,6 +4115,7 @@
             <button type="button" class="sidebar-section-toggle" id="btn-mytasks" aria-current="false">
               <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
               <span id="mytasks-label">Mis tareas</span>
+              <span class="mytasks-badges" id="mytasks-badges" hidden></span>
             </button>
           </div>
         </div>
