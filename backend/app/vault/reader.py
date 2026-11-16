@@ -425,6 +425,65 @@ def views_from_frontmatter(
     return views
 
 
+def row_templates_from_frontmatter(
+    raw, path: str, warnings: list[str]
+) -> list[dict]:
+    """Las plantillas de fila que declara la base (`row_templates:`).
+
+    Una plantilla es `{name, properties, body}`: el nombre con el que se elige
+    en el alta, los valores por defecto de sus propiedades y el cuerpo inicial
+    de la fila. Se normaliza lo que un `.md` escrito a mano puede tener, sin
+    validar todavía contra el `schema`: eso pasa al usarla (guardarla o crear
+    una fila con ella), que es donde se puede decir por qué no vale y no dejar
+    nada a medias. Lo que no es una plantilla —sin nombre, o `properties` que no
+    es un mapa— se avisa y se queda fuera, como una vista inválida.
+
+    El nombre identifica la plantilla en la interfaz y en
+    `POST /databases/{id}/rows/from-template`: dos con el mismo nombre serían
+    ambiguas, así que la segunda se descarta con aviso.
+    """
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        warnings.append(f"{path}: 'row_templates' no es una lista; se ignora")
+        return []
+
+    templates: list[dict] = []
+    vistos: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            warnings.append(f"{path}: plantilla de fila inválida (no es un mapa): {item!r}")
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            warnings.append(f"{path}: plantilla de fila sin nombre; se ignora")
+            continue
+        if name.casefold() in vistos:
+            warnings.append(f"{path}: plantilla de fila repetida {name!r}; se queda la primera")
+            continue
+        properties = item.get("properties")
+        if properties in (None, ""):
+            properties = {}
+        elif not isinstance(properties, dict):
+            warnings.append(
+                f"{path}: 'properties' de la plantilla {name!r} no es un mapa; se ignora"
+            )
+            properties = {}
+        body = item.get("body")
+        if body is None:
+            body = ""
+        elif not isinstance(body, str):
+            warnings.append(
+                f"{path}: 'body' de la plantilla {name!r} no es texto; se ignora"
+            )
+            body = ""
+        vistos.add(name.casefold())
+        templates.append(
+            {"name": name, "properties": dict(properties), "body": body}
+        )
+    return templates
+
+
 def _columnas_de_vista(config: dict, name: str, path: str, warnings: list[str]) -> dict:
     """`widths` y `order`: el ancho y el orden de las columnas, POR VISTA.
 

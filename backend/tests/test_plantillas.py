@@ -1,0 +1,466 @@
+"""Plantillas: crear un proyecto o una tarea en un clic (función 29).
+
+Lo que fija esta suite, que es lo que pide la tarjeta:
+
+1. las cuatro plantillas de serie (Proyecto, Tareas sueltas, CRM y Reuniones)
+   crean una base con su schema, sus 2-3 vistas, la regla `closed` cuando
+   aplica y sus plantillas de fila, y **sin filas de ejemplo**;
+2. la plantilla se copia: cambiar la plantilla después no cambia las bases ya
+   creadas (todo vive en el `.md`);
+3. una plantilla que miente —un tipo o un valor que el código no conoce— da un
+   400 con el motivo y **no crea nada**;
+4. una plantilla de fila guardada en el `.md` crea una fila con sus valores por
+   defecto y su cuerpo inicial, y una plantilla inválida no se guarda a medias.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.vault import fm
+
+
+def frontmatter(path: Path) -> dict:
+    raw, _cuerpo = fm.split_document(path.read_text(encoding="utf-8"))
+    assert raw is not None, f"{path} no tiene frontmatter"
+    return fm.parse(raw).data
+
+
+def crear_desde(client, template, **cuerpo):
+    return client.post(
+        "/databases/from-template", json={"template": template, **cuerpo}
+    )
+
+
+def vistas(client, database_id) -> list[dict]:
+    respuesta = client.get(f"/databases/{database_id}/views")
+    assert respuesta.status_code == 200, respuesta.text
+    return respuesta.json()
+
+
+# --------------------------------------------------------------------------
+# 1. cada plantilla de serie crea lo que promete
+# --------------------------------------------------------------------------
+
+def test_el_catalogo_ofrece_las_cuatro_plantillas(client):
+    catalogo = client.get("/databases/templates").json()
+    assert [p["key"] for p in catalogo] == ["proyecto", "tasks", "crm", "reuniones"]
+    assert [p["title"] for p in catalogo] == [
+        "Proyecto",
+        "Tareas sueltas",
+        "Contactos",
+        "Reuniones",
+    ]
+    # El catálogo dice lo que trae cada plantilla: la interfaz no adivina.
+    proyecto = next(p for p in catalogo if p["key"] == "proyecto")
+    assert {"Estado", "Responsable", "Prioridad", "Inicio", "Entrega"} <= set(
+        proyecto["properties"]
+    )
+    assert proyecto["views"] == ["Tabla", "Tablero", "Calendario"]
+    assert proyecto["row_templates"] == ["Revisión semanal", "Tarea urgente"]
+    assert proyecto["closed"] == {"property": "estado", "values": ["hecha"]}
+
+
+def test_crear_desde_proyecto_deja_esquema_vistas_y_estado(client, vault_path):
+    base = crear_desde(client, "proyecto", title="Lanzamiento").json()
+    assert base["title"] == "Lanzamiento"
+    assert [p["key"] for p in base["schema_def"]] == [
+        "estado",
+        "responsable",
+        "prioridad",
+        "inicio",
+        "entrega",
+        "parte_de",
+    ]
+    tipos = {p["key"]: p["type"] for p in base["schema_def"]}
+    assert tipos["estado"] == "select"
+    assert tipos["responsable"] == "person"
+    assert tipos["parte_de"] == "parent_row"
+    assert base["closed"] == {
+        "property": "estado",
+        "values": ["hecha"],
+        "source": "base",
+    }
+
+    # Tres vistas, cada una con SU configuración, escritas en el `.md`.
+    vistas_de_la_base = {v["name"]: v for v in vistas(client, base["id"])}
+    assert set(vistas_de_la_base) == {"Tabla", "Tablero", "Calendario"}
+    assert vistas_de_la_base["Tablero"]["config"] == {"group_by": "estado"}
+    assert vistas_de_la_base["Calendario"]["config"] == {"date_property": "entrega"}
+    tabla = vistas_de_la_base["Tabla"]["config"]
+    assert tabla["sort"] == [{"key": "entrega", "dir": "asc"}]
+    assert tabla["order"] == ["estado", "responsable", "prioridad", "entrega"]
+    assert tabla["widths"]["estado"] == 140
+
+    # Cero filas: la plantilla no trae datos de mentira.
+    assert client.get(f"/databases/{base['id']}/rows").json() == []
+
+    # Las plantillas de fila son parte de la base.
+    assert [t["name"] for t in base["row_templates"]] == [
+        "Revisión semanal",
+        "Tarea urgente",
+    ]
+
+    # Y el `.md` dice lo mismo: schema, closed, views y row_templates.
+    archivo = vault_path / "Bases" / "Lanzamiento.md"
+    datos = frontmatter(archivo)
+    assert datos["type"] == "database"
+    assert datos["closed"] == {"property": "estado", "values": ["hecha"]}
+    assert {v["name"] for v in datos["views"]} == {"Tabla", "Tablero", "Calendario"}
+    assert [t["name"] for t in datos["row_templates"]] == [
+        "Revisión semanal",
+        "Tarea urgente",
+    ]
+    # Y el `.md` de la base no es una tabla con filas de ejemplo.
+    filas = [p for p in (vault_path / "Bases" / "Lanzamiento").iterdir() if p.suffix == ".md"]
+    assert filas == []
+
+
+def test_crear_desde_tareas_sueltas_es_la_version_simple(client, vault_path):
+    base = crear_desde(client, "tasks", title="Recados").json()
+    assert [p["key"] for p in base["schema_def"]] == ["estado", "prioridad", "fecha"]
+    assert base["closed"]["values"] == ["hecha"]
+    assert {v["name"] for v in vistas(client, base["id"])} == {"Tabla", "Tablero"}
+    datos = frontmatter(vault_path / "Bases" / "Recados.md")
+    assert [p["name"] for p in datos["schema"]] == ["Estado", "Prioridad", "Fecha"]
+    assert client.get(f"/databases/{base['id']}/rows").json() == []
+
+
+def test_crear_desde_crm_conserva_la_plantilla_de_siempre(client):
+    base = crear_desde(client, "crm").json()
+    assert base["title"] == "Contactos"
+    assert {p["key"] for p in base["schema_def"]} == {
+        "empresa",
+        "fase",
+        "valor",
+        "proximo_contacto",
+    }
+    assert {v["name"] for v in vistas(client, base["id"])} == {
+        "Pipeline",
+        "Tabla",
+        "Agenda",
+    }
+    assert base["closed"]["values"] == ["ganado", "perdido"]
+    assert client.get(f"/databases/{base['id']}/rows").json() == []
+
+
+def test_crear_desde_reuniones_trae_fecha_persona_y_notas(client):
+    base = crear_desde(client, "reuniones", title="Semanales").json()
+    tipos = {p["key"]: p["type"] for p in base["schema_def"]}
+    assert tipos == {"fecha": "date", "asistente": "person", "notas": "text"}
+    # Sin estado no hay `closed`: no se inventa una regla que la base no tiene.
+    assert base["closed"] is None
+    assert {v["name"] for v in vistas(client, base["id"])} == {"Tabla", "Calendario"}
+    assert [t["name"] for t in base["row_templates"]] == ["Reunión de equipo"]
+
+
+def test_la_base_puede_nacer_en_una_carpeta(client, vault_path):
+    nota = client.post("/pages", json={"title": "Clientes"}).json()
+    base = crear_desde(
+        client, "proyecto", title="Web", parent_id=nota["id"]
+    ).json()
+    assert base["title"] == "Web"
+    # Cuelga de la nota: la carpeta de hijas de la nota, no `Bases/`.
+    assert (vault_path / "Notas" / "Clientes" / "Web.md").exists()
+
+
+# --------------------------------------------------------------------------
+# 2. copiar es copiar: la plantilla no se queda enlazada
+# --------------------------------------------------------------------------
+
+def test_cambiar_la_plantilla_no_cambia_las_bases_ya_creadas(client, vault_path, monkeypatch):
+    from app import templates
+
+    antes = crear_desde(client, "proyecto", title="Copia").json()
+    archivo = vault_path / "Bases" / "Copia.md"
+    original = archivo.read_text(encoding="utf-8")
+
+    # Alguien cambia la plantilla de serie (en el código, en una versión
+    # futura). La base que ya existe no puede cambiar: lo suyo está en su .md.
+    monkeypatch.setitem(
+        templates.TEMPLATES,
+        "proyecto",
+        {
+            **templates.TEMPLATES["proyecto"],
+            "schema_def": [
+                {"key": "otra", "name": "Otra", "type": "text"},
+            ],
+            "views": [{"name": "Solo", "type": "table", "config": {}}],
+            "row_templates": [],
+        },
+    )
+    assert archivo.read_text(encoding="utf-8") == original
+    despues = client.get(f"/databases/{antes['id']}").json()
+    assert [p["key"] for p in despues["schema_def"]] == [
+        "estado",
+        "responsable",
+        "prioridad",
+        "inicio",
+        "entrega",
+        "parte_de",
+    ]
+    assert {v["name"] for v in vistas(client, antes["id"])} == {
+        "Tabla",
+        "Tablero",
+        "Calendario",
+    }
+
+
+# --------------------------------------------------------------------------
+# 3. una plantilla que miente no crea nada
+# --------------------------------------------------------------------------
+
+def _plantilla_rota(**cambios) -> dict:
+    from app import templates
+
+    base = {
+        "title": "Rota",
+        "schema_def": [{"key": "texto", "name": "Texto", "type": "text"}],
+        "views": [{"name": "Tabla", "type": "table", "config": {}}],
+    }
+    base.update(cambios)
+    return base
+
+
+def test_un_tipo_que_el_codigo_no_conoce_es_un_400_y_no_crea_nada(
+    client, vault_path, monkeypatch
+):
+    from app import templates
+
+    monkeypatch.setitem(
+        templates.TEMPLATES,
+        "rota",
+        _plantilla_rota(
+            schema_def=[{"key": "raro", "name": "Raro", "type": "magia"}]
+        ),
+    )
+    respuesta = crear_desde(client, "rota", title="A medias")
+    assert respuesta.status_code == 400, respuesta.text
+    assert "magia" in respuesta.json()["detail"]
+    assert "no conoce" in respuesta.json()["detail"]
+    # Ni base, ni página, ni fichero: no se crea a medias.
+    assert client.get("/databases").json() == []
+    assert client.get("/pages").json() == []
+    assert list((vault_path / "Bases").glob("*.md")) == []
+
+
+def test_una_vista_que_agrupa_por_una_propiedad_que_no_existe_no_crea_nada(
+    client, vault_path, monkeypatch
+):
+    from app import templates
+
+    monkeypatch.setitem(
+        templates.TEMPLATES,
+        "rota",
+        _plantilla_rota(
+            views=[{"name": "Tablero", "type": "board", "config": {"group_by": "fase"}}]
+        ),
+    )
+    respuesta = crear_desde(client, "rota")
+    assert respuesta.status_code == 400
+    assert "fase" in respuesta.json()["detail"]
+    assert client.get("/databases").json() == []
+    assert list((vault_path / "Bases").glob("*.md")) == []
+
+
+def test_una_plantilla_de_fila_con_un_valor_inventado_no_crea_nada(
+    client, vault_path, monkeypatch
+):
+    from app import templates
+
+    monkeypatch.setitem(
+        templates.TEMPLATES,
+        "rota",
+        _plantilla_rota(
+            schema_def=[
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["abierta", "hecha"],
+                }
+            ],
+            row_templates=[
+                {"name": "Mala", "properties": {"estado": "inventado"}, "body": ""}
+            ],
+        ),
+    )
+    respuesta = crear_desde(client, "rota")
+    assert respuesta.status_code == 400
+    assert "inventado" in respuesta.json()["detail"]
+    assert client.get("/databases").json() == []
+    assert list((vault_path / "Bases").glob("*.md")) == []
+
+
+def test_el_closed_que_no_casa_con_el_esquema_no_crea_nada(
+    client, vault_path, monkeypatch
+):
+    from app import templates
+
+    monkeypatch.setitem(
+        templates.TEMPLATES,
+        "rota",
+        _plantilla_rota(closed={"property": "estado", "values": ["hecha"]}),
+    )
+    respuesta = crear_desde(client, "rota")
+    assert respuesta.status_code == 400
+    assert "estado" in respuesta.json()["detail"]
+    assert client.get("/databases").json() == []
+    assert list((vault_path / "Bases").glob("*.md")) == []
+
+
+def test_una_plantilla_que_no_existe_es_un_404(client):
+    respuesta = crear_desde(client, "no-existe")
+    assert respuesta.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# 4. plantillas de fila: guardar y usar
+# --------------------------------------------------------------------------
+
+def test_guardar_plantillas_de_fila_las_escribe_en_el_md(client, vault_path):
+    base = client.post(
+        "/databases",
+        json={
+            "title": "Tareas",
+            "schema_def": [
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["abierta", "hecha"],
+                },
+                {"key": "prioridad", "name": "Prioridad", "type": "text"},
+            ],
+        },
+    ).json()
+
+    respuesta = client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {
+                    "name": "Revisión semanal",
+                    "properties": {"estado": "abierta", "prioridad": "media"},
+                    "body": "## Qué revisar\n",
+                }
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["row_templates"] == [
+        {
+            "name": "Revisión semanal",
+            "properties": {"estado": "abierta", "prioridad": "media"},
+            "body": "## Qué revisar\n",
+        }
+    ]
+
+    datos = frontmatter(vault_path / "Bases" / "Tareas.md")
+    assert datos["row_templates"] == [
+        {
+            "name": "Revisión semanal",
+            "properties": {"estado": "abierta", "prioridad": "media"},
+            "body": "## Qué revisar\n",
+        }
+    ]
+
+    # Borrarlas quita la clave del fichero: no queda un `row_templates: []`.
+    vacia = client.put(
+        f"/databases/{base['id']}/row-templates", json={"row_templates": []}
+    ).json()
+    assert vacia["row_templates"] == []
+    assert "row_templates" not in frontmatter(vault_path / "Bases" / "Tareas.md")
+
+
+def test_una_plantilla_de_fila_invalida_no_se_guarda(client, vault_path):
+    base = client.post(
+        "/databases",
+        json={
+            "title": "Tareas",
+            "schema_def": [
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["abierta", "hecha"],
+                }
+            ],
+        },
+    ).json()
+
+    respuesta = client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {"name": "Mala", "properties": {"estado": "inventado"}, "body": ""}
+            ]
+        },
+    )
+    assert respuesta.status_code == 400
+    assert "inventado" in respuesta.json()["detail"]
+    # El `.md` no cambia: no se guarda a medias.
+    assert "row_templates" not in frontmatter(vault_path / "Bases" / "Tareas.md")
+    assert client.get(f"/databases/{base['id']}").json()["row_templates"] == []
+
+
+def test_crear_una_fila_desde_plantilla_escribe_valores_y_cuerpo(client, vault_path):
+    base = crear_desde(client, "proyecto", title="Lanzamiento").json()
+
+    respuesta = client.post(
+        f"/databases/{base['id']}/rows/from-template",
+        json={"template": "Revisión semanal", "title": "Revisión del lunes"},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    fila = respuesta.json()
+    assert fila["title"] == "Revisión del lunes"
+    assert fila["properties"]["estado"] == "abierta"
+    assert fila["properties"]["prioridad"] == "media"
+    assert fila["closed"] is False
+
+    # La fila nace con el cuerpo de la plantilla en su `.md`.
+    archivo = vault_path / "Bases" / "Lanzamiento" / f"{fila['id'][:8]}.md"
+    texto = archivo.read_text(encoding="utf-8")
+    assert "## Qué revisar" in texto
+    detalle = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert "## Qué revisar" in detalle["body_markdown"]
+
+
+def test_la_plantilla_de_fila_rellena_pero_no_cierra_la_fila(client):
+    base = crear_desde(client, "proyecto", title="Lanzamiento").json()
+    fila = client.post(
+        f"/databases/{base['id']}/rows/from-template",
+        json={"template": "Revisión semanal", "title": "Lunes"},
+    ).json()
+    # «hecha» cierra; «abierta» no. La plantilla trae abierta, así que la fila
+    # nace abierta y el contador de su madre no la cuenta como cerrada.
+    assert fila["closed"] is False
+
+
+def test_una_plantilla_de_fila_que_no_existe_es_un_404(client):
+    base = crear_desde(client, "proyecto", title="Lanzamiento").json()
+    respuesta = client.post(
+        f"/databases/{base['id']}/rows/from-template",
+        json={"template": "No está", "title": "X"},
+    )
+    assert respuesta.status_code == 404
+
+
+def test_una_fila_puede_nacer_con_cuerpo_por_la_api(client, vault_path):
+    base = client.post("/databases", json={"title": "Notas"}).json()
+    fila = client.post(
+        f"/databases/{base['id']}/rows",
+        json={"title": "Con cuerpo", "body_markdown": "Hola\n"},
+    ).json()
+    archivo = vault_path / "Bases" / "Notas" / f"{fila['id'][:8]}.md"
+    assert "Hola" in archivo.read_text(encoding="utf-8")
+
+
+def test_las_plantillas_de_fila_sobreviven_a_un_reindexado(client, vault_path):
+    base = crear_desde(client, "proyecto", title="Lanzamiento").json()
+    client.post("/reindex")
+    despues = client.get(f"/databases/{base['id']}").json()
+    assert [t["name"] for t in despues["row_templates"]] == [
+        "Revisión semanal",
+        "Tarea urgente",
+    ]

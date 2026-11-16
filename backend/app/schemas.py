@@ -199,6 +199,46 @@ class DatabaseCreate(BaseModel):
 
 
 class DatabaseFromTemplate(BaseModel):
+    """Crear una base a partir de una plantilla de serie.
+
+    `title` es el nombre de la base nueva (si falta, el de la plantilla) y
+    `parent_id` la carpeta destino: una nota de la que cuelga. Sin él, la base
+    nace en `Bases/`, como cualquier base creada desde el diálogo.
+    """
+
+    template: str
+    title: Optional[str] = None
+    parent_id: Optional[uuid.UUID] = None
+
+
+class RowTemplate(BaseModel):
+    """Una plantilla de fila: nombre, valores por defecto y cuerpo inicial.
+
+    Vive en el frontmatter de su base (`row_templates:`) y se copia al índice.
+    `properties` está en la forma del `.md` (claves del schema y valores tal y
+    como se escriben); el servidor los valida contra el schema al guardarla y al
+    usarla, porque una plantilla que nombra un valor que no existe no puede
+    crear una fila a medias.
+    """
+
+    name: str
+    properties: dict[str, Any] = {}
+    body: str = ""
+
+
+class RowTemplatesUpdate(BaseModel):
+    """El cuerpo de `PUT /databases/{id}/row-templates`."""
+
+    row_templates: list[RowTemplate] = []
+
+
+class RowFromTemplate(BaseModel):
+    """Crear una fila con una de las plantillas de su base.
+
+    `template` es el **nombre** de la plantilla (el que se lee en el diálogo) y
+    `title` el título de la fila nueva; sin él, el de la plantilla.
+    """
+
     template: str
     title: Optional[str] = None
 
@@ -237,6 +277,9 @@ class DatabaseRead(BaseModel):
     # los filtros). Viene resuelta: la interfaz no tiene que mirar los `done`
     # viejos del schema.
     closed: Optional[ClosedRule] = None
+    # Plantillas de fila de ESTA base, en el orden del `.md`: el «+ Nueva fila»
+    # las ofrece y el servidor las aplica por nombre. `[]` = la base no tiene.
+    row_templates: list[RowTemplate] = []
     created_at: datetime
     updated_at: datetime
 
@@ -245,6 +288,9 @@ class RowCreate(BaseModel):
     title: str = "Sin título"
     icon: Optional[str] = None
     properties: dict[str, Any] = {}
+    # Cuerpo markdown inicial de la fila (lo usa la plantilla de fila: una fila
+    # nueva puede nacer con su «## Qué revisar»). Ausente = cuerpo vacío.
+    body_markdown: Optional[str] = None
 
 
 class RowUpdate(BaseModel):

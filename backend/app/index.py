@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -174,6 +174,18 @@ MIGRATIONS: dict[int, list[str]] = {
     rule_json   TEXT NOT NULL
 )""",
     ],
+    # v8: las plantillas de fila son parte de la base (`row_templates:` en el
+    # frontmatter de `Bases/<slug>.md`). Se copian al índice para que la
+    # interfaz las lea con la misma consulta que la base; el `.md` sigue siendo
+    # la verdad y un reindexado las reconstruye. Como `database_titles`, va en
+    # su propia tabla: `CREATE TABLE IF NOT EXISTS` es idempotente y la
+    # migración queda inocua en un fichero creado ya con `SCHEMA_SQL`.
+    8: [
+        """CREATE TABLE IF NOT EXISTS database_row_templates (
+    database_id  TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    templates_json TEXT NOT NULL
+)""",
+    ],
 }
 
 SCHEMA_SQL = """
@@ -224,6 +236,14 @@ CREATE TABLE databases (
 CREATE TABLE database_closed (
     database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
     rule_json   TEXT NOT NULL
+);
+
+-- Plantillas de fila de la base (v8): nombre, valores por defecto de sus
+-- propiedades y cuerpo inicial. Viven en el frontmatter (`row_templates:`) y
+-- aquí solo se copian para leerlas con la base; sin fila, la base no tiene.
+CREATE TABLE database_row_templates (
+    database_id  TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    templates_json TEXT NOT NULL
 );
 
 -- Nombre visible y visibilidad de la columna del título (v6). El título no
@@ -329,7 +349,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -606,7 +626,7 @@ def _inspect(path: str) -> IndexInfo:
 
         missing = {"pages", "databases", "views", "rows", "links",
                    "workspaces", "meta", "users", "sessions",
-                   "database_titles"} - _table_names(conn)
+                   "database_titles", "database_row_templates"} - _table_names(conn)
         if missing:
             raise IndexSchemaError(
                 "al índice le faltan tablas: " + ", ".join(sorted(missing))

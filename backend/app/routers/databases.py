@@ -21,7 +21,7 @@ from app.properties import (
 )
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
-from app.templates import TEMPLATES
+from app import templates as template_defs
 from app.vault.store import UNSET, VaultError
 from app.views import apply_view
 
@@ -85,6 +85,9 @@ def _serialize_database(
             if db_def.closed
             else None
         ),
+        # Las plantillas de fila viajan con la base: el «+ Nueva fila» las
+        # ofrece sin otra consulta y el cliente no tiene que leer el `.md`.
+        row_templates=[schemas.RowTemplate(**t) for t in db_def.row_templates],
         created_at=as_utc(db_def.created_at),
         updated_at=as_utc(db_def.updated_at),
     )
@@ -263,10 +266,13 @@ def list_databases(repo: Repository = Depends(get_repo)):
 
 @router.get("/templates")
 def list_templates():
-    return [
-        {"key": key, "title": t["title"], "properties": [p["name"] for p in t["schema_def"]]}
-        for key, t in TEMPLATES.items()
-    ]
+    """Las plantillas de serie que ofrece «Crear desde plantilla».
+
+    Es un catálogo, no el contenido: nombre, descripción y qué propiedades y
+    vistas trae cada una. El `schema_def` se queda en el servidor y es lo que se
+    copia en el `.md` de la base nueva.
+    """
+    return template_defs.catalog()
 
 
 @router.post("/from-template", response_model=schemas.DatabaseRead)
@@ -275,18 +281,54 @@ def create_from_template(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    template = TEMPLATES.get(payload.template)
+    """Crea una base copiando una plantilla de serie.
+
+    La plantilla es **datos**: su schema, sus vistas, la regla `closed` y sus
+    plantillas de fila se escriben en el `.md` de la base nueva. A partir de ahí
+    son dos cosas independientes: cambiar la plantilla no cambia esta base.
+
+    Antes de escribir nada se valida la plantilla entera —tipos, opciones,
+    `closed`, vistas y plantillas de fila— y la carpeta destino: un tipo o un
+    valor que el código no conoce es un 400 con el motivo y **no se crea a
+    medias**. La base nace sin filas: no hay datos de ejemplo que borrar.
+    """
+    template = template_defs.TEMPLATES.get(payload.template)
     if not template:
         raise HTTPException(404, f"Plantilla '{payload.template}' no existe")
+
+    # Las claves de las propiedades se derivan del nombre visible, igual que en
+    # el alta normal; las plantillas las declaran explícitas y se respetan.
+    schema_def, _renames, _borradas = plan_schema(
+        [], [dict(p) for p in template["schema_def"]]
+    )
+    cuerpo = {
+        **template,
+        "schema_def": schema_def,
+        "views": template.get("views") or [],
+        "row_templates": template.get("row_templates") or [],
+    }
+    template_defs.validate_template(cuerpo)
+
+    closed_rule = None
+    if template.get("closed"):
+        closed_rule = closed.validate(
+            schema_def,
+            template["closed"].get(closed.PROPERTY_KEY),
+            template["closed"].get(closed.VALUES_KEY),
+        )
 
     with _vault_errors():
         db_def = repo.create_database(
             title=payload.title or template["title"],
+            parent_id=payload.parent_id,
             icon=settings.default_icon,
             created_by=user.display_name,
-            schema_def=template["schema_def"],
-            views=template["views"],
+            schema_def=schema_def,
+            views=template.get("views") or [],
+            closed_rule=closed_rule,
+            row_templates=cuerpo["row_templates"],
         )
+    publish_database(db_def.id, "created")
     return _serialize_database(db_def, repo.database_ids())
 
 
@@ -342,6 +384,31 @@ def clear_closed(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
     return _serialize_database(actualizada, repo.database_ids())
 
 
+@router.put("/{database_id}/row-templates", response_model=schemas.DatabaseRead)
+def set_row_templates(
+    database_id: uuid.UUID,
+    payload: schemas.RowTemplatesUpdate,
+    repo: Repository = Depends(get_repo),
+):
+    """Configura las plantillas de fila de la base (`row_templates:` en su `.md`).
+
+    Cada plantilla se valida contra el schema antes de escribir nada: una clave
+    que no existe, un valor que no es una opción o un tipo que no admite valor
+    por defecto son un 400 con el motivo, y el fichero se queda como estaba. Los
+    nombres no se repiten (son la forma de elegir la plantilla en el alta).
+    """
+    db_def = _get_database_or_404(repo, database_id)
+    templates = template_defs.validate_row_templates(
+        [t.model_dump() for t in payload.row_templates], db_def.schema_def
+    )
+    with _vault_errors():
+        actualizada = repo.set_row_templates(database_id, templates)
+    if actualizada is None:
+        raise HTTPException(404, "Base de datos no encontrada")
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
+
+
 @router.patch("/{database_id}", response_model=schemas.DatabaseRead)
 def update_database(
     database_id: uuid.UUID, payload: schemas.DatabaseUpdate, repo: Repository = Depends(get_repo)
@@ -391,9 +458,60 @@ def create_row(
     )
     with _vault_errors():
         row = repo.create_row(
-            database_id, title=payload.title, icon=payload.icon, properties=cleaned
+            database_id,
+            title=payload.title,
+            icon=payload.icon,
+            properties=cleaned,
+            body=payload.body_markdown or "",
         )
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
+    publish_database(database_id, "rows")
+    return _serialize_row(repo, db_def, row)
+
+
+@router.post("/{database_id}/rows/from-template", response_model=schemas.RowRead)
+def create_row_from_template(
+    database_id: uuid.UUID,
+    payload: schemas.RowFromTemplate,
+    repo: Repository = Depends(get_repo),
+):
+    """Crea una fila con una de las plantillas de fila de su base.
+
+    La plantilla se busca por **nombre** en el `.md` de la base (lo que enseña
+    el desplegable del «+ Nueva fila»), se valida contra el schema actual y se
+    aplican sus valores por defecto y su cuerpo inicial. Una plantilla que ya no
+    encaja —el `.md` es del usuario y puede haber cambiado— es un 400 con el
+    motivo, no una fila a medias.
+    """
+    db_def = _get_database_or_404(repo, database_id)
+    nombre = str(payload.template or "").strip()
+    plantilla = next(
+        (
+            t
+            for t in db_def.row_templates
+            if str(t.get("name") or "").strip().casefold() == nombre.casefold()
+        ),
+        None,
+    )
+    if plantilla is None:
+        raise HTTPException(
+            404,
+            f"La plantilla de fila «{nombre}» no existe en esta base",
+        )
+    properties, body = template_defs.apply_row_template(plantilla, db_def.schema_def)
+    cleaned = validate_properties(
+        db_def.schema_def, properties, refs=repo.row_refs, users=repo.user_refs
+    )
+    hierarchy.validate_parent(
+        db_def.schema_def, cleaned, row_id=None, rows=repo.list_rows(database_id)
+    )
+    with _vault_errors():
+        row = repo.create_row(
+            database_id,
+            title=payload.title or plantilla.get("name") or "Sin título",
+            properties=cleaned,
+            body=body,
+        )
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
 
