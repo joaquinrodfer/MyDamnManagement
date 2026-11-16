@@ -10190,16 +10190,19 @@ function renderTable(
           titleTd.style.paddingLeft = `${10 + 20 * prof}px`;
           tr.dataset.depth = String(prof);
         }
-        const cuenta = contadorDeSubtareas(row);
-        if (cuenta) {
-          // El contador es un dato, no un control: no puede quitarle el clic a
-          // la celda (que edita el título). El `title` dice qué cuenta.
-          const badge = document.createElement("span");
-          badge.className = "cell-subtasks";
-          badge.textContent = cuenta;
-          badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
-          titleTd.appendChild(badge);
-        }
+      }
+      // El contador va FUERA de `indenta`: es un dato de la fila y se pinta
+      // agrupe o no la vista. Lo que la agrupación desmiente es la sangría,
+      // que es una posición (la fila cae en su grupo, no bajo su madre).
+      const cuenta = contadorDeSubtareas(row);
+      if (cuenta) {
+        // El contador es un dato, no un control: no puede quitarle el clic a
+        // la celda (que edita el título). El `title` dice qué cuenta.
+        const badge = document.createElement("span");
+        badge.className = "cell-subtasks";
+        badge.textContent = cuenta;
+        badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
+        titleTd.appendChild(badge);
       }
       celdas.set(null, titleTd);
       tr.appendChild(titleTd);

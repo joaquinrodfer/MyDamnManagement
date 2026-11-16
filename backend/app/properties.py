@@ -352,6 +352,19 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
     selección con `done: [Hecho]` y ahora pasa a texto— se suelta: el contador
     deja de contar cerradas, que es la verdad de esa base, y guardar el resto
     del schema no puede fallar por un marcador que el usuario no ha escrito.
+
+    Lo mismo con las opciones de la propiedad: un `done` que nombre un valor
+    que no está en `options` no puede contar ninguna fila —la celda nunca
+    valdría ese valor—, así que el contador se quedaría en «0 de N» para
+    siempre y sin aviso. Es un 400 si viene pedido; si venía heredado se suelta,
+    como el caso del tipo (renombrar una opción no puede romper el guardado).
+
+    La comparación es la del lector (`app.closed.is_closed`): sin mayúsculas ni
+    espacios de sobra. Un `done: [HECHA]` sobre `options: [hecha]` cuenta, así
+    que no se rechaza; se guarda con la grafía de la opción, que es la que la
+    celda puede tener. Si el marcador viene heredado y la opción solo ha
+    cambiado de grafía, se queda (reescrito) en vez de soltarse: soltarlo dejaba
+    el contador en «0 de N» sin aviso, que es la trampa que esto cierra.
     """
     pedido = item.get("done")
     crudo = pedido if pedido is not None else (origen or {}).get("done")
@@ -373,9 +386,12 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
 
     tipo = prop.get("type")
     if tipo not in ("checkbox", "select", "multiselect"):
+        # `type` llega como `PropertyType` (un `str`-enum): su `str()` es
+        # «PropertyType.text», que no es lo que puede leer quien usa la API.
+        etiqueta = getattr(tipo, "value", tipo)
         rechazar(
             "`done` solo tiene sentido en una casilla o una selección (es la "
-            f"propiedad que dice si una fila está cerrada), y esta es de tipo {tipo!r}"
+            f"propiedad que dice si una fila está cerrada), y esta es de tipo «{etiqueta}»"
         )
         return
     if tipo == "checkbox":
@@ -390,7 +406,47 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
             "cerrada (`done: [Hecho]`)"
         )
         return
-    prop["done"] = valores
+    # `done` son valores de la celda, así que tienen que ser opciones de la
+    # propiedad: uno que no esté nunca coincidirá con la celda y el contador se
+    # quedaría en «0 de N» sin decir nada. Se compara **sin mayúsculas** —igual
+    # que el lector (`app.closed.is_closed`)— y se guarda la grafía de la
+    # opción: un `done: [HECHA]` sobre `options: [hecha]` sí cuenta, así que
+    # rechazarlo sería un 400 que miente, y dejarlo con la grafía tecleada
+    # escribiría un valor que la celda no tiene.
+    opciones = [
+        str(o).strip()
+        for o in (
+            prop.get("options")
+            if prop.get("options") is not None
+            else (origen or {}).get("options")
+        )
+        or []
+        if str(o).strip()
+    ]
+    if not opciones:
+        # Sin opciones declaradas no hay lista contra la que validar: cualquier
+        # valor de celda es válido (misma tolerancia que la celda de un select).
+        prop["done"] = valores
+        return
+    canonica = {opcion.casefold(): opcion for opcion in opciones}
+    elegidos: list[str] = []
+    fuera: list[str] = []
+    for valor in valores:
+        real = canonica.get(valor.casefold())
+        if real is None:
+            fuera.append(valor)
+        elif real not in elegidos:
+            elegidos.append(real)
+    if fuera:
+        sobran = ", ".join(f"«{v}»" for v in fuera)
+        rechazar(
+            f"{sobran} no {'está' if len(fuera) == 1 else 'están'} entre las "
+            "opciones de la propiedad, así que ninguna fila contaría como "
+            f"cerrada con {'él' if len(fuera) == 1 else 'ellos'}. Opciones: "
+            + ", ".join(opciones)
+        )
+        return
+    prop["done"] = elegidos
 
 
 def _plan_order(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
