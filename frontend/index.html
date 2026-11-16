@@ -3322,15 +3322,10 @@
     gap: 8px;
     padding: 6px 10px;
     border-bottom: 1px solid var(--panel-border);
-    background: var(--surface-elevated);
+    background: var(--panel);
     color: var(--ink-muted);
   }
-  .db-list-head-text {
-    font-size: var(--text-xs);
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
+  .db-list-head-text { font-size: 12px; font-weight: 500; }
   .list-row-item {
     display: flex;
     align-items: center;
@@ -3338,7 +3333,8 @@
     padding-left: 10px;
     border-bottom: 1px solid var(--panel-border);
   }
-  .list-row-item:hover { background: var(--code-bg); }
+  .list-row-item:hover { background: var(--row-hover); }
+  .list-row-item:hover .list-row:hover { background: none; }
   .list-row-item.is-selected { background: var(--accent-soft); }
   .list-row-item .list-row {
     flex: 1 1 auto;
@@ -3453,7 +3449,10 @@
     margin-right: calc(-1 * var(--main-pad-x));
     display: flex;
     flex-direction: column;
-    background: var(--panel);
+    /* El mismo fondo que tiene #main (el del body): la fila abierta es una
+       página más, no una hoja de otro color con una franja oscura arriba y a
+       la izquierda, que es lo que dejaba --panel sobre los márgenes de #main. */
+    background: var(--bg);
   }
   .row-page-view:focus { outline: none; }
   .row-page-bar {
@@ -3478,9 +3477,7 @@
     align-items: center;
     gap: 6px;
     font-family: var(--font-body);
-    font-size: var(--text-xs);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-size: 12.5px;
     color: var(--ink-muted);
   }
   .row-page-crumb {
@@ -3501,7 +3498,7 @@
     cursor: pointer;
   }
   button.row-page-crumb:hover { text-decoration: underline; }
-  .row-page-crumb-current { color: var(--ink); font-weight: 600; }
+  .row-page-crumb-current { color: var(--ink); font-weight: 500; }
   .row-page-crumb-sep { flex: 0 0 auto; color: var(--ink-muted); }
   .row-page-savestatus { flex: 0 0 auto; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
   .row-page-savestatus.is-error { color: var(--down); }
@@ -3541,9 +3538,8 @@
   .row-page-prop { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .row-page-prop label {
     font-family: var(--font-body);
-    font-size: var(--text-xs);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-size: 12px;
+    font-weight: 500;
     color: var(--ink-muted);
   }
   .row-page-prop input,
@@ -4163,7 +4159,28 @@
     .cal-agenda-date { min-width: 78px; }
     .cal-title { font-size: var(--text-md); }
     .db-title { min-width: 0; width: 100%; }
-    .view-tab { min-height: 40px; padding: 8px 14px; }
+    .view-tab { flex: none; min-height: 40px; padding: 8px 14px; }
+    /* La cabecera de una base, en una pantalla estrecha: los botones y las
+       pestañas de vista van cada uno en UNA línea que se desplaza de lado, y
+       el resumen de propiedades se queda en una. Antes eran seis renglones
+       (media pantalla a 375 px) antes de ver la primera fila. El relleno y el
+       margen negativo dejan sitio al anillo de foco, que la caja con scroll
+       recortaría. */
+    .db-header .btn-row,
+    .view-tabs {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding: 3px;
+      margin-left: -3px;
+      margin-right: -3px;
+    }
+    .db-header .btn-row { max-width: calc(100% + 6px); }
+    .db-header .btn-row::-webkit-scrollbar,
+    .view-tabs::-webkit-scrollbar { display: none; }
+    .db-header .btn-row .btn { flex: none; }
+    .view-tabs { margin-bottom: 13px; }
+    .db-schema-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 12px; }
 
     /* --- diálogos: ancho completo y botones al alcance del pulgar --- */
     dialog {
