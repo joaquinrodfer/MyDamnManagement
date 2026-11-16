@@ -22,6 +22,15 @@
 > [`ADR-0006-subtareas.md`](ADR-0006-subtareas.md) y
 > [`ADR-0007-estado-cerrado.md`](ADR-0007-estado-cerrado.md).
 >
+> **Nota de avisos de vencimiento (2026-11-16).** Qué está vencido lo resta el
+> servidor (`backend/app/due.py`) contra su propio día y viaja hecho en la
+> respuesta: `GET /my-tasks` manda `today`, `counts.overdue`/`counts.today` y,
+> por tarea, `due` y `days`; cada fila manda `overdue_keys`, las fechas pasadas
+> de una fila abierta de una base con regla de cierre. La barra lateral, el
+> aviso de al entrar y la marca de la tabla leen esa misma cuenta; el cliente no
+> mira ningún reloj. Decisiones en
+> [`ADR-0008-avisos-de-vencimiento.md`](ADR-0008-avisos-de-vencimiento.md).
+>
 > Lo que sigue describe el diseño funcional (motor, rutas, flujos) y sigue
 > vigente en eso; el diagrama ER de §2 y el detalle de §4 conservan la forma del modelo
 > anterior (`page_content`, `tags`, `attachments`) porque P2 va a cambiar otra
