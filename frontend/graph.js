@@ -49,12 +49,13 @@ const NODE_ALPHA_MIN = 0.55; // grado 0 sobre el fondo: 3,20:1, se distingue
 const DEGREE_FULL = 12; // grado al que la escala ya está arriba (el 12 del dueño)
 const MIN_NODE_SCREEN_R = 1.6; // px de pantalla: al alejar el zoom nadie desaparece
 
-// Trazo de la pertenencia base -> fila (`kind: "row"`). Mismo color que un
-// enlace -- es una relación del mismo grafo, no otra cosa -- pero a 0,9 px en
-// vez de 1,6 y al 45 % de opacidad: se ve si la miras y no compite con las
-// aristas que alguien escribió. Sin guiones: una línea discontinua de medio
-// píxel, al alejar el zoom, se convierte en una textura gris que ensucia el
-// dibujo en vez de explicarlo.
+// Trazo de la jerarquía: la pertenencia base -> fila (`kind: "row"`) y la
+// subtarea madre -> hija (`kind: "subtask"`). Mismo color que un enlace -- es
+// una relación del mismo grafo, no otra cosa -- pero a 0,9 px en vez de 1,6 y
+// al 45 % de opacidad: se ve si la miras y no compite con las aristas que
+// alguien escribió. Sin guiones: una línea discontinua de medio píxel, al
+// alejar el zoom, se convierte en una textura gris que ensucia el dibujo en vez
+// de explicarlo.
 const ROW_EDGE_WIDTH = 0.9;
 const ROW_EDGE_ALPHA = 0.45;
 
@@ -386,18 +387,21 @@ function createView({ pageId, onOpenPage }) {
       }
       if (algo) ctx.stroke();
     };
-    const esRow = (e) => e.kind === "row";
+    // `row` es «esta fila es de esa base» y `subtask` es «esta fila es un paso
+    // de esa otra»: las dos son jerarquía del modelo, no enlaces escritos, y se
+    // pintan igual de finas.
+    const esJerarquia = (e) => e.kind === "row" || e.kind === "subtask";
     if (!hover) {
-      traza(esRow, colors.edge, anchoRow, ROW_EDGE_ALPHA);
-      traza((e) => !esRow(e), colors.edge, ancho, 1);
+      traza(esJerarquia, colors.edge, anchoRow, ROW_EDGE_ALPHA);
+      traza((e) => !esJerarquia(e), colors.edge, ancho, 1);
     } else {
       const fuera = (e) => e.a !== hover && e.b !== hover;
-      traza((e) => esRow(e) && fuera(e), colors.edge, anchoRow, ROW_EDGE_ALPHA * 0.4);
-      traza((e) => !esRow(e) && fuera(e), colors.edge, ancho, 0.18);
-      // El foco del ratón sube la pertenencia también a acento, pero sigue
+      traza((e) => esJerarquia(e) && fuera(e), colors.edge, anchoRow, ROW_EDGE_ALPHA * 0.4);
+      traza((e) => !esJerarquia(e) && fuera(e), colors.edge, ancho, 0.18);
+      // El foco del ratón sube la jerarquía también a acento, pero sigue
       // siendo más fina: el grosor es lo que dice qué clase de arista es.
-      traza((e) => esRow(e) && !fuera(e), colors.edgeActive, anchoRow * 1.4, 0.85);
-      traza((e) => !esRow(e) && !fuera(e), colors.edgeActive, anchoActivo, 1);
+      traza((e) => esJerarquia(e) && !fuera(e), colors.edgeActive, anchoRow * 1.4, 0.85);
+      traza((e) => !esJerarquia(e) && !fuera(e), colors.edgeActive, anchoActivo, 1);
     }
     ctx.globalAlpha = 1;
 
@@ -657,12 +661,14 @@ function createView({ pageId, onOpenPage }) {
     // Las aristas `row` no son enlaces escritos: se cuentan aparte, o la barra
     // diría «300 enlaces» de una base que solo tiene filas.
     const filas = edges.filter((e) => e.kind === "row").length;
-    const enlaces = edges.length - filas;
+    const subtareas = edges.filter((e) => e.kind === "subtask").length;
+    const enlaces = edges.length - filas - subtareas;
     const partes = [
       `${nodes.length} nodo${nodes.length === 1 ? "" : "s"}`,
       `${enlaces} enlace${enlaces === 1 ? "" : "s"}`,
     ];
     if (filas) partes.push(`${filas} fila${filas === 1 ? "" : "s"} en su base`);
+    if (subtareas) partes.push(`${subtareas} subtarea${subtareas === 1 ? "" : "s"}`);
     if (truncated) {
       // El aviso de siempre, con la cuenta cuando la sabemos (el corte por
       // tamaño de este lado) para no dejar al usuario con un "hay más".

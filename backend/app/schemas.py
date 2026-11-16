@@ -264,6 +264,11 @@ class RowRead(BaseModel):
     parent_id: Optional[str] = None
     # Cuántas subtareas tiene y cuántas están cerradas: el «1 de 3» de la fila.
     children: RowChildren = Field(default_factory=RowChildren)
+    # Si ESTA fila está cerrada, con la misma regla que cuenta el contador de su
+    # madre (`app.hierarchy.is_closed`). Lo calcula el servidor para que el
+    # cliente no tenga que repetir la regla de `done` y las dos no puedan
+    # discrepar.
+    closed: bool = False
     # `{clave_de_la_propiedad: [fila, ...]}` de las propiedades `relation`, con
     # el título ya resuelto por el servidor (una consulta por respuesta). Una
     # fila sin relaciones devuelve `{}`.
@@ -289,6 +294,9 @@ class RowPageRead(RowRead):
     subtasks: list[RowRead] = []
     # El id de su madre, si esta fila es una subtarea (para la miga de pan).
     parent_id: Optional[str] = None
+    # El título de su madre, ya resuelto: la página de la fila puede decir de
+    # quién es sin pedir otra fila. `null` = no tiene madre (o ya no existe).
+    parent_title: Optional[str] = None
 
 
 class ViewCreate(BaseModel):

@@ -206,7 +206,10 @@ def test_un_ciclo_de_tres_se_rechaza(client):
     # madre -> hija -> nieta; colgar la madre de la nieta cerraría el círculo.
     respuesta = parchear_fila(client, base, plan["madre"]["id"], {"paso_de": nieta["id"]})
     assert respuesta.status_code == 400, respuesta.text
-    assert "ciclo" in respuesta.json()["detail"]
+    detalle = respuesta.json()["detail"]
+    assert "ciclo" in detalle
+    # El mensaje dice POR DÓNDE vuelve el círculo, con títulos y en orden.
+    assert "Nieta → Textos → Lanzar la web" in detalle
 
     # Y la jerarquía sigue como estaba: nada se escribió a medias.
     leida = client.get(f"/databases/{base}/rows/{plan['madre']['id']}").json()
@@ -304,6 +307,20 @@ def test_la_tabla_y_el_tablero_ensanan_solo_madres_por_defecto(client):
     assert len(filas(client, base)) == 4
 
 
+def test_sin_vista_las_hijas_tambien_van_detras_de_su_madre(client):
+    base = crear_base(client, title="Dos ramas")
+    una = crear_fila(client, base["id"], "Una")
+    otra = crear_fila(client, base["id"], "Otra")
+    crear_fila(client, base["id"], "Hija de Una", {"paso_de": una["id"]})
+    crear_fila(client, base["id"], "Hija de Otra", {"paso_de": otra["id"]})
+    assert [r["title"] for r in filas(client, base["id"])] == [
+        "Una",
+        "Hija de Una",
+        "Otra",
+        "Hija de Otra",
+    ]
+
+
 def test_la_lista_ensena_todas_las_hijas_detras_de_su_madre(client):
     plan = plan_con_hijas(client)
     base = plan["base"]["id"]
@@ -376,11 +393,18 @@ def test_la_pagina_de_la_madre_trae_sus_subtareas(client):
     assert diseno["properties"]["fecha"] == "2026-12-01"
     assert diseno["parent_id"] == plan["madre"]["id"]
     assert pagina["children"] == {"total": 3, "closed": 1}
+    # «Cerrada» lo dice el servidor con la regla de la base: la fila del estado
+    # «Hecho» está cerrada y la de «En curso» no.
+    assert diseno["closed"] is False
+    assert next(s for s in pagina["subtasks"] if s["title"] == "Dominio")["closed"] is True
+    assert pagina["closed"] is False
 
-    # Una hija no arrastra a sus hermanas: solo SUS subtareas.
+    # Una hija no arrastra a sus hermanas: solo SUS subtareas, y dice de quién
+    # es (para la miga de pan de su página).
     hija = client.get(f"/databases/{plan['base']['id']}/rows/{plan['hija']['id']}").json()
     assert hija["subtasks"] == []
     assert hija["parent_id"] == plan["madre"]["id"]
+    assert hija["parent_title"] == "Lanzar la web"
 
 
 def test_una_subtarea_se_crea_ya_enlazada_desde_la_pagina(client, vault_path):

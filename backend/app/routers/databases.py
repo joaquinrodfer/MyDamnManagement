@@ -113,6 +113,7 @@ def _serialize_rows(
                 total=cuentas.get(str(row.id), (0, 0))[0],
                 closed=cuentas.get(str(row.id), (0, 0))[1],
             ),
+            closed=hierarchy.is_closed(db_def.schema_def, props),
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
         )
@@ -169,10 +170,13 @@ def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schema
         if key
         else []
     )
+    id_madre = hierarchy.parent_of(row.properties or {}, key)
+    madre = repo.row_refs([id_madre]).get(id_madre) if id_madre else None
     return schemas.RowPageRead(
         **base.model_dump(),
         body_markdown=row.body_markdown or "",
         subtasks=subtasks,
+        parent_title=madre[0] if madre else None,
     )
 
 
@@ -335,6 +339,11 @@ def list_rows(
             parent_key=key,
             view_type=getattr(view_def.type, "value", view_def.type),
         )
+    elif key:
+        # «Todas» no tiene vista que diga el nivel, así que se ven todas las
+        # filas; pero el orden sí es el de la jerarquía: una hija detrás de su
+        # madre, como en cualquier vista de la base.
+        rows = hierarchy.arrange(rows, key)
 
     return _serialize_rows(repo, db_def, rows, parent_key=key, counts=counts)
 

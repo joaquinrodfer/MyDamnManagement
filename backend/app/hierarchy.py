@@ -319,13 +319,12 @@ def validate_parent(
         return                     # una fila nueva no puede cerrar un ciclo
 
     titulo = _titulo(por_id.get(str(row_id))) or "esta fila"
+    camino: list[str] = []          # de la madre hacia arriba, con nombres
     vistas: set[str] = set()
     actual: Optional[str] = madre
     while actual and actual not in vistas:
         if actual == str(row_id):
-            cadena = " → ".join(
-                _titulo(por_id.get(uno)) or uno for uno in [madre, *vistas]
-            )
+            cadena = " → ".join([*camino, titulo])
             raise HTTPException(
                 400,
                 f"{nombre}: no se puede colgar «{titulo}» de "
@@ -334,6 +333,7 @@ def validate_parent(
             )
         vistas.add(actual)
         fila = por_id.get(actual)
+        camino.append(_titulo(fila) or actual)
         actual = parent_of(fila, key) if fila is not None else None
 
 
