@@ -11813,16 +11813,30 @@ function renderCalendar(database, rows, view, refresh) {
     document[metodo]("keydown", teclaDeArrastre, true);
   };
 
-  /** Escribir el gesto: un PATCH con la fecha de inicio, la de fin, o las dos. */
-  const aplicarGesto = async (row, desde, hasta) => {
+  /** Escribir el gesto: un PATCH con la fecha de inicio, la de fin, o las dos.
+   *
+   * `modo` dice qué se está haciendo —`mover`, `inicio` o `fin`—, y con eso se
+   * decide qué fechas se escriben. Al MOVER solo se desplazan las que la fila
+   * ya tenía: rellenar la que faltaba convertía una fila de un día (solo
+   * `inicio`) en una con `entrega`, y el `.md` es la verdad del repo —los
+   * filtros `is_empty`/`is_not_empty`, el orden y la tabla leen esa clave—, así
+   * que el gesto no debe inventar propiedades. Un asa sí crea la suya: es la
+   * fecha que se está estirando.
+   */
+  const aplicarGesto = async (row, desde, hasta, modo) => {
     const properties = {};
     const antes = {};
     const claveActual = (prop) => claveDeFecha(row.properties?.[prop.key]);
-    if (desde !== claveActual(rango.inicio)) {
+    // Solo se toca la fecha que cambia y, según el gesto, solo la que le toca:
+    // mover las que existen; un asa, la suya (aunque la fila no la tuviera).
+    const seEscribe = (prop, clave, modoPropio) =>
+      clave !== claveActual(prop) &&
+      (modo === "mover" ? claveActual(prop) !== null : modo === modoPropio);
+    if (seEscribe(rango.inicio, desde, "inicio")) {
       antes[rango.inicio.key] = row.properties?.[rango.inicio.key] ?? null;
       properties[rango.inicio.key] = fechaEnDia(row.properties?.[rango.inicio.key], desde);
     }
-    if (rango.fin && hasta !== claveActual(rango.fin)) {
+    if (rango.fin && seEscribe(rango.fin, hasta, "fin")) {
       antes[rango.fin.key] = row.properties?.[rango.fin.key] ?? null;
       properties[rango.fin.key] = fechaEnDia(row.properties?.[rango.fin.key], hasta);
     }
@@ -11858,7 +11872,7 @@ function renderCalendar(database, rows, view, refresh) {
     if (!fin) return;
     if (fin.desde === g.desde && fin.hasta === g.hasta) return; // un clic, no un gesto
     suprimirClic = true;
-    aplicarGesto(g.row, fin.desde, fin.hasta);
+    aplicarGesto(g.row, fin.desde, fin.hasta, g.modo);
   };
 
   function moverArrastre(e) {
