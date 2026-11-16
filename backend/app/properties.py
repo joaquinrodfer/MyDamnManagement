@@ -244,6 +244,13 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
     valdría ese valor—, así que el contador se quedaría en «0 de N» para
     siempre y sin aviso. Es un 400 si viene pedido; si venía heredado se suelta,
     como el caso del tipo (renombrar una opción no puede romper el guardado).
+
+    La comparación es la del lector (`app.closed.is_closed`): sin mayúsculas ni
+    espacios de sobra. Un `done: [HECHA]` sobre `options: [hecha]` cuenta, así
+    que no se rechaza; se guarda con la grafía de la opción, que es la que la
+    celda puede tener. Si el marcador viene heredado y la opción solo ha
+    cambiado de grafía, se queda (reescrito) en vez de soltarse: soltarlo dejaba
+    el contador en «0 de N» sin aviso, que es la trampa que esto cierra.
     """
     pedido = item.get("done")
     crudo = pedido if pedido is not None else (origen or {}).get("done")
@@ -287,9 +294,35 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
         return
     # `done` son valores de la celda, así que tienen que ser opciones de la
     # propiedad: uno que no esté nunca coincidirá con la celda y el contador se
-    # quedaría en «0 de N» sin decir nada.
-    opciones = [str(o).strip() for o in (prop.get("options") or [])]
-    fuera = [v for v in valores if v not in opciones] if opciones else []
+    # quedaría en «0 de N» sin decir nada. Se compara **sin mayúsculas** —igual
+    # que el lector (`app.closed.is_closed`)— y se guarda la grafía de la
+    # opción: un `done: [HECHA]` sobre `options: [hecha]` sí cuenta, así que
+    # rechazarlo sería un 400 que miente, y dejarlo con la grafía tecleada
+    # escribiría un valor que la celda no tiene.
+    opciones = [
+        str(o).strip()
+        for o in (
+            prop.get("options")
+            if prop.get("options") is not None
+            else (origen or {}).get("options")
+        )
+        or []
+        if str(o).strip()
+    ]
+    if not opciones:
+        # Sin opciones declaradas no hay lista contra la que validar: cualquier
+        # valor de celda es válido (misma tolerancia que la celda de un select).
+        prop["done"] = valores
+        return
+    canonica = {opcion.casefold(): opcion for opcion in opciones}
+    elegidos: list[str] = []
+    fuera: list[str] = []
+    for valor in valores:
+        real = canonica.get(valor.casefold())
+        if real is None:
+            fuera.append(valor)
+        elif real not in elegidos:
+            elegidos.append(real)
     if fuera:
         sobran = ", ".join(f"«{v}»" for v in fuera)
         rechazar(
@@ -299,7 +332,7 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
             + ", ".join(opciones)
         )
         return
-    prop["done"] = valores
+    prop["done"] = elegidos
 
 
 def relation_properties(schema_def: list[dict]) -> list[dict]:

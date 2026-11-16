@@ -290,6 +290,75 @@ def test_un_done_heredado_que_ya_no_es_opcion_se_suelta(client, vault_path):
     assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 0}
 
 
+def test_el_marcador_se_guarda_con_la_grafia_de_la_opcion(client, vault_path):
+    """Escritor y lector comparan igual: un valor con otra grafía SÍ cuenta.
+
+    El contador (`app.closed.is_closed`) compara sin mayúsculas, así que
+    `done: [HECHO]` sobre `options: [Hecho]` cierra la fila. Rechazarlo con
+    «ninguna fila contaría» era un 400 que mentía; y guardarlo tal cual dejaría
+    en el `.md` una grafía que la celda no tiene. Se acepta y se escribe la de
+    la opción.
+    """
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    respuesta = client.patch(
+        f"/databases/{base}",
+        json={
+            "schema_def": [
+                {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["Pendiente", "En curso", "Hecho"],
+                    "done": ["HECHO"],
+                },
+                {"key": "fecha", "name": "Fecha", "type": "date"},
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    estado = next(p for p in respuesta.json()["schema_def"] if p["key"] == "estado")
+    assert estado["done"] == ["Hecho"]
+    assert "done: [Hecho]" in (vault_path / "Bases" / "Plan.md").read_text(encoding="utf-8")
+    # Y el contador cuenta: la hija cerrada lleva «Hecho», la misma opción.
+    leidas = {r["id"]: r for r in filas(client, base)}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 1}
+
+
+def test_cambiar_la_grafia_de_la_opcion_no_suelta_el_marcador(client, vault_path):
+    """Guardar el schema sin `done` no pierde un marcador que sigue valiendo.
+
+    Antes, renombrar «Hecho» a «HECHO» y guardar el resto del schema soltaba el
+    marcador en silencio (1 de 3 -> 0 de 3): la opción seguía cerrando, pero el
+    `.md` se quedaba sin regla. Con la comparación sin mayúsculas el marcador
+    heredado se conserva, reescrito con la grafía nueva.
+    """
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    respuesta = client.patch(
+        f"/databases/{base}",
+        json={
+            "schema_def": [
+                {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["Pendiente", "En curso", "HECHO"],
+                },
+                {"key": "fecha", "name": "Fecha", "type": "date"},
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    estado = next(p for p in respuesta.json()["schema_def"] if p["key"] == "estado")
+    assert estado["done"] == ["HECHO"]
+    assert "done: [HECHO]" in (vault_path / "Bases" / "Plan.md").read_text(encoding="utf-8")
+    leidas = {r["id"]: r for r in filas(client, base)}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 1}
+
+
 def test_la_madre_tiene_que_ser_de_la_misma_base(client):
     plan = plan_con_hijas(client)
     otra_base = crear_base(client, title="Otra")
