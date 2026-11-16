@@ -123,6 +123,85 @@ def test_la_hija_guarda_el_id_de_su_madre_en_el_frontmatter(client, vault_path):
     assert leida["properties"]["paso_de"] == plan["madre"]["id"]
 
 
+def test_cambiar_el_tipo_del_estado_suelta_lo_que_marcaba_cerrada(client):
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    respuesta = client.patch(
+        f"/databases/{base}",
+        json={
+            "schema_def": [
+                {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+                {"key": "estado", "name": "Estado", "type": "text"},
+                {"key": "fecha", "name": "Fecha", "type": "date"},
+            ]
+        },
+    )
+    # Guardar la base no puede fallar porque el marcador ya no quepa: se suelta.
+    assert respuesta.status_code == 200, respuesta.text
+    assert all("done" not in p for p in respuesta.json()["schema_def"])
+    leidas = {r["id"]: r for r in filas(client, base)}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 0}
+
+
+def test_guardar_la_base_conserva_el_marcador_done(client, vault_path):
+    plan = plan_con_hijas(client)
+    base = plan["base"]["id"]
+    respuesta = client.patch(
+        f"/databases/{base}",
+        json={
+            "schema_def": [
+                {"key": "paso_de", "name": "Subtarea de", "type": "parent_row"},
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["Pendiente", "En curso", "Hecho"],
+                },
+                {"key": "fecha", "name": "Fecha", "type": "date"},
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    estado = next(p for p in respuesta.json()["schema_def"] if p["key"] == "estado")
+    assert estado["done"] == ["Hecho"]
+    assert "done: [Hecho]" in (vault_path / "Bases" / "Plan.md").read_text(encoding="utf-8")
+    # Y el contador sigue contando la cerrada.
+    leidas = {r["id"]: r for r in filas(client, base)}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 3, "closed": 1}
+
+
+def test_un_done_imposible_se_rechaza_con_el_motivo(client):
+    respuesta = client.post(
+        "/databases",
+        json={
+            "title": "Marcador imposible",
+            "schema_def": [
+                {"key": "nota", "name": "Nota", "type": "text", "done": True},
+            ],
+        },
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    assert "solo tiene sentido en una casilla o una selección" in respuesta.json()["detail"]
+
+    respuesta = client.post(
+        "/databases",
+        json={
+            "title": "Selección sin lista",
+            "schema_def": [
+                {
+                    "key": "estado",
+                    "name": "Estado",
+                    "type": "select",
+                    "options": ["Sí", "No"],
+                    "done": True,
+                },
+            ],
+        },
+    )
+    assert respuesta.status_code == 400, respuesta.text
+    assert "la lista de valores" in respuesta.json()["detail"]
+
+
 def test_la_madre_tiene_que_ser_de_la_misma_base(client):
     plan = plan_con_hijas(client)
     otra_base = crear_base(client, title="Otra")
@@ -144,6 +223,17 @@ def test_la_madre_tiene_que_ser_de_la_misma_base(client):
     )
     assert respuesta.status_code == 400
     assert "«Subtarea de»" in respuesta.json()["detail"]
+
+
+def test_quitar_la_madre_devuelve_la_fila_a_la_raiz(client, vault_path):
+    plan = plan_con_hijas(client)
+    respuesta = parchear_fila(client, plan["base"]["id"], plan["hija"]["id"], {"paso_de": None})
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["parent_id"] is None
+    # La celda vacía no se escribe en el `.md` (como cualquier celda vacía).
+    assert "paso_de" not in md_de_fila(vault_path, row_id=plan["hija"]["id"])
+    leidas = {r["id"]: r for r in filas(client, plan["base"]["id"])}
+    assert leidas[plan["madre"]["id"]]["children"] == {"total": 2, "closed": 1}
 
 
 def test_una_celda_de_subtarea_no_admite_listas_ni_titulos(client):

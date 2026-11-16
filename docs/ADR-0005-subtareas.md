@@ -139,3 +139,9 @@ se lee en el orden de las filas y en el contador, no en una columna de uuids.
 - La página de la fila trae sus subtareas en la misma respuesta (`subtasks`): la
   tabla no las arrastra, para no convertir una respuesta de cien filas en cien
   árboles.
+- **El nivel se aplica antes que los filtros de la vista.** Con «solo madres»,
+  un filtro sobre una propiedad que solo tienen las hijas (el estado, sin ir
+  más lejos) deja la vista vacía: la madre no cumple el filtro y una fila no se
+  enseña «porque su hija cumple». Heredar el filtro hacia la madre —y decidir
+  qué significa «cerrada» al filtrar— es una decisión de producto aparte; hoy,
+  para filtrar hijas, se elige «todas las filas» en esa vista.

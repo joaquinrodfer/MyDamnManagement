@@ -225,27 +225,51 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
     diálogo de propiedades no pregunta por él, y guardar el resto de la base no
     puede desactivar el contador sin que nadie lo haya pedido. `done: false`
     (o una lista vacía) lo quita.
+
+    Un marcador que no cabe en el tipo **pedido en esta petición** es un 400
+    (quien llama se ha equivocado). Si venía heredado —la propiedad era una
+    selección con `done: [Hecho]` y ahora pasa a texto— se suelta: el contador
+    deja de contar cerradas, que es la verdad de esa base, y guardar el resto
+    del schema no puede fallar por un marcador que el usuario no ha escrito.
     """
-    crudo = item.get("done")
-    if crudo is None:
-        crudo = (origen or {}).get("done")
+    pedido = item.get("done")
+    crudo = pedido if pedido is not None else (origen or {}).get("done")
     if crudo is None:
         return
+
+    valores: list[str] = []
     if isinstance(crudo, list):
         valores = [str(v).strip() for v in crudo if str(v).strip()]
-        if valores:
-            prop["done"] = valores
+        if not valores:
+            return
+    elif str(crudo).strip().lower() in ("false", "0", "no", "off", "") or crudo is False:
         return
-    if str(crudo).strip().lower() in ("false", "0", "no", "off", "") or crudo is False:
-        return
-    if prop.get("type") not in ("checkbox", "select", "multiselect"):
-        raise HTTPException(
-            400,
-            f"«{name}»: `done` solo tiene sentido en una casilla o una selección "
-            f"(es la propiedad que dice si una fila está cerrada), y esta es de "
-            f"tipo {prop.get('type')!r}",
+
+    def rechazar(motivo: str) -> None:
+        if pedido is None:      # heredado: se suelta, no se rompe el guardado
+            return
+        raise HTTPException(400, f"«{name}»: {motivo}")
+
+    tipo = prop.get("type")
+    if tipo not in ("checkbox", "select", "multiselect"):
+        rechazar(
+            "`done` solo tiene sentido en una casilla o una selección (es la "
+            f"propiedad que dice si una fila está cerrada), y esta es de tipo {tipo!r}"
         )
-    prop["done"] = True
+        return
+    if tipo == "checkbox":
+        if valores:
+            rechazar("en una casilla basta `done: true`: se cierra cuando está marcada")
+            return
+        prop["done"] = True
+        return
+    if not valores:
+        rechazar(
+            "en una selección, `done` es la lista de valores que cuentan como "
+            "cerrada (`done: [Hecho]`)"
+        )
+        return
+    prop["done"] = valores
 
 
 def relation_properties(schema_def: list[dict]) -> list[dict]:

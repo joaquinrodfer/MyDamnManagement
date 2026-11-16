@@ -61,6 +61,13 @@ def apply_view(
     lo decide el `sort` de la vista, y dentro de una rama se repite la regla
     (`app.hierarchy.arrange`). Sin `parent_key` —una base sin jerarquía— nada de
     esto se aplica y el resultado es exactamente el de siempre.
+
+    El nivel se aplica ANTES que los `filters`: «solo madres» elige qué filas
+    son las de la vista y el filtro se aplica a esas. Consecuencia conocida: un
+    filtro sobre una propiedad que solo tienen las hijas deja la vista vacía
+    (la madre no lo cumple), porque una fila no se enseña «porque su hija
+    cumple». Heredar el filtro hacia la madre es una decisión de producto aparte
+    y hoy no se hace.
     """
     if parent_key and hierarchy.level(config, view_type) == hierarchy.LEVEL_ROOTS:
         rows = hierarchy.only_roots(rows, parent_key)
