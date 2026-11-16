@@ -482,13 +482,16 @@ def create_row(
     db_def = _get_database_or_404(repo, database_id)
     properties = dict(payload.properties or {})
     body = payload.body_markdown or ""
-    if payload.template:
+    # Un `template` en blanco es «sin plantilla»: el desplegable del alta manda
+    # el nombre elegido y vaciarlo no es pedir una plantilla llamada «», que es
+    # un 404 hablando de un nombre que nadie escribió.
+    nombre = (payload.template or "").strip()
+    if nombre:
         # La plantilla se valida aquí también, aunque el alta ya haya pintado
         # sus valores: es la última puerta antes de escribir, y una plantilla
         # que miente (una opción que ya no existe, una columna borrada) es un
         # 400 con el motivo, no una fila a medias. Lo que el usuario cambió en
         # el formulario manda sobre el valor por defecto.
-        nombre = payload.template.strip()
         plantilla = next(
             (
                 t
@@ -525,53 +528,6 @@ def create_row(
             body=body,
         )
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
-    publish_database(database_id, "rows")
-    return _serialize_row(repo, db_def, row)
-
-
-@router.post("/{database_id}/rows/from-template", response_model=schemas.RowRead)
-def create_row_from_template(
-    database_id: uuid.UUID,
-    payload: schemas.RowFromTemplate,
-    repo: Repository = Depends(get_repo),
-):
-    """Crea una fila con una de las plantillas de fila de su base.
-
-    La plantilla se busca por **nombre** en el `.md` de la base (lo que enseña
-    el desplegable del «+ Nueva fila»), se valida contra el schema actual y se
-    aplican sus valores por defecto y su cuerpo inicial. Una plantilla que ya no
-    encaja —el `.md` es del usuario y puede haber cambiado— es un 400 con el
-    motivo, no una fila a medias.
-    """
-    db_def = _get_database_or_404(repo, database_id)
-    nombre = str(payload.template or "").strip()
-    plantilla = next(
-        (
-            t
-            for t in db_def.row_templates
-            if str(t.get("name") or "").strip().casefold() == nombre.casefold()
-        ),
-        None,
-    )
-    if plantilla is None:
-        raise HTTPException(
-            404,
-            f"La plantilla de fila «{nombre}» no existe en esta base",
-        )
-    properties, body = template_defs.apply_row_template(plantilla, db_def.schema_def)
-    cleaned = validate_properties(
-        db_def.schema_def, properties, refs=repo.row_refs, users=repo.user_refs
-    )
-    hierarchy.validate_parent(
-        db_def.schema_def, cleaned, row_id=None, rows=repo.list_rows(database_id)
-    )
-    with _vault_errors():
-        row = repo.create_row(
-            database_id,
-            title=payload.title or plantilla.get("name") or "Sin título",
-            properties=cleaned,
-            body=body,
-        )
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
 

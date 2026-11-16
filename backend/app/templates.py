@@ -357,6 +357,17 @@ def _valor_por_defecto(prop: dict, valor: Any, title: str) -> Any:
     El `.md` no infiere tipos (`true` es el texto `"true"`), así que aquí se
     normaliza igual que al guardar una celda: la plantilla que se lee del
     fichero y la que llega de la interfaz se comportan igual.
+
+    Qué se valida es **lo que el control del tipo no puede representar**, no lo
+    que parece mal escrito: una opción que ya no está en `options`, una fecha que
+    el `<input type="date">` deja en blanco (y la celda nacería vacía sin decir
+    nada) o un número que no lo es. `text` y `url` no se validan a propósito: el
+    editor los pinta en un `<input type="text">` que conserva cualquier cosa y
+    una celda `url` acepta el mismo texto tal cual (`app.properties._coerce` no
+    valida formato), así que una plantilla más estricta que la celda rechazaría
+    plantillas del `.md` que hoy crean filas —y rompería ficheros del usuario que
+    no han perdido nada—. Validar «esto no parece una URL» es una decisión de
+    producto que hay que tomar en la celda primero.
     """
     nombre = prop.get("name") or prop.get("key")
     tipo = _tipo(prop)
@@ -434,6 +445,7 @@ def _valor_por_defecto(prop: dict, valor: Any, title: str) -> Any:
                 title, f"«{nombre}» tiene una fecha que no existe: «{texto}»."
             ) from exc
         return texto
+    # `text` y `url`: tal cual (ver el docstring: el control los conserva).
     return str(valor)
 
 

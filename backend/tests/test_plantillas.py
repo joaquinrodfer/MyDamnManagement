@@ -422,10 +422,17 @@ def test_una_plantilla_de_fila_invalida_no_se_guarda(client, vault_path):
 
 
 def test_crear_una_fila_desde_plantilla_escribe_valores_y_cuerpo(client, vault_path):
+    """El único camino del alta con plantilla es `POST /rows` con `template`.
+
+    Hasta t_3a92a0db había además un `POST /rows/from-template` que nadie
+    llamaba (la interfaz manda `template` en el alta desde la ronda 2): dos
+    puertas con la misma validación duplicada. Esta prueba se quedó con el
+    camino que sí se usa.
+    """
     base = crear_desde(client, "proyecto", title="Lanzamiento").json()
 
     respuesta = client.post(
-        f"/databases/{base['id']}/rows/from-template",
+        f"/databases/{base['id']}/rows",
         json={"template": "Revisión semanal", "title": "Revisión del lunes"},
     )
     assert respuesta.status_code == 200, respuesta.text
@@ -442,11 +449,18 @@ def test_crear_una_fila_desde_plantilla_escribe_valores_y_cuerpo(client, vault_p
     detalle = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
     assert "## Qué revisar" in detalle["body_markdown"]
 
+    # Sin título, el de la plantilla (antes lo ponía el endpoint retirado).
+    sin_titulo = client.post(
+        f"/databases/{base['id']}/rows", json={"template": "Revisión semanal"}
+    )
+    assert sin_titulo.status_code == 200, sin_titulo.text
+    assert sin_titulo.json()["title"] == "Sin título"
+
 
 def test_la_plantilla_de_fila_rellena_pero_no_cierra_la_fila(client):
     base = crear_desde(client, "proyecto", title="Lanzamiento").json()
     fila = client.post(
-        f"/databases/{base['id']}/rows/from-template",
+        f"/databases/{base['id']}/rows",
         json={"template": "Revisión semanal", "title": "Lunes"},
     ).json()
     # «hecha» cierra; «abierta» no. La plantilla trae abierta, así que la fila
@@ -454,13 +468,12 @@ def test_la_plantilla_de_fila_rellena_pero_no_cierra_la_fila(client):
     assert fila["closed"] is False
 
 
-def test_una_plantilla_de_fila_que_no_existe_es_un_404(client):
-    base = crear_desde(client, "proyecto", title="Lanzamiento").json()
-    respuesta = client.post(
-        f"/databases/{base['id']}/rows/from-template",
-        json={"template": "No está", "title": "X"},
-    )
-    assert respuesta.status_code == 404
+def test_el_endpoint_dedicado_de_filas_por_plantilla_ya_no_existe():
+    """Se retiró con su test: la API pública no guarda dos caminos para lo mismo."""
+    from app.main import app
+
+    rutas = {getattr(ruta, "path", "") for ruta in app.routes}
+    assert "/databases/{database_id}/rows/from-template" not in rutas
 
 
 def test_una_fila_puede_nacer_con_cuerpo_por_la_api(client, vault_path):
@@ -758,3 +771,134 @@ def test_una_fecha_por_defecto_que_no_es_fecha_no_se_guarda(client, vault_path):
     assert respuesta.status_code == 400, respuesta.text
     assert "AAAA-MM-DD" in respuesta.json()["detail"]
     assert "row_templates" not in frontmatter(vault_path / "Bases" / "Citas.md")
+
+
+# --------------------------------------------------------------------------
+# 7. restos de la revisión de las plantillas (t_3a92a0db)
+# --------------------------------------------------------------------------
+
+def test_guardar_el_editor_de_plantillas_descarta_el_valor_que_no_encaja(
+    client, vault_path
+):
+    """Guardar una plantilla que no encaja **descarta** el valor que ningún
+    control puede pintar, y el diálogo lo dice antes de escribir.
+
+    Es la decisión que pide t_3a92a0db, y la que ya tomaba el servidor cuando el
+    schema cambia (un valor que se retira sale de la plantilla, no se queda
+    mintiendo): el `.md` es del usuario, pero al guardar desde la interfaz se
+    escribe lo que la interfaz puede representar. Conservar el valor no es una
+    opción por esta puerta —el `PUT` revalida y una plantilla que miente no
+    puede entrar por ella—, así que lo que no se acepta es que se pierda en
+    silencio: el diálogo nombra la plantilla, la propiedad y el valor en la
+    tarjeta, y la primera pulsación de Guardar no escribe nada (pide una
+    segunda). Ver `frontend/app.js` (`valoresQueSeDescartan`) y el CHANGELOG.
+
+    Esta prueba fija el resultado de ese guardado: es exactamente lo que manda
+    el editor, que solo puede leer los `values` coaccionados.
+    """
+    base = crear_desde(client, "proyecto", title="Rota").json()
+    archivo = vault_path / "Bases" / "Rota.md"
+    # Alguien edita el `.md` a mano: la plantilla nombra una opción que la
+    # columna ya no tiene.
+    archivo.write_text(
+        archivo.read_text(encoding="utf-8").replace(
+            "prioridad: media", "prioridad: inventada"
+        ),
+        encoding="utf-8",
+    )
+    client.post("/reindex")
+
+    leidas = client.get(f"/databases/{base['id']}").json()["row_templates"]
+    rota = next(t for t in leidas if t["name"] == "Revisión semanal")
+    # Lo que el diálogo necesita para poder decirlo: el valor tal cual está en
+    # el `.md`…
+    assert rota["properties"]["prioridad"] == "inventada"
+    # …y el motivo de que no esté en `values`: ningún control lo puede pintar.
+    assert "prioridad" not in rota["values"]
+    assert "inventada" in rota["error"]
+
+    # Guardar sin tocar nada: el editor reenvía lo que sus controles leen (los
+    # `values`) y no lo que se quedó sin control.
+    respuesta = client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {"name": t["name"], "properties": t["values"], "body": t["body"]}
+                for t in leidas
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+
+    guardadas = {t["name"]: t for t in respuesta.json()["row_templates"]}
+    assert guardadas["Revisión semanal"]["properties"] == {"estado": "abierta"}
+    # Ya no miente: lo que no se podía representar se fue con la pregunta hecha.
+    assert guardadas["Revisión semanal"]["error"] is None
+    # Y las otras tarjetas del diálogo conservan lo suyo: guardar por renombrar
+    # una no se lleva los valores de las demás.
+    assert guardadas["Tarea urgente"]["properties"] == {
+        "estado": "abierta",
+        "prioridad": "alta",
+    }
+    texto = archivo.read_text(encoding="utf-8")
+    assert "inventada" not in texto
+    assert "prioridad: alta" in texto
+
+
+def test_un_template_en_blanco_es_sin_plantilla(client):
+    """`template: "  "` no es pedir una plantilla llamada «» —el 404 hablaba de un
+    nombre vacío que nadie escribió—: es no pedir plantilla."""
+    base = crear_desde(client, "proyecto", title="Blanco").json()
+    respuesta = client.post(
+        f"/databases/{base['id']}/rows", json={"title": "Suelta", "template": "  "}
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    fila = respuesta.json()
+    assert "estado" not in fila["properties"]
+    assert "prioridad" not in fila["properties"]
+    # El cuerpo tampoco: la fila no nace con el de ninguna plantilla.
+    detalle = client.get(f"/databases/{base['id']}/rows/{fila['id']}").json()
+    assert detalle["body_markdown"] == ""
+
+
+def test_una_url_por_defecto_se_guarda_tal_cual_a_proposito(client, vault_path):
+    """`url` no valida formato, y está escrito por qué (t_3a92a0db).
+
+    `_valor_por_defecto` valida lo que el control del tipo **no puede
+    representar**: una opción que ya no está en `options`, una fecha que el
+    `<input type="date">` deja en blanco (la celda nacería vacía sin decir
+    nada), un número que no lo es. Un `url` se pinta en un `<input type="text">`
+    que conserva cualquier texto, y una celda `url` guarda ese mismo texto tal
+    cual (`app.properties._coerce` tampoco valida formato), así que una
+    plantilla más estricta que la celda rechazaría plantillas del `.md` que hoy
+    crean filas. Decidir «esto no parece una URL» es una decisión de la celda;
+    el día que la celda lo valide, la plantilla lo hereda aquí.
+    """
+    base = client.post(
+        "/databases",
+        json={
+            "title": "Enlaces",
+            "schema_def": [{"key": "web", "name": "Web", "type": "url"}],
+        },
+    ).json()
+    respuesta = client.put(
+        f"/databases/{base['id']}/row-templates",
+        json={
+            "row_templates": [
+                {
+                    "name": "Sin url buena",
+                    "properties": {"web": "no es una url"},
+                    "body": "",
+                }
+            ]
+        },
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    en_el_md = frontmatter(vault_path / "Bases" / "Enlaces.md")["row_templates"]
+    assert en_el_md[0]["properties"] == {"web": "no es una url"}
+
+    fila = client.post(
+        f"/databases/{base['id']}/rows", json={"template": "Sin url buena"}
+    )
+    assert fila.status_code == 200, fila.text
+    assert fila.json()["properties"]["web"] == "no es una url"
