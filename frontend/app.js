@@ -5323,6 +5323,9 @@ async function guardarConfigDeVista(database, view, cambios) {
 }
 
 function nombreDePropiedad(database, key) {
+  // El título no es una propiedad del `schema`: su nombre vive en `title_name`
+  // (y el servidor ordena por él con la clave `title`).
+  if (key === "title") return database.title_name || "Título";
   return database.schema_def.find((p) => p.key === key)?.name || key;
 }
 
@@ -5925,7 +5928,10 @@ function filaDeOrden(database, claves, clave, indice) {
   propSelect.className = "filter-prop";
   propSelect.setAttribute("aria-label", `Propiedad de la clave ${indice + 1}`);
   const usadas = new Set(claves.filter((_, i) => i !== indice).map((otra) => otra.key));
-  database.schema_def.forEach((prop) => {
+  // El título se puede ordenar como cualquier columna (texto natural): no es
+  // una propiedad del `schema`, pero el servidor lo conoce con la clave
+  // `title`, así que se ofrece el primero.
+  [{ key: "title", name: database.title_name || "Título" }, ...database.schema_def].forEach((prop) => {
     if (usadas.has(prop.key)) return; // una propiedad, una clave
     const opcion = document.createElement("option");
     opcion.value = prop.key;
@@ -6001,7 +6007,11 @@ document.getElementById("btn-add-sort").addEventListener("click", () => {
   const ctx = sortDialogCtx;
   if (!ctx) return;
   const usadas = new Set(ctx.claves.map((clave) => clave.key));
-  const libre = ctx.database.schema_def.find((prop) => !usadas.has(prop.key));
+  const libres = [
+    { key: "title", name: ctx.database.title_name || "Título" },
+    ...ctx.database.schema_def,
+  ];
+  const libre = libres.find((prop) => !usadas.has(prop.key));
   if (!libre) {
     sortStatusEl.textContent = "Ya están todas las propiedades en el orden.";
     return;
@@ -9731,11 +9741,14 @@ function abrirFormularioDeColumna(anchor, contexto) {
  * servidor no ordena, o una tabla sin vista) el rótulo es el que abre el menú:
  * un `<th>` que no hace nada al pincharlo parece roto.
  */
-function cabeceraDeColumna(contexto, prop, nombre) {
+function cabeceraDeColumna(contexto, prop, nombre, paraOrdenar = prop) {
   // El `<th>` de ordenar es el de siempre: así la flecha, el «N de M» de la
-  // prioridad y el `aria-sort` no se reimplementan aquí.
-  const th = prop
-    ? celdaDeCabecera(prop, contexto.sort || [], contexto.onToggleSort)
+  // prioridad y el `aria-sort` no se reimplementan aquí. `paraOrdenar` es la
+  // propiedad con la que ordena una columna que no está en el `schema`: la del
+  // título, que el servidor ordena con la clave `title` (texto natural) aunque
+  // su `<th>` siga siendo `@title`.
+  const th = paraOrdenar
+    ? celdaDeCabecera(paraOrdenar, contexto.sort || [], contexto.onToggleSort)
     : document.createElement("th");
   th.scope = "col";
   th.classList.add("db-col-head");
@@ -9940,7 +9953,12 @@ function renderTable(
   if (muestraTitulo) {
     // El título no ordena (el servidor no ordena por él: una flecha que no
     // hace nada sería mentir) pero sí tiene menú, para renombrarlo y quitarlo.
-    headRow.appendChild(cabeceraDeColumna(contextoDeColumna, null, rotuloTitulo));
+    headRow.appendChild(
+      cabeceraDeColumna(contextoDeColumna, null, rotuloTitulo, {
+        key: "title",
+        name: rotuloTitulo,
+      }),
+    );
   }
   // Cada propiedad es una cabecera que ordena (`filtros-vista`) y, además, el
   // menú de la columna: el rótulo ordena y el botón de tres puntos abre el menú.
@@ -12790,7 +12808,9 @@ function addPropertyRow(prop = null) {
 
   // El orden manual que se está editando y lo que ya venía declarado en el
   // `.md` (puede nombrar valores que ya no están en `options`: no se pierden).
-  wrap.__orden = [];
+  // Se arranca con el orden declarado (no con el de `options`): abrir el
+  // diálogo y guardar sin tocar nada no puede cambiar el orden que ya había.
+  wrap.__orden = [...(prop?.sort_order || [])];
   wrap.__sortOrder = [...(prop?.sort_order || [])];
   let arrastrandoValor = null;
 
