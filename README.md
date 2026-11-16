@@ -187,6 +187,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/auth/tokens/{id}` | DELETE | Revoca un token de captura (404 si no es del usuario) |
 | `/capture`     | POST   | Crea una nota en la bandeja (`Bandeja/`) desde un atajo o un script: `{text, title?, source}` → `{id, title, path}`. Sesión **o** token de captura |
 | `/inbox`       | GET    | La bandeja: `{dir, count, pages}` para la sección «Bandeja (N)». Solo sesión |
+| `/my-tasks`    | GET    | «Mis tareas»: las filas de **todas** las bases cuyo responsable (`person`) eres tú, en una llamada: `{count, closed_values, tasks:[{row_id, database_id, database_title, title, icon, status, date}]}`. Solo las abiertas (ver abajo) |
 | `/manifest.webmanifest` | GET | Manifiesto de la PWA (`application/manifest+json`) |
 
 Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest`, `/icons/*.png` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
@@ -211,6 +212,12 @@ Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]
 Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": [{"key":"valor","dir":"desc"}], "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend (`app/views.py`) sobre las filas de la vista, y son **de esa vista**: dos pestañas de la misma base pueden filtrar distinto y la base sin vista no filtra. `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
 
 `filters` es una lista de condiciones que se cumplen **todas** (Y). `op` es uno de `eq`, `neq`, `contains` (texto), `gt`, `gte`, `lt`, `lte` (número o fecha), `before`, `after` (fecha), `checked`, `unchecked` (casilla), `includes` (relación) e `is_empty`, `is_not_empty`; `value` no se escribe en los operadores que no lo necesitan. `sort` es una lista de claves en orden de prioridad (`dir`: `asc` o `desc`), y las filas sin valor en la clave van al final en las dos direcciones. La forma antigua de una sola clave (`"sort": {"key":"valor","dir":"desc"}`) se sigue leyendo; no se reescribe al editarla.
+
+### Mis tareas (`GET /my-tasks`)
+
+Una llamada, no cuarenta: el servidor lee los `schema_def` de todas las bases en una consulta, se queda con las que tienen alguna propiedad `person` y pide las filas de esas bases en otra; el filtro por persona se hace en memoria sobre el JSON de la fila. Devuelve, por cada fila cuyo responsable eres tú, **de qué base viene** (`database_title`), el título, el estado y la fecha límite. La propiedad de estado es la de **selección** llamada «Estado» o con la clave `estado` (por clave primero: renombrarla no la pierde); la fecha es la **primera** propiedad `date` de la base. Si la base no tiene una u otra, ese campo viene `null` y la interfaz no enseña hueco. El panel agrupa por fecha (vencidas / hoy / esta semana / resto) con el reloj del navegador y abre cada fila como página.
+
+Solo salen las **abiertas**. Mientras no exista el estado «cerrado» con semántica, el criterio es una lista de valores que cuentan como hechos —`hecho, hecha, hechos, hechas, cerrado, cerrada, cerrados, cerradas, done, ganado, ganada, ganados, ganadas`, comparados sin acentos ni mayúsculas— y una base **sin** propiedad de estado entra entera (no hay nada que diga que sus filas están hechas). La lista viaja en la respuesta (`closed_values`) y la vista la escribe en una nota, así que el criterio se lee en pantalla y no se puede quedar viejo.
 
 ### Agentes (`/agent/...`)
 
