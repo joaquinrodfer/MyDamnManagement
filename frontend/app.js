@@ -5247,14 +5247,25 @@ const OPS_DE_ESTADO = [
   ["is_open", "está abierta"],
 ];
 
+/** Si el operador es de los del estado de la base.
+ *
+ * Son operadores de la VISTA y no de la columna: quién está cerrado lo decide
+ * la regla de la base (`closed: {property, values}`), así que la condición no
+ * tiene que nombrar la columna donde vive la regla —el `.md` puede traerla sin
+ * `key` y el servidor la aplica igual (`app.views.apply_view`)—. */
+function esOperadorDeEstado(op) {
+  return OPS_DE_ESTADO.some(([valor]) => valor === op);
+}
+
 // Los títulos de las filas de las bases destino de una relación, para que el
 // valor de «incluye» sea un nombre y no un id. Se cachea por clave de
 // propiedad; si la base destino no se puede leer, el control pide el id.
 const titulosDeRelacion = new Map();
 
 /** Los operadores de una propiedad. `regla` es la regla de cierre de la base:
- * solo la columna que la base declara como estado ofrece «está cerrada» y «está
- * abierta» — en cualquier otra no habría nada que preguntar. */
+ * la columna que la base declara como estado ofrece además «está cerrada» y
+ * «está abierta» (que son de la vista, aunque se lean desde su columna; el
+ * panel los ofrece en cualquier condición con `operadoresDeCondicion`). */
 function operadoresDe(prop, regla = null) {
   const ops = [...(OPERADORES_FILTRO[prop?.type] || OPERADORES_TEXTO)];
   if (regla && prop?.key && String(regla.property) === String(prop.key)) {
@@ -5273,11 +5284,35 @@ function operadorPorDefecto(prop, regla = null) {
   return operadoresDe(prop, regla)[0][0];
 }
 
-/** Los filtros de una vista, normalizados (una vista vieja puede no tener). */
+/** Los operadores que ofrece UNA condición del panel de filtros.
+ *
+ * Los de estado (`is_closed`/`is_open`) son de la vista: se ofrecen siempre,
+ * también cuando la condición no nombra ninguna columna. Y una condición que ya
+ * es de estado conserva su operador aunque la regla de la base se haya movido a
+ * otra columna: al abrir el panel no puede convertirse en un `eq` con el valor
+ * vacío (`Estado es «—»`), que es lo que pasaba antes de esto. */
+function operadoresDeCondicion(prop, cond, regla) {
+  const ops = operadoresDe(prop, regla);
+  if (!prop?.key) return [...OPS_DE_ESTADO];
+  if (esOperadorDeEstado(cond.op) && !ops.some(([valor]) => valor === cond.op)) {
+    ops.push(...OPS_DE_ESTADO);
+  }
+  return ops;
+}
+
+/** Los filtros de una vista, normalizados (una vista vieja puede no tener).
+ *
+ * Una condición de estado (`is_closed`/`is_open`) vale sin `key`: la regla de la
+ * base es la que sabe qué está cerrado. Descartarla aquí dejaba la vista
+ * filtrada por el servidor sin chip y con el panel diciendo «sin condiciones»,
+ * así que aplicar cualquier cambio en el panel borraba el filtro del `.md` sin
+ * avisar. */
 function filtrosDeVista(view) {
   const filtros = view?.config?.filters;
   if (!Array.isArray(filtros)) return [];
-  return filtros.filter((f) => f && typeof f === "object" && f.key && f.op);
+  return filtros.filter(
+    (f) => f && typeof f === "object" && f.op && (f.key || esOperadorDeEstado(f.op)),
+  );
 }
 
 /** Las claves de orden, aceptando la forma antigua de una sola clave
@@ -5331,7 +5366,13 @@ function nombreDePropiedad(database, key) {
 /** Una condición en palabras, para el chip: «Fase es «lead»». */
 function textoDeCondicion(cond, database) {
   const prop = database.schema_def.find((p) => p.key === cond.key);
-  if (!prop) return `${cond.key} ${cond.op}`;
+  if (!prop) {
+    // Una condición de la VISTA, sin columna: «Está abierta». Es lo que deja un
+    // filtro sin `key`, y hay que pintarlo o el chip desaparece y el panel de
+    // filtros borra la condición al aplicarse.
+    const texto = `${cond.key ? cond.key + " " : ""}${etiquetaDeOperador(null, cond.op)}`;
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
+  }
   const operador = etiquetaDeOperador(prop, cond.op, reglaDeCierre(database));
   if (OPS_SIN_VALOR.has(cond.op)) return `${prop.name} ${operador}`;
   const valor =
@@ -5665,17 +5706,37 @@ function filaDeCondicion(database, cond, indice) {
   // la primera propiedad de la base cambiaría el filtro sin decirlo.
   const prop = database.schema_def.find((p) => p.key === cond.key) || null;
   const opciones = [...database.schema_def];
-  if (!prop) opciones.unshift({ key: cond.key, name: `${cond.key} (ya no existe)` });
+  if (!prop && cond.key) {
+    opciones.unshift({ key: cond.key, name: `${cond.key} (ya no existe)` });
+  }
   opciones.forEach((p) => {
     const opcion = document.createElement("option");
     opcion.value = p.key;
     opcion.textContent = p.name;
     propSelect.appendChild(opcion);
   });
-  const propParaElControl = prop || { key: cond.key, name: cond.key, type: "text" };
-  propSelect.value = propParaElControl.key;
+  // «Estado de la base»: la condición de la vista, sin columna. Es la forma que
+  // trae un `.md` escrito a mano (`filters: [{op: is_open}]`) y la que sobrevive
+  // a que la regla se mueva de columna: el filtro se abre y se guarda igual.
+  const sinColumna = document.createElement("option");
+  sinColumna.value = "";
+  sinColumna.textContent = "Estado de la base";
+  propSelect.appendChild(sinColumna);
+  const propParaElControl = prop || {
+    key: cond.key || "",
+    name: cond.key || "Estado de la base",
+    type: "text",
+  };
+  propSelect.value = cond.key || "";
   const regla = reglaDeCierre(database);
   propSelect.addEventListener("change", () => {
+    if (propSelect.value === "") {
+      cond.key = "";
+      cond.op = OPS_DE_ESTADO[0][0];
+      cond.value = "";
+      pintarFilasDeFiltro();
+      return;
+    }
     const nueva = database.schema_def.find((p) => p.key === propSelect.value);
     if (!nueva) return;
     cond.key = nueva.key;
@@ -5687,13 +5748,14 @@ function filaDeCondicion(database, cond, indice) {
   const opSelect = document.createElement("select");
   opSelect.className = "filter-op";
   opSelect.setAttribute("aria-label", `Operador de la condición ${indice + 1}`);
-  operadoresDe(propParaElControl, regla).forEach(([valor, etiqueta]) => {
+  const ops = operadoresDeCondicion(propParaElControl, cond, regla);
+  ops.forEach(([valor, etiqueta]) => {
     const opcion = document.createElement("option");
     opcion.value = valor;
     opcion.textContent = etiqueta;
     opSelect.appendChild(opcion);
   });
-  if (!operadoresDe(propParaElControl, regla).some(([valor]) => valor === cond.op)) {
+  if (!ops.some(([valor]) => valor === cond.op)) {
     cond.op = operadorPorDefecto(propParaElControl, regla);
   }
   opSelect.value = cond.op;
@@ -5870,6 +5932,14 @@ document.getElementById("btn-apply-filter").addEventListener("click", async () =
   const filtros = [];
   const sinValor = [];
   ctx.condiciones.forEach((cond, indice) => {
+    if (esOperadorDeEstado(cond.op)) {
+      // Operador de la vista: la regla de la base decide qué está cerrado, así
+      // que se guarda sin `key` cuando la condición no nombra columna (la forma
+      // que acepta `apply_view`). Con `key` también vale: una regla que se mueve
+      // de columna no invalida el filtro.
+      filtros.push(cond.key ? { key: cond.key, op: cond.op } : { op: cond.op });
+      return;
+    }
     if (!cond.key) return;
     if (OPS_SIN_VALOR.has(cond.op)) {
       filtros.push({ key: cond.key, op: cond.op });
