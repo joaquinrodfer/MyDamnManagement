@@ -195,6 +195,67 @@ def test_el_estado_se_reconoce_por_el_nombre_aunque_la_clave_sea_otra(client, es
     assert tarea["status"] == {"key": "situacion", "name": "Estado", "value": "Pendiente"}
 
 
+def test_una_propiedad_estado_de_texto_no_hace_de_estado(client, escenario):
+    """Un `text` llamado «Estado» es texto libre: sus palabras no cierran nada.
+
+    Si contara, escribir «hecho» en una nota cualquiera la haría desaparecer de
+    la vista. Solo una **selección** hace de estado.
+    """
+    libre = crear_base(
+        client,
+        "Texto libre",
+        [
+            {"key": "responsable", "name": "Responsable", "type": "person"},
+            {"key": "estado", "name": "Estado", "type": "text"},
+        ],
+    )
+    crear_fila(
+        client,
+        libre["id"],
+        "Con texto en el estado",
+        {"responsable": escenario["yo"], "estado": "hecho"},
+    )
+
+    datos = mis_tareas(client)
+
+    assert datos["count"] == 1
+    assert datos["tasks"][0]["status"] is None
+
+
+def test_el_estado_de_un_multiseleccion_cierra_si_uno_de_sus_valores_esta_hecho(client, escenario):
+    """«hecho, archivado» sigue siendo una tarea hecha."""
+    etiquetas = crear_base(
+        client,
+        "Etiquetas",
+        [
+            {"key": "responsable", "name": "Responsable", "type": "person"},
+            {
+                "key": "estado",
+                "name": "Estado",
+                "type": "multiselect",
+                "options": ["En curso", "Hecho", "Archivado"],
+            },
+        ],
+    )
+    crear_fila(
+        client,
+        etiquetas["id"],
+        "Una hecha",
+        {"responsable": escenario["yo"], "estado": ["En curso", "Hecho"]},
+    )
+    crear_fila(
+        client,
+        etiquetas["id"],
+        "Una en curso",
+        {"responsable": escenario["yo"], "estado": ["En curso"]},
+    )
+
+    datos = mis_tareas(client)
+
+    assert [t["title"] for t in datos["tasks"]] == ["Una en curso"]
+    assert datos["tasks"][0]["status"]["value"] == "En curso"
+
+
 # --------------------------------------------------------------------------
 # 4. la fecha
 # --------------------------------------------------------------------------
