@@ -5048,77 +5048,37 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     title.blur(); // un solo camino: el mismo que salir del campo
   });
 
-  const headerActions = document.createElement("div");
-  headerActions.className = "btn-row";
-
-  // La vista activa hace falta ya para el botón de borrarla: «Todas» no es una
-  // vista, es la base sin filtro, y no hay nada que quitar.
+  // La vista activa hace falta ya para el menú: «Todas» no es una vista, es la
+  // base sin filtro, y no hay nada que filtrar, ordenar ni borrar.
   const activeView = views.find((v) => v.id === activeViewId) || null;
-
-  const schemaBtn = document.createElement("button");
-  schemaBtn.className = "btn";
-  schemaBtn.textContent = "Propiedades";
-  schemaBtn.addEventListener("click", () => openDatabaseDialog(database, recargarVistas));
-
-  const newViewBtn = document.createElement("button");
-  newViewBtn.className = "btn";
-  newViewBtn.innerHTML = `${svgIcon("i-plus")}Vista`;
-  // Las plantillas de fila se configuran desde la base (función 29): lo que se
-  // guarda es parte de su `.md`, no una preferencia de esta pestaña.
-  const rowTemplatesBtn = document.createElement("button");
-  rowTemplatesBtn.className = "btn";
-  rowTemplatesBtn.textContent = "Plantillas de fila";
-  rowTemplatesBtn.addEventListener("click", () =>
-    openRowTemplatesDialog(database, recargarVistas),
-  );
-
-  newViewBtn.addEventListener("click", () => openViewDialog(database));
-
-  // Borrar la vista activa: se lleva su filtro, su orden y su tipo, y ninguna
-  // fila (los datos son de la base, no de la vista). Solo con una vista de
-  // verdad activa, y nunca la última: sin ninguna, la base se quedaría sin la
-  // pestaña con la que se abre. Con una sola, el botón se queda ahí apagado y
-  // el motivo escrito debajo de las pestañas, en vez de desaparecer sin decir
-  // nada -- el estado no es mudo.
+  // Nunca se borra la última vista: sin ninguna, la base se quedaría sin la
+  // pestaña con la que se abre. El menú lo dice en vez de esconder la opción.
   const esLaUltimaVista = Boolean(activeView) && views.length <= 1;
-  const deleteViewBtn = document.createElement("button");
-  deleteViewBtn.type = "button";
-  deleteViewBtn.className = "btn btn-danger";
-  deleteViewBtn.textContent = "Borrar vista";
-  if (activeView) {
-    deleteViewBtn.disabled = esLaUltimaVista;
-    deleteViewBtn.title = esLaUltimaVista
-      ? "Es la última vista: una base necesita al menos una. Las filas no se tocan."
-      : "";
-    deleteViewBtn.addEventListener("click", async () => {
-      const pregunta =
-        `¿Borrar la vista «${activeView.name}»?\n\n` +
-        "Las filas no se tocan: los datos son de la base, no de la vista. " +
-        "Se quita esta forma de mirarlos (filtro, orden y tipo).";
-      if (!confirm(pregunta)) return;
-      try {
-        await api(`/databases/${database.id}/views/${activeView.id}`, { method: "DELETE" });
-      } catch (e) {
-        reportError("No se pudo borrar la vista", e);
-        return;
-      }
-      // La vista activa pasa a una que exista -- la vecina de la izquierda, o
-      // la primera si era la primera -- y el foco vuelve a la pestaña: el botón
-      // que se acaba de pulsar ya no está, y el foco no puede quedarse en
-      // <body> (el siguiente Tab empezaría por arriba del documento).
-      const indice = views.findIndex((v) => v.id === activeView.id);
-      const quedan = views.filter((v) => v.id !== activeView.id);
-      const siguiente = quedan[Math.min(indice, quedan.length - 1)] || null;
-      await renderDatabase(database, quedan, siguiente ? siguiente.id : null, {
-        focus: "viewTab",
-      });
-    });
-  }
 
-  const deleteDbBtn = document.createElement("button");
-  deleteDbBtn.className = "btn btn-danger";
-  deleteDbBtn.textContent = "Borrar base de datos";
-  deleteDbBtn.addEventListener("click", async () => {
+  const borrarVista = async () => {
+    const pregunta =
+      `¿Borrar la vista «${activeView.name}»?\n\n` +
+      "Las filas no se tocan: los datos son de la base, no de la vista. " +
+      "Se quita esta forma de mirarlos (filtro, orden y tipo).";
+    if (!confirm(pregunta)) return;
+    try {
+      await api(`/databases/${database.id}/views/${activeView.id}`, { method: "DELETE" });
+    } catch (e) {
+      reportError("No se pudo borrar la vista", e);
+      return;
+    }
+    // La vista activa pasa a una que exista -- la vecina de la izquierda, o
+    // la primera si era la primera -- y el foco vuelve a la pestaña: el menú
+    // ya no está, y el foco no puede quedarse en <body>.
+    const indice = views.findIndex((v) => v.id === activeView.id);
+    const quedan = views.filter((v) => v.id !== activeView.id);
+    const siguiente = quedan[Math.min(indice, quedan.length - 1)] || null;
+    await renderDatabase(database, quedan, siguiente ? siguiente.id : null, {
+      focus: "viewTab",
+    });
+  };
+
+  const borrarBase = async () => {
     if (!confirm(`¿Borrar "${database.title}" y todas sus filas? Esto no se puede deshacer.`)) return;
     try {
       await api(`/databases/${database.id}`, { method: "DELETE" });
@@ -5128,18 +5088,23 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       // Si no se borró, la database sigue en pantalla: mejor decir por qué.
       reportError("No se pudo borrar la base de datos", e);
     }
-  });
+  };
 
-  headerActions.append(schemaBtn, rowTemplatesBtn, newViewBtn);
-  if (activeView) headerActions.append(deleteViewBtn);
-  headerActions.append(deleteDbBtn);
-  header.append(title, headerActions);
+  header.append(title);
 
   const hint = document.createElement("div");
   hint.className = "db-schema-hint";
   hint.textContent =
     database.schema_def.map((p) => `${p.name} (${tipoVisible(p.type)})`).join(" · ") ||
     "Sin propiedades definidas.";
+
+  // La línea de las vistas, como en Notion: las pestañas a la izquierda y, a la
+  // derecha, el recuento y los tres puntos con todo lo demás (filtrar, ordenar,
+  // propiedades, plantillas, borrar). Al marcar filas, la barra de la selección
+  // ocupa ESTA línea (ver `.db-viewbar > .db-sel-bar` en el CSS): la tabla no se
+  // mueve y, al quitar la selección, vuelven las pestañas.
+  const viewbar = document.createElement("div");
+  viewbar.className = "db-viewbar";
 
   const tabs = document.createElement("div");
   tabs.className = "view-tabs";
@@ -5167,13 +5132,154 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     tabs.appendChild(tab);
   });
 
+  // «+» tras la última pestaña: una vista nueva, como en Notion.
+  const newViewTab = document.createElement("button");
+  newViewTab.type = "button";
+  newViewTab.className = "view-tab view-tab-add";
+  newViewTab.innerHTML = svgIcon("i-plus");
+  newViewTab.title = "Nueva vista";
+  newViewTab.setAttribute("aria-label", "Nueva vista");
+  newViewTab.addEventListener("click", () => openViewDialog(database));
+  tabs.appendChild(newViewTab);
+
+  const viewbarFin = document.createElement("div");
+  viewbarFin.className = "db-viewbar-end";
+
+  const menuBtn = document.createElement("button");
+  menuBtn.type = "button";
+  menuBtn.className = "icon-btn db-menu-btn";
+  menuBtn.innerHTML = svgIcon("i-more");
+  menuBtn.title = "Opciones de la base";
+  menuBtn.setAttribute("aria-label", "Opciones de la base: filtrar, ordenar, propiedades…");
+  menuBtn.setAttribute("aria-haspopup", "menu");
+  menuBtn.setAttribute("aria-expanded", "false");
+  menuBtn.addEventListener("click", () => {
+    if (menuBtn.getAttribute("aria-expanded") === "true") {
+      cerrarPanelDeColumna();
+      return;
+    }
+    abrirMenuDeBase();
+  });
+  viewbarFin.appendChild(menuBtn);
+  viewbar.append(tabs, viewbarFin);
+
+  /** El menú de los tres puntos. Lo de la vista arriba (filtrar, ordenar,
+   * qué filas), lo de la base debajo y lo que borra al final. Una opción que
+   * no se puede usar se queda visible y, al pulsarla, dice por qué. */
+  function abrirMenuDeBase() {
+    const menu = document.createElement("div");
+    menu.className = "db-col-menu db-base-menu";
+    const avisar = (texto) => {
+      const nota = notaDeMenu(menu);
+      nota.textContent = texto;
+      nota.hidden = false;
+    };
+    const elegir = (accion) => () => {
+      cerrarPanelDeColumna();
+      accion();
+    };
+    const etiqueta = (texto) => {
+      const el = document.createElement("div");
+      el.className = "db-col-menu-label";
+      el.textContent = texto;
+      return el;
+    };
+
+    menu.appendChild(etiqueta(activeView ? `Vista «${activeView.name}»` : "Todas (sin vista)"));
+    const sinVista =
+      "«Todas» es la base entera: el filtro, el orden de las filas y el ancho y el " +
+      "orden de las columnas son de una vista. Elige una pestaña para cambiarlos.";
+    const sinPropiedades = "La base no tiene propiedades: no hay nada que filtrar ni por lo que ordenar.";
+    const motivoDeVista = !activeView ? sinVista : database.schema_def.length === 0 ? sinPropiedades : "";
+    const nFiltros = filtros.length;
+    const nOrden = clavesOrden.length;
+    menu.append(
+      itemDeColumna("Filtrar", {
+        marca: nFiltros ? String(nFiltros) : "",
+        motivo: motivoDeVista,
+        alElegir: motivoDeVista
+          ? () => avisar(motivoDeVista)
+          : elegir(() => openFilterDialog(database, activeView, aplicarConfig)),
+      }),
+      itemDeColumna("Ordenar", {
+        marca: nOrden ? String(nOrden) : "",
+        motivo: motivoDeVista,
+        alElegir: motivoDeVista
+          ? () => avisar(motivoDeVista)
+          : elegir(() => openSortDialog(database, activeView, aplicarConfig)),
+      }),
+    );
+    // El nivel de filas es de la vista y solo existe si la base tiene
+    // jerarquía: una base sin subtareas no enseña algo que no haría nada.
+    if (activeView && claveDeJerarquia(database)) {
+      const nivel = nivelDeVista(activeView, database);
+      menu.appendChild(separadorDeMenu());
+      menu.appendChild(etiqueta("Filas"));
+      [
+        ["roots", "Solo madres"],
+        ["all", "Todas las filas"],
+      ].forEach(([valor, texto]) =>
+        menu.appendChild(
+          itemDeColumna(texto, {
+            radio: true,
+            marca: nivel === valor ? "✓" : "",
+            alElegir: elegir(() => {
+              if (nivel !== valor) aplicarConfig({ parent_level: valor });
+            }),
+          }),
+        ),
+      );
+    }
+
+    menu.appendChild(separadorDeMenu());
+    menu.appendChild(
+      itemDeColumna("Propiedades…", {
+        alElegir: elegir(() => openDatabaseDialog(database, recargarVistas)),
+      }),
+    );
+    // Las plantillas de fila se configuran desde la base (función 29): lo que
+    // se guarda es parte de su `.md`, no una preferencia de esta pestaña.
+    menu.appendChild(
+      itemDeColumna("Plantillas de fila…", {
+        alElegir: elegir(() => openRowTemplatesDialog(database, recargarVistas)),
+      }),
+    );
+    menu.appendChild(
+      itemDeColumna("Nueva vista…", { alElegir: elegir(() => openViewDialog(database)) }),
+    );
+
+    menu.appendChild(separadorDeMenu());
+    if (activeView) {
+      const motivo = esLaUltimaVista
+        ? `«${activeView.name}» es la última vista de esta base: no se puede borrar. ` +
+          "Las filas no dependen de ella y no se tocan."
+        : "";
+      menu.appendChild(
+        itemDeColumna("Borrar esta vista", {
+          peligro: !motivo,
+          motivo,
+          alElegir: motivo ? () => avisar(motivo) : elegir(borrarVista),
+        }),
+      );
+    }
+    menu.appendChild(
+      itemDeColumna("Borrar base de datos", { peligro: true, alElegir: elegir(borrarBase) }),
+    );
+
+    abrirPanelFlotante(menuBtn, menu, { etiqueta: "Opciones de la base" });
+    // Al borde derecho del botón, que el menú sale de la esquina de la base.
+    const r = menuBtn.getBoundingClientRect();
+    const ancho = menu.getBoundingClientRect().width;
+    menu.style.left = `${Math.round(Math.max(8, Math.min(r.right - ancho, window.innerWidth - ancho - 8)))}px`;
+  }
+
   const content = document.createElement("div");
   // El cuerpo de la vista (tabla/tablero/lista/calendario) entra con un
   // fundido de 160 ms solo cuando se cambia de pestaña; al repintar por
   // guardar una fila, mover una tarjeta o editar el esquema no se anima nada
   // (repintar no es navegar, y el parpadeo se notaría a cada celda).
   content.className = "db-view" + (focus === "viewTab" ? " is-entering" : "");
-  main.append(header, hint, tabs, content);
+  main.append(header, hint, viewbar, content);
   // En pantalla estrecha las pestañas van en una línea que se desplaza de lado
   // (ver el bloque «móvil» del CSS): la activa tiene que quedar a la vista, o
   // se mira el calendario con «Tabla» en pantalla. Solo se mueve esa línea.
@@ -5184,17 +5290,6 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     if (r.left < caja.left || r.right > caja.right) {
       tabs.scrollLeft += r.left - caja.left - (caja.width - r.width) / 2;
     }
-  }
-
-  // El motivo escrito y no en un `title` escondido: un botón apagado sin
-  // explicación a la vista es un estado mudo (y en táctil no hay hover).
-  if (esLaUltimaVista) {
-    const nota = document.createElement("p");
-    nota.className = "db-view-note";
-    nota.textContent =
-      `«${activeView.name}» es la última vista de esta base: no se puede borrar. ` +
-      "Las filas no dependen de ella y no se tocan.";
-    main.insertBefore(nota, content);
   }
 
   // El filtro y el orden son de la vista y los aplica el servidor (`?view=`),
@@ -5245,25 +5340,21 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   };
 
   if (activeView) {
-    main.insertBefore(
-      renderViewTools({
-        database,
-        view: activeView,
-        visibles: rows.length,
-        total,
-        onCambio: aplicarConfig,
-      }),
-      content,
-    );
-  } else if (views.length) {
-    // «Todas» es la base entera y no tiene vista donde guardar un filtro: se
-    // dice, en vez de enseñar unos botones que no podrían recordar nada.
-    const notaTodas = document.createElement("p");
-    notaTodas.className = "db-view-note";
-    notaTodas.textContent =
-      "«Todas» es la base entera: el filtro, el orden de las filas y el ancho y " +
-      "el orden de las columnas son de una vista. Elige una pestaña para cambiarlos.";
-    main.insertBefore(notaTodas, content);
+    // El recuento va en la línea de las vistas, junto a los tres puntos; los
+    // chips de las condiciones activas, en su propia línea encima de la tabla
+    // (solo si hay alguna).
+    const nivel = nivelDeVista(activeView, database);
+    const cuenta = document.createElement("span");
+    cuenta.className = "db-count";
+    // «Solo madres» deja fuera las hijas igual que un filtro: el recuento sigue
+    // diciendo cuántas hay en la base, o «1 fila» parecería que solo hay una.
+    const filtraAlgo = filtros.length > 0 || nivel === "roots";
+    cuenta.textContent = textoDeRecuento(rows.length, filtraAlgo ? total : null);
+    viewbarFin.insertBefore(cuenta, menuBtn);
+    // Un filtro o un orden activo se nota también en los tres puntos.
+    menuBtn.classList.toggle("is-active", filtros.length > 0 || clavesOrden.length > 0);
+    const chips = renderViewTools({ database, view: activeView, onCambio: aplicarConfig });
+    if (chips) main.insertBefore(chips, content);
   }
 
   // La tabla de la vista y su «+ Nueva fila». La tabla se pinta a demanda
@@ -5301,6 +5392,8 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       // Tras borrar o cambiar una propiedad en bloque, la tabla se repinta
       // con lo que diga el servidor: nada de ir tocando filas a mano.
       onRepintar: refresh,
+      // La barra de la selección ocupa la línea de las vistas.
+      barraEn: viewbar,
       // La fila nueva ya está en su sitio: el contador de la vista y el aviso
       // (si el filtro la deja fuera, lo dice).
       onAlta: (res) => {
@@ -5316,8 +5409,14 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     // Esconderla dejaría una selección invisible que, aun así, actúa.
     const hueco = document.createElement("div");
     hueco.className = "db-sel-shell";
-    const sel = crearSeleccionDeFilas({ database, rows: [], onRepintar: refresh });
-    hueco.append(sel.barra, sel.informes, avisoDeFiltroVacio(() => aplicarConfig({ filters: [] })));
+    const sel = crearSeleccionDeFilas({
+      database,
+      rows: [],
+      onRepintar: refresh,
+      anfitrion: viewbar,
+      marco: hueco,
+    });
+    hueco.append(sel.informes, avisoDeFiltroVacio(() => aplicarConfig({ filters: [] })));
     content.appendChild(hueco);
     // Sin filas no hay tabla donde escribir la nueva: «+ Nueva fila» cambia el
     // aviso por la tabla vacía y pinta ahí la fila fantasma. Vale para
@@ -5332,7 +5431,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   } else if (activeView && activeView.type === "calendar") {
     content.appendChild(renderCalendar(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "list") {
-    content.appendChild(renderList(database, rows, activeView, refresh));
+    content.appendChild(renderList(database, rows, activeView, refresh, { barraEn: viewbar }));
   } else {
     content.appendChild(pintarTabla());
   }
@@ -5632,85 +5731,21 @@ function pintarChipsDeVista(chips, database, filtros, claves, onCambio) {
   }
 }
 
-/** La barra de la vista: «Filtrar», «Ordenar», el recuento honesto y los
- * chips de las condiciones activas (encima de la tabla, como se pide). */
-function renderViewTools({ database, view, visibles, total, onCambio }) {
+/** Los chips de las condiciones activas de la vista (filtro y orden), en su
+ * línea encima de la tabla. Filtrar, ordenar y el nivel de filas están en el
+ * menú de los tres puntos; el recuento, en la línea de las vistas. `null` si la
+ * vista no filtra ni ordena: no se pinta una línea vacía. */
+function renderViewTools({ database, view, onCambio }) {
   const filtros = filtrosDeVista(view);
   const claves = clavesDeOrden(view.config);
+  if (!filtros.length && !claves.length) return null;
 
   const tools = document.createElement("div");
   tools.className = "db-tools";
 
-  const cabeza = document.createElement("div");
-  cabeza.className = "db-tools-head";
-
-  const filtrar = document.createElement("button");
-  filtrar.type = "button";
-  filtrar.className = "btn" + (filtros.length ? " is-active" : "");
-  filtrar.textContent = filtros.length ? `Filtrar (${filtros.length})` : "Filtrar";
-  filtrar.setAttribute("aria-haspopup", "dialog");
-  if (database.schema_def.length === 0) {
-    // Sin propiedades no hay nada que filtrar: se dice, no se abre un panel
-    // vacío.
-    filtrar.disabled = true;
-    filtrar.title = "La base no tiene propiedades: no hay nada que filtrar.";
-  } else {
-    filtrar.addEventListener("click", () => openFilterDialog(database, view, onCambio));
-  }
-
-  const ordenar = document.createElement("button");
-  ordenar.type = "button";
-  ordenar.className = "btn" + (claves.length ? " is-active" : "");
-  ordenar.textContent = claves.length ? `Ordenar (${claves.length})` : "Ordenar";
-  ordenar.setAttribute("aria-haspopup", "dialog");
-  if (database.schema_def.length === 0) {
-    ordenar.disabled = true;
-    ordenar.title = "La base no tiene propiedades: no hay nada por lo que ordenar.";
-  } else {
-    ordenar.addEventListener("click", () => openSortDialog(database, view, onCambio));
-  }
-
-  // El nivel de filas es de la vista y solo existe si la base tiene jerarquía:
-  // una base sin subtareas no enseña un control que no haría nada. Se guarda en
-  // el `config` de la vista (el `.md`), como el filtro y el orden.
-  const nivel = nivelDeVista(view, database);
-  let nivelCtl = null;
-  if (claveDeJerarquia(database)) {
-    nivelCtl = document.createElement("label");
-    nivelCtl.className = "db-level";
-    const rotulo = document.createElement("span");
-    rotulo.className = "db-level-label";
-    rotulo.textContent = "Filas";
-    const select = document.createElement("select");
-    select.className = "db-level-select";
-    select.setAttribute("aria-label", "Qué filas enseña la vista");
-    [
-      ["roots", "Solo madres"],
-      ["all", "Todas las filas"],
-    ].forEach(([valor, etiqueta]) => {
-      const opcion = document.createElement("option");
-      opcion.value = valor;
-      opcion.textContent = etiqueta;
-      select.appendChild(opcion);
-    });
-    select.value = nivel;
-    select.addEventListener("change", () => onCambio({ parent_level: select.value }));
-    nivelCtl.append(rotulo, select);
-  }
-
-  const cuenta = document.createElement("span");
-  cuenta.className = "db-count";
-  // «Solo madres» deja fuera las hijas igual que un filtro: el recuento sigue
-  // diciendo cuántas hay en la base, o «1 fila» parecería que solo hay una.
-  const filtraAlgo = filtros.length > 0 || nivel === "roots";
-  cuenta.textContent = textoDeRecuento(visibles, filtraAlgo ? total : null);
-
-  cabeza.append(filtrar, ordenar, ...(nivelCtl ? [nivelCtl] : []), cuenta);
-  tools.appendChild(cabeza);
-
   const chips = document.createElement("div");
   chips.className = "db-chips";
-  if (filtros.length || claves.length) tools.appendChild(chips);
+  tools.appendChild(chips);
   pintarChipsDeVista(chips, database, filtros, claves, onCambio);
 
   // Un filtro sobre una relación enseña un id hasta que se conoce el título de
@@ -5739,17 +5774,16 @@ function renderViewTools({ database, view, visibles, total, onCambio }) {
 /** Reescribe el recuento de la barra SIN repintar la vista.
  *
  * El alta en línea de la lista y del calendario repinta solo su cuerpo, y el
- * «N de M filas» vive en la barra que pinta `renderViewTools`: sin esto el
+ * «N de M filas» vive en la línea de las vistas (`.db-viewbar`): sin esto el
  * contador se quedaba con el número de antes del alta (un contador que miente
  * es peor que no tenerlo). `total` nulo es «la vista no filtra».
  *
- * `desde` es el cuerpo de la vista (dentro de `.db-view`); la barra es el
- * hermano que va justo antes.
+ * `desde` es el cuerpo de la vista (dentro de `.db-view`); la línea de las
+ * vistas es hermana de `.db-view`.
  */
 function refrescarRecuentoDeVista(desde, visibles, total) {
   const cuerpo = desde.closest(".db-view");
-  const barra = cuerpo ? cuerpo.previousElementSibling : null;
-  const cuenta = barra ? barra.querySelector(".db-count") : null;
+  const cuenta = cuerpo?.parentElement?.querySelector(":scope > .db-viewbar .db-count") ?? null;
   if (!cuenta) return;
   cuenta.textContent = textoDeRecuento(visibles, total);
 }
@@ -6454,6 +6488,8 @@ async function renderDatabaseEmbed(block, container) {
       (tablaPintada = renderTable(database, filas, {
         deletable: false,
         hooks,
+        // Con filas marcadas, la barra ocupa la cabecera del bloque.
+        barraEn: head,
         sort: clavesOrden,
         vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
         view: activeView,
@@ -8519,6 +8555,13 @@ function crearSeleccionDeFilas({
   puedeBorrar = true,
   hooks = null,
   onRepintar = null,
+  // Dónde va la barra: la línea de las vistas de la base, la cabecera del
+  // bloque en una nota. Con selección, la barra ocupa esa línea en su lugar
+  // (ver `.db-sel-host` en el CSS); sin anfitrión, va encima de la tabla.
+  anfitrion = null,
+  // El envoltorio de la tabla o de la lista: con selección lleva
+  // `con-seleccion`, que es lo que deja a la vista todas las casillas.
+  marco = null,
 }) {
   const claveBase = String(database.id);
   const sel = seleccionDeBase(claveBase);
@@ -8538,6 +8581,8 @@ function crearSeleccionDeFilas({
   barra.setAttribute("role", "region");
   barra.setAttribute("aria-label", "Acciones de las filas seleccionadas");
   barra.hidden = true;
+  // En una nota, un clic en el hueco de la barra no abre la valla en crudo.
+  if (hooks?.embed) barra.dataset.dbAction = "seleccion";
 
   const cuenta = document.createElement("span");
   cuenta.className = "db-sel-count";
@@ -8588,6 +8633,10 @@ function crearSeleccionDeFilas({
     const total = sel.size;
     const fueraDeVista = hayFueraDeVista();
     barra.hidden = total === 0;
+    marco?.classList.toggle("con-seleccion", total > 0);
+    if (anfitrion && barra.parentElement === anfitrion) {
+      anfitrion.classList.toggle("con-seleccion", total > 0);
+    }
     cuenta.textContent = `${total} ${total === 1 ? "seleccionada" : "seleccionadas"}`;
     fuera.hidden = fueraDeVista === 0;
     // Corto, que la barra es de una línea; la frase entera va en el `title`.
@@ -8889,6 +8938,13 @@ function crearSeleccionDeFilas({
   acciones.append(btnQuitar);
 
   barra.append(cuenta, fuera, avance, acciones);
+  if (anfitrion) {
+    // La de un pintado anterior (la tabla se repinta sin repintar la línea de
+    // las vistas) se va: en cada anfitrión hay una sola barra.
+    anfitrion.querySelectorAll(":scope > .db-sel-bar").forEach((vieja) => vieja.remove());
+    anfitrion.classList.add("db-sel-host");
+    anfitrion.appendChild(barra);
+  }
   document.addEventListener(EVENTO_SELECCION_BARRAS, alCambiarSeleccion);
   sincronizar();
   pintarInforme();
@@ -10525,6 +10581,7 @@ function renderTable(
     onRepintar = null,
     onCambioColumnas = null,
     onAlta = null,
+    barraEn = null,
   } = {},
 ) {
   // La selección múltiple envuelve la tabla (barra e informe encima), pero
@@ -10538,6 +10595,8 @@ function renderTable(
     puedeBorrar: deletable,
     hooks,
     onRepintar,
+    anfitrion: barraEn,
+    marco: shell,
   });
 
   const wrap = document.createElement("div");
@@ -10941,7 +11000,7 @@ function renderTable(
     // de que se pinte nada (nada de parpadeo con el reparto de antes).
     queueMicrotask(() => congelarAnchos(table, cols, anchos));
   }
-  shell.append(sel.barra, sel.informes, wrap);
+  shell.append(...(barraEn ? [] : [sel.barra]), sel.informes, wrap);
 
   // ------------------------------------------------ alta en el sitio
   // «+ Nueva fila» no abre un formulario: pinta una fila FANTASMA al final de
@@ -13112,12 +13171,18 @@ function renderCalendar(database, rows, view, refresh) {
  * (los vacíos no se pintan). Es la vista de repasar muchas filas de un vistazo;
  * cada línea abre la fila, que es donde se edita, igual que una tarjeta del
  * tablero. */
-function renderList(database, rows, view, refresh) {
+function renderList(database, rows, view, refresh, { barraEn = null } = {}) {
   const shell = document.createElement("div");
   shell.className = "db-sel-shell";
   // Misma selección que la tabla: una fila marcada en la lista y luego vista en
   // la tabla (otra pestaña) sigue marcada.
-  const sel = crearSeleccionDeFilas({ database, rows, onRepintar: refresh });
+  const sel = crearSeleccionDeFilas({
+    database,
+    rows,
+    onRepintar: refresh,
+    anfitrion: barraEn,
+    marco: shell,
+  });
 
   const wrap = document.createElement("div");
   wrap.className = "db-list";
@@ -13243,7 +13308,7 @@ function renderList(database, rows, view, refresh) {
   wrap.addEventListener("keydown", (e) => sel.teclas(e), true);
   sel.sincronizar();
 
-  shell.append(sel.barra, sel.informes, wrap);
+  shell.append(...(barraEn ? [] : [sel.barra]), sel.informes, wrap);
   return shell;
 }
 
@@ -15395,6 +15460,8 @@ function setSidebarCollapsed(collapsed, { animar = false } = {}) {
   clearTimeout(sidebarSaliendo);
   sidebarSaliendo = null;
   layoutEl.classList.remove("sidebar-entering", "sidebar-leaving");
+  // Fijarla o plegarla acaba con el asomo: deja de flotar.
+  terminarAsomo({ animar: false });
   if (!animar || sinMovimiento.matches || esMovil()) {
     layoutEl.classList.toggle("sidebar-collapsed", collapsed);
     return;
@@ -15425,6 +15492,83 @@ function sidebarOculta() {
 document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
   if (esMovil()) return setCajonAbierto(!cajonAbierto());
   setSidebarCollapsed(!sidebarOculta(), { animar: true });
+});
+
+// ------------------------------------- asomar la barra plegada (como Notion)
+// Con la barra plegada, llevar el ratón al borde izquierdo (o al botón de la
+// barra) la hace ASOMAR: flota sobre el contenido, sin empujarlo, y se recoge
+// sola al sacar el ratón. Pulsar el botón mientras asoma la deja fija. Solo
+// en escritorio: en el móvil es el cajón, y sin ratón no hay a qué asomar.
+const zonaDeAsomo = document.createElement("div");
+zonaDeAsomo.className = "sidebar-peek-zone";
+zonaDeAsomo.setAttribute("aria-hidden", "true");
+layoutEl.appendChild(zonaDeAsomo);
+const ASOMO_RECOGER_MS = 280; // margen para cruzar el hueco sin que se cierre
+const ASOMO_SALIDA_MS = 140; // lo que dura `mdm-side-out`
+let asomoCierre = null;
+let asomoSalida = null;
+const hayRaton = window.matchMedia("(hover: hover) and (pointer: fine)");
+// Los mismos nodos que `sidebarEl` y `toggleSidebarBtn` (declarados más abajo,
+// con el cajón del móvil): aquí todavía no se pueden usar esos nombres.
+const barraAside = document.getElementById("sidebar-aside");
+const botonDeBarra = document.getElementById("btn-toggle-sidebar");
+
+function asomando() {
+  return layoutEl.classList.contains("sidebar-peek");
+}
+function asomar() {
+  clearTimeout(asomoCierre);
+  asomoCierre = null;
+  if (!layoutEl.classList.contains("sidebar-collapsed") || esMovil() || !hayRaton.matches) return;
+  clearTimeout(asomoSalida);
+  layoutEl.classList.remove("sidebar-peek-leaving");
+  layoutEl.classList.add("sidebar-peek");
+}
+function terminarAsomo({ animar = true } = {}) {
+  clearTimeout(asomoCierre);
+  asomoCierre = null;
+  if (!asomando()) return;
+  clearTimeout(asomoSalida);
+  if (!animar || sinMovimiento.matches) {
+    layoutEl.classList.remove("sidebar-peek", "sidebar-peek-leaving");
+    return;
+  }
+  layoutEl.classList.add("sidebar-peek-leaving");
+  asomoSalida = setTimeout(() => {
+    layoutEl.classList.remove("sidebar-peek", "sidebar-peek-leaving");
+  }, ASOMO_SALIDA_MS);
+}
+/** Recoger al cabo de un momento, salvo que algo la siga usando: escribir en
+ * la búsqueda o un menú contextual abierto desde el árbol (vive en <body>,
+ * fuera de la barra, y sacar el ratón hacia él no es irse). */
+function recogerAsomoLuego() {
+  if (!asomando()) return;
+  clearTimeout(asomoCierre);
+  asomoCierre = setTimeout(function intentar() {
+    const foco = document.activeElement;
+    const escribiendo = foco && barraAside.contains(foco) && foco.matches("input, textarea");
+    const menu = document.querySelector(".mdm-context-menu");
+    if (escribiendo || (menu && !menu.hidden)) {
+      asomoCierre = setTimeout(intentar, ASOMO_RECOGER_MS);
+      return;
+    }
+    terminarAsomo();
+  }, ASOMO_RECOGER_MS);
+}
+for (const el of [zonaDeAsomo, barraAside, botonDeBarra]) {
+  el.addEventListener("mouseenter", (e) => {
+    // Arrastrando (seleccionar texto, mover una tarjeta) no se abre nada.
+    if (e.buttons) return;
+    if (el === barraAside && !asomando()) return;
+    asomar();
+  });
+  el.addEventListener("mouseleave", recogerAsomoLuego);
+}
+// Escape la recoge sin esperar, como cualquier panel flotante.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && asomando() && !document.querySelector(".mdm-context-menu")) {
+    terminarAsomo();
+  }
 });
 
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");

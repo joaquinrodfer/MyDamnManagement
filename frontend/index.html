@@ -1954,7 +1954,7 @@
   .db-schema-hint { font-size: 12px; color: var(--ink-muted); margin-bottom: 16px; }
   /* Cabecera de una base incrustada en una nota (P17.2): el título es el
      botón que abre la base entera, que es donde se edita. */
-  .db-embed-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+  .db-embed-head { display: flex; align-items: center; gap: 8px; min-height: 32px; margin-bottom: 4px; flex-wrap: wrap; }
   .db-embed-title {
     font-size: 13px;
     font-weight: 600;
@@ -1970,14 +1970,31 @@
   /* Las pestañas de vista, como en Notion: icono del tipo y nombre, sin caja.
      La activa se distingue por la tinta, el peso y un fondo apenas marcado;
      las demás quedan apagadas. Una línea fina las separa del contenido. */
-  .view-tabs {
+  /* La línea de las vistas: pestañas a la izquierda; recuento y tres puntos a
+     la derecha. Una línea fina la separa del contenido. Con filas marcadas, la
+     barra de la selección la tapa entera (`.db-sel-host`). */
+  .db-viewbar {
     display: flex;
-    gap: 2px;
-    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 12px;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--panel-border);
   }
+  .view-tabs {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .view-tab-add { padding: 5px 7px; }
+  .db-viewbar-end { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+  /* Los tres puntos en horizontal, como en Notion. Con un filtro o un orden
+     activo se tiñen: lo que cambia la vista no queda escondido del todo. */
+  .db-menu-btn .svg-icon { transform: rotate(90deg); }
+  .db-menu-btn.is-active { color: var(--accent-ink); }
+  .db-base-menu { min-width: 220px; }
   .view-tab {
     display: inline-flex;
     align-items: center;
@@ -2007,9 +2024,7 @@
   /* La barra vive entre las pestañas y el cuerpo de la vista: los botones y el
      recuento arriba, los chips de las condiciones activas debajo (encima de la
      tabla, como se pide). */
-  .db-tools { display: flex; flex-direction: column; gap: 8px; margin: -6px 0 12px; }
-  .db-tools-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .db-tools .btn.is-active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  .db-tools { display: flex; flex-direction: column; gap: 8px; margin: -4px 0 12px; }
   /* «N de M filas»: un dato de la vista, no un rótulo suelto entre botones.
      Va en su propia pastilla apagada, con los números a plomo. */
   .db-count {
@@ -2254,6 +2269,40 @@
   .layout.sidebar-entering > aside:not(.note-suggestions-panel) { animation: mdm-side-in var(--dur-normal) var(--ease-out); }
   .layout.sidebar-leaving > aside:not(.note-suggestions-panel) { animation: mdm-side-out 140ms var(--ease-std) forwards; }
   @keyframes mdm-side-in { from { opacity: 0; transform: translateX(-16px); } }
+  /* Plegada, la barra ASOMA al llevar el ratón al borde izquierdo (o al botón
+     de la barra), como en Notion: una tarjeta flotante con sombra encima del
+     contenido, sin empujarlo. Se recoge sola al sacar el ratón (ver «asomar la
+     barra plegada» en app.js). Solo en escritorio y con ratón. */
+  .sidebar-peek-zone { display: none; }
+  @media (min-width: 769px) and (hover: hover) and (pointer: fine) {
+    .layout.sidebar-collapsed > .sidebar-peek-zone {
+      display: block;
+      position: fixed;
+      top: var(--header-height);
+      bottom: 0;
+      left: 0;
+      width: 14px;
+      z-index: 40;
+    }
+    .layout.sidebar-collapsed.sidebar-peek > aside:not(.note-suggestions-panel) {
+      display: flex;
+      position: fixed;
+      z-index: 50;
+      top: calc(var(--header-height) + 8px);
+      bottom: 12px;
+      left: 8px;
+      width: 272px;
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius-lg);
+      background: var(--surface-elevated);
+      box-shadow: var(--shadow-float);
+      animation: mdm-peek-in var(--dur-normal) var(--ease-out);
+    }
+    .layout.sidebar-collapsed.sidebar-peek-leaving > aside:not(.note-suggestions-panel) {
+      animation: mdm-side-out 140ms var(--ease-std) forwards;
+    }
+  }
+  @keyframes mdm-peek-in { from { opacity: 0; transform: translateX(-12px); } }
   @keyframes mdm-side-out { to { opacity: 0; transform: translateX(-16px); } }
 
   /* min-width: max-content: la tabla nunca se comprime por debajo del ancho
@@ -2936,7 +2985,7 @@
     .rows-table .row-check:focus-visible,
     .rows-table .row-check:checked,
     .rows-table .row-check:indeterminate,
-    .db-sel-shell:has(> .db-sel-bar:not([hidden])) .rows-table .row-check { opacity: 1; }
+    .db-sel-shell.con-seleccion .rows-table .row-check { opacity: 1; }
   }
   /* Scroll horizontal propio y SIEMPRE visible: a 1024 px la tabla mide
      ~947 px de ancho natural contra los ~663 px útiles del panel, así que
@@ -3020,35 +3069,36 @@
      marcada entre dos con hover se perdía. */
   .rows-table tr.is-selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 
-  /* La barra aparece con la primera fila marcada, como en Notion: FLOTA sobre
-     lo que hay justo encima de la tabla (la línea de filtrar y ordenar, la
-     cabecera del bloque en una nota), en vez de empujar la tabla hacia abajo.
-     La altura de la página no cambia al marcar ni al desmarcar. Es una tira
-     compacta de una línea: recuento y acciones. */
-  .db-sel-shell { position: relative; }
+  /* La barra aparece con la primera fila marcada, como en Notion: ocupa el
+     sitio de la línea de las vistas (en una nota, el de la cabecera del
+     bloque), con su mismo fondo y su misma línea de abajo, como si fuera parte
+     de la tabla. No flota ni empuja nada: la altura no cambia al marcar ni al
+     desmarcar, y al quitar la selección vuelven las pestañas. */
+  .db-sel-host { position: relative; }
   .db-sel-bar {
-    position: absolute;
-    left: 0;
-    bottom: calc(100% + 4px);
-    z-index: 6;
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 2px;
     flex-wrap: nowrap;
-    max-width: 100%;
     overflow-x: auto;
     scrollbar-width: none;
-    margin: 0;
-    padding: 3px;
-    border: 1px solid var(--panel-border);
-    border-radius: var(--radius-md);
-    background: var(--panel);
-    box-shadow: var(--shadow-float);
+    margin: 0 0 8px;
     color: var(--ink);
     font-size: 12.5px;
     white-space: nowrap;
+  }
+  .db-sel-host > .db-sel-bar {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    margin: 0;
+    background: var(--bg);
     animation: mdm-fade-in var(--dur-fast) var(--ease-out);
   }
+  /* La línea de las vistas guarda 6 px bajo las pestañas: la barra, igual. */
+  .db-viewbar > .db-sel-bar { padding-bottom: 6px; }
+  /* Lo de debajo no se ve ni se alcanza con el tabulador mientras tanto. */
+  .db-sel-host.con-seleccion > :not(.db-sel-bar) { visibility: hidden; }
   .db-sel-bar::-webkit-scrollbar { display: none; }
   .db-sel-bar[hidden] { display: none; }
   .db-sel-count {
@@ -4338,7 +4388,7 @@
     .db-header .btn-row::-webkit-scrollbar,
     .view-tabs::-webkit-scrollbar { display: none; }
     .db-header .btn-row .btn { flex: none; }
-    .view-tabs { margin-bottom: 13px; }
+    .db-viewbar { margin-bottom: 13px; padding-bottom: 3px; }
     .db-schema-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 12px; }
 
     /* --- diálogos: ancho completo y botones al alcance del pulgar --- */
@@ -4407,8 +4457,7 @@
        casilla se toca con el dedo: 44 px de celda y 22 de casilla. */
     /* La barra ocupa el ancho y «Borrar» se queda en su icono: así caben
        recuento y acciones sin desplazar la tira. */
-    .db-sel-bar { right: 0; }
-    .db-sel-bar .btn { min-height: 40px; }
+    .db-sel-bar .btn { min-height: 36px; }
     .db-sel-bar .btn-danger span { display: none; }
     .rows-table th.row-sel-head,
     .rows-table td.row-sel-cell { width: 44px; padding: 4px 6px; }
