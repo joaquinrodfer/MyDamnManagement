@@ -20,6 +20,12 @@ const state = {
   // necesitan los botones de la cabecera para saber si hay atrás/adelante.
   history: [], // [{kind, id}, ...]
   historyPos: -1, // índice de "dónde estamos" dentro de state.history
+  // ¿La pila guardada explica la entrada del navegador en la que estamos? Es
+  // `false` cuando el documento se cargó por una navegación que no fue de la
+  // app (pegar una URL, un marcador): entonces la cuenta no sabe en qué punto
+  // de la pila del navegador estamos y los botones se lo preguntan a él (ver
+  // `puedeRetroceder`). Lo decide `abrirAlArrancar`.
+  pilaAnclada: true,
   noteSession: null, // nota abierta: qué queda sin guardar y cómo refrescarla (P8, /events)
   repaintAuthor: null, // repinta «Creado por …» de la nota abierta cuando llega /auth/me (P11b)
   refitNoteText: null, // remide el alto de título/descripción de la nota abierta (P14, cambio de ancho)
@@ -4443,6 +4449,21 @@ const LAST_ROUTE_KEY = "mdm_last_route";
 // caso que importa: F5 en una nota y seguir pudiendo ir atrás) y no se mezcla
 // entre pestañas.
 const NAV_HISTORY_KEY = "mdm_nav_history";
+// La marca del documento que escribe la cuenta (P18): un valor al azar por
+// carga. Viaja dentro de cada entrada del navegador y en la pila guardada, y
+// sirve para una sola cosa: saber si la entrada en la que estamos la escribió
+// ESTE documento. Un F5 conserva la entrada con su estado --y la pila
+// guardada, con la misma marca--, así que la cuenta sigue valiendo; una
+// dirección pegada, un marcador o un atrás a una entrada de otro documento
+// traen otra marca (o ninguna), y entonces la cuenta no puede decir dónde
+// estamos (ver `pilaAnclada`).
+const NAV_GEN = Math.random().toString(36).slice(2);
+
+/** Lo que se guarda en cada entrada del navegador: la posición en la cuenta y
+ * la marca del documento que la escribió (ver `NAV_GEN`). */
+function marcaDeEntrada(pos) {
+  return { pos, gen: NAV_GEN };
+}
 
 /** La dirección de un destino: `/<id>` para una nota o una base, `/mis-tareas`
  * para esa vista y `/` para el inicio. */
@@ -4516,7 +4537,7 @@ function guardarPila() {
   try {
     sessionStorage.setItem(
       NAV_HISTORY_KEY,
-      JSON.stringify({ pos: state.historyPos, pila: state.history }),
+      JSON.stringify({ pos: state.historyPos, gen: NAV_GEN, pila: state.history }),
     );
   } catch {
     // sin sessionStorage: la cuenta se queda en memoria
@@ -4531,6 +4552,9 @@ function pilaGuardada() {
     if (datos.pila.length === 0) return null;
     return {
       pos: Math.max(0, Math.min(datos.pos, datos.pila.length - 1)),
+      // La marca del documento que la guardó, para poder comprobar que la
+      // entrada del navegador en la que estamos es la que la pila describe.
+      gen: typeof datos.gen === "string" ? datos.gen : null,
       pila: datos.pila.map((e) => ({ kind: e.kind, id: e.id ?? null })),
     };
   } catch {
@@ -4568,7 +4592,7 @@ async function goTo(kind, id, { replace = false } = {}) {
   paintMyTasks();
   if (replace) {
     state.history[state.historyPos] = { kind, id: id ?? null };
-    history.replaceState({ pos: state.historyPos }, "", rutaDe(kind, id));
+    history.replaceState(marcaDeEntrada(state.historyPos), "", rutaDe(kind, id));
   } else {
     // Como en un navegador: navegar desde una posición anterior descarta el
     // «adelante» pendiente. En la pila del navegador lo hace él; en nuestra
@@ -4576,7 +4600,7 @@ async function goTo(kind, id, { replace = false } = {}) {
     state.history = state.history.slice(0, state.historyPos + 1);
     state.history.push({ kind, id: id ?? null });
     state.historyPos = state.history.length - 1;
-    history.pushState({ pos: state.historyPos }, "", rutaDe(kind, id));
+    history.pushState(marcaDeEntrada(state.historyPos), "", rutaDe(kind, id));
   }
   guardarPila();
   recordarRuta(kind, id);
@@ -4588,15 +4612,64 @@ function goHome() {
   goTo("home");
 }
 
+/** Dónde estamos dentro de la pila del navegador, si el navegador lo dice.
+ *
+ * La `Navigation API` (Chromium 102 y posteriores) expone el índice exacto de
+ * la entrada actual y la pila entera: es la única forma de saber si hay
+ * atrás/adelante sin adivinar. Sin ella devuelve `null` y se cae a la cuenta
+ * de la app, que es exacta mientras sepa que las entradas son suyas.
+ */
+function posicionEnLaPila() {
+  const nav = window.navigation;
+  const actual = nav && nav.currentEntry;
+  if (!actual || typeof actual.index !== "number") return null;
+  return { pos: actual.index, total: nav.entries().length };
+}
+
+/** ¿Se puede ir atrás? La cabecera no puede contradecir al navegador: si él
+ * tiene atrás --aunque sea a una entrada que no puso esta app, como la página
+ * desde la que se abrió-- el botón tiene que estar vivo; y al revés, un ← que
+ * no hace nada es una mentira peor que uno apagado.
+ *
+ * Primero la cuenta de la app (`pos > 0` es prueba: esas entradas existen) y,
+ * cuando no puede probarlo, el navegador: `Navigation API` si está, y si no
+ * `history.length` (hay más entradas que esta, que es lo único que se sabe).
+ * Con la pila anclada y sin `Navigation API`, `pos 0` es la primera página de
+ * la app y el botón se apaga: volver más atrás sería salirse de ella.
+ */
+function puedeRetroceder() {
+  if (state.historyPos > 0) return true;
+  const real = posicionEnLaPila();
+  if (real) return real.pos > 0;
+  if (state.pilaAnclada) return false;
+  return history.length > 1;
+}
+
+/** ¿Se puede ir adelante?
+ *
+ * `pos` por debajo del final de la cuenta es prueba de que hay algo delante.
+ * Que `pos` SEA el final no prueba lo contrario: al recargar en una página
+ * puede quedar por delante una entrada que no está en la pila de este
+ * documento (se navegó a otra nota desde otro documento y se volvió con
+ * atrás). Por eso ahí se le pregunta al navegador, y sin `Navigation API` se
+ * apaga: `history.length` dice cuántas entradas hay, no dónde estamos.
+ */
+function puedeAvanzar() {
+  if (state.historyPos < state.history.length - 1) return true;
+  const real = posicionEnLaPila();
+  if (real) return real.pos < real.total - 1;
+  return false;
+}
+
 function goBack() {
-  if (state.historyPos <= 0) return;
+  if (!puedeRetroceder()) return;
   // No se pinta aquí: se le pide al navegador que retroceda y `popstate` hace
   // el resto. Así la cabecera y el botón del navegador son el mismo camino.
   history.back();
 }
 
 function goForward() {
-  if (state.historyPos >= state.history.length - 1) return;
+  if (!puedeAvanzar()) return;
   history.forward();
 }
 
@@ -4637,7 +4710,11 @@ async function seguirAlNavegador(event) {
   }
   // La entrada se queda con su posición y con la dirección canónica (una base
   // abierta por el id de su página pasa a su `database_id`).
-  history.replaceState({ pos: state.historyPos }, "", rutaDe(destino.kind, destino.id));
+  history.replaceState(
+    marcaDeEntrada(state.historyPos),
+    "",
+    rutaDe(destino.kind, destino.id),
+  );
   paintMyTasks();
   recordarRuta(destino.kind, destino.id);
   guardarPila();
@@ -4646,6 +4723,18 @@ async function seguirAlNavegador(event) {
 
 window.addEventListener("popstate", (event) => {
   seguirAlNavegador(event).catch((e) => reportError("No se pudo cambiar de página", e));
+});
+
+// Volver a esta página desde la caché del navegador (atrás/adelante sin
+// recargarla: `pageshow` con `persisted`) no reejecuta nada, así que los
+// botones se quedarían como los dejó esta página al irse. Y la cuenta puede
+// haberse quedado corta: mientras esta página dormía, otro documento empujó
+// entradas delante (se navegó a otra nota y se volvió), y eso la cuenta no lo
+// puede saber. Se marca sin anclar y se vuelve a preguntar.
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted) return;
+  state.pilaAnclada = false;
+  updateNavButtons();
 });
 
 /** El arranque: cargado el árbol, se abre lo que dice la dirección (P18).
@@ -4677,24 +4766,44 @@ async function abrirAlArrancar() {
     if (valida) destino = valida;
   }
   const guardada = pilaGuardada();
-  if (guardada && mismaRuta(guardada.pila[guardada.pos], destino)) {
+  // La pila guardada solo vale si la entrada en la que estamos es la que la
+  // pila describe: cada entrada lleva la marca del documento que la escribió y
+  // un F5 conserva las dos cosas. Si el documento se cargó por una navegación
+  // que no fue nuestra --pegar una URL en la barra, abrir un marcador, volver
+  // con atrás a una entrada de otro documento--, la cuenta no dice dónde
+  // estamos dentro de la pila del navegador, y darlo por hecho apagaba ← y →
+  // aunque el navegador sí pudiera.
+  const mismaEntrada =
+    guardada !== null &&
+    history.state !== null &&
+    history.state.gen === guardada.gen &&
+    history.state.pos === guardada.pos &&
+    mismaRuta(guardada.pila[guardada.pos], destino);
+  if (mismaEntrada) {
     state.history = guardada.pila;
     state.historyPos = guardada.pos;
+    state.pilaAnclada = true;
   } else {
     state.history = [destino];
     state.historyPos = 0;
+    state.pilaAnclada = false;
   }
   // La entrada de arranque es de la app: se queda con su posición y con la
   // dirección canónica (en `/` eso pasa a `/<id>` cuando hay «donde lo
   // dejaste»; una base abierta por el id de su página, a su `database_id`).
-  history.replaceState({ pos: state.historyPos }, "", rutaDe(destino.kind, destino.id));
+  history.replaceState(
+    marcaDeEntrada(state.historyPos),
+    "",
+    rutaDe(destino.kind, destino.id),
+  );
   const pintada = await pintar(destino.kind, destino.id, { focus: null });
   if (!pintada) {
     // La dirección apuntaba a algo que el árbol tenía y el servidor ya no: se
     // entra limpio, sin dejar la barra en un enlace roto.
     state.history = [{ kind: "home", id: null }];
     state.historyPos = 0;
-    history.replaceState({ pos: 0 }, "", "/");
+    state.pilaAnclada = false; // el navegador puede tener entradas suyas detrás
+    history.replaceState(marcaDeEntrada(0), "", "/");
     await showEmpty();
   } else {
     recordarRuta(destino.kind, destino.id);
@@ -4726,8 +4835,8 @@ function updateNavButtons() {
   const backBtn = document.getElementById("btn-nav-back");
   const fwdBtn = document.getElementById("btn-nav-forward");
   const upBtn = document.getElementById("btn-nav-up");
-  if (backBtn) backBtn.disabled = state.historyPos <= 0;
-  if (fwdBtn) fwdBtn.disabled = state.historyPos >= state.history.length - 1;
+  if (backBtn) backBtn.disabled = !puedeRetroceder();
+  if (fwdBtn) fwdBtn.disabled = !puedeAvanzar();
   if (upBtn) upBtn.disabled = !getCurrentParentId();
   // «Inicio» (en «Mis cosas») se marca como «Mis tareas» cuando es donde estás:
   // el inicio es no tener nada abierto (`showEmpty`).
