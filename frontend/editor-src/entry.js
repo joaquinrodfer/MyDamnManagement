@@ -28,6 +28,7 @@ import {
   resolveCreatedLinkTitle,
 } from "./link-create.js";
 import { blockKeyEdit } from "./block-keys.js";
+import { listIndentEdit } from "./list-indent.js";
 import {
   emptyBlockTail,
   gapBackspaceEdit,
@@ -1407,11 +1408,10 @@ function clearNativeSelection() {
 // Botón "+" del asa: añade un bloque de párrafo vacío justo DEBAJO del bloque
 // indicado (clic normal) o ENCIMA con Alt+clic (pedido del dueño: «no puedo
 // insertar un bloque antes de otro»). No necesariamente donde esté el cursor
-// ahora mismo -- el usuario puede clicar el "+" de cualquier bloque. Mismo
-// mecanismo que ⏎: el hueco en blanco resultante se ve colapsado por
-// blankLinePlugin hasta que el cursor entra en él, y si se abandona sin
-// escribir no queda aire en el `.md`. Qué par de saltos se inserta y dónde lo
-// decide block-move.js (`insertBlockEdit`), con sus pruebas en node --test.
+// ahora mismo -- el usuario puede clicar el "+" de cualquier bloque. Lo mismo
+// que ⏎: un bloque vacío entre dos separadores (ver block-gaps.js), con el
+// cursor dentro. Qué saltos se insertan y dónde lo decide block-move.js
+// (`insertBlockEdit`), con sus pruebas en node --test.
 function insertBlockBeside(view, index, where) {
   const { blocks } = view.state.field(blockField);
   const edit = insertBlockEdit({ text: view.state.doc.toString(), blocks, index, where });
@@ -2284,7 +2284,7 @@ function blankLineDecorations(view) {
       // La línea del salto suave es una fila del párrafo: mide una línea.
       const classes = line.from === soft ? ["cm-mdm-gap-empty"] : blankLineClasses(doc, blocks, line);
       // El bloque vacío del cursor enseña el texto de ayuda, como en Notion.
-      if (classes.includes("cm-mdm-gap-empty") && line.number === cursorLine) classes.push("cm-mdm-gap-current");
+      if (line.from !== soft && classes.includes("cm-mdm-gap-empty") && line.number === cursorLine) classes.push("cm-mdm-gap-current");
       ranges.push(
         Decoration.line({
           class: classes.join(" "),
@@ -3426,6 +3426,32 @@ function runGapKey(view, backward) {
   return true;
 }
 
+/** Tab / ⇧Tab en un ítem de lista: lo mete debajo del de arriba o lo saca un
+ * nivel, como en Notion (ver list-indent.js). En una lista la tecla se consume
+ * aunque no haya a dónde moverlo; fuera de una lista (o dentro de código)
+ * sigue su camino y el foco puede salir del editor como siempre. */
+function runListIndent(view, dir) {
+  const { state } = view;
+  if (state.selection.ranges.length !== 1) return false;
+  const pos = state.selection.main.head;
+  if (isInsideCode(codeRangesOf(state, pos), pos)) return false;
+  const edit = listIndentEdit(state.doc.toString(), pos, dir);
+  if (!edit) return false;
+  if (edit.noop) return true;
+  view.dispatch({
+    changes: { from: edit.from, to: edit.to, insert: edit.insert },
+    selection: { anchor: edit.cursor },
+    scrollIntoView: true,
+    userEvent: "input.indent",
+  });
+  return true;
+}
+
+const listIndentKeymap = keymap.of([
+  { key: "Tab", run: (view) => runListIndent(view, 1) },
+  { key: "Shift-Tab", run: (view) => runListIndent(view, -1) },
+]);
+
 const gapDeleteKeymap = keymap.of([
   { key: "Backspace", run: (view) => runGapKey(view, true) },
   { key: "Delete", run: (view) => runGapKey(view, false) },
@@ -3657,14 +3683,13 @@ function runBlockKey(view, kind) {
 // colapsadas de golpe, y el cursor podía aterrizar varios bloques más
 // arriba/abajo de lo esperado en una sola pulsación (issue #2 en GitHub).
 //
-// Sustituye el cálculo por líneas lógicas del documento (actual ± 1) en vez
-// de por píxeles -- inmune a cualquier cosa que colapse o esconda contenido,
-// ahora o en el futuro. Como la fuente del editor es monoespaciada, la
-// columna en caracteres coincide con la columna visual, así que no hace
-// falta convertir a/desde coordenadas de pantalla. La columna "objetivo" se
-// recuerda entre pulsaciones consecutivas de ↑/↓ (para no perder la columna
-// real al cruzar una línea más corta) y se olvida en cualquier otro cambio
-// -- escribir, hacer clic, mover con las flechas horizontales...
+// Sustituye el cálculo por líneas lógicas del documento (la de al lado, sin
+// contar los separadores entre bloques: ver block-gaps.js) en vez de por
+// píxeles -- inmune a cualquier cosa que colapse o esconda contenido, ahora o
+// en el futuro. La columna "objetivo" (en píxeles) se recuerda entre
+// pulsaciones consecutivas de ↑/↓ (para no perder la columna real al cruzar
+// una línea más corta) y se olvida en cualquier otro cambio -- escribir, hacer
+// clic, mover con las flechas horizontales...
 function verticalMoveExtension() {
   const plugin = ViewPlugin.fromClass(
     class {
@@ -4339,6 +4364,7 @@ export function createNoteEditor({
         blockDeleteKeymap,
         backspaceJoinKeymap,
         gapDeleteKeymap,
+        listIndentKeymap,
         moveBlockKeymap,
         formatKeymap,
         // El Backspace «que borra el marcador» de Markdown (deleteMarkupBackward)
