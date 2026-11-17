@@ -7,6 +7,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 ### Añadido
 - **Añadir fila en el sitio**: «+ Nueva fila» abre una fila vacía al final de la tabla, con el cursor en el título, en vez del formulario de alta. La fila se crea al confirmar (Enter, Tab o salir), si la dejas vacía no deja nada, y el «▾» del botón ofrece las plantillas de fila. Vale en la página de la base, en la tabla incrustada en una nota y en cada columna del tablero.
 
+### Corregido
+- **Reindexar dejó de ser cuadrático: 12.000 notas pasan de 486 s a 3,9 s en frío.** Resolver los `[[wikilinks]]` de una nota pedía los títulos de **todo** el workspace, así que el enlazado del reindexado hacía una consulta de 12.000 filas por nota (144 millones de filas leídas) y se llevaba el 99 % del arranque: de los 485,7 s medidos, 482,8 s eran `enlazando`. Ahora el mapa de títulos se construye **una vez por reindexado** (`TitleIndex` en `app/links.py`) y se pasa a quien resuelve los enlaces; el guardado de una nota suelta lo construye para ella, que ahí es una consulta sola. Medido con el mismo vault de 12.000 notas de [`docs/MEDICIONES-P16.md`](docs/MEDICIONES-P16.md) (2 wikilinks por nota): `enlazando` de **482,8 s a 1,2 s**, arranque en frío de **485,7 s a 3,9 s** y `POST /reindex?force=true` de **454,0 s a 5,0 s**; con un vault de 50 notas los dos tardan lo mismo (0,2 s). La tabla `links` sale **idéntica fila por fila** (22.813 filas y el mismo `sha1`, `81ec7e2…`), un `[[Inexistente]]` sigue sin resolverse y los enlaces a la propia página siguen sin fila. Construir el mapa cuesta 44 ms con 12.000 títulos, así que no hace falta ningún índice nuevo. La medida se repite con `tools/medir_reindexado.py`.
+
 ## [2.6.0] — 2026-11-16
 
 ### Añadido

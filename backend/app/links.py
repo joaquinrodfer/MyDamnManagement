@@ -52,8 +52,52 @@ def fold_title(title: str) -> str:
     return unicodedata.normalize("NFKC", title).casefold()
 
 
+class TitleIndex:
+    """Los títulos de un workspace, plegados una vez, para resolver enlaces.
+
+    Resolver un `[[Título]]` es mirar un diccionario; lo caro es construirlo,
+    porque cuesta una consulta a `pages`. Construirlo **por nota** hacía
+    cuadrático el reindexado: con 12.000 notas eran 12.000 consultas de 12.000
+    filas (144 millones de filas leídas) y ~230 s de los ~270 s del arranque en
+    frío. `rebuild` lo construye una vez (`load`) y lo pasa a `sync_wikilinks`
+    de todas las notas; el guardado de una nota suelta lo construye para ella,
+    que ahí es una consulta y no 12.000.
+
+    El mapa **no** excluye la página que hace el enlace: quien resuelve
+    descarta su propio id, que es lo que hacía el `id != ?` de la consulta de
+    antes. Así el mismo mapa sirve para cualquier nota del workspace.
+    """
+
+    __slots__ = ("workspace_id", "by_folded")
+
+    def __init__(self, workspace_id: str, by_folded: dict[str, list[str]]) -> None:
+        self.workspace_id = str(workspace_id)
+        # Título plegado -> ids, en el orden en que los devuelve `pages` (una
+        # lista porque varios títulos pueden plegar igual).
+        self.by_folded = by_folded
+
+    @classmethod
+    def load(cls, conn: sqlite3.Connection, workspace_id: str) -> "TitleIndex":
+        """Una consulta: todos los títulos del workspace, ya plegados."""
+        by_folded: dict[str, list[str]] = {}
+        for row in conn.execute(
+            "SELECT id, title FROM pages WHERE workspace_id = ?", (workspace_id,)
+        ):
+            by_folded.setdefault(fold_title(row["title"]), []).append(row["id"])
+        return cls(workspace_id, by_folded)
+
+    def ids_for(self, title: str) -> list[str]:
+        """Ids de las páginas cuyo título pliega igual que `title` (o nada)."""
+        return self.by_folded.get(fold_title(title), [])
+
+
 def sync_wikilinks(
-    conn: sqlite3.Connection, page_id: str, workspace_id: str, body_markdown: str
+    conn: sqlite3.Connection,
+    page_id: str,
+    workspace_id: str,
+    body_markdown: str,
+    *,
+    title_index: TitleIndex | None = None,
 ) -> None:
     """Recalcula los enlaces salientes de una página a partir de su cuerpo.
 
@@ -78,36 +122,47 @@ def sync_wikilinks(
     repara los wikilinks ya guardados en otras; se corrigen cuando esa página
     se vuelve a guardar (o, desde P1.2, al reindexar el vault entero). Con las
     bases no pasa: se resuelven por id.
+
+    `title_index` es el mapa de títulos del workspace ya construido. Quien
+    resuelve muchos cuerpos seguidos —`VaultStore.rebuild`, que enlaza el
+    vault entero— lo pasa para construirlo **una vez**; sin él se construye
+    para este cuerpo, que es lo correcto cuando se guarda una sola nota.
     """
     conn.execute(
         "DELETE FROM links WHERE from_id = ? AND kind IN (?, ?)",
         (page_id, LinkKind.wikilink.value, LinkKind.embed.value),
     )
-    _sync_title_links(conn, page_id, workspace_id, body_markdown)
+    _sync_title_links(conn, page_id, workspace_id, body_markdown, title_index)
     _sync_embedded_databases(conn, page_id, workspace_id, body_markdown)
 
 
 def _sync_title_links(
-    conn: sqlite3.Connection, page_id: str, workspace_id: str, body_markdown: str
+    conn: sqlite3.Connection,
+    page_id: str,
+    workspace_id: str,
+    body_markdown: str,
+    title_index: TitleIndex | None = None,
 ) -> None:
     titles = extract_titles(body_markdown or "")
     if not titles:
         return
-    # Una consulta por guardado: título plegado -> ids de las páginas del
-    # workspace (todas, sin `LIMIT`). Una lista porque puede haber repetidos.
-    targets: dict[str, list[str]] = {}
-    for row in conn.execute(
-        "SELECT id, title FROM pages WHERE workspace_id = ? AND id != ?",
-        (workspace_id, page_id),
-    ):
-        targets.setdefault(fold_title(row["title"]), []).append(row["id"])
+    # Título plegado -> ids de las páginas del workspace. Con el mapa del
+    # reindexado no hay consulta; en un guardado suelto es una sola (la de
+    # antes), no una por nota.
+    index = (
+        title_index if title_index is not None else TitleIndex.load(conn, workspace_id)
+    )
     # Destino -> forma del título que se guarda. El `dict` conserva el orden
     # del cuerpo y `setdefault` deja la primera forma encontrada: dos guardados
     # del mismo cuerpo escriben la misma fila (y el `UNIQUE` no sirve para
     # deduplicar aquí, porque `target_title` es distinto en cada forma).
     chosen: dict[str, str] = {}
     for title in titles:
-        for target_id in targets.get(fold_title(title), ()):
+        for target_id in index.ids_for(title):
+            if target_id == page_id:
+                # Una página no se enlaza a sí misma: era el `id != ?` de la
+                # consulta por nota, que el mapa compartido no puede aplicar.
+                continue
             chosen.setdefault(target_id, title)
     for target_id, title in chosen.items():
         conn.execute(
