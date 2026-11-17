@@ -9,7 +9,7 @@
 
 import { ChangeSet, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, invertedEffects } from "@codemirror/commands";
 import { HighlightStyle, ensureSyntaxTree, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
@@ -893,11 +893,26 @@ const markdownParser = markdownSupport.language.parser;
 // abajo. Se hace en la MISMA transacción (el filtro cambia el texto que se
 // teclea por "\n" + ese texto), así que un solo ⌘Z deshace las dos cosas y el
 // `.md` sigue con una línea en blanco entre bloques como el que lo escribe a
-// mano. Pegar contenido entra por el MISMO camino (un pegado sin saltos es la
-// primera letra del bloque nuevo); si el texto trae saltos o hay varias
-// selecciones la marca se descarta y el párrafo se queda pegado a un vecino: una
+// mano.
+//
+// Lo que cuenta es DÓNDE cae el contenido, no cómo llega: una letra, un pegado,
+// las marcas de ⌘B, un emoji o un enlace insertados desde la interfaz... Todo
+// lo que caiga en la línea del bloque nuevo es su primer contenido. Por eso la
+// marca no se suelta al cambiar el documento en otro sitio (se desplaza con él)
+// ni la pierde un ⌘Z: deshacer el primer contenido la devuelve (ver
+// `blockBreakHistory`). Si el texto trae saltos (t_608d3c57) o hay varias
+// selecciones, la marca se suelta y el párrafo se queda pegado a un vecino: una
 // línea en blanco menos, nunca una de más.
-const addBlockBreak = StateEffect.define();
+const addBlockBreak = StateEffect.define({ map: (pos, mapping) => mapping.mapPos(pos) });
+
+/** ¿`pos` sigue siendo el principio de una línea vacía? Es lo único que la
+ * marca necesita para seguir valiendo: si la línea ya tiene texto, el bloque
+ * nuevo dejó de estar vacío. */
+function isEmptyLineStart(doc, pos) {
+  if (pos < 0 || pos > doc.length) return false;
+  const line = doc.lineAt(pos);
+  return line.from === pos && line.length === 0;
+}
 
 const blockBreakField = StateField.define({
   create: () => null,
@@ -909,23 +924,32 @@ const blockBreakField = StateField.define({
       pos = effect.value;
       justSet = true;
     }
-    if (!justSet) {
-      if (value == null) return null;
-      // Ya se ha escrito (o el documento ha cambiado por otra vía): la marca
-      // solo vale para la primera letra del bloque nuevo.
-      if (tr.docChanged) return null;
-      // Y el cursor PUEDE salir de la línea y volver -- ↓ y ↑, un clic en el
-      // editor --: el bloque vacío sigue siendo el mismo, así que la marca
-      // sigue viva. Soltándola al primer movimiento, al volver la primera letra
-      // ya no materializaba nada: el párrafo se pegaba al bloque de abajo (dos
-      // bloques se fundían en uno) y el encabezado perdía su hueco (18 px → 0).
-      // Quien decide si la marca se usa es el filtro de abajo, que exige que la
-      // inserción caiga justo en `pos`; escribir en cualquier otro sitio no la
-      // toca (y el cambio de documento la suelta).
-      return value;
-    }
-    return pos == null ? null : pos;
+    if (justSet) return pos;
+    if (value == null) return null;
+    // El cursor PUEDE salir de la línea y volver -- ↓ y ↑, un clic --: la
+    // marca no depende de la selección. Soltándola al primer movimiento, la
+    // primera letra al volver no materializaba nada: el párrafo se pegaba al
+    // bloque de abajo y el encabezado perdía su hueco (18 px → 0).
+    if (!tr.docChanged) return value;
+    // Lo que toca la línea del bloque nuevo la consume: el primer contenido
+    // (que el filtro de abajo ya ha materializado), un pegado con saltos, un
+    // borrado que se la lleva... Deshacerlo la devuelve (`blockBreakHistory`).
+    if (tr.changes.touchesRange(value, value)) return null;
+    // Un cambio en otro sitio -- escribir en el encabezado, deshacer algo de
+    // más abajo -- solo la desplaza.
+    const mapped = tr.changes.mapPos(value);
+    return isEmptyLineStart(tr.state.doc, mapped) ? mapped : null;
   },
+});
+
+/** ⌘Z del primer contenido devuelve la marca: el historial guarda, con cada
+ * transacción que la consume, el efecto que la vuelve a poner. Sin esto,
+ * ⏎ → letra → ⌘Z → otra letra (o un pegado) ya no materializaba nada y el
+ * párrafo nuevo se fundía con el de abajo. */
+const blockBreakHistory = invertedEffects.of((tr) => {
+  const pos = tr.startState.field(blockBreakField, false);
+  if (pos == null || !tr.docChanged) return [];
+  return tr.changes.touchesRange(pos, pos) ? [addBlockBreak.of(pos)] : [];
 });
 
 /** El bloque que empieza en el hueco (o justo debajo de él): el de ABAJO del
@@ -936,25 +960,24 @@ function blockBelow(blocks, pos) {
   return blocks.find((b) => b.from >= pos) || null;
 }
 
-/** Mete la línea en blanco del bloque nuevo en la transacción del primer
- * contenido (ver `blockBreakField`): una letra tecleada o un pegado. Solo se
- * toca lo que es UNA inserción en el punto donde quedó el cursor y sin saltos
- * de línea. */
+/** Mete la línea en blanco del bloque nuevo en la transacción de su primer
+ * contenido (ver `blockBreakField`). Decide el SITIO, no el origen: vale
+ * cualquier transacción cuyos cambios sean todos inserciones en la línea vacía
+ * del bloque nuevo (`pos`) y sin saltos de línea -- una letra, un pegado, las
+ * `****` de ⌘B, un emoji... --. Deshacer y rehacer quedan fuera: devuelven el
+ * documento a un estado que ya tuvo, con o sin sus líneas en blanco. */
 const blockBreakMaterialization = EditorState.transactionFilter.of((tr) => {
-  // Pegar es escribir contenido (requisito 3 de t_c7756962): sin esto, el
-  // pegado se saltaba la marca y se comía el bloque de al lado.
   if (!tr.docChanged) return tr;
-  if (!tr.isUserEvent("input.type") && !tr.isUserEvent("input.paste")) return tr;
+  if (tr.isUserEvent("undo") || tr.isUserEvent("redo")) return tr;
   const pos = tr.startState.field(blockBreakField);
   if (pos == null) return tr;
-  let count = 0;
-  let single = null;
+  let text = "";
+  let onlyInsertsAtPos = true;
   tr.changes.iterChanges((from, to, fromB, toB, inserted) => {
-    count++;
-    single = { from, to, text: inserted.toString() };
+    if (from !== pos || to !== pos) onlyInsertsAtPos = false;
+    text += inserted.toString();
   });
-  if (count !== 1 || single.from !== pos || single.to !== pos) return tr;
-  if (!single.text || single.text.includes("\n")) return tr;
+  if (!onlyInsertsAtPos || !text || text.includes("\n")) return tr;
   // La línea de arriba va SIEMPRE: es la que dicta el hueco de la regla (18 px
   // detrás de un H1, 14 detrás de un H2–H4) y la que impide que el texto se
   // pegue al bloque de arriba. La de abajo solo cuando el bloque de debajo se
@@ -962,12 +985,21 @@ const blockBreakMaterialization = EditorState.transactionFilter.of((tr) => {
   // entre los dos y el `.md` no gana nada.
   const doc = tr.startState.doc;
   const below = blockBelow(tr.startState.field(blockField).blocks, pos);
-  const insert = blockBreakInsert(markdownParser, single.text, below && doc.sliceString(below.from, below.to));
+  const insert = blockBreakInsert(markdownParser, text, below && doc.sliceString(below.from, below.to));
+  // La selección de la transacción original (el cursor dentro de las `****`
+  // de ⌘B, o detrás de lo tecleado) se traslada al texto nuevo: lo que caía
+  // en lo insertado se corre la línea en blanco de arriba; lo de detrás, todo
+  // lo añadido.
+  const shift = (p) => (p < pos ? p : p <= pos + text.length ? p + 1 : p + insert.length - text.length);
+  const selection = EditorSelection.create(
+    tr.newSelection.ranges.map((r) => EditorSelection.range(shift(r.anchor), shift(r.head))),
+    tr.newSelection.mainIndex,
+  );
   return {
     changes: { from: pos, to: pos, insert },
-    selection: { anchor: pos + 1 + single.text.length },
+    selection,
     effects: tr.effects,
-    userEvent: tr.userEvent,
+    userEvent: tr.annotation(Transaction.userEvent),
     scrollIntoView: tr.scrollIntoView,
   };
 });
@@ -980,9 +1012,10 @@ export const blockBreakTestExtensions = [
   markdownSupport,
   blockField,
   blockBreakField,
+  blockBreakHistory,
   blockBreakMaterialization,
 ];
-export { addBlockBreak };
+export { addBlockBreak, blockBreakField };
 
 /**
  * El DOM del asa de un bloque: SOLO el «+», con el índice del bloque en
@@ -4407,6 +4440,7 @@ export function createNoteEditor({
         blockField,
         pendingEmptyGaps,
         blockBreakField,
+        blockBreakHistory,
         blockBreakMaterialization,
         // Marcar varios bloques es un estado NUESTRO (blockField), no una
         // selección de documento: desde t_c2c98f7b `selectBlocks` no toca la
