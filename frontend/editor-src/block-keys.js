@@ -57,6 +57,99 @@ function insertAt(pos, insert) {
   return { from: pos, to: pos, insert, cursor: pos + insert.length };
 }
 
+// ------------------------------------------------- ¿el de abajo se lo come?
+
+// La PRIMERA LÍNEA del bloque (y, en las tablas, la segunda) es lo que mira el
+// parser para decidir si empieza un bloque nuevo o si sigue siendo texto del
+// párrafo de arriba. Por eso la decisión se toma sobre el texto, no sobre el
+// `type`: una numerada que empieza en 2 es `ordered_list_item` igual que una
+// que empieza en 1, y la primera no interrumpe un párrafo.
+const CODE_INDENT_RE = /^(?: {4,}|\t)/;
+const ATX_START_RE = /^ {0,3}#{1,6}(?:[ \t]|$)/;
+const FENCE_START_RE = /^ {0,3}(?:`{3,}|~{3,})/;
+const QUOTE_START_RE = /^ {0,3}>/;
+const THEMATIC_RE = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/;
+const SETEXT_UNDERLINE_RE = /^ {0,3}-+[ \t]*$/;
+const BULLET_START_RE = /^ {0,3}([-*+])(?:[ \t]+|$)/;
+const ORDERED_START_RE = /^ {0,3}(\d{1,9})[.)](?:[ \t]+|$)/;
+const LINK_DEF_START_RE = /^ {0,3}\[[^\]]*\]:/;
+const TABLE_DELIM_RE = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?$/;
+// HTML que interrumpe un párrafo: los bloques 1–6 de CommonMark. El 7 (una
+// etiqueta suelta, p. ej. `<span>x</span>`) exige línea en blanco delante.
+const HTML_RAW_START_RE =
+  /^ {0,3}(?:<!--|<\?|<![A-Za-z]|<!\[CDATA\[|<(?:script|pre|style|textarea)(?:[ \t>]|$))/i;
+const HTML_BLOCK_TAGS = [
+  "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption",
+  "center", "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt",
+  "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2",
+  "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "iframe", "legend", "li",
+  "link", "main", "menu", "menuitem", "nav", "noframes", "ol", "optgroup", "option",
+  "p", "param", "search", "section", "summary", "table", "tbody", "td", "tfoot", "th",
+  "thead", "title", "tr", "track", "ul",
+];
+const HTML_BLOCK_START_RE = new RegExp(
+  `^ {0,3}</?(?:${HTML_BLOCK_TAGS.join("|")})(?:[ \\t/>]|$)`,
+  "i",
+);
+
+/**
+ * ¿El texto que se escribe encima de este bloque acabaría DENTRO de él?
+ *
+ * `text` es el bloque de abajo ENTERO (tal y como lo da `computeBlocks`),
+ * porque algunas construcciones necesitan su segunda línea para saberse: una
+ * tabla es la cabecera más la fila de guiones, y sin ella la cabecera es un
+ * párrafo más.
+ *
+ * Comprobado contra el parser de verdad (test/block-keys.test.js mete
+ * `"x\n" + text` en `markdownLanguage.parser` y exige que esta respuesta
+ * coincida con lo que hace el árbol); si el parser cambia de criterio, el test
+ * avisa.
+ */
+export function gluesBelow(text) {
+  const nl = text.indexOf("\n");
+  const first = nl === -1 ? text : text.slice(0, nl);
+  const second = nl === -1 ? "" : text.slice(nl + 1).split("\n")[0];
+  // Código INDENTADO (4 espacios o un tabulador): no interrumpe nunca un
+  // párrafo, sigue siendo texto del de arriba.
+  if (CODE_INDENT_RE.test(first)) return true;
+  // Encabezado ATX, valla y cita: interrumpen un párrafo sin más.
+  if (ATX_START_RE.test(first) || FENCE_START_RE.test(first) || QUOTE_START_RE.test(first)) return false;
+  // Regla horizontal. La de guiones se lee como subrayado del párrafo de arriba
+  // (`texto` + `---` = un H2), así que esa sí se lo come; `***` y `--- ---` no.
+  if (THEMATIC_RE.test(first)) return SETEXT_UNDERLINE_RE.test(first);
+  // Viñeta: hace falta que el punto tenga contenido para interrumpir (un punto
+  // vacío no interrumpe nunca un párrafo). Un `-` suelto además es subrayado
+  // de setext, que se come la línea de arriba.
+  const bullet = BULLET_START_RE.exec(first);
+  if (bullet) return first.slice(bullet[0].length).trim() === "";
+  // Numerada: solo interrumpe si empieza en 1 y el punto no está vacío.
+  const ordered = ORDERED_START_RE.exec(first);
+  if (ordered) return ordered[1] !== "1" || first.slice(ordered[0].length).trim() === "";
+  // HTML: los bloques 1–6 interrumpen, el 7 (una etiqueta suelta) no.
+  if (/^ {0,3}</.test(first)) return !HTML_RAW_START_RE.test(first) && !HTML_BLOCK_START_RE.test(first);
+  // Definición de enlace: se queda dentro del párrafo de arriba.
+  if (LINK_DEF_START_RE.test(first)) return true;
+  // Tabla: cabecera + fila de guiones sí empieza tabla (con este parser).
+  if (second !== "" && TABLE_DELIM_RE.test(second) && (first.includes("|") || second.includes("|"))) return false;
+  // Párrafo, y todo lo que no sabemos: de frente, se pega.
+  return true;
+}
+
+/**
+ * Lo que se teclea en el hueco de un bloque nuevo abierto con ⏎ al final de
+ * otro, con las líneas en blanco que necesita alrededor (ver `blockBreak`):
+ *
+ * - la de ARRIBA va siempre: es la que da el hueco de la regla (18 px detrás de
+ *   un H1, 14 detrás de un H2–H4) y la que impide que el texto se pegue al
+ *   bloque de arriba. Con un bloque debajo que no se lo come, la que ya había
+ *   entre los dos hace ese papel y el `.md` no gana nada;
+ * - la de ABAJO solo cuando el bloque de abajo se comería el texto
+ *   (`gluesBelow`): sin ella, el párrafo nuevo y el de abajo serían uno.
+ */
+export function blockBreakInsert(typed, below) {
+  return "\n" + typed + (below != null && gluesBelow(below) ? "\n" : "");
+}
+
 // ---------------------------------------------------------------- ⏎ en seco
 
 /**

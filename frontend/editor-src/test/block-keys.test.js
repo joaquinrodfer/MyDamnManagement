@@ -14,7 +14,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { blockKeyEdit } from "../block-keys.js";
+import { markdownLanguage } from "@codemirror/lang-markdown";
+
+import { blockBreakInsert, blockKeyEdit, gluesBelow } from "../block-keys.js";
 
 /** Aplica la tecla al documento y devuelve el documento y el cursor nuevos. */
 function apply(text, pos, block, kind = "enter") {
@@ -95,6 +97,74 @@ test("⏎ al final de una fila de dentro del bloque no añade una línea de más
 
 test("⏎ en una nota vacía no crea nada (que decida CodeMirror)", () => {
   assert.equal(blockKeyEdit({ text: "", pos: 0, block: null, kind: "enter" }), null);
+});
+
+// -------------------------------- la primera letra del bloque abierto con ⏎
+
+test("la primera letra: línea en blanco arriba siempre, abajo solo si se lo comen", () => {
+  // Con un bloque debajo que no se come la línea, la que ya había hace de
+  // arriba: el `.md` no crece y el hueco es el de la regla (18 px tras un H1).
+  assert.equal(blockBreakInsert("Z", "# STRATERIA"), "\nZ");
+  assert.equal(blockBreakInsert("Z", "# STRATERIA\n\n# SAIFFE"), "\nZ");
+  // Último bloque de la nota: la de arriba es la única que hay.
+  assert.equal(blockBreakInsert("Z", null), "\nZ");
+  // Un párrafo debajo se come la línea: sin la de abajo, los dos son uno. Y
+  // entonces la de arriba hay que materializarla, o el encabezado pierde su
+  // hueco (requisito 2: 18 px tras un H1 aunque el bloque de abajo sea texto).
+  assert.equal(blockBreakInsert("W", "Texto de abajo."), "\nW\n");
+  // Numerada que empieza en 2: tampoco interrumpe un párrafo, así que se come
+  // el texto y la lista dejaría de ser lista (regresión de la revisión).
+  assert.equal(blockBreakInsert("W", "2. dos\n3. tres"), "\nW\n");
+  // La que empieza en 1 sí interrumpe: basta la línea de arriba.
+  assert.equal(blockBreakInsert("W", "1. uno\n2. dos"), "\nW");
+});
+
+test("gluesBelow: qué bloques se comen la línea de encima", () => {
+  const casos = [
+    ["hola\ny más", true, "párrafo"],
+    ["[id]: /url", true, "definición de enlace"],
+    ["    codigo", true, "código indentado"],
+    ["\tcodigo", true, "código con tabulador"],
+    ["---", true, "solo guiones: subrayado setext"],
+    ["- ", true, "viñeta vacía: subrayado setext"],
+    ["1.", true, "numerada vacía"],
+    ["2. dos\n3. tres", true, "numerada que empieza en 2"],
+    ["001. uno", true, "numerada con ceros delante"],
+    ["<span>x</span>", true, "HTML tipo 7 (etiqueta suelta)"],
+    ["# B", false, "encabezado"],
+    ["##### B", false, "encabezado de cinco"],
+    ["```\ncodigo\n```", false, "valla"],
+    ["> cita", false, "cita"],
+    ["- uno\n- dos", false, "viñeta con contenido"],
+    ["* ", true, "viñeta `*` vacía (un punto vacío no interrumpe)"],
+    ["1. uno\n2. dos", false, "numerada que empieza en 1"],
+    ["***", false, "regla de asteriscos"],
+    ["- - -", false, "regla de guiones separados"],
+    ["<div>x</div>", false, "HTML de bloque"],
+    ["| a | b |\n|---|---|", false, "tabla"],
+  ];
+  for (const [text, glue, nombre] of casos) {
+    assert.equal(gluesBelow(text), glue, `${nombre}: ${JSON.stringify(text)}`);
+  }
+});
+
+test("gluesBelow coincide con el parser de verdad", () => {
+  // Quien decide es el árbol de Markdown: si al parsear "x" + el bloque de
+  // abajo el primer bloque no acaba justo en la `x`, es que el de abajo se ha
+  // comido la línea. Las dos respuestas tienen que dar lo mismo, o la regla se
+  // ha quedado atrás respecto al parser.
+  const bloques = [
+    "hola", "[id]: /url", "    codigo", "---", "- ", "1.", "2. dos", "001. uno",
+    // (Una viñeta vacía con `*` no entra: este parser deja el `*` dentro del
+    // párrafo en vez de pegarlo al ítem, y ahí no hay nada que comparar.)
+    "<span>x</span>", "# B", "##### B", "```\nx\n```", "> cita", "- uno",
+    "1. uno", "***", "- - -", "<div>x</div>", "| a | b |\n|---|---|",
+  ];
+  for (const text of bloques) {
+    const primero = markdownLanguage.parser.parse("x\n" + text).topNode.firstChild;
+    const seLoCome = !(primero && primero.from === 0 && primero.to === 1);
+    assert.equal(gluesBelow(text), seLoCome, `el parser y gluesBelow discrepan con ${JSON.stringify(text)}`);
+  }
 });
 
 // ------------------------------------------------- ⇧⏎ / ⌘⏎ = salto de línea
