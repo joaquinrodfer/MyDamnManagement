@@ -859,6 +859,14 @@ function emptyGapEffect(from, insert = "\n\n") {
   return /^\n{2,}$/.test(insert) ? [addEmptyGap.of({ from, to: from + insert.length })] : [];
 }
 
+// El Markdown del editor: el MISMO `LanguageSupport` que monta el `EditorView`
+// (va en `extensions` de `createNoteEditor`, sin su keymap de ⏎). De él sale el
+// parser con el que se decide si el bloque de abajo se come la línea en blanco
+// (`gluesBelow`, block-keys.js): el árbitro tiene que ser el parser que pinta,
+// no uno paralelo que se pueda quedar atrás.
+const markdownSupport = markdown({ addKeymap: false });
+const markdownParser = markdownSupport.language.parser;
+
 // ------------------------------------------- ⏎ al final de un bloque, sin hueco
 //
 // El bloque vacío que abre ⏎ detrás de un bloque (t_c7756962: detrás de un
@@ -877,10 +885,10 @@ function emptyGapEffect(from, insert = "\n\n") {
 // abajo. Se hace en la MISMA transacción (el filtro cambia el texto que se
 // teclea por "\n" + ese texto), así que un solo ⌘Z deshace las dos cosas y el
 // `.md` sigue con una línea en blanco entre bloques como el que lo escribe a
-// mano. Si el texto entra por otro camino (un pegado, varias líneas, varias
-// selecciones) la marca se descarta y el párrafo se queda pegado a un vecino:
-// una línea en blanco menos, nunca una de más (ni una que se coma el bloque de
-// al lado).
+// mano. Pegar contenido entra por el MISMO camino (un pegado sin saltos es la
+// primera letra del bloque nuevo); si el texto trae saltos o hay varias
+// selecciones la marca se descarta y el párrafo se queda pegado a un vecino: una
+// línea en blanco menos, nunca una de más.
 const addBlockBreak = StateEffect.define();
 
 const blockBreakField = StateField.define({
@@ -915,11 +923,15 @@ function blockBelow(blocks, pos) {
   return blocks.find((b) => b.from >= pos) || null;
 }
 
-/** Mete la línea en blanco del bloque nuevo en la transacción de la primera
- * letra (ver `blockBreakField`). Solo se toca lo que es una tecla normal: UNA
- * inserción en el punto donde quedó el cursor y sin saltos de línea. */
+/** Mete la línea en blanco del bloque nuevo en la transacción del primer
+ * contenido (ver `blockBreakField`): una letra tecleada o un pegado. Solo se
+ * toca lo que es UNA inserción en el punto donde quedó el cursor y sin saltos
+ * de línea. */
 const blockBreakMaterialization = EditorState.transactionFilter.of((tr) => {
-  if (!tr.docChanged || !tr.isUserEvent("input.type")) return tr;
+  // Pegar es escribir contenido (requisito 3 de t_c7756962): sin esto, el
+  // pegado se saltaba la marca y se comía el bloque de al lado.
+  if (!tr.docChanged) return tr;
+  if (!tr.isUserEvent("input.type") && !tr.isUserEvent("input.paste")) return tr;
   const pos = tr.startState.field(blockBreakField);
   if (pos == null) return tr;
   let count = 0;
@@ -937,7 +949,7 @@ const blockBreakMaterialization = EditorState.transactionFilter.of((tr) => {
   // entre los dos y el `.md` no gana nada.
   const doc = tr.startState.doc;
   const below = blockBelow(tr.startState.field(blockField).blocks, pos);
-  const insert = blockBreakInsert(single.text, below && doc.sliceString(below.from, below.to));
+  const insert = blockBreakInsert(markdownParser, single.text, below && doc.sliceString(below.from, below.to));
   return {
     changes: { from: pos, to: pos, insert },
     selection: { anchor: pos + 1 + single.text.length },
@@ -946,6 +958,18 @@ const blockBreakMaterialization = EditorState.transactionFilter.of((tr) => {
     scrollIntoView: tr.scrollIntoView,
   };
 });
+
+/** Las piezas de ⏎ al final de un bloque -- el campo de bloques, la marca del
+ * bloque nuevo, su materialización y el efecto con el que ⏎ lo marca --, para
+ * probarlas sobre un `EditorState` de verdad sin navegador
+ * (ver test/block-break.test.js). */
+export const blockBreakTestExtensions = [
+  markdownSupport,
+  blockField,
+  blockBreakField,
+  blockBreakMaterialization,
+];
+export { addBlockBreak };
 
 /**
  * El DOM del asa de un bloque: el «+» y el «⋮⋮», con el índice del bloque en
@@ -4151,7 +4175,7 @@ export function createNoteEditor({
         // Sin keymap propio: su Enter (continuar lista/cita con un salto de
         // línea) es justo el que ahora decide blockKeymap. Su Backspace se
         // conserva, registrado arriba.
-        markdown({ addKeymap: false }),
+        markdownSupport,
         syntaxHighlighting(highlightStyle),
         blockField,
         pendingEmptyGaps,
