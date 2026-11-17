@@ -90,7 +90,7 @@
     --space-5: 22px;
     --space-6: 28px;
     --control-size: 28px;        /* Tamaño mínimo de botones de icono y asas de bloque (>= 24x24 WCAG 2.5.8) */
-    --header-height: 40px;
+    --header-height: 44px;
     --sidebar-width: 248px;
     --sidebar-width-compact: 220px;
     --note-max-width: 780px;
@@ -278,101 +278,80 @@
   .svg-icon.icon-18 { width: 18px; height: 18px; }
   .svg-icon.icon-20 { width: 20px; height: 20px; }
 
-  /* ---------- cabecera ---------- */
+  /* ---------- cabecera ----------
+     Ya no es una franja aparte con su fondo y su línea: va arriba de la
+     columna del contenido, con el mismo fondo, y solo lleva el botón de la
+     barra lateral y la navegación. Todo lo demás vive en la barra lateral. */
   header {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--panel-border);
-    background: var(--panel);
-  }
-  header .brand {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--font-body);
-    font-size: 14px;
-    font-weight: 600;
+    height: var(--header-height);
+    padding: 0 12px;
+    background: var(--bg);
   }
   .brand-logo { width: 22px; height: 22px; border-radius: 50%; display: block; }
-  .brand-name { white-space: nowrap; }
-
-  /* Cabecera estrecha (P11b). Con el chip de usuario la fila dejó de caber
-     entre ~481 y ~640 px: sobraba ancho y el menú del chip se salía por la
-     derecha (era el único scroll horizontal de la app). Por debajo de 720 px
-     el nombre de la marca se queda en el logo (sigue en el title del span) y
-     los huecos se aprietan; el chip recorta un nombre visible largo en vez de
-     empujar la fila. Los indicadores api/db conservan su punto a partir de
-     520 px y por debajo dejan solo el punto, que es lo que se mira de un
-     vistazo. */
-  @media (max-width: 720px) {
-    header { padding: 8px 12px; gap: 10px; }
-    header .brand { gap: 0; }
-    .brand-name { display: none; }
-    .status-strip { gap: 10px; }
-    .user-chip-name {
-      max-width: 11ch;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-  }
-  @media (max-width: 520px) {
-    header { padding: 8px 10px; gap: 6px; }
-    .status-strip { gap: 8px; }
-    .status-item-label { display: none; }
-    .header-left { gap: 8px; }
-  }
-  /* Móvil estrecho: los cinco botones de navegación y el chip no caben con los
-     huecos de escritorio. Se aprieta todo un poco más; no se esconde nada. */
-  @media (max-width: 400px) {
-    header { padding: 8px 6px; gap: 4px; }
-    .header-left { gap: 4px; }
-    .status-strip { gap: 6px; }
-    .user-chip { padding: 2px 4px; gap: 5px; }
-    .user-chip-name { max-width: 8ch; }
-    /* El logo (22 px + hueco) es lo único prescindible: el título sigue en la
-       pestaña. Sin esto quedaban 10 px de scroll a 375. */
-    header .brand { display: none; }
-  }
-  .status-strip { display: flex; gap: 14px; font-family: var(--font-body); font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
-  .status-item { display: flex; align-items: center; gap: 5px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
-  .dot.ok { background: var(--ok); }
-  .dot.down { background: var(--down); }
+  .brand-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* ---------- quién eres (P11b) ---------- */
-  /* El chip vive en la cabecera: punto del color del usuario + su nombre. Al
-     pulsarlo se abre el menú, que es `position: absolute` dentro de su
-     contenedor y no del header: así queda pegado al chip aunque la cabecera
-     cambie de alto. */
+  /* Abajo del todo en la barra lateral, como el espacio de trabajo en Notion:
+     un cuadrado con tu inicial sobre tu color, tu nombre y una flecha. Al
+     pulsarlo, el menú se abre hacia arriba (Ajustes, Cerrar sesión). Se queda
+     pegado abajo aunque el árbol sea largo. */
+  .sidebar-user.user-chip-wrap {
+    position: sticky;
+    bottom: 0;
+    margin-top: auto;
+    padding: 6px 8px 8px;
+    border-top: 1px solid var(--panel-border);
+    background: inherit;
+    z-index: 2;
+  }
   .user-chip-wrap { position: relative; display: flex; align-items: center; }
   .user-chip-wrap[hidden] { display: none; }
   .user-chip {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 3px 9px 3px 7px;
-    border: 1px solid transparent;
-    border-radius: 999px;
+    gap: 8px;
+    width: 100%;
+    min-height: 34px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 6px;
     background: none;
-    color: var(--ink-muted);
+    color: var(--ink);
     font-family: var(--font-body);
-    font-size: 11.5px;
-    line-height: 1.6;
+    font-size: 13.5px;
+    font-weight: 600;
+    text-align: left;
+    transition: background-color var(--dur-fast) var(--ease-std);
   }
   .user-chip:hover,
-  .user-chip[aria-expanded="true"] { color: var(--ink); background: var(--code-bg); border-color: var(--panel-border); }
-  .user-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .user-chip[aria-expanded="true"] { background: var(--row-hover); }
+  .user-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .user-avatar {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    background: var(--ink-muted);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .user-chip-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-chip-caret { width: 14px; height: 14px; color: var(--ink-muted); }
+  .user-chip[aria-expanded="true"] .user-chip-caret { transform: rotate(180deg); }
   .user-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-muted); flex: 0 0 auto; }
   .user-menu {
     position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
+    bottom: calc(100% + 4px);
+    left: 8px;
+    right: 8px;
     z-index: 1000; /* como los menús flotantes del editor: encima del contenido */
-    min-width: 200px;
     padding: 5px;
     display: flex;
     flex-direction: column;
@@ -399,6 +378,8 @@
 
   /* ---------- layout ---------- */
   .layout { flex: 1; display: flex; min-height: 0; }
+  /* La columna del contenido: arriba la navegación, debajo la página. */
+  .workspace { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
   aside {
     width: 280px;
@@ -419,6 +400,7 @@
   main {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     overflow-y: auto;
     padding: var(--main-pad-y) var(--main-pad-x) var(--main-pad-bottom);
   }
@@ -434,6 +416,38 @@
     color: var(--ink);
   }
   .sidebar-section { padding: 8px 8px 6px; }
+  /* La marca, arriba de la barra lateral (antes iba en la cabecera). */
+  .sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 8px 16px 4px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  /* «Mis cosas»: Inicio, Mis tareas y Grafo, con el aspecto de «Mis tareas». */
+  .sidebar-mine #mytasks-section { padding: 0; }
+  .sidebar-mine-label { padding: 4px 8px 2px; }
+  .sidebar-mine .sidebar-section-head:not(.sidebar-mine-label) {
+    padding: 0;
+    font-size: 13.5px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--ink);
+  }
+  .sidebar-mine .sidebar-section-toggle {
+    gap: 8px;
+    min-height: 30px;
+    padding: 0 8px;
+    border-radius: 6px;
+    transition: background-color var(--dur-fast) var(--ease-std);
+  }
+  .sidebar-mine .sidebar-section-toggle:hover { background: var(--row-hover); }
+  .sidebar-mine .sidebar-section-toggle .svg-icon { width: 16px; height: 16px; color: var(--ink-muted); }
+  #btn-nav-home[aria-current="page"] { background: var(--accent-soft); font-weight: 600; }
+  #btn-nav-home[aria-current="page"] .svg-icon { color: var(--accent-ink); }
   /* «Mis tareas» y «Bandeja» son sitios a los que se va, no rótulos de
      sección: se leen como una fila del árbol (mismo alto, mismo hover, mismo
      activo) y las versalitas quedan para el rótulo «Páginas». */
@@ -639,9 +653,9 @@
   .icon-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
   .icon-btn:disabled:hover { background: none; color: var(--ink-muted); }
 
-  /* ---------- navegación (atrás/adelante/subir), en la cabecera ---------- */
-  .header-left { display: flex; align-items: center; gap: 14px; }
-  .nav-history-controls { display: flex; gap: 4px; }
+  /* ---------- navegación (atrás/adelante/subir), junto al botón de la barra ---------- */
+  .header-left { display: flex; align-items: center; gap: 6px; }
+  .nav-history-controls { display: flex; gap: 2px; }
 
   .template-btn {
     background: none;
@@ -2288,8 +2302,9 @@
       display: flex;
       position: fixed;
       z-index: 50;
-      top: calc(var(--header-height) + 8px);
-      bottom: 12px;
+      /* Debajo de la fila de ☰: el botón sigue a mano para dejarla fija. */
+      top: calc(var(--header-height) + 2px);
+      bottom: 8px;
       left: 8px;
       width: 272px;
       border: 1px solid var(--panel-border);
@@ -4087,6 +4102,98 @@
   }
 
   .form-note { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--ink-muted); }
+
+  /* ---------- ajustes ----------
+     Una ventana ancha con los apartados a la izquierda y su contenido a la
+     derecha, como los ajustes de Notion. Alto fijo: cambiar de apartado no
+     hace saltar la ventana; lo largo se desplaza dentro. */
+  dialog.settings-dialog {
+    width: min(860px, 94vw);
+    height: min(640px, 88vh);
+    padding: 0;
+    overflow: hidden;
+  }
+  .settings-shell { display: flex; height: 100%; }
+  .settings-nav {
+    flex: 0 0 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 16px 8px;
+    border-right: 1px solid var(--panel-border);
+    background: var(--panel);
+  }
+  .settings-nav h3 { margin: 0 8px 10px; font-size: var(--text-base); color: var(--ink-muted); font-weight: 600; }
+  .settings-tab {
+    display: flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--ink-muted);
+    font-size: 13.5px;
+    text-align: left;
+  }
+  .settings-tab[hidden] { display: none; }
+  .settings-tab:hover { background: var(--row-hover); color: var(--ink); }
+  .settings-tab.active { background: var(--row-hover); color: var(--ink); font-weight: 600; }
+  .settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .settings-body { position: relative; flex: 1 1 auto; min-width: 0; overflow-y: auto; padding: 22px 32px 28px; }
+  .settings-close { position: absolute; top: 12px; right: 12px; }
+  .settings-section h4 {
+    margin: 0 0 18px;
+    padding: 0 40px 10px 0;
+    border-bottom: 1px solid var(--panel-border);
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+  .settings-group { margin-bottom: 26px; }
+  .settings-group h5 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--ink); }
+  .settings-group .dialog-actions { justify-content: flex-start; margin-top: 8px; }
+  .settings-group form { max-width: 420px; }
+  /* El tema: dos opciones como un interruptor de dos posiciones. */
+  .theme-choice {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    background: var(--bg);
+  }
+  .theme-option { position: relative; display: inline-flex; }
+  .theme-option input { position: absolute; opacity: 0; pointer-events: none; }
+  .theme-option span {
+    padding: 5px 16px;
+    border-radius: 6px;
+    color: var(--ink-muted);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .theme-option span:hover { color: var(--ink); }
+  .theme-option input:checked + span { background: var(--code-bg); color: var(--ink); font-weight: 600; }
+  .theme-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* En el móvil, la ventana ocupa la pantalla y los apartados van arriba en
+     una fila. */
+  @media (max-width: 640px) {
+    dialog.settings-dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+    .settings-shell { flex-direction: column; }
+    .settings-nav {
+      flex: none;
+      flex-direction: row;
+      align-items: center;
+      overflow-x: auto;
+      padding: 8px 52px 8px 8px;
+      border-right: 0;
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .settings-nav h3 { display: none; }
+    .settings-tab { flex: none; min-height: 40px; }
+    .settings-body { padding: 18px 16px 24px; }
+    .settings-close { position: fixed; top: 8px; right: 8px; }
+    .settings-section h4 { padding-right: 0; }
+  }
   .form-note.form-error { color: var(--down); }
   .form-note.form-ok { color: var(--ok); }
   /* --- «Procesar» hacia un nombre que ya existe (M1) ---
@@ -4213,19 +4320,11 @@
       padding: 0 8px;
       gap: 6px;
     }
-    .header-left { gap: 6px; min-width: 0; }
-    /* Los cinco botones de navegación se leen como un solo grupo, no como
-       cinco iconos sueltos repartidos por la fila. */
-    .nav-history-controls {
-      gap: 0;
-      padding: 2px;
-      border: 1px solid var(--panel-border);
-      border-radius: 10px;
-      background: var(--bg);
-    }
-    .nav-history-controls .icon-btn { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
-    .status-strip { gap: 8px; }
-    .status-item-label { display: none; }
+    .header-left { gap: 4px; min-width: 0; }
+    .nav-history-controls { gap: 0; }
+    .nav-history-controls .icon-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+    /* En el cajón, el usuario abajo con el alto de un dedo. */
+    .user-chip { min-height: 44px; }
 
     /* --- barra lateral = cajón --- */
     .layout { position: relative; }
@@ -4487,23 +4586,6 @@
     }
   }
 
-  /* Cabecera muy estrecha / móvil pequeño: el nombre de usuario se queda en su
-     punto de color (sigue en el title y en el aria-label del chip, así que no
-     se pierde nada para quien use lector de pantalla) y la fila respira. */
-  @media (max-width: 640px) {
-    .user-chip-name { display: none; }
-    .user-chip {
-      width: 44px;
-      height: 44px;
-      padding: 0;
-      justify-content: center;
-      gap: 0;
-      border-radius: 50%;
-    }
-    .user-dot { width: 12px; height: 12px; }
-    .user-menu { min-width: 200px; max-width: calc(100vw - 20px); }
-    header .brand { display: none; }
-  }
 
   /* Móvil pequeño: el nombre, el tipo y el botón de quitar, en una línea. */
   @media (max-width: 480px) {
@@ -4730,66 +4812,43 @@
     </defs>
   </svg>
 
-  <header>
-    <div class="header-left">
-      <button class="icon-btn" id="btn-toggle-sidebar" title="Mostrar/ocultar barra lateral" aria-label="Mostrar u ocultar barra lateral"><svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-menu"/></svg></button>
-      <span class="brand" title="MyDamnManagement"><img src="/logo.png" alt="" class="brand-logo" /><span class="brand-name">MyDamnManagement</span></span>
-      <div class="nav-history-controls">
-        <button class="icon-btn" id="btn-nav-home" title="Ir al inicio" aria-label="Ir al inicio"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-home"/></svg></button>
-        <button class="icon-btn" id="btn-nav-back" title="Atrás" aria-label="Atrás" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-left"/></svg></button>
-        <button class="icon-btn" id="btn-nav-forward" title="Adelante" aria-label="Adelante" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right"/></svg></button>
-        <button class="icon-btn" id="btn-nav-up" title="Subir un nivel" aria-label="Subir un nivel" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-up"/></svg></button>
-        <button class="icon-btn" id="btn-graph" title="Grafo de la nota (G)" aria-label="Abrir el grafo de la nota"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-graph"/></svg></button>
-      </div>
-    </div>
-    <div class="status-strip">
-      <span class="status-item"><span class="dot" id="dot-api"></span><span class="status-item-label">api</span></span>
-      <span class="status-item"><span class="dot" id="dot-db"></span><span class="status-item-label">db</span></span>
-      <!-- Quién eres (P11b): tu punto de color y tu nombre; al pulsarlo, tu
-           menú. app.js lo rellena con /auth/me y lo deja oculto hasta saberlo
-           (sin sesión, la puerta ya ha mandado a /login). -->
-      <div class="user-chip-wrap" id="user-chip-wrap" hidden>
-        <button type="button" class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Tu cuenta">
-          <span class="user-dot" aria-hidden="true"></span>
-          <span class="user-chip-name"></span>
-        </button>
-        <div class="user-menu" id="user-menu" role="menu" aria-label="Tu cuenta" hidden>
-          <!-- Los tokens de `POST /capture` (P13): crear, ver su último uso y
-               revocar. El secreto se enseña una sola vez, al crearlo. -->
-          <button type="button" class="user-menu-item" role="menuitem" data-action="tokens">Tokens de captura</button>
-          <button type="button" class="user-menu-item" role="menuitem" data-action="password">Cambiar contraseña</button>
-          <!-- Solo para un admin: paintUserChip() lo enseña o lo esconde. -->
-          <button type="button" class="user-menu-item" role="menuitem" data-action="users" hidden>Usuarios</button>
-          <button type="button" class="user-menu-item is-danger" role="menuitem" data-action="logout">Cerrar sesión</button>
-        </div>
-      </div>
-      <!-- Interruptor de tema (SPEC-B §1.1). El icono visible lo decide el
-           data-theme del <html>: sol en oscuro (pasar a claro) y luna en claro. -->
-      <button type="button" class="icon-btn" id="btn-toggle-theme" title="Cambiar a tema claro" aria-label="Cambiar entre tema oscuro y claro" aria-pressed="false">
-        <svg class="svg-icon theme-icon-light" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg>
-        <svg class="svg-icon theme-icon-dark" aria-hidden="true" focusable="false"><use href="#i-moon"/></svg>
-      </button>
-    </div>
-  </header>
 
   <div class="layout">
     <aside id="sidebar-aside">
+      <div class="sidebar-brand" title="MyDamnManagement"><img src="/logo.png" alt="" class="brand-logo" /><span class="brand-name">MyDamnManagement</span></div>
       <div class="sidebar-search">
         <input type="search" id="search-input" placeholder="Buscar…" />
       </div>
       <div id="search-results" class="search-results" hidden></div>
 
       <div id="nav-sections">
-        <!-- Mis tareas: las filas de TODAS las bases cuyo responsable eres tú.
-             La sección la enseña `paintMyTasks()` (app.js) y solo si hay algo,
-             igual que la bandeja: quien no usa responsables no ve una sección
-             vacía que no le dice nada. -->
-        <div class="sidebar-section" id="mytasks-section" hidden>
+        <!-- Mis cosas: lo que es tuyo y no una página del árbol. Inicio, tus
+             tareas y el grafo; aquí irán también menciones y avisos. -->
+        <div class="sidebar-section sidebar-mine" id="mine-section">
+          <div class="sidebar-section-head sidebar-mine-label"><span>Mis cosas</span></div>
           <div class="sidebar-section-head">
-            <button type="button" class="sidebar-section-toggle" id="btn-mytasks" aria-current="false">
-              <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-              <span id="mytasks-label">Mis tareas</span>
-              <span class="mytasks-badges" id="mytasks-badges" hidden></span>
+            <button type="button" class="sidebar-section-toggle" id="btn-nav-home" aria-current="false">
+              <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-home"/></svg>
+              <span>Inicio</span>
+            </button>
+          </div>
+          <!-- Mis tareas: las filas de TODAS las bases cuyo responsable eres tú.
+               La sección la enseña `paintMyTasks()` (app.js) y solo si hay algo,
+               igual que la bandeja: quien no usa responsables no ve una sección
+               vacía que no le dice nada. -->
+          <div class="sidebar-section" id="mytasks-section" hidden>
+            <div class="sidebar-section-head">
+              <button type="button" class="sidebar-section-toggle" id="btn-mytasks" aria-current="false">
+                <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
+                <span id="mytasks-label">Mis tareas</span>
+                <span class="mytasks-badges" id="mytasks-badges" hidden></span>
+              </button>
+            </div>
+          </div>
+          <div class="sidebar-section-head">
+            <button type="button" class="sidebar-section-toggle" id="btn-graph" title="Grafo de la página abierta (G)">
+              <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-graph"/></svg>
+              <span>Grafo</span>
             </button>
           </div>
         </div>
@@ -4821,15 +4880,46 @@
         </div>
 
       </div>
+
+      <!-- Tú, abajo del todo (como el espacio de trabajo en Notion): tu nombre
+           y, al pulsarlo, Ajustes y Cerrar sesión. app.js lo rellena con
+           /auth/me y lo deja oculto hasta saberlo. -->
+      <div class="sidebar-user user-chip-wrap" id="user-chip-wrap" hidden>
+        <button type="button" class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Tu cuenta">
+          <span class="user-avatar" aria-hidden="true"></span>
+          <span class="user-chip-name"></span>
+          <svg class="svg-icon user-chip-caret" aria-hidden="true" focusable="false"><use href="#i-chevron-down"/></svg>
+        </button>
+        <div class="user-menu" id="user-menu" role="menu" aria-label="Tu cuenta" hidden>
+          <button type="button" class="user-menu-item" role="menuitem" data-action="settings">Ajustes</button>
+          <button type="button" class="user-menu-item is-danger" role="menuitem" data-action="logout">Cerrar sesión</button>
+        </div>
+      </div>
     </aside>
 
     <!-- Fondo del cajón en móvil (P14): tapa el contenido y, al tocarlo, cierra
          la barra. En escritorio este div no está (lo esconde el CSS). -->
     <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
 
-    <main id="main">
-      <div class="empty-state">Elige una página o crea una nueva.</div>
-    </main>
+    <div class="workspace">
+      <!-- La barra de arriba ya no es una franja aparte: va dentro de la
+           columna del contenido, con su mismo fondo y sin línea. Solo el botón
+           de la barra lateral y la navegación (atrás, adelante, subir); lo
+           demás (inicio, grafo, usuario, tema) vive en la barra lateral. -->
+      <header>
+        <div class="header-left">
+          <button class="icon-btn" id="btn-toggle-sidebar" title="Mostrar/ocultar barra lateral" aria-label="Mostrar u ocultar barra lateral"><svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-menu"/></svg></button>
+          <div class="nav-history-controls">
+            <button class="icon-btn" id="btn-nav-back" title="Atrás" aria-label="Atrás" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-left"/></svg></button>
+            <button class="icon-btn" id="btn-nav-forward" title="Adelante" aria-label="Adelante" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right"/></svg></button>
+            <button class="icon-btn" id="btn-nav-up" title="Subir un nivel" aria-label="Subir un nivel" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-up"/></svg></button>
+          </div>
+        </div>
+      </header>
+      <main id="main">
+        <div class="empty-state">Elige una página o crea una nueva.</div>
+      </main>
+    </div>
   </div>
 
   <dialog id="dialog-database">
@@ -4992,88 +5082,137 @@
     </div>
   </dialog>
 
-  <!-- Tokens de captura (P13): crear, listar con su último uso y revocar. El
-       secreto se enseña una sola vez —en la base solo queda su SHA-256— y el
-       atajo del sistema lo usa como MDM_TOKEN. -->
-  <dialog id="dialog-tokens">
-    <h3>Tokens de captura</h3>
-    <p class="form-note" id="tokens-note">Un token de captura solo sirve para crear notas en la bandeja (POST /capture). Los usan los atajos de macOS, Windows y Linux (ver tools/capture/).</p>
-    <div class="tokens-list" id="tokens-list"></div>
-    <div class="token-reveal" id="token-reveal" hidden>
-      <p><strong>Este es el token, y no se vuelve a enseñar.</strong> Cópialo ahora y guárdalo en el atajo (MDM_TOKEN). Si lo pierdes, revócalo y crea otro.</p>
-      <div class="token-value">
-        <input type="text" id="token-value" readonly spellcheck="false" aria-label="Token de captura recién creado" />
-        <button type="button" class="btn" id="btn-copy-token">Copiar</button>
+  <!-- Ajustes: una ventana con apartados a la izquierda, como en Notion.
+       «Aplicación» (el tema), «Usuario» (nombre, contraseña y tokens de
+       captura) y, solo para un admin, «Administración» (usuarios). Se abre
+       desde el menú del usuario, abajo en la barra lateral. -->
+  <dialog id="dialog-settings" class="settings-dialog" aria-labelledby="settings-title">
+    <div class="settings-shell">
+      <nav class="settings-nav" aria-label="Apartados de los ajustes">
+        <h3 id="settings-title">Ajustes</h3>
+        <button type="button" class="settings-tab" data-section="app">Aplicación</button>
+        <button type="button" class="settings-tab" data-section="user">Usuario</button>
+        <button type="button" class="settings-tab" data-section="admin" hidden>Administración</button>
+      </nav>
+      <div class="settings-body">
+        <button type="button" class="icon-btn settings-close" id="btn-close-settings" title="Cerrar (Esc)" aria-label="Cerrar los ajustes"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
+
+        <section class="settings-section" data-section="app" aria-labelledby="settings-app-title">
+          <h4 id="settings-app-title">Ajustes de la aplicación</h4>
+          <div class="settings-group">
+            <h5>Tema</h5>
+            <p class="form-note">Se recuerda en este navegador.</p>
+            <div class="theme-choice" role="radiogroup" aria-label="Tema">
+              <label class="theme-option"><input type="radio" name="settings-theme" value="light" /><span>Claro</span></label>
+              <label class="theme-option"><input type="radio" name="settings-theme" value="dark" /><span>Oscuro</span></label>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section" data-section="user" aria-labelledby="settings-user-title" hidden>
+          <h4 id="settings-user-title">Ajustes de usuario</h4>
+
+          <!-- Nombre visible propio (PATCH /auth/me). El @usuario no cambia:
+               es con lo que se entra. -->
+          <div class="settings-group">
+            <h5>Perfil</h5>
+            <form id="form-profile" novalidate>
+              <div class="field">
+                <label for="profile-name">Nombre visible</label>
+                <input type="text" id="profile-name" autocomplete="name" />
+              </div>
+              <p class="form-note" id="profile-note">Es el nombre que se ve en las tablas y en «Creado por». Entras con <span id="profile-username"></span>, que no cambia.</p>
+              <div class="dialog-actions">
+                <button type="submit" class="btn btn-primary" id="btn-save-profile">Guardar nombre</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Cambiar la contraseña propia. La actual se pide porque cambiarla
+               es también la forma de echar a quien estuviera dentro con la
+               vieja (el backend cierra las demás sesiones). -->
+          <div class="settings-group">
+            <h5>Contraseña</h5>
+            <form id="form-password" novalidate>
+              <div class="field">
+                <label for="pw-current">Contraseña actual</label>
+                <input type="password" id="pw-current" autocomplete="current-password" />
+              </div>
+              <div class="field">
+                <label for="pw-new">Contraseña nueva</label>
+                <input type="password" id="pw-new" autocomplete="new-password" />
+              </div>
+              <div class="field">
+                <label for="pw-repeat">Repite la contraseña nueva</label>
+                <input type="password" id="pw-repeat" autocomplete="new-password" />
+              </div>
+              <p class="form-note" id="pw-note">Al menos 8 caracteres. Al cambiarla se cierran las demás sesiones abiertas.</p>
+              <div class="dialog-actions">
+                <button type="submit" class="btn btn-primary" id="btn-save-password">Cambiar contraseña</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Tokens de captura (P13): crear, listar con su último uso y
+               revocar. El secreto se enseña una sola vez —en la base solo
+               queda su SHA-256— y el atajo del sistema lo usa como MDM_TOKEN. -->
+          <div class="settings-group">
+            <h5>Tokens de captura</h5>
+            <p class="form-note" id="tokens-note">Un token de captura solo sirve para crear notas en la bandeja (POST /capture). Los usan los atajos de macOS, Windows y Linux (ver tools/capture/).</p>
+            <div class="tokens-list" id="tokens-list"></div>
+            <div class="token-reveal" id="token-reveal" hidden>
+              <p><strong>Este es el token, y no se vuelve a enseñar.</strong> Cópialo ahora y guárdalo en el atajo (MDM_TOKEN). Si lo pierdes, revócalo y crea otro.</p>
+              <div class="token-value">
+                <input type="text" id="token-value" readonly spellcheck="false" aria-label="Token de captura recién creado" />
+                <button type="button" class="btn" id="btn-copy-token">Copiar</button>
+              </div>
+            </div>
+            <form id="form-new-token" novalidate>
+              <div class="field">
+                <label for="nt-name">Nombre (opcional)</label>
+                <input type="text" id="nt-name" placeholder="Mac de casa" autocomplete="off" spellcheck="false" />
+              </div>
+              <p class="form-note" id="nt-note">Un nombre solo sirve para reconocer la llave en esta lista.</p>
+              <div class="dialog-actions">
+                <button type="submit" class="btn btn-primary" id="btn-create-token">Crear token</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <!-- Usuarios (P11b, solo admin): listar y crear. -->
+        <section class="settings-section" data-section="admin" aria-labelledby="settings-admin-title" hidden>
+          <h4 id="settings-admin-title">Ajustes de administración</h4>
+          <div class="settings-group">
+            <h5>Usuarios</h5>
+            <p class="form-note" id="users-note"></p>
+            <div class="users-list" id="users-list"></div>
+            <form id="form-new-user" novalidate>
+              <div class="field">
+                <label for="nu-username">Usuario</label>
+                <input type="text" id="nu-username" placeholder="marta" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label for="nu-display">Nombre visible</label>
+                <input type="text" id="nu-display" placeholder="Marta" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="nu-password">Contraseña</label>
+                <input type="password" id="nu-password" autocomplete="new-password" />
+              </div>
+              <div class="field field-inline">
+                <input type="checkbox" id="nu-admin" />
+                <label for="nu-admin">Administrador</label>
+              </div>
+              <p class="form-note" id="nu-note">El color lo asigna la paleta según el nombre de usuario.</p>
+              <div class="dialog-actions">
+                <button type="submit" class="btn btn-primary" id="btn-create-user">Crear usuario</button>
+              </div>
+            </form>
+          </div>
+        </section>
       </div>
     </div>
-    <form id="form-new-token" novalidate>
-      <div class="field">
-        <label for="nt-name">Nombre (opcional)</label>
-        <input type="text" id="nt-name" placeholder="Mac de casa" autocomplete="off" spellcheck="false" />
-      </div>
-      <p class="form-note" id="nt-note">Un nombre solo sirve para reconocer la llave en esta lista.</p>
-      <div class="dialog-actions">
-        <button type="button" class="btn" id="btn-close-tokens">Cerrar</button>
-        <button type="submit" class="btn btn-primary" id="btn-create-token">Crear token</button>
-      </div>
-    </form>
-  </dialog>
-
-  <!-- Tu cuenta (P11b): cambiar la contraseña propia. La actual se pide
-       porque cambiarla es también la forma de echar a quien estuviera dentro
-       con la vieja (el backend cierra las demás sesiones). -->
-  <dialog id="dialog-password">
-    <h3>Cambiar contraseña</h3>
-    <form id="form-password" novalidate>
-      <div class="field">
-        <label for="pw-current">Contraseña actual</label>
-        <input type="password" id="pw-current" autocomplete="current-password" />
-      </div>
-      <div class="field">
-        <label for="pw-new">Contraseña nueva</label>
-        <input type="password" id="pw-new" autocomplete="new-password" />
-      </div>
-      <div class="field">
-        <label for="pw-repeat">Repite la contraseña nueva</label>
-        <input type="password" id="pw-repeat" autocomplete="new-password" />
-      </div>
-      <p class="form-note" id="pw-note">Al menos 8 caracteres. Al cambiarla se cierran las demás sesiones abiertas.</p>
-      <div class="dialog-actions">
-        <button type="button" class="btn" id="btn-cancel-password">Cancelar</button>
-        <button type="submit" class="btn btn-primary" id="btn-save-password">Cambiar</button>
-      </div>
-    </form>
-  </dialog>
-
-  <!-- Usuarios (P11b, solo admin): listar y crear. Editar y borrar no entran
-       en esta tarjeta. -->
-  <dialog id="dialog-users">
-    <h3>Usuarios</h3>
-    <p class="form-note" id="users-note"></p>
-    <div class="users-list" id="users-list"></div>
-    <form id="form-new-user" novalidate>
-      <div class="field">
-        <label for="nu-username">Usuario</label>
-        <input type="text" id="nu-username" placeholder="marta" autocomplete="off" spellcheck="false" />
-      </div>
-      <div class="field">
-        <label for="nu-display">Nombre visible</label>
-        <input type="text" id="nu-display" placeholder="Marta" autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="nu-password">Contraseña</label>
-        <input type="password" id="nu-password" autocomplete="new-password" />
-      </div>
-      <div class="field field-inline">
-        <input type="checkbox" id="nu-admin" />
-        <label for="nu-admin">Administrador</label>
-      </div>
-      <p class="form-note" id="nu-note">El color lo asigna la paleta según el nombre de usuario.</p>
-      <div class="dialog-actions">
-        <button type="button" class="btn" id="btn-close-users">Cerrar</button>
-        <button type="submit" class="btn btn-primary" id="btn-create-user">Crear usuario</button>
-      </div>
-    </form>
   </dialog>
 
   <script type="module" src="/app.js"></script>

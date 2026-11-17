@@ -129,7 +129,7 @@ docker compose run --rm \
 
 El nombre del volumen es el del proyecto de compose que lo creó: `docker volume ls | grep attachments` dice cuál es si no es `mydamnmanagement`.
 
-Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs) (con `DOCS_ENABLED` encendido, el valor por defecto). Panel visual en [http://localhost:8000/](http://localhost:8000/) (estado de `api`/`db` en la cabecera, árbol de páginas —con las bases dentro— a la izquierda).
+Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs) (con `DOCS_ENABLED` encendido, el valor por defecto). Panel visual en [http://localhost:8000/](http://localhost:8000/) (barra lateral a la izquierda con «Mis cosas» —Inicio, Mis tareas, Grafo—, el árbol de páginas con las bases dentro y tu usuario abajo, que abre **Ajustes**: tema, perfil, contraseña, tokens de captura y, para un admin, usuarios).
 
 ## Panel visual
 
@@ -178,6 +178,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/auth/setup`  | POST   | Alta del primer usuario (admin). **403** si ya hay usuarios |
 | `/auth/login`  | POST   | `{username, password}` → cookie de sesión `HttpOnly`      |
 | `/auth/me`     | GET    | Usuario de la sesión (`id`, `username`, `display_name`, `color`, `is_admin`) |
+| `/auth/me`     | PATCH  | Cambia el nombre visible propio (`{"display_name": "…"}`); el `id` no cambia |
 | `/auth/password` | POST | Cambia la contraseña propia (pide la actual) y cierra las demás sesiones |
 | `/auth/users`  | GET    | Lista los usuarios (`as_dict()`, sin hashes). Solo un administrador |
 | `/auth/users`  | POST   | Crea otro usuario. Solo un administrador                 |
@@ -435,7 +436,7 @@ curl -s -X POST http://127.0.0.1:8000/capture \
 
 El panel entra con la cookie de sesión, pero un atajo del sistema operativo no
 tiene cookie. Para eso está el **token de captura** — y es del usuario, no del
-agente: panel → menú del usuario → **«Tokens de captura»** → crear (el secreto
+agente: panel → tu usuario (abajo en la barra lateral) → **Ajustes → Usuario → «Tokens de captura»** → crear (el secreto
 se enseña **una sola vez**), listar (con su `last_used_at`) y revocar. Por API,
 con la sesión puesta (`cookies.txt` es el fichero de cookie de `curl`):
 

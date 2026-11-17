@@ -76,6 +76,12 @@ class UserUpdateRequest(BaseModel):
     color: Optional[str] = None
 
 
+class MeUpdateRequest(BaseModel):
+    """Lo que cualquiera puede cambiar de sí mismo: su nombre visible."""
+
+    display_name: str
+
+
 # ------------------------------------------------------------------ conexión
 
 
@@ -233,6 +239,28 @@ def login(
 def me(user: auth.User = Depends(get_current_user)):
     """Quién está detrás de la sesión. Lo usan el panel y la pantalla de login."""
     return user.as_dict()
+
+
+@router.patch("/me")
+def update_me(
+    payload: MeUpdateRequest,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Cambia el nombre visible propio (los ajustes de usuario).
+
+    Cualquier usuario, sobre sí mismo: es lo mismo que hace un admin con
+    `PATCH /auth/users/{id}`, pero sin poder tocar a nadie más ni el color. El
+    `id` no cambia, así que las celdas `person` siguen apuntando a la misma
+    persona y enseñan el nombre nuevo.
+    """
+    try:
+        actualizado = auth.update_user(conn, user.id, display_name=payload.display_name)
+    except auth.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if actualizado is None:
+        raise HTTPException(404, "el usuario de la sesión ya no existe")
+    return actualizado.as_dict()
 
 
 @router.post("/logout", status_code=204)
