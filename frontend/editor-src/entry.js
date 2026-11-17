@@ -885,7 +885,7 @@ function emptyGapEffect(from, insert = "\n\n") {
  * no existía -- ni asa, ni arrastre, ni «+», ni Alt+↑/↓ con un punto de entrada
  * claro -- y el widget tiene que llevar el asa dentro. Tarjeta t_45697398.
  */
-function blockHandleDom(index) {
+export function blockHandleDom(index) {
   const wrap = document.createElement("span");
   wrap.className = "cm-mdm-block-handle-wrap";
   // El índice va en la BANDA: de aquí lo leen el marcar y el arrastrar, que ya
@@ -1105,6 +1105,9 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           } else {
             next = new Set([idx]);
           }
+          // Los nodos del bloque, ANTES de marcarlo: de ahí sale la copia que
+          // sigue al cursor (ver `startDragGhost`).
+          const nodes = renderedBlockNodes(view, view.state.field(blockField).blocks[idx]);
           selectBlocks(view, next);
           // El mousedown de la banda va con preventDefault (para no mover el
           // caret ni pintar texto), así que el navegador NO da el foco al
@@ -1115,7 +1118,7 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           // mientras no se mueva más de unos píxeles no es arrastre (es clic,
           // que ya ha marcado). En táctil no: ahí el gesto es del menú de
           // pulsación larga.
-          if (lastPointerType !== "touch") beginBlockDrag(view, event, idx);
+          if (lastPointerType !== "touch") beginBlockDrag(view, event, idx, nodes);
           return true;
         }
 
@@ -1127,9 +1130,10 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           const idx = blockIndexAtCoords(view, event);
           if (idx >= 0) {
             event.preventDefault();
+            const nodes = renderedBlockNodes(view, view.state.field(blockField).blocks[idx]);
             selectBlocks(view, new Set([idx]));
             view.focus();
-            beginBlockDrag(view, event, idx);
+            beginBlockDrag(view, event, idx, nodes);
             return true;
           }
         }
@@ -1437,7 +1441,10 @@ function renderedBlockNodes(view, block) {
   for (const child of view.contentDOM.children) {
     if (!(child instanceof HTMLElement)) continue;
     const rect = child.getBoundingClientRect();
-    if (rect.bottom <= top || rect.top >= bottom) continue;
+    // El CENTRO dentro de la banda: rozarla por un píxel -- que es lo que hace
+    // la línea en blanco de encima, por el padding del bloque -- no cuenta.
+    const mid = (rect.top + rect.bottom) / 2;
+    if (mid < top || mid > bottom) continue;
     nodes.push(child);
   }
   return nodes;
@@ -1446,8 +1453,11 @@ function renderedBlockNodes(view, block) {
 /** La copia translúcida que sigue al cursor: el DOM del bloque clonado, colgado
  * del body en `position: fixed` y movido con `transform` (nada de recalcular
  * nada por fila). El bloque original se queda en su sitio, atenuado. */
-function startDragGhost(view, block) {
-  const nodes = renderedBlockNodes(view, block);
+function startDragGhost(view, block, nodes = null) {
+  // Con `nodes` se clona lo que estaba pintado ANTES de marcar el bloque: al
+  // marcar una base incrustada su widget se repinta y, mientras llega la tabla,
+  // la copia se quedaría en una caja vacía.
+  if (!nodes) nodes = renderedBlockNodes(view, block);
   if (!nodes.length) return null;
   const content = view.contentDOM.getBoundingClientRect();
   const ghost = document.createElement("div");
@@ -1466,13 +1476,27 @@ function startDragGhost(view, block) {
     copy.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
     copy.classList.remove("cm-mdm-line-marked");
     ghost.appendChild(copy);
-    node.classList.add("cm-mdm-line-dragging");
   }
   document.body.appendChild(ghost);
   return ghost;
 }
 
+/** Atenúa el bloque que se está arrastrando. Se vuelve a poner en cada
+ * movimiento: el punto del bloque despacha un efecto en cada `mousemove`, y un
+ * repintado de esa línea se lleva por delante la clase puesta a mano. */
+function markDragSource(view, index) {
+  for (const node of view.contentDOM.querySelectorAll(".cm-mdm-line-dragging")) {
+    node.classList.remove("cm-mdm-line-dragging");
+  }
+  const block = view.state.field(blockField).blocks[index];
+  if (!block) return;
+  for (const node of renderedBlockNodes(view, block)) {
+    node.classList.add("cm-mdm-line-dragging");
+  }
+}
+
 function moveDragGhost(drag, event) {
+  markDragSource(drag.view, drag.index);
   if (!drag.ghost) return;
   const dx = Math.round(event.clientX - drag.startX);
   const dy = Math.round(event.clientY - drag.startY);
@@ -1546,7 +1570,7 @@ function onBlockDragMove(event) {
     // banda) y el texto del bloque no se selecciona sin querer.
     document.body.classList.add("cm-mdm-dragging");
     const block = drag.view.state.field(blockField).blocks[drag.index];
-    if (block) drag.ghost = startDragGhost(drag.view, block);
+    if (block) drag.ghost = startDragGhost(drag.view, block, drag.nodes);
   }
   event.preventDefault();
   moveDragGhost(drag, event);
@@ -1586,7 +1610,7 @@ function onBlockDragEnd(event) {
   if (wasActive) moveBlockTo(view, index, slot, null);
 }
 
-function beginBlockDrag(view, event, index) {
+function beginBlockDrag(view, event, index, nodes = null) {
   endBlockDrag(); // un arrastre anterior sin `mouseup` no puede sobrevivir a otro
   blockDrag = {
     view,
@@ -1597,6 +1621,8 @@ function beginBlockDrag(view, event, index) {
     slot: null,
     line: null,
     ghost: null,
+    // Lo pintado del bloque AHORA (antes de marcarlo): de ahí sale la copia.
+    nodes,
   };
   window.addEventListener("mousemove", onBlockDragMove, true);
   window.addEventListener("mouseup", onBlockDragEnd, true);

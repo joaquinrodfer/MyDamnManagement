@@ -1609,6 +1609,11 @@
     opacity: 1;
   }
   .cm-mdm-block-add {
+    /* Por encima de la zona de agarrar (`::before` de la banda, que va
+       posicionada y si no taparía el «+»): el clic en el «+» tiene que añadir
+       un bloque, no marcar y arrastrar. */
+    position: relative;
+    z-index: 1;
     width: 28px;
     height: 28px;
     min-width: 28px;
@@ -1744,7 +1749,7 @@
   }
   /* Línea de inserción del arrastre de bloques: marca, entre dos bloques, el
      hueco donde va a caer el que se arrastra (ya no hay asa: se coge por la
-     banda del margen o con Alt).
+     banda del margen o con Alt). */
   .cm-mdm-drop-line {
     position: fixed;
     z-index: 950;
