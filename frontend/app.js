@@ -15,7 +15,10 @@ const state = {
   flushSaveBeacon: null, // guarda ya (con keepalive) la nota abierta, al cerrar u ocultar la pestaña
   selectedPages: new Map(), // id de página (nodo del árbol) -> node; selección múltiple en la barra lateral
   lastClickedRowId: null, // para el rango de Mayús+clic
-  history: [], // [{kind, id}, ...] -- pila de navegación para los botones atrás/adelante
+  // La cuenta de por dónde va la app en la pila del NAVEGADOR (P18): la
+  // navegación de verdad es `history.pushState`/`popstate`, y esto es lo que
+  // necesitan los botones de la cabecera para saber si hay atrás/adelante.
+  history: [], // [{kind, id}, ...]
   historyPos: -1, // índice de "dónde estamos" dentro de state.history
   noteSession: null, // nota abierta: qué queda sin guardar y cómo refrescarla (P8, /events)
   repaintAuthor: null, // repinta «Creado por …» de la nota abierta cuando llega /auth/me (P11b)
@@ -2211,10 +2214,15 @@ async function loadTree() {
     // El árbol acaba de cambiar (arranque, crear, borrar, evento del
     // vigilante...): los destinos que ofrece el "[[" del editor son estos.
     syncLinkTargets();
+    // El arranque lo necesita para saber si una dirección de la URL se puede
+    // resolver (`abrirAlArrancar`): sin árbol no se puede distinguir «esa nota
+    // no existe» de «la API todavía no contesta».
+    return true;
   } catch (e) {
     // El árbol anterior (si lo había) se queda tal cual: solo se vacía
     // después de que la petición haya ido bien.
     reportError("No se pudo cargar el árbol de páginas", e);
+    return false;
   }
 }
 
@@ -2388,7 +2396,7 @@ async function bulkDeletePages(items) {
 
   clearPageSelection();
   await loadTree();
-  if (currentWasDeleted) showEmpty();
+  if (currentWasDeleted) volverAlInicio();
 }
 
 // -------------------------------------------------------------- selector de emojis
@@ -2537,6 +2545,7 @@ async function selectNote(id) {
   try {
     const [page, backlinks] = await Promise.all([api(`/pages/${id}`), api(`/pages/${id}/backlinks`)]);
     renderNote(page, backlinks);
+    return true;
   } catch (e) {
     // renderNote() no llegó a ejecutarse, así que #main sigue mostrando la
     // página anterior: se devuelven state.current y el resaltado del árbol a
@@ -2544,6 +2553,7 @@ async function selectNote(id) {
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la nota", e);
+    return false;
   } finally {
     marcarCarga(false);
   }
@@ -4144,7 +4154,7 @@ function reloadOpenNoteFromDisk(session, { deleted = false } = {}) {
   session.whenQuiet().then(() => {
     if (state.noteSession !== session) return; // ya no es la nota abierta
     if (deleted) {
-      showEmpty();
+      volverAlInicio();
       return;
     }
     reloadNoteFromDisk(session.id);
@@ -4162,7 +4172,7 @@ async function reloadNoteFromDisk(id) {
     ]);
   } catch (e) {
     // 404: se borró entre el aviso y esta lectura.
-    if (state.current?.kind === "note" && state.current.id === id) showEmpty();
+    if (state.current?.kind === "note" && state.current.id === id) volverAlInicio();
     else console.error("No se pudo recargar la nota desde el disco:", e);
     return;
   }
@@ -4242,7 +4252,7 @@ function handleVaultEvent(data) {
         onDismiss: () => session.resumeSave(),
       });
     } else {
-      showEmpty(); // ya no está: se vuelve al inicio, como al borrarla desde la app
+      volverAlInicio(); // ya no está: se vuelve al inicio, como al borrarla desde la app
     }
     return;
   }
@@ -4401,20 +4411,149 @@ function navigateToPage(pageId) {
 }
 
 // -------------------------------------------------- navegación (atrás/adelante/subir)
-// Historial propio, al estilo navegador -- state.current por sí solo no basta
-// para "atrás", porque no hay pila. Todo lo que sea "ir a otra página de
-// verdad" pasa por goTo(); lo que es solo refrescar la página ya abierta
-// (borrar una fila, crear una vista nueva...) sigue llamando a selectNote/
-// selectDatabase directamente, para no llenar el historial de duplicados.
+// La navegación vive en el historial del NAVEGADOR (P18). Cada nota y cada
+// base tiene su dirección --`/<id>`, el id y no el título, que cambia--, así
+// que recargar en ella abre esa página, se puede mandar el enlace a otra
+// persona y atrás/adelante del navegador recorren lo visitado. Los botones de
+// la cabecera siguen ahí, pero ya no llevan una pila propia: le piden al
+// navegador que mueva SU pila y pintan lo que llega por `popstate`. Dos pilas
+// serían dos posibilidades de desincronizarse.
+//
+// `state.history`/`state.historyPos` no son la pila: son la cuenta de por
+// dónde va la app dentro de la del navegador (lo que necesitan los botones
+// para saber si pueden ir atrás/adelante), y se guardan en `sessionStorage`
+// para que un F5 no los apague.
+//
+// Lo que sea "ir a otra página de verdad" pasa por goTo(); lo que es solo
+// refrescar la página ya abierta (borrar una fila, crear una vista nueva...)
+// sigue llamando a selectNote/selectDatabase directamente, para no llenar el
+// historial de duplicados.
+//
+// Las filas de una base (v2.5) NO tienen dirección propia: `openRowPage` es
+// una capa que se apila SOBRE la vista que la contiene (se abre desde una
+// tabla, un tablero o una relación, y para pintarse necesita esa base, esa
+// vista y a veces otra fila debajo). Un enlace a una fila obligaría a
+// reconstruir al entrar la vista de debajo y la pila entera, y a que su
+// «Volver» dejase de ser un gesto de la app para ser un `history.back()` de
+// verdad. Se deja para otra tarjeta; aquí la dirección es la de la página que
+// está debajo.
 
-async function goTo(kind, id, { fromHistory = false } = {}) {
-  if (!fromHistory) {
-    // Si veníamos de "atrás", navegar a algo nuevo descarta el "adelante"
-    // pendiente -- mismo comportamiento que el historial de un navegador.
-    state.history = state.history.slice(0, state.historyPos + 1);
-    state.history.push({ kind, id });
-    state.historyPos = state.history.length - 1;
+const LAST_ROUTE_KEY = "mdm_last_route";
+// La cuenta de la pila dentro de la pestaña: sobrevive a recargar (que es el
+// caso que importa: F5 en una nota y seguir pudiendo ir atrás) y no se mezcla
+// entre pestañas.
+const NAV_HISTORY_KEY = "mdm_nav_history";
+
+/** La dirección de un destino: `/<id>` para una nota o una base, `/mis-tareas`
+ * para esa vista y `/` para el inicio. */
+function rutaDe(kind, id) {
+  if (kind === "mytasks") return "/mis-tareas";
+  if (kind === "home" || !id) return "/";
+  return "/" + encodeURIComponent(id);
+}
+
+/** ¿Las dos entradas son el mismo sitio? */
+function mismaRuta(a, b) {
+  return Boolean(a && b) && a.kind === b.kind && (a.id ?? null) === (b.id ?? null);
+}
+
+/** El destino que corresponde a una dirección, resuelto contra el árbol ya
+ * cargado (`state.pagesById`). `null` si esa página ya no existe (o la
+ * dirección no es de ninguna parte).
+ *
+ * Una base se reconoce por su `database_id` --el id de su página es otro-- y
+ * se acepta también el de la página, para que un enlace copiado desde
+ * cualquier sitio acabe en la base. */
+function destinoDeRuta(pathname = location.pathname) {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  if (path === "/") return { kind: "home", id: null };
+  if (path === "/mis-tareas") return { kind: "mytasks", id: null };
+  let id;
+  try {
+    id = decodeURIComponent(path.replace(/^\//, ""));
+  } catch {
+    return null;
   }
+  if (!id || id.includes("/")) return null;
+  const node = state.pagesById.get(id);
+  if (node) {
+    return node.type === "database"
+      ? { kind: "database", id: node.database_id }
+      : { kind: "note", id: node.id };
+  }
+  const base = [...state.pagesById.values()].find(
+    (n) => n.type === "database" && n.database_id === id,
+  );
+  return base ? { kind: "database", id: base.database_id } : null;
+}
+
+/** «Abrir donde lo dejaste»: el último sitio abierto en ESTE navegador, en
+ * `localStorage` (una preferencia de pantalla, como el tema; no es un dato del
+ * vault). El inicio no se guarda: ir a Inicio es ir a Inicio. */
+function recordarRuta(kind, id) {
+  try {
+    if (kind === "home") localStorage.removeItem(LAST_ROUTE_KEY);
+    else localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify({ kind, id: id ?? null }));
+  } catch {
+    // sin localStorage (modo privado, cuota llena) se pierde «donde lo
+    // dejaste» y nada más: la app funciona igual
+  }
+}
+
+function rutaRecordada() {
+  try {
+    const guardada = JSON.parse(localStorage.getItem(LAST_ROUTE_KEY) || "null");
+    if (!guardada || typeof guardada.kind !== "string") return null;
+    return { kind: guardada.kind, id: guardada.id ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/** La cuenta de la pila, a `sessionStorage`. Si el navegador no la deja
+ * guardar, la app sigue: solo se pierde saber si hay «adelante» tras recargar. */
+function guardarPila() {
+  try {
+    sessionStorage.setItem(
+      NAV_HISTORY_KEY,
+      JSON.stringify({ pos: state.historyPos, pila: state.history }),
+    );
+  } catch {
+    // sin sessionStorage: la cuenta se queda en memoria
+  }
+}
+
+function pilaGuardada() {
+  try {
+    const datos = JSON.parse(sessionStorage.getItem(NAV_HISTORY_KEY) || "null");
+    if (!datos || !Array.isArray(datos.pila) || typeof datos.pos !== "number") return null;
+    if (datos.pila.some((e) => !e || typeof e.kind !== "string")) return null;
+    if (datos.pila.length === 0) return null;
+    return {
+      pos: Math.max(0, Math.min(datos.pos, datos.pila.length - 1)),
+      pila: datos.pila.map((e) => ({ kind: e.kind, id: e.id ?? null })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Pinta un destino SIN tocar la dirección. Devuelve si se pudo: si la página
+ * no existe (un enlace viejo), no se pinta nada y no se mueve la barra. */
+async function pintar(kind, id, { focus = null } = {}) {
+  if (kind === "database") return selectDatabase(id, { focus });
+  if (kind === "mytasks") {
+    await showMisTareas();
+    return true;
+  }
+  if (kind === "home" || !id) {
+    await showEmpty();
+    return true;
+  }
+  return selectNote(id);
+}
+
+async function goTo(kind, id, { fromHistory = false, replace = false } = {}) {
   // Lo que se esté escribiendo en una fila abierta como página es texto del
   // usuario igual que el de una nota: se manda antes de navegar. Cerrar la
   // fila también lo manda (con `keepalive`), pero eso no espera respuesta.
@@ -4422,14 +4561,29 @@ async function goTo(kind, id, { fromHistory = false } = {}) {
   // Abrir una base con una navegación nueva (árbol, recientes, búsqueda, una
   // plantilla) deja el foco en el primer campo del alta; volver con atrás o
   // adelante no, que el foco es del usuario, no del historial.
-  if (kind === "database") await selectDatabase(id, { focus: fromHistory ? null : "addRow" });
-  else if (kind === "mytasks") await showMisTareas();
-  else if (kind === "home") await showEmpty();
-  else await selectNote(id);
+  const pintada = await pintar(kind, id, { focus: fromHistory ? null : "addRow" });
+  if (!pintada) return false;
   // La sección de la barra lateral se marca (o se desmarca) como la actual con
   // la misma navegación que todo lo demás.
   paintMyTasks();
+  if (!fromHistory) {
+    if (replace) {
+      state.history[state.historyPos] = { kind, id: id ?? null };
+      history.replaceState({ pos: state.historyPos }, "", rutaDe(kind, id));
+    } else {
+      // Como en un navegador: navegar desde una posición anterior descarta el
+      // «adelante» pendiente. En la pila del navegador lo hace él; en nuestra
+      // cuenta, este `slice`.
+      state.history = state.history.slice(0, state.historyPos + 1);
+      state.history.push({ kind, id: id ?? null });
+      state.historyPos = state.history.length - 1;
+      history.pushState({ pos: state.historyPos }, "", rutaDe(kind, id));
+    }
+    guardarPila();
+  }
+  recordarRuta(kind, id);
   updateNavButtons();
+  return true;
 }
 
 function goHome() {
@@ -4438,16 +4592,118 @@ function goHome() {
 
 function goBack() {
   if (state.historyPos <= 0) return;
-  state.historyPos -= 1;
-  const entry = state.history[state.historyPos];
-  goTo(entry.kind, entry.id, { fromHistory: true });
+  // No se pinta aquí: se le pide al navegador que retroceda y `popstate` hace
+  // el resto. Así la cabecera y el botón del navegador son el mismo camino.
+  history.back();
 }
 
 function goForward() {
   if (state.historyPos >= state.history.length - 1) return;
-  state.historyPos += 1;
-  const entry = state.history[state.historyPos];
-  goTo(entry.kind, entry.id, { fromHistory: true });
+  history.forward();
+}
+
+/** Vuelve al inicio **cambiando la dirección** (la página abierta ya no
+ * existe: dejarla en la barra sería dejar un enlace roto en el historial). Se
+ * sustituye la entrada, no se añade una: «atrás» no debe volver a lo borrado. */
+function volverAlInicio() {
+  goTo("home", null, { replace: true }).catch((e) =>
+    reportError("No se pudo volver al inicio", e),
+  );
+}
+
+/** El navegador ha cambiado de entrada (atrás/adelante, o una entrada que no
+ * es nuestra): se pinta lo que dice la dirección. No se empuja nada -- esa
+ * entrada ya existe. */
+async function seguirAlNavegador(event) {
+  const destino = destinoDeRuta();
+  if (!destino) {
+    // La dirección ya no es de ninguna página (se borró mientras tanto).
+    showNotice("Esa página ya no existe: te llevo al inicio.");
+    await goTo("home", null, { replace: true });
+    return;
+  }
+  // La posición la dice la propia entrada (cada pushState guarda la suya).
+  const pos = event.state && typeof event.state.pos === "number" ? event.state.pos : null;
+  if (pos !== null && pos >= 0 && pos < state.history.length) state.historyPos = pos;
+  // Si la entrada no es de esta pestaña (viene de antes de una recarga sin
+  // `sessionStorage`, o la pila se perdió), se reancla en su destino en vez de
+  // inventar una posición.
+  if (!mismaRuta(state.history[state.historyPos], destino)) {
+    const i = state.history.findIndex((e) => mismaRuta(e, destino));
+    state.historyPos = i >= 0 ? i : state.history.push(destino) - 1;
+  }
+  const pintada = await pintar(destino.kind, destino.id, { focus: null });
+  if (!pintada) {
+    await goTo("home", null, { replace: true });
+    return;
+  }
+  // La entrada se queda con su posición y con la dirección canónica (una base
+  // abierta por el id de su página pasa a su `database_id`).
+  history.replaceState({ pos: state.historyPos }, "", rutaDe(destino.kind, destino.id));
+  paintMyTasks();
+  recordarRuta(destino.kind, destino.id);
+  guardarPila();
+  updateNavButtons();
+}
+
+window.addEventListener("popstate", (event) => {
+  seguirAlNavegador(event).catch((e) => reportError("No se pudo cambiar de página", e));
+});
+
+/** El arranque: cargado el árbol, se abre lo que dice la dirección (P18).
+ *
+ * - En `/<id>` manda la dirección -- es lo que hace que un enlace compartido
+ *   abra esa nota--; si esa página ya no existe, se entra limpio en Inicio y
+ *   se dice, que un enlace muerto no puede dejar la pantalla en blanco.
+ * - En `/` manda «donde lo dejaste» (`localStorage`). Si lo recordado ya no
+ *   existe, se entra limpio en Inicio **sin error**: no es un fallo, es una
+ *   página que se borró.
+ * - La pila de la pestaña se recupera si la última entrada era esta misma
+ *   dirección: recargar no apaga «atrás» ni «adelante».
+ */
+async function abrirAlArrancar() {
+  const arbolListo = await loadTree();
+  if (!arbolListo) {
+    // Sin árbol no hay direcciones que resolver: se pinta el inicio y se deja
+    // la dirección como está (recargar cuando la API conteste).
+    await showEmpty();
+    return;
+  }
+  let destino = destinoDeRuta();
+  if (!destino) {
+    showNotice("Esa página ya no existe: te llevo al inicio.");
+    destino = { kind: "home", id: null };
+  } else if (destino.kind === "home") {
+    const recordada = rutaRecordada();
+    const valida = recordada ? destinoDeRuta(rutaDe(recordada.kind, recordada.id)) : null;
+    if (valida) destino = valida;
+  }
+  const guardada = pilaGuardada();
+  if (guardada && mismaRuta(guardada.pila[guardada.pos], destino)) {
+    state.history = guardada.pila;
+    state.historyPos = guardada.pos;
+  } else {
+    state.history = [destino];
+    state.historyPos = 0;
+  }
+  // La entrada de arranque es de la app: se queda con su posición y con la
+  // dirección canónica (en `/` eso pasa a `/<id>` cuando hay «donde lo
+  // dejaste»; una base abierta por el id de su página, a su `database_id`).
+  history.replaceState({ pos: state.historyPos }, "", rutaDe(destino.kind, destino.id));
+  const pintada = await pintar(destino.kind, destino.id, { focus: null });
+  if (!pintada) {
+    // La dirección apuntaba a algo que el árbol tenía y el servidor ya no: se
+    // entra limpio, sin dejar la barra en un enlace roto.
+    state.history = [{ kind: "home", id: null }];
+    state.historyPos = 0;
+    history.replaceState({ pos: 0 }, "", "/");
+    await showEmpty();
+  } else {
+    recordarRuta(destino.kind, destino.id);
+  }
+  paintMyTasks();
+  guardarPila();
+  updateNavButtons();
 }
 
 /** El id de página de una database (Page.id) no es el id con el que se
@@ -4869,6 +5125,41 @@ function showContextMenu(x, y, sections) {
 
 // -------------------------------------------------------------- databases
 
+// La pestaña con la que se dejó cada base (id de vista, o `null` para «Todas»),
+// en `localStorage`: es la mitad de «abrir donde lo dejaste» que vive DENTRO de
+// una base, y una preferencia de este navegador, no un dato del vault. Sin la
+// clave en el mapa, esa base no se ha abierto nunca aquí.
+const VIEWS_KEY = "mdm_last_views";
+
+function vistaRecordada(databaseId) {
+  try {
+    const mapa = JSON.parse(localStorage.getItem(VIEWS_KEY) || "{}") || {};
+    if (!Object.prototype.hasOwnProperty.call(mapa, databaseId)) return undefined;
+    return mapa[databaseId] ?? null;
+  } catch {
+    return undefined;
+  }
+}
+
+function recordarVista(databaseId, viewId) {
+  try {
+    const mapa = JSON.parse(localStorage.getItem(VIEWS_KEY) || "{}") || {};
+    mapa[databaseId] = viewId ?? null;
+    localStorage.setItem(VIEWS_KEY, JSON.stringify(mapa));
+  } catch {
+    // sin localStorage se abre siempre en la primera vista; nada más
+  }
+}
+
+/** La pestaña con la que abrir una base: la que se dejó si sigue existiendo
+ * («Todas» incluida), y si no la primera. */
+function vistaInicial(databaseId, views) {
+  const recordada = vistaRecordada(databaseId);
+  if (recordada === undefined) return views[0]?.id ?? null;
+  if (recordada === null) return null;
+  return views.some((v) => v.id === recordada) ? recordada : (views[0]?.id ?? null);
+}
+
 async function selectDatabase(id, { focus = null } = {}) {
   const previous = state.current;
   state.current = { kind: "database", id };
@@ -4876,13 +5167,17 @@ async function selectDatabase(id, { focus = null } = {}) {
   marcarCarga(true);
   try {
     const [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
-    await renderDatabase(database, views, views[0]?.id ?? null, { focus });
+    // «Abrir donde lo dejaste» también dentro de una base: su pestaña (ver
+    // `vistaInicial`), no siempre la primera.
+    await renderDatabase(database, views, vistaInicial(id, views), { focus });
+    return true;
   } catch (e) {
     // Igual que en selectNote: si falla la carga, no se ha pintado nada y el
     // estado vuelve a donde estaba.
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la base de datos", e);
+    return false;
   } finally {
     marcarCarga(false);
   }
@@ -5149,6 +5444,13 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // La vista activa hace falta ya para el menú: «Todas» no es una vista, es la
   // base sin filtro, y no hay nada que filtrar, ordenar ni borrar.
   const activeView = views.find((v) => v.id === activeViewId) || null;
+  // La pestaña con la que queda abierta esta base se recuerda aquí (una vez
+  // pintada, no antes: si el pintado falla, la que valía sigue siendo la
+  // anterior). Es lo que hace que recargar en `/<id>` de una base --o volver a
+  // ella mañana-- abra la misma vista, «Todas» incluida.
+  if (state.current?.kind === "database" && state.current.id === database.id) {
+    recordarVista(database.id, activeViewId);
+  }
   // Nunca se borra la última vista: sin ninguna, la base se quedaría sin la
   // pestaña con la que se abre. El menú lo dice en vez de esconder la opción.
   const esLaUltimaVista = Boolean(activeView) && views.length <= 1;
@@ -5181,7 +5483,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     try {
       await api(`/databases/${database.id}`, { method: "DELETE" });
       await loadTree();
-      showEmpty();
+      volverAlInicio();
     } catch (e) {
       // Si no se borró, la database sigue en pantalla: mejor decir por qué.
       reportError("No se pudo borrar la base de datos", e);
@@ -15772,8 +16074,9 @@ cargarPersonas().catch(() => {});
 initUserChip();
 loadCurrentUser();
 
-loadTree();
-showEmpty(); // landing con páginas recientes + fechas cercanas, en vez del hueco estático de index.html
+// El arranque: cargado el árbol, se abre la dirección de la barra (o «donde lo
+// dejaste» si es `/`) -- ver `abrirAlArrancar`.
+abrirAlArrancar().catch((e) => reportError("No se pudo abrir el panel", e));
 pollStatus();
 setInterval(pollStatus, 4000);
 // P8: avisos de lo que cambia en el vault (los `.md` editados por fuera).
