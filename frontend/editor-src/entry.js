@@ -523,7 +523,7 @@ class DatabaseBlockWidget extends WidgetType {
   }
   toDOM(view) {
     const wrap = document.createElement("div");
-    wrap.className = "cm-mdm-dblock";
+    wrap.className = "cm-mdm-dblock" + (this.selected ? " cm-mdm-dblock-marked" : "");
     wrap.dataset.databaseBlock = "1";
     // Aquí no se edita nada: para cambiar la vista o los datos se abre la
     // base entera. Ni una celda con contenteditable dentro del bloque.
@@ -533,7 +533,7 @@ class DatabaseBlockWidget extends WidgetType {
     // línea de la valla, así que el asa que la decoración de línea pinta en su
     // sitio no se llega a ver (ver `blockHandleDom`). Va la primera para que
     // también la tenga una valla rota: su tarjeta de error es igual de movible.
-    if (this.index >= 0) wrap.appendChild(blockHandleDom(this.index, this.selected));
+    if (this.index >= 0) wrap.appendChild(blockHandleDom(this.index));
 
     // Un clic en el bloque (menos en lo que ya es un botón, como el
     // encabezado: eso lleva a la base) pone el cursor en la valla, que
@@ -647,7 +647,15 @@ function databaseBlockField(render) {
       // datos. Sin el aviso, mover el cursor reutiliza el DOM (que es lo que
       // se quiere) y no se pide nada a la API.
       const epoch = value.epoch + (tr.effects.some((e) => e.is(refreshDatabaseBlocks)) ? 1 : 0);
-      if (epoch !== value.epoch || tr.docChanged || !tr.state.selection.eq(tr.startState.selection)) {
+      // `blockField` también: marcar un bloque ya no mueve la selección del
+      // documento, así que el widget de una base marcada se entera por aquí
+      // (`cm-mdm-dblock-marked`), no por un cambio de selección.
+      if (
+        epoch !== value.epoch ||
+        tr.docChanged ||
+        !tr.state.selection.eq(tr.startState.selection) ||
+        tr.state.field(blockField) !== tr.startState.field(blockField)
+      ) {
         return { decos: databaseBlockDecorations(tr.state, render, epoch), epoch };
       }
       return value;
@@ -972,8 +980,14 @@ export const blockBreakTestExtensions = [
 export { addBlockBreak };
 
 /**
- * El DOM del asa de un bloque: el «+» y el «⋮⋮», con el índice del bloque en
+ * El DOM del asa de un bloque: SOLO el «+», con el índice del bloque en
  * `data-block-index` (de ahí lo leen los handlers de `blockHandleEventHandlers`).
+ *
+ * El «⋮⋮» ya no está: el dueño pidió quitar «la bolita esa que sale a la
+ * derecha del símbolo del +». Lo que hacía se ha repartido (t_c2c98f7b): el
+ * bloque se marca y se arrastra desde la banda del margen -- este mismo
+ * envoltorio, estirado a la izquierda con su `::before`, ver index.html -- y
+ * las acciones están en el clic derecho sobre el bloque.
  *
  * Lo comparten la decoración de línea (`BlockHandleWidget`) y el widget de una
  * base incrustada. La base se pinta sustituyendo la valla ENTERA -- primera
@@ -983,9 +997,12 @@ export { addBlockBreak };
  * no existía -- ni asa, ni arrastre, ni «+», ni Alt+↑/↓ con un punto de entrada
  * claro -- y el widget tiene que llevar el asa dentro. Tarjeta t_45697398.
  */
-function blockHandleDom(index, isSelected) {
+export function blockHandleDom(index) {
   const wrap = document.createElement("span");
   wrap.className = "cm-mdm-block-handle-wrap";
+  // El índice va en la BANDA: de aquí lo leen el marcar y el arrastrar, que ya
+  // no tienen un asa a la que agarrarse.
+  wrap.dataset.blockIndex = String(index);
 
   const addBtn = document.createElement("span");
   addBtn.className = "cm-mdm-block-add";
@@ -993,14 +1010,7 @@ function blockHandleDom(index, isSelected) {
   addBtn.dataset.blockIndex = String(index);
   addBtn.title = "Añadir un bloque después de este · Alt+clic: antes";
 
-  const handle = document.createElement("span");
-  handle.className = "cm-mdm-block-handle" + (isSelected ? " cm-mdm-block-handle-selected" : "");
-  handle.textContent = "⋮⋮";
-  handle.dataset.blockIndex = String(index);
-  handle.title =
-    "Clic: seleccionar bloque · Mayús/Ctrl+clic: varios · clic derecho: acciones · arrastrar: mover";
-
-  wrap.append(addBtn, handle);
+  wrap.append(addBtn);
   return wrap;
 }
 
@@ -1014,16 +1024,15 @@ function blockHandleDom(index, isSelected) {
 // al margen izquierdo con position:absolute -- como es hijo real de esa
 // línea, hereda su altura exacta sin ningún cálculo aparte.
 class BlockHandleWidget extends WidgetType {
-  constructor(index, isSelected) {
+  constructor(index) {
     super();
     this.index = index;
-    this.isSelected = isSelected;
   }
   eq(other) {
-    return other.index === this.index && other.isSelected === this.isSelected;
+    return other.index === this.index;
   }
   toDOM() {
-    return blockHandleDom(this.index, this.isSelected);
+    return blockHandleDom(this.index);
   }
   ignoreEvent() {
     return false; // que el mousedown/contextmenu le lleguen a nuestros handlers
@@ -1031,9 +1040,9 @@ class BlockHandleWidget extends WidgetType {
 }
 
 function blockHandleDecorations(state) {
-  const { blocks, selected } = state.field(blockField);
+  const { blocks } = state.field(blockField);
   const ranges = blocks.map((b, i) =>
-    Decoration.widget({ widget: new BlockHandleWidget(i, selected.has(i)), side: -1 }).range(b.from)
+    Decoration.widget({ widget: new BlockHandleWidget(i), side: -1 }).range(b.from)
   );
   return Decoration.set(ranges, true);
 }
@@ -1054,35 +1063,79 @@ function blockHandlesPlugin() {
   );
 }
 
+// ------------------------------------------- marca del bloque marcado
+// La marca es del BLOQUE, no del texto. Antes, marcar un bloque era poner una
+// selección de CodeMirror sobre su rango: el texto se pintaba de azul (igual
+// que una selección de letras), `window.getSelection()` devolvía su contenido y
+// Ctrl+C se llevaba el texto de un bloque que el usuario creía haber cogido
+// (t_c2c98f7b). Ahora son dos cosas separadas: el bloque marcado lleva su clase
+// -- `cm-mdm-line-marked`, o `cm-mdm-dblock-marked` si es una base incrustada --
+// y la selección del documento no se toca.
+function blockMarkDecorations(state) {
+  const { blocks, selected } = state.field(blockField);
+  if (!selected.size) return Decoration.none;
+  const doc = state.doc;
+  const ranges = [];
+  for (const index of [...selected].sort((a, b) => a - b)) {
+    const block = blocks[index];
+    if (!block) continue;
+    let pos = block.from;
+    while (pos <= block.to) {
+      const line = doc.lineAt(pos);
+      ranges.push(Decoration.line({ class: "cm-mdm-line-marked" }).range(line.from));
+      if (line.to >= block.to) break;
+      pos = line.to + 1;
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function blockMarkPlugin() {
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.decorations = blockMarkDecorations(view.state);
+      }
+      update(update) {
+        if (update.docChanged || update.state.field(blockField) !== update.startState.field(blockField)) {
+          this.decorations = blockMarkDecorations(update.state);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations }
+  );
+}
+
 function blockHandleEventHandlers(onBlockContextMenu) {
   return EditorView.domEventHandlers({
     // ---- pulsación larga (pantalla táctil) ----
     // En el móvil no hay clic derecho ni `Supr`: sin esta puerta no había
     // manera de abrir el menú de bloque (convertir/duplicar/eliminar). La
-    // pulsación larga sobre el asa abre el mismo menú que el clic derecho; el
-    // toque corto sigue seleccionando el bloque como siempre. No se consume el
-    // evento: el mousedown de después (el que selecciona) tiene que seguir
-    // llegando, y con ratón esto ni se activa.
+    // pulsación larga sobre la BANDA del margen abre el mismo menú que el clic
+    // derecho; el toque corto marca el bloque. Sobre el «+» no: ahí el toque
+    // corto añade un bloque y no hay menú que abrir. No se consume el evento:
+    // el mousedown de después (el que marca) tiene que seguir llegando, y con
+    // ratón esto ni se activa.
     pointerdown(event, view) {
       const target = event.target;
       lastPointerType = event.pointerType;
       if (!(target instanceof HTMLElement)) return false;
-      const handle = target.closest(".cm-mdm-block-handle");
-      if (!handle) return false;
+      const band = target.closest(".cm-mdm-block-handle-wrap");
+      if (!band || target.closest(".cm-mdm-block-add")) return false;
       if (event.pointerType === "mouse") return false;
       cancelLongPress();
       longPressOrigin = { x: event.clientX, y: event.clientY };
       longPressTimer = window.setTimeout(() => {
         longPressTimer = null;
         longPressOrigin = null;
-        const idx = Number(handle.dataset.blockIndex);
+        const idx = Number(band.dataset.blockIndex);
         const { selected } = view.state.field(blockField);
         const indices = selected.has(idx) ? selected : new Set([idx]);
         if (indices !== selected) selectBlocks(view, indices);
         // El clic sintético que el navegador manda al soltar el dedo llegaría
         // al `document` y cerraría el menú recién abierto (ver `click`).
         suppressTapUntil = Date.now() + 1200;
-        const rect = handle.getBoundingClientRect();
+        const rect = band.getBoundingClientRect();
         openBlockMenu(view, indices, rect.left, rect.bottom, onBlockContextMenu);
         swallowTapAfterMenu();
       }, LONG_PRESS_MS);
@@ -1132,8 +1185,13 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           return true;
         }
 
-        const handle = target.closest(".cm-mdm-block-handle");
-        if (handle) {
+        // ---- la banda del margen: marcar el bloque y arrastrarlo ----
+        // Aquí vivía el «⋮⋮», que ya no está (t_c2c98f7b). Lo que hacía se hace
+        // desde esta banda, que es el envoltorio del «+» estirado a la izquierda
+        // con su `::before`: el bloque se marca (Mayús/Ctrl para varios) y se
+        // arrastra de una vez.
+        const band = target.closest(".cm-mdm-block-handle-wrap");
+        if (band) {
           event.preventDefault();
           // Si acaba de abrirse el menú con un toque largo, el toque que lo
           // abrió no tiene que volver a marcar ni a llevarse el foco del menú.
@@ -1144,7 +1202,7 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           // «Eliminar bloque» borraba uno solo con dos marcados).
           if (event.button !== 0) return true;
 
-          const idx = Number(handle.dataset.blockIndex);
+          const idx = Number(band.dataset.blockIndex);
           const { selected } = view.state.field(blockField);
 
           let next;
@@ -1159,20 +1217,37 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           } else {
             next = new Set([idx]);
           }
+          // Los nodos del bloque, ANTES de marcarlo: de ahí sale la copia que
+          // sigue al cursor (ver `startDragGhost`).
+          const nodes = renderedBlockNodes(view, view.state.field(blockField).blocks[idx]);
           selectBlocks(view, next);
-          // El mousedown del asa va con preventDefault (para no mover el
-          // caret), así que el navegador NO da el foco al editor: sin esto,
-          // marcar un bloque con el asa y pulsar Supr no hacía nada porque la
-          // tecla no llegaba al editor. El foco deja la selección donde la
-          // puso selectBlocks (el bloque marcado), que es donde tiene que
-          // escribir y borrar el teclado.
+          // El mousedown de la banda va con preventDefault (para no mover el
+          // caret ni pintar texto), así que el navegador NO da el foco al
+          // editor: sin esto, marcar un bloque y pulsar Supr no hacía nada
+          // porque la tecla no llegaba al editor.
           view.focus();
           // Y con el ratón, el mismo mousedown arranca el posible arrastre:
           // mientras no se mueva más de unos píxeles no es arrastre (es clic,
-          // que ya ha seleccionado). En táctil no: ahí el gesto es del menú
-          // de pulsación larga (ver `beginBlockDrag`).
-          if (event.button === 0 && lastPointerType !== "touch") beginBlockDrag(view, event, idx);
+          // que ya ha marcado). En táctil no: ahí el gesto es del menú de
+          // pulsación larga.
+          if (lastPointerType !== "touch") beginBlockDrag(view, event, idx, nodes);
           return true;
+        }
+
+        // Alt+arrastrar desde el propio bloque (su texto, su tabla, su caja):
+        // lo que se mueve es el bloque entero, como en Notion. Sin Alt,
+        // arrastrar sobre el texto sigue seleccionando letras -- eso es editar,
+        // y no se toca.
+        if (event.altKey && event.button === 0) {
+          const idx = blockIndexAtCoords(view, event);
+          if (idx >= 0) {
+            event.preventDefault();
+            const nodes = renderedBlockNodes(view, view.state.field(blockField).blocks[idx]);
+            selectBlocks(view, new Set([idx]));
+            view.focus();
+            beginBlockDrag(view, event, idx, nodes);
+            return true;
+          }
         }
       }
 
@@ -1222,7 +1297,7 @@ function blockHandleEventHandlers(onBlockContextMenu) {
       if (
         Date.now() < suppressTapUntil &&
         event.target instanceof HTMLElement &&
-        event.target.closest(".cm-mdm-block-handle")
+        event.target.closest(".cm-mdm-block-handle-wrap")
       ) {
         event.preventDefault();
         event.stopPropagation();
@@ -1252,19 +1327,30 @@ function blockHandleEventHandlers(onBlockContextMenu) {
     contextmenu(event, view) {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return false;
-      const handle = target.closest(".cm-mdm-block-handle");
-      if (!handle) return false;
+      // Dentro de un control propio (una celda de la tabla incrustada, un campo
+      // de texto) el menú es del navegador: ahí no se está cogiendo el bloque.
+      if (target.closest("input, textarea, select, [data-db-action]")) return false;
+      // El menú es el del bloque que hay debajo del puntero: ya no hay asa que
+      // ofrezca el de «su» bloque, así que el clic derecho en cualquier punto
+      // del bloque trae sus acciones (t_c2c98f7b).
+      const band = target.closest(".cm-mdm-block-handle-wrap");
+      const idx = band ? Number(band.dataset.blockIndex) : blockIndexAtCoords(view, event);
+      if (idx < 0) return false;
       event.preventDefault();
       // Si el navegador (Android) sintetiza un `contextmenu` en la misma
       // pulsación larga que ya abrió el menú, el temporizador sobra.
       cancelLongPress();
 
-      const idx = Number(handle.dataset.blockIndex);
       const { selected } = view.state.field(blockField);
-      // El clic derecho actúa sobre lo que ya estuviera marcado (con dos asas
-      // marcadas no se reduce a una); con un solo bloque, sobre ese.
+      // El clic derecho actúa sobre lo que ya estuviera marcado (con dos
+      // marcados no se reduce a uno); con un solo bloque, sobre ese.
       const indices = selected.has(idx) ? selected : new Set([idx]);
-      if (indices !== selected) selectBlocks(view, indices);
+      // También cuando el bloque YA estaba marcado: si el documento traía una
+      // selección de texto viva, el clic derecho tampoco puede dejarla ahí (es
+      // el mismo defecto que el clic de la banda, por otra puerta).
+      if (indices !== selected || view.state.selection.ranges.some((range) => !range.empty)) {
+        selectBlocks(view, indices);
+      }
       openBlockMenu(view, indices, event.clientX, event.clientY, onBlockContextMenu);
       return true;
     },
@@ -1351,18 +1437,37 @@ function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
   });
 }
 
-function selectBlocks(view, indices) {
-  const { blocks } = view.state.field(blockField);
+export function selectBlocks(view, indices) {
+  // Ni una selección de documento: marcar un bloque NO selecciona su texto. La
+  // marca la pinta el editor (`cm-mdm-line-marked` / `cm-mdm-dblock-marked`), y
+  // `window.getSelection()` se queda vacío, así que Ctrl+C no se lleva el texto
+  // de un bloque que el usuario creía haber cogido entero (t_c2c98f7b).
+  //
+  // Vaciar el DOM no basta si el ESTADO de CodeMirror conserva un rango: el
+  // `view.focus()` que viene después -- y cualquier sincronización de selección
+  // del propio editor -- vuelve a escribir en el DOM el rango que el estado
+  // siga teniendo, y la selección de texto reaparece intacta encima del bloque
+  // marcado. Por eso el rango viejo se colapsa en ESTA misma transacción, en el
+  // arranque del primer bloque marcado.
   const ordered = [...indices].sort((a, b) => a - b);
-  const ranges = ordered.map((i) => EditorSelection.range(blocks[i].from, blocks[i].to));
+  const block = ordered.length ? view.state.field(blockField).blocks[ordered[0]] : null;
+  const stale = Boolean(block) && view.state.selection.ranges.some((range) => !range.empty);
+  clearNativeSelection();
   view.dispatch({
     effects: setSelectedBlocks.of(indices),
-    selection: ranges.length ? EditorSelection.create(ranges, ranges.length - 1) : undefined,
+    ...(stale ? { selection: EditorSelection.cursor(block.from) } : null),
     // Marcar un bloque no es escribir: si esto entrara en el historial, cada
     // ⌘⇧Z tendría que gastar una pulsación en la selección de por medio antes
     // de llegar al borrado que de verdad se quiere rehacer.
     annotations: Transaction.addToHistory.of(false),
   });
+}
+
+/** Vacía la selección del navegador (la de `window.getSelection()`): el texto
+ * que hubiera quedado marcado antes de coger un bloque no puede seguir ahí. */
+function clearNativeSelection() {
+  const selection = window.getSelection?.();
+  if (selection && selection.rangeCount) selection.removeAllRanges();
 }
 
 // Botón "+" del asa: añade un bloque de párrafo vacío justo DEBAJO del bloque
@@ -1419,11 +1524,18 @@ export function moveBlockTo(view, index, slot, cursor = null) {
   return true;
 }
 
-// ------------------------------------------------------------- arrastrar el asa
+// ---------------------------------------------------------- arrastrar bloques
 //
-// Arrastrar el asa (⋮⋮) reordena: mientras se arrastra, una línea horizontal
-// marca el hueco entre bloques donde va a caer, y al soltar el bloque se mueve
-// (una sola transacción, igual que con el teclado).
+// Se coge el bloque y se mueve entero, como en Notion (t_c2c98f7b): mientras se
+// arrastra, una copia translúcida del bloque sigue al cursor y una línea
+// horizontal marca el hueco entre bloques donde va a caer; al soltar, el bloque
+// se mueve en UNA transacción (igual que con el teclado), así que un solo ⌘Z lo
+// deshace. El documento no se toca hasta soltar.
+//
+// ¿De dónde se agarra? De la banda del margen izquierdo del bloque (el
+// envoltorio del «+», ver `blockHandleDom`) y de cualquier punto del bloque con
+// Alt pulsado. Arrastrar sobre el texto SIN Alt sigue seleccionando letras: eso
+// es editar, y no se toca.
 //
 // En táctil NO se arrastra: la pulsación larga ya abre el menú de bloque, y un
 // gesto de arrastre competiría con el desplazamiento de la nota. Ahí el
@@ -1433,6 +1545,95 @@ const DRAG_SLOP = 4;
 const DRAG_EDGE = 44;
 let blockDrag = null;
 let lastPointerType = "mouse";
+
+/** Índice del bloque que hay bajo el puntero, o -1. Ya no hay asa que lleve el
+ * índice encima: el clic derecho sobre un bloque y el Alt+arrastrar desde su
+ * texto lo resuelven por coordenadas. */
+function blockIndexAtCoords(view, event) {
+  const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+  if (pos === null || pos === undefined) return -1;
+  const { blocks } = view.state.field(blockField);
+  return blocks.findIndex((b) => pos >= b.from && pos <= b.to);
+}
+
+/** Los nodos DOM que pintan un bloque: sus líneas, o el widget de la base
+ * incrustada. Se buscan por la banda vertical que ocupa el bloque -- el DOM del
+ * editor sólo tiene pintado el tramo visible, y eso es justo lo que se coge. */
+function renderedBlockNodes(view, block) {
+  const first = view.coordsAtPos(block.from, -1);
+  if (!first) return [];
+  const last = view.coordsAtPos(block.to, 1) || first;
+  const top = Math.min(first.top, last.top) - 1;
+  const bottom = Math.max(first.bottom, last.bottom) + 1;
+  const nodes = [];
+  for (const child of view.contentDOM.children) {
+    if (!(child instanceof HTMLElement)) continue;
+    const rect = child.getBoundingClientRect();
+    // El CENTRO dentro de la banda: rozarla por un píxel -- que es lo que hace
+    // la línea en blanco de encima, por el padding del bloque -- no cuenta.
+    const mid = (rect.top + rect.bottom) / 2;
+    if (mid < top || mid > bottom) continue;
+    nodes.push(child);
+  }
+  return nodes;
+}
+
+/** La copia translúcida que sigue al cursor: el DOM del bloque clonado, colgado
+ * del body en `position: fixed` y movido con `transform` (nada de recalcular
+ * nada por fila). El bloque original se queda en su sitio, atenuado. */
+function startDragGhost(view, block, nodes = null) {
+  // Con `nodes` se clona lo que estaba pintado ANTES de marcar el bloque: al
+  // marcar una base incrustada su widget se repinta y, mientras llega la tabla,
+  // la copia se quedaría en una caja vacía.
+  if (!nodes) nodes = renderedBlockNodes(view, block);
+  if (!nodes.length) return null;
+  const content = view.contentDOM.getBoundingClientRect();
+  const ghost = document.createElement("div");
+  ghost.className = "cm-mdm-drag-ghost";
+  ghost.setAttribute("aria-hidden", "true");
+  ghost.style.left = `${Math.round(content.left)}px`;
+  ghost.style.top = `${Math.round(nodes[0].getBoundingClientRect().top)}px`;
+  ghost.style.width = `${Math.round(content.width)}px`;
+  for (const node of nodes) {
+    const copy = node.cloneNode(true);
+    // El asa y el punto son del editor, no del bloque: en la copia sobran. Y
+    // nada de `id` duplicados: la copia cuelga del documento.
+    copy
+      .querySelectorAll(".cm-mdm-block-handle-wrap, .cm-mdm-block-dot-wrap")
+      .forEach((el) => el.remove());
+    copy.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+    // La marca no viaja en la copia: si el bloque ya estaba marcado al
+    // empezar el arrastre, el clon salía con el fondo de «marcado» y parecían
+    // dos bloques seleccionados deslizándose. La base incrustada marca su
+    // propio envoltorio con `cm-mdm-dblock-marked`.
+    copy.classList.remove("cm-mdm-line-marked", "cm-mdm-dblock-marked", "cm-mdm-line-dragging");
+    ghost.appendChild(copy);
+  }
+  document.body.appendChild(ghost);
+  return ghost;
+}
+
+/** Atenúa el bloque que se está arrastrando. Se vuelve a poner en cada
+ * movimiento: el punto del bloque despacha un efecto en cada `mousemove`, y un
+ * repintado de esa línea se lleva por delante la clase puesta a mano. */
+function markDragSource(view, index) {
+  for (const node of view.contentDOM.querySelectorAll(".cm-mdm-line-dragging")) {
+    node.classList.remove("cm-mdm-line-dragging");
+  }
+  const block = view.state.field(blockField).blocks[index];
+  if (!block) return;
+  for (const node of renderedBlockNodes(view, block)) {
+    node.classList.add("cm-mdm-line-dragging");
+  }
+}
+
+function moveDragGhost(drag, event) {
+  markDragSource(drag.view, drag.index);
+  if (!drag.ghost) return;
+  const dx = Math.round(event.clientX - drag.startX);
+  const dy = Math.round(event.clientY - drag.startY);
+  drag.ghost.style.transform = `translate(${dx}px, ${dy}px)`;
+}
 
 /** Hueco (slot) más cercano a la altura `y`: entre los bloques cuyo punto
  * medio queda por debajo del puntero. */
@@ -1497,11 +1698,14 @@ function onBlockDragMove(event) {
   if (!drag.active) {
     if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_SLOP) return;
     drag.active = true;
-    // El cursor de "agarrando" durante todo el arrastre (también fuera del asa)
-    // y el texto del bloque no se selecciona sin querer.
+    // El cursor de "agarrando" durante todo el arrastre (también fuera de la
+    // banda) y el texto del bloque no se selecciona sin querer.
     document.body.classList.add("cm-mdm-dragging");
+    const block = drag.view.state.field(blockField).blocks[drag.index];
+    if (block) drag.ghost = startDragGhost(drag.view, block, drag.nodes);
   }
   event.preventDefault();
+  moveDragGhost(drag, event);
   autoScrollWhileDragging(drag.view, event.clientY);
   drag.slot = dropSlotAt(drag.view, event.clientY);
   placeDropLine(drag.view, drag.slot);
@@ -1514,6 +1718,13 @@ function endBlockDrag() {
   const drag = blockDrag;
   blockDrag = null;
   if (drag?.line) drag.line.remove();
+  if (drag?.ghost) drag.ghost.remove();
+  const contentDOM = drag?.view?.contentDOM;
+  if (contentDOM) {
+    for (const node of contentDOM.querySelectorAll(".cm-mdm-line-dragging")) {
+      node.classList.remove("cm-mdm-line-dragging");
+    }
+  }
   document.body.classList.remove("cm-mdm-dragging");
   return drag;
 }
@@ -1531,9 +1742,20 @@ function onBlockDragEnd(event) {
   if (wasActive) moveBlockTo(view, index, slot, null);
 }
 
-function beginBlockDrag(view, event, index) {
+function beginBlockDrag(view, event, index, nodes = null) {
   endBlockDrag(); // un arrastre anterior sin `mouseup` no puede sobrevivir a otro
-  blockDrag = { view, index, startX: event.clientX, startY: event.clientY, active: false, slot: null, line: null };
+  blockDrag = {
+    view,
+    index,
+    startX: event.clientX,
+    startY: event.clientY,
+    active: false,
+    slot: null,
+    line: null,
+    ghost: null,
+    // Lo pintado del bloque AHORA (antes de marcarlo): de ahí sale la copia.
+    nodes,
+  };
   window.addEventListener("mousemove", onBlockDragMove, true);
   window.addEventListener("mouseup", onBlockDragEnd, true);
   window.addEventListener("blur", endBlockDrag, true);
@@ -4181,13 +4403,15 @@ export function createNoteEditor({
         pendingEmptyGaps,
         blockBreakField,
         blockBreakMaterialization,
-        // Sin este facet CodeMirror colapsa una selección de varios rangos al
-        // rango principal: las asas se pintaban marcadas pero solo actuaba la
-        // última (D3). El resto de selecciones múltiples (varios cursores) no
-        // existe por defecto: solo las crea selectBlocks, al marcar asas.
+        // Marcar varios bloques es un estado NUESTRO (blockField), no una
+        // selección de documento: desde t_c2c98f7b `selectBlocks` no toca la
+        // selección, así que este facet ya no hace falta para eso. Se queda
+        // porque los cursores múltiples de verdad (varios rangos en el texto)
+        // se comportan como antes.
         EditorState.allowMultipleSelections.of(true),
         typingOverBlocks(),
         blockHandlesPlugin(),
+        blockMarkPlugin(),
         dotField,
         blockDotPlugin(),
         blockDotEventHandlers(),
