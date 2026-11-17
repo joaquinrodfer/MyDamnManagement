@@ -1967,21 +1967,37 @@
   }
   .db-embed-title:hover { text-decoration: underline; }
   .db-embed-meta { font-size: 12px; color: var(--ink-muted); }
-  .view-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
-  .view-tab {
-    font-size: 12.5px;
-    padding: 5px 12px;
-    border-radius: 999px;
-    border: 1px solid var(--panel-border);
-    background: var(--panel);
-    color: var(--ink-muted);
+  /* Las pestañas de vista, como en Notion: icono del tipo y nombre, sin caja.
+     La activa se distingue por la tinta, el peso y un fondo apenas marcado;
+     las demás quedan apagadas. Una línea fina las separa del contenido. */
+  .view-tabs {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--panel-border);
   }
+  .view-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-base);
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: var(--radius-md);
+    border: 0;
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+  }
+  .view-tab .svg-icon { width: 15px; height: 15px; flex: none; }
   /* Solo donde hay ratón: en táctil el hover se queda pegado a la última
      pestaña tocada y parecía que había dos activas. */
   @media (hover: hover) {
-    .view-tab:hover { border-color: var(--border-input); color: var(--ink); background: var(--code-bg); }
+    .view-tab:hover { color: var(--ink); background: var(--code-bg); }
   }
-  .view-tab.active { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  .view-tab.active { color: var(--ink); font-weight: 600; background: var(--code-bg); }
   /* Por qué no se puede borrar la última vista: se escribe, no se esconde en
      un `title` (en táctil no hay hover y un botón apagado sin motivo es un
      estado mudo). */
@@ -2194,7 +2210,6 @@
   /* El botón y el formulario se turnan: `hidden` solo, no basta, porque
      `display: inline-flex`/`flex` de las clases gana a la regla del navegador. */
   .db-add-row-btn[hidden], .db-add-row-form[hidden] { display: none; }
-  .view-tab.active:hover { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
   /* El cambio de vista (tabla → tablero → calendario) entra con un fundido de
      160 ms y nada más: sin transform, para que el layout no se mueva ni un
      píxel mientras se cambia de pestaña. Ver `is-entering` en renderDatabase. */
@@ -2269,14 +2284,12 @@
      para que las columnas queden a plomo. */
   .rows-table th {
     height: 34px;
-    background: var(--panel);
+    border-top: 1px solid var(--panel-border);
     font-family: var(--font-body);
     font-size: 12px;
     color: var(--ink-muted);
     font-weight: 500;
   }
-  /* La última fila no dibuja su línea: debajo ya está el borde de la caja. */
-  .rows-table tbody tr:last-child td { border-bottom-color: transparent; }
   /* ------------------------------------------ ancho y orden de las columnas
      (por vista: `views[].widths` y `views[].order` del `.md`). El asa vive
      DENTRO del `<th>` --que lleva `overflow: hidden`-- pegada al borde derecho:
@@ -2894,9 +2907,9 @@
        desborda, alargan el scroll horizontal de TODA la página. */
     position: relative;
     overflow-x: auto;
-    border: 1px solid var(--panel-border);
-    border-radius: var(--radius-lg);
-    background: var(--panel);
+    /* Sin caja: la tabla se funde con el fondo de la página (como en Notion).
+       Solo se ven las líneas de las filas, que llegan hasta donde llega la
+       tabla; lo que sobra a la derecha es fondo, no un panel vacío. */
     scrollbar-width: thin;
     scrollbar-color: var(--border-input) transparent;
   }
@@ -4336,18 +4349,18 @@
     .rows-table td.row-sel-cell {
       position: sticky;
       right: 0;
-      background: var(--panel);
+      background: var(--bg);
       box-shadow: -1px 0 0 var(--panel-border);
     }
     /* El velo del hover y el tinte de la selección son translúcidos: sobre una
        celda pegada dejaban ver el texto que pasa por debajo al desplazar. Se
-       pintan encima del fondo opaco de la caja. */
+       pintan encima del fondo opaco de la página. */
     .rows-table tbody tr:hover td.row-sel-cell {
-      background: linear-gradient(var(--row-hover), var(--row-hover)), var(--panel);
+      background: linear-gradient(var(--row-hover), var(--row-hover)), var(--bg);
     }
     .rows-table tr.is-selected td.row-sel-cell,
     .rows-table tbody tr.is-selected:hover td.row-sel-cell {
-      background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel);
+      background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--bg);
     }
   }
 
@@ -4574,6 +4587,9 @@
       <!-- Bandeja de capturas (P13). -->
       <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
       <symbol id="i-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol>
+      <symbol id="i-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/></symbol>
+      <symbol id="i-board" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></symbol>
       <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></symbol>
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>

@@ -4923,6 +4923,14 @@ function contadorDeSubtareas(row) {
   return `${row.children.closed || 0} de ${total}`;
 }
 
+/** Cómo se enseña cada tipo de vista en su pestaña: icono y nombre legible. */
+const TIPOS_DE_VISTA = {
+  table: { icono: "i-table", nombre: "Tabla" },
+  board: { icono: "i-board", nombre: "Tablero" },
+  calendar: { icono: "i-calendar", nombre: "Calendario" },
+  list: { icono: "i-list", nombre: "Lista" },
+};
+
 async function renderDatabase(database, views, activeViewId, { focus = null } = {}) {
   // Una fila escrita en la fantasma que aún se está guardando (se cambió de
   // vista con ella a medias): se espera, para pintar la vista ya con ella.
@@ -5141,7 +5149,8 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 
   const defaultTab = document.createElement("button");
   defaultTab.className = "view-tab" + (activeViewId === null ? " active" : "");
-  defaultTab.textContent = "Todas (sin vista)";
+  defaultTab.innerHTML = `${svgIcon("i-database")}<span>Todas</span>`;
+  defaultTab.title = "Todas las filas, sin vista";
   defaultTab.addEventListener("click", () => renderDatabase(database, views, null, { focus: "viewTab" }));
   tabButtons.set(null, defaultTab);
   tabs.appendChild(defaultTab);
@@ -5149,7 +5158,10 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   views.forEach((v) => {
     const tab = document.createElement("button");
     tab.className = "view-tab" + (v.id === activeViewId ? " active" : "");
-    tab.textContent = `${v.name} (${v.type})`;
+    // El tipo de la vista lo dice el icono (y el `title`), no un sufijo.
+    const tipo = TIPOS_DE_VISTA[v.type] || TIPOS_DE_VISTA.table;
+    tab.innerHTML = `${svgIcon(tipo.icono)}<span>${escapeHtml(v.name)}</span>`;
+    tab.title = `${v.name} · ${tipo.nombre}`;
     tab.addEventListener("click", () => renderDatabase(database, views, v.id, { focus: "viewTab" }));
     tabButtons.set(v.id, tab);
     tabs.appendChild(tab);
@@ -10622,7 +10634,7 @@ function renderTable(
     th.dataset.colKey = "@actions";
     const soloTexto = document.createElement("span");
     soloTexto.className = "sr-only";
-    soloTexto.textContent = deletable ? "Seleccionar y acciones" : "Seleccionar";
+    soloTexto.textContent = "Seleccionar";
     th.append(sel.casillaDeCabecera(), soloTexto);
     headRow.appendChild(th);
   }
@@ -10835,8 +10847,7 @@ function renderTable(
       abrir();
     });
 
-    // La casilla de la fila, en la columna de acciones y antes del botón de
-    // borrar. Dentro de una nota, `data-db-action` deja pasar el clic: sin él
+    // La casilla de la fila, en su columna. Dentro de una nota, `data-db-action` deja pasar el clic: sin él
     // el widget del editor se lo traga y la tabla se desmonta.
     const accTd = document.createElement("td");
     accTd.className = "row-sel-cell";
@@ -10847,24 +10858,8 @@ function renderTable(
     tr.appendChild(accTd);
     sel.registrarFila(row, tr, casilla);
 
-    if (!deletable) {
-      // Sin botón de borrar: la fila se borra desde la página de la base (en
-      // una nota, borrar filas es demasiado fácil de hacer sin querer).
-      return tr;
-    }
-
-    const delBtn = document.createElement("button");
-    delBtn.className = "row-del";
-    delBtn.innerHTML = svgIcon("i-trash");
-    delBtn.title = "Borrar fila";
-    delBtn.setAttribute("aria-label", "Borrar fila");
-    delBtn.addEventListener("click", async () => {
-      if (!confirm(`¿Borrar "${row.title}"?`)) return;
-      await api(`/databases/${database.id}/rows/${row.id}`, { method: "DELETE" });
-      selectDatabase(database.id);
-    });
-    accTd.appendChild(delBtn);
-
+    // La fila no lleva botón de borrar propio: se marca y se borra desde la
+    // barra de selección, que sale encima de la tabla (donde la vista deja).
     return tr;
   };
   rows.forEach((row) => tbody.appendChild(pintarFila(row)));
