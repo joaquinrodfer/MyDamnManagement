@@ -91,9 +91,15 @@ orden sigue siendo:
 1. **Export íntegro y verificado** (del índice a un vault completo, con test de
    ida y vuelta). Es la red de seguridad: sin ella la decisión no es reversible.
 2. **Los cuerpos dejan de necesitar el fichero** (`pages.body` ya guarda el
-   cuerpo).
+   cuerpo) **y, en el mismo cambio, una `version` por documento**
+   ([ADR-0009](ADR-0009-colaboracion-con-autoridad.md) D3).
+2.5. **Colaboración en vivo con autoridad en el servidor** (ADR-0009): dos
+   personas en la misma nota, cursores y presencia, cambios rebasados por el
+   servidor con `lastSeenVersion`. Sin offline y sin peer-to-peer.
 3. **Versiones por documento y varios escritores** (`If-Match`).
 4. **Tiempo real** (presencia, cursores) — que es la función 26 de arriba.
+   El CRDT se aplaza hasta después de la 2.5, y antes hay que decidir si el
+   documento son bloques o texto (ADR-0009 D4).
 
 Mientras esté aquí, la obligación que sí aplica desde ya: **nada nuevo se guarda
 de una forma que no se pueda escribir a `.md` sin pérdida**.
