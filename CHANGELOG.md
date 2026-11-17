@@ -7,6 +7,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 ### Añadido
 - **Añadir fila en el sitio**: «+ Nueva fila» abre una fila vacía al final de la tabla, con el cursor en el título, en vez del formulario de alta. La fila se crea al confirmar (Enter, Tab o salir), si la dejas vacía no deja nada, y el «▾» del botón ofrece las plantillas de fila. Vale en la página de la base, en la tabla incrustada en una nota y en cada columna del tablero.
 
+### Corregido
+
+- **Intro detrás de un encabezado: una línea y el hueco que toca, no tres.** Pulsar ⏎ al final de un H1 metía dos líneas en blanco en el `.md` y en pantalla se veían tres huecos seguidos (54 px: 18 + 18 + 18) para un párrafo nuevo vacío. Ahora el bloque nuevo **ocupa la línea en blanco que ya separaba del bloque de abajo** —el `.md` no cambia— y el hueco que se ve es el que dicta la regla del bloque de arriba: **una** línea en blanco (18 px detrás de un H1, 14 detrás de un H2–H4). La línea en blanco que separa ese párrafo de sus vecinos se materializa **en cuanto se escribe la primera letra**, en la misma transacción, así que el `.md` sigue con una línea en blanco entre bloques y un solo `⌘Z` deshace letra y hueco. Si el bloque de debajo es un párrafo, un `---` o código indentado —los que se comen la línea de encima— la línea va **debajo** del texto nuevo, para que nadie se lo trague. Vale para H1–H4 y también con el cursor a mitad del encabezado (ahí el bloque se parte como antes), y el encabezado sigue pintándose como encabezado: ni un `#` suelto. Tarjeta t_c7756962.
+
 ## [2.6.0] — 2026-11-16
 
 ### Añadido
