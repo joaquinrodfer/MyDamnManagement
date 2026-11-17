@@ -859,6 +859,110 @@ function emptyGapEffect(from, insert = "\n\n") {
   return /^\n{2,}$/.test(insert) ? [addEmptyGap.of({ from, to: from + insert.length })] : [];
 }
 
+// ------------------------------------------- ⏎ al final de un bloque, sin hueco
+//
+// El bloque vacío que abre ⏎ detrás de un bloque (t_c7756962: detrás de un
+// encabezado) NO materializa líneas en blanco mientras está vacío. El cursor
+// se queda en la línea de debajo -- la línea en blanco que YA separaba del
+// bloque siguiente, si la había (ver `splitBlock` en block-keys.js) --, así que
+// el hueco que se ve es el que dicta la regla del bloque de arriba: UNA línea
+// en blanco (18 px detrás de un H1, 12 detrás de un párrafo). Antes se
+// materializaban dos líneas más y se veían tres huecos seguidos (54 px).
+//
+// La línea en blanco que separa ese párrafo de sus vecinos aparece EN CUANTO
+// se escribe la primera letra (arriba: la que deja el hueco de la regla).
+// Se hace en la MISMA transacción (el filtro cambia el texto que se teclea por
+// "\n" + ese texto), así que un solo ⌘Z deshace las dos cosas y el `.md` sigue
+// con una línea en blanco entre bloques como el que lo escribe a mano. Si el
+// texto entra por otro camino (un pegado, varias líneas, varias selecciones) la
+// marca se descarta y el párrafo se queda pegado a un vecino: una línea en
+// blanco menos, nunca una de más (ni una que se coma el bloque de al lado).
+const addBlockBreak = StateEffect.define();
+
+const blockBreakField = StateField.define({
+  create: () => null,
+  update(value, tr) {
+    let pos = null;
+    let justSet = false;
+    for (const effect of tr.effects) {
+      if (!effect.is(addBlockBreak)) continue;
+      pos = effect.value;
+      justSet = true;
+    }
+    if (!justSet) {
+      if (value == null) return null;
+      // Ya se ha escrito (o el documento ha cambiado por otra vía): la marca
+      // solo vale para la primera letra del bloque nuevo.
+      if (tr.docChanged) return null;
+      pos = value;
+    }
+    if (pos == null) return null;
+    // Y se suelta en cuanto el cursor sale de esa línea: ya no se escribe ahí.
+    const line = tr.state.doc.lineAt(Math.min(pos, tr.state.doc.length));
+    return tr.state.selection.ranges.some((r) => r.from <= line.to && r.to >= line.from) ? pos : null;
+  },
+});
+
+/**
+ * ¿El bloque de debajo se pegaría al texto que se escribe? El párrafo nuevo se
+ * lo comería y los dos acabarían siendo uno (comprobado con el parser de
+ * verdad): un párrafo, un `---` (que convierte el de arriba en setext) y el
+ * código INDENTADO se comen la línea de encima; los encabezados, las listas,
+ * las citas, las vallas, las tablas y el HTML no.
+ */
+function gluesBelow(doc, block) {
+  if (block.type === "paragraph") return true;
+  const first = doc.lineAt(block.from).text;
+  if (block.type === "hr") return /^ {0,3}-+ *$/.test(first);
+  if (block.type === "code") return !/^ {0,3}(```|~~~)/.test(first);
+  return false;
+}
+
+/** Los dos vecinos del hueco: el bloque que acaba justo encima y el que empieza
+ * justo debajo (`null` si el hueco es un extremo del documento). */
+function blocksAround(blocks, pos) {
+  let above = null;
+  for (const b of blocks) {
+    if (b.to <= pos) above = b;
+    else break;
+  }
+  return { above, below: blocks.find((b) => b.from >= pos) || null };
+}
+
+/** Mete la línea en blanco del bloque nuevo en la transacción de la primera
+ * letra (ver `blockBreakField`). Solo se toca lo que es una tecla normal: UNA
+ * inserción en el punto donde quedó el cursor y sin saltos de línea. */
+const blockBreakMaterialization = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged || !tr.isUserEvent("input.type")) return tr;
+  const pos = tr.startState.field(blockBreakField);
+  if (pos == null) return tr;
+  let count = 0;
+  let single = null;
+  tr.changes.iterChanges((from, to, fromB, toB, inserted) => {
+    count++;
+    single = { from, to, text: inserted.toString() };
+  });
+  if (count !== 1 || single.from !== pos || single.to !== pos) return tr;
+  if (!single.text || single.text.includes("\n")) return tr;
+  // La línea en blanco va ARRIBA (la que dicta el hueco de la regla: detrás de
+  // un H1 son 18 px) salvo que el bloque de arriba no la necesite y el de abajo
+  // sí: entonces va debajo, que es lo único que impide que se coman el texto.
+  // Si los dos la necesitan (detrás de un párrafo y con otro párrafo debajo) se
+  // materializan las dos, como antes: un párrafo de más es peor que una línea.
+  const doc = tr.startState.doc;
+  const { above, below } = blocksAround(tr.startState.field(blockField).blocks, pos);
+  const needAbove = above != null && !/^h[1-5]$/.test(above.type) && above.type !== "hr";
+  const needBelow = below != null && gluesBelow(doc, below);
+  const insert = (needAbove || !needBelow ? "\n" : "") + single.text + (needBelow ? "\n" : "");
+  return {
+    changes: { from: pos, to: pos, insert },
+    selection: { anchor: pos + insert.length - (needBelow ? 1 : 0) },
+    effects: tr.effects,
+    userEvent: tr.userEvent,
+    scrollIntoView: tr.scrollIntoView,
+  };
+});
+
 /**
  * El DOM del asa de un bloque: el «+» y el «⋮⋮», con el índice del bloque en
  * `data-block-index` (de ahí lo leen los handlers de `blockHandleEventHandlers`).
@@ -3297,12 +3401,19 @@ function runBlockKey(view, kind) {
   });
   if (!edit) return false; // nota vacía, "---", fila en blanco...: decide CodeMirror
 
+  const effects = emptyGapEffect(edit.from, edit.insert);
+  // El bloque vacío de detrás no materializa su línea en blanco: la mete el
+  // primer carácter que se escriba (ver `blockBreakField`).
+  if (edit.blockBreak) effects.push(addBlockBreak.of(edit.cursor));
+
   view.dispatch({
-    changes: { from: edit.from, to: edit.to, insert: edit.insert },
+    // Sin texto que cambiar (el bloque nuevo ocupa la línea en blanco que ya
+    // había) solo se mueve el cursor.
+    changes: edit.from === edit.to && !edit.insert ? [] : { from: edit.from, to: edit.to, insert: edit.insert },
     selection: { anchor: edit.cursor },
     scrollIntoView: true,
     userEvent: "input",
-    effects: emptyGapEffect(edit.from, edit.insert),
+    effects,
   });
   return true;
 }
@@ -4060,6 +4171,8 @@ export function createNoteEditor({
         syntaxHighlighting(highlightStyle),
         blockField,
         pendingEmptyGaps,
+        blockBreakField,
+        blockBreakMaterialization,
         // Sin este facet CodeMirror colapsa una selección de varios rangos al
         // rango principal: las asas se pintaban marcadas pero solo actuaba la
         // última (D3). El resto de selecciones múltiples (varios cursores) no

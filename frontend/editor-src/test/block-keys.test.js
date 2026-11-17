@@ -23,6 +23,7 @@ function apply(text, pos, block, kind = "enter") {
   return {
     text: text.slice(0, edit.from) + edit.insert + text.slice(edit.to),
     cursor: edit.cursor,
+    blockBreak: edit.blockBreak === true,
   };
 }
 
@@ -30,10 +31,52 @@ const para = (from, to) => ({ from, to, type: "paragraph" });
 
 // --------------------------------------------------------------- ⏎ = bloque
 
-test("⏎ en un párrafo abre un bloque nuevo, separado por una línea en blanco", () => {
+test("⏎ al final de un párrafo deja el cursor en la línea de debajo, sin línea de más", () => {
+  // El bloque nuevo no materializa líneas en blanco (t_c7756962): la que lo
+  // separa del párrafo de arriba la mete la primera letra que se escribe.
   const r = apply("uno", 3, para(0, 3));
-  assert.equal(r.text, "uno\n\n");
-  assert.equal(r.cursor, 5);
+  assert.equal(r.text, "uno\n");
+  assert.equal(r.cursor, 4);
+  assert.equal(r.blockBreak, true);
+});
+
+test("⏎ al final de un bloque NO añade líneas en blanco a la que ya separa", () => {
+  // El caso del dueño: con un bloque detrás, el hueco ya está ahí y el cursor
+  // lo ocupa. Antes se metían dos saltos más y se veían tres huecos (54 px).
+  const text = "# THALIA\n\n# STRATERIA\n\n# SAIFFE";
+  const r = apply(text, 8, { from: 0, to: 8, type: "h1" });
+  assert.equal(r.text, text, "el .md no cambia: una línea en blanco, no tres");
+  assert.equal(r.cursor, 9, "el cursor queda en la línea en blanco de debajo");
+  assert.equal(r.blockBreak, true);
+});
+
+test("⏎ al final de un encabezado vale para h1, h2, h3 y h4", () => {
+  for (const [type, line] of [
+    ["h1", "# UNO"],
+    ["h2", "## UNO"],
+    ["h3", "### UNO"],
+    ["h4", "#### UNO"],
+  ]) {
+    const text = line + "\n\n" + line.replace("UNO", "DOS");
+    const r = apply(text, line.length, { from: 0, to: line.length, type });
+    assert.equal(r.text, text, `${type}: el .md no gana líneas en blanco`);
+    assert.equal(r.cursor, line.length + 1, `${type}: el cursor queda debajo`);
+    assert.equal(r.blockBreak, true, `${type}: el bloque nuevo se marca`);
+  }
+});
+
+test("⏎ al final de un encabezado pegado al de abajo crea UNA línea en blanco", () => {
+  const r = apply("# A\n# B", 3, { from: 0, to: 3, type: "h1" });
+  assert.equal(r.text, "# A\n\n# B");
+  assert.equal(r.cursor, 4);
+  assert.equal(r.blockBreak, true);
+});
+
+test("⏎ al final del último bloque de la nota deja una línea, no dos", () => {
+  const r = apply("# SOLO", 6, { from: 0, to: 6, type: "h1" });
+  assert.equal(r.text, "# SOLO\n");
+  assert.equal(r.cursor, 7);
+  assert.equal(r.blockBreak, true);
 });
 
 test("⏎ a mitad de palabra parte el bloque en dos", () => {
@@ -194,13 +237,16 @@ test("⇧⏎ dentro de una cita salta línea dentro de la misma cita", () => {
 
 test("⏎ en un título termina el bloque y abre un párrafo normal", () => {
   const r = apply("# Titulo", 8, { from: 0, to: 8, type: "h1" });
-  assert.equal(r.text, "# Titulo\n\n");
-  assert.equal(r.cursor, 10);
+  assert.equal(r.text, "# Titulo\n");
+  assert.equal(r.cursor, 9);
+  assert.equal(r.blockBreak, true);
 });
 
 test("⏎ a mitad de un título deja el resto como párrafo", () => {
   const r = apply("# Titulo largo", 8, { from: 0, to: 14, type: "h1" });
   assert.equal(r.text, "# Titulo\n\nlargo");
+  // Ahí los saltos separan texto que ya existía: no hay bloque vacío que valga.
+  assert.equal(r.blockBreak, false);
 });
 
 // ---------------------------------------------------------------- código

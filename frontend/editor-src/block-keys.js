@@ -61,16 +61,37 @@ function insertAt(pos, insert) {
 
 /**
  * Parte un bloque que no tiene continuación propia (párrafo, título, otros):
- * lo que queda detrás del cursor pasa a ser un bloque NUEVO, separado por una
- * línea en blanco. Si el cursor está al final de una fila del bloque, esa
- * fila ya aporta su `\n` y solo hace falta uno más -- si no, saldría un hueco
- * de dos líneas en blanco.
+ * lo que queda detrás del cursor pasa a ser un bloque NUEVO.
+ *
+ * Al final del bloque (el caso de ⏎ detrás de un encabezado, t_c7756962) el
+ * bloque nuevo NO materializa líneas en blanco: el cursor se queda en la línea
+ * de debajo, que es la línea en blanco que YA separa del bloque siguiente -- o,
+ * si no había ninguna, una sola que se crea ahora --, y al final de la nota la
+ * línea de debajo a secas. Así el hueco que se ve en pantalla es el que dicta
+ * la regla de huecos del bloque de arriba (el de UNA línea en blanco), no la
+ * suma de líneas materializadas más el hueco del bloque vacío: pulsar ⏎ detrás
+ * de un H1 dejaba tres líneas en blanco (18 + 18 + 18 px) para un párrafo
+ * nuevo vacío.
+ *
+ * `blockBreak` dice que esa línea es el bloque nuevo: la línea en blanco que lo
+ * separa del bloque de arriba se materializa en cuanto se escribe la primera
+ * letra (ver `blockBreakField` en entry.js).
+ *
+ * Detrás de una fila del MEDIO del bloque, el salto que ya había cuenta como
+ * uno de los dos separadores y solo hace falta uno más -- si no, saldría un
+ * hueco de dos líneas en blanco.
  */
 function splitBlock(text, pos, block) {
   const { from, to } = cutAround(text, block.from, block.to, pos);
+  if (to === block.to) {
+    // El cursor va al principio de la línea de debajo: la línea en blanco que
+    // ya había no se toca (el `.md` no cambia); si no la había, se crea.
+    if (text.startsWith("\n\n", block.to)) return { from, to, insert: "", cursor: block.to + 1, blockBreak: true };
+    return { from, to, insert: "\n", cursor: from + 1, blockBreak: true };
+  }
   const tail = text.slice(to, block.to);
   const gap = tail.startsWith("\n") ? "\n" : "\n\n";
-  return { from, to, insert: gap, cursor: from + gap.length + leadingNewlines(tail) };
+  return { from, to, insert: gap, cursor: from + gap.length + leadingNewlines(tail), blockBreak: false };
 }
 
 /**
@@ -172,8 +193,11 @@ function splitSoft(text, pos, block) {
  *        bloque que contiene el cursor, tal y como lo da `computeBlocks`
  *        (null: no hay bloque ahí -- nota vacía, fila en blanco entre bloques)
  * @param {"enter"|"soft"} [opts.kind] `enter` = ⏎; `soft` = ⇧⏎, ⌘⏎ o ⌃⏎
- * @returns {{from: number, to: number, insert: string, cursor: number}|null}
+ * @returns {{from: number, to: number, insert: string, cursor: number,
+ *            blockBreak?: boolean}|null}
  *        null cuando la tecla no es de este módulo (que decida CodeMirror).
+ *        `blockBreak` marca el bloque vacío que se abre al final de otro:
+ *        mientras esté vacío no lleva líneas en blanco materializadas.
  */
 export function blockKeyEdit({ text, pos, block, kind = "enter" }) {
   if (!block || pos < block.from || pos > block.to) return null;
