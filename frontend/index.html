@@ -2866,6 +2866,39 @@
     background: var(--row-hover);
   }
   .row-open .svg-icon { width: 15px; height: 15px; }
+  .row-open-cell .row-open-label { display: none; }
+  @media (hover: none), (pointer: coarse) {
+    .rows-table td.cell-title .row-open-label { display: none; }
+    .rows-table td.cell-title .row-open { padding: 0 5px; }
+  }
+  /* «Abrir» dentro de la celda del título, a su derecha, como en Notion: una
+     pastilla con icono y rótulo que tapa el final del título solo mientras se
+     pasa por la fila. Fondo opaco para que el texto de debajo no se lea a
+     través. */
+  .rows-table td.cell-title { position: relative; }
+  .rows-table td.cell-title .row-open {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    width: auto;
+    height: 24px;
+    gap: 4px;
+    padding: 0 8px 0 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--bg);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    box-shadow: var(--shadow-card);
+  }
+  .rows-table td.cell-title .row-open:hover,
+  .rows-table td.cell-title .row-open:focus-visible {
+    background: var(--code-bg);
+    color: var(--ink);
+  }
+  .rows-table td.cell-title .row-open .svg-icon { width: 13px; height: 13px; }
   .rows-table tbody tr:hover td { background: var(--row-hover); }
   /* Una celda editable lo dice al pasar: un filo por dentro, como el de un
      campo. Es `box-shadow` (no borde) para no mover ni un píxel la rejilla. */
@@ -2891,11 +2924,19 @@
     .rows-table .row-open:focus-visible,
     .rows-table .rel-edit:hover,
     .rows-table .rel-edit:focus-visible { opacity: 1; }
-    /* La casilla, apagada hasta que hace falta: al pasar, con foco o marcada. */
-    .rows-table td .row-check { opacity: 0.45; }
+    /* La pastilla «Abrir» tapa el final del título: a medias se leería el
+       texto de debajo a través. Entera o nada. */
+    .rows-table tr:hover td.cell-title .row-open,
+    .rows-table tr:focus-within td.cell-title .row-open { opacity: 1; }
+    /* La casilla no se ve hasta que hace falta: al pasar por su fila (la de la
+       cabecera, al pasar por la cabecera), con foco o marcada. En cuanto hay
+       algo marcado se ven todas, para seguir marcando sin buscarlas. */
+    .rows-table .row-check { opacity: 0; transition: opacity var(--dur-fast) var(--ease-std); }
     .rows-table tr:hover .row-check,
     .rows-table .row-check:focus-visible,
-    .rows-table .row-check:checked { opacity: 1; }
+    .rows-table .row-check:checked,
+    .rows-table .row-check:indeterminate,
+    .db-sel-shell:has(> .db-sel-bar:not([hidden])) .rows-table .row-check { opacity: 1; }
   }
   /* Scroll horizontal propio y SIEMPRE visible: a 1024 px la tabla mide
      ~947 px de ancho natural contra los ~663 px útiles del panel, así que
@@ -2953,9 +2994,9 @@
   /* ---------- selección múltiple de filas ---------- */
   /* La casilla vive en la columna de acciones, con el botón de borrar cuando
      la vista deja borrar. Estrecha: es un control, no una columna de datos. */
-  .rows-table th.row-sel-head { width: 34px; text-align: center; }
+  .rows-table th.row-sel-head { width: 32px; text-align: center; padding: 0 4px; }
   .rows-table td.row-sel-cell {
-    width: 34px;
+    width: 32px;
     max-width: none;
     padding: 2px 4px;
     text-align: center;
@@ -2979,38 +3020,69 @@
      marcada entre dos con hover se perdía. */
   .rows-table tr.is-selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 
-  /* La barra aparece con la primera fila marcada y va encima de la tabla (y de
-     la lista), en el flujo: no tapa filas ni se va con su scroll horizontal. */
+  /* La barra aparece con la primera fila marcada, como en Notion: FLOTA sobre
+     lo que hay justo encima de la tabla (la línea de filtrar y ordenar, la
+     cabecera del bloque en una nota), en vez de empujar la tabla hacia abajo.
+     La altura de la página no cambia al marcar ni al desmarcar. Es una tira
+     compacta de una línea: recuento y acciones. */
+  .db-sel-shell { position: relative; }
   .db-sel-bar {
-    display: flex;
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 4px);
+    z-index: 6;
+    display: inline-flex;
     align-items: center;
-    gap: 8px 12px;
-    flex-wrap: wrap;
-    margin: 0 0 10px;
-    padding: 8px 10px;
-    border: 1px solid var(--accent);
+    gap: 2px;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin: 0;
+    padding: 3px;
+    border: 1px solid var(--panel-border);
     border-radius: var(--radius-md);
-    background: var(--accent-soft);
+    background: var(--panel);
+    box-shadow: var(--shadow-float);
     color: var(--ink);
     font-size: 12.5px;
+    white-space: nowrap;
+    animation: mdm-fade-in var(--dur-fast) var(--ease-out);
   }
+  .db-sel-bar::-webkit-scrollbar { display: none; }
   .db-sel-bar[hidden] { display: none; }
   .db-sel-count {
+    padding: 0 10px 0 8px;
+    margin-right: 2px;
+    border-right: 1px solid var(--panel-border);
     font-weight: 600;
     color: var(--accent-ink);
     font-variant-numeric: tabular-nums;
   }
-  .db-sel-fuera { color: var(--ink-muted); font-size: var(--text-sm); }
+  .db-sel-fuera { color: var(--ink-muted); font-size: var(--text-sm); padding: 0 6px; cursor: help; }
   .db-sel-fuera[hidden] { display: none; }
-  .db-sel-progress { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .db-sel-progress { color: var(--ink-muted); font-variant-numeric: tabular-nums; padding: 0 6px; }
   .db-sel-progress[hidden] { display: none; }
   .db-sel-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-left: auto;
+    gap: 2px;
+    flex-wrap: nowrap;
   }
+  .db-sel-bar .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 28px;
+    padding: 3px 9px;
+    border-color: transparent;
+    background: none;
+    font-size: 12.5px;
+  }
+  .db-sel-bar .btn:hover:not(:disabled) { background: var(--code-bg); border-color: transparent; }
+  .db-sel-bar .btn .svg-icon { width: 14px; height: 14px; }
+  .db-sel-bar .btn-danger:hover:not(:disabled) { background: var(--down-bg); color: var(--down); }
+  .db-sel-bar .db-sel-icon { padding: 3px 6px; color: var(--ink-muted); }
   .db-sel-note { color: var(--ink-muted); font-size: var(--text-sm); }
 
   /* El informe de una acción en bloque: qué se hizo, cuáles y —si fallaron—
@@ -4333,24 +4405,26 @@
        El recuento y los botones no caben en una línea: los botones bajan a la
        suya y se reparten el ancho (44 px de alto ya los pone `.btn`). La
        casilla se toca con el dedo: 44 px de celda y 22 de casilla. */
-    .db-sel-bar { gap: 6px 8px; }
-    .db-sel-fuera { flex: 1 1 100%; }
-    .db-sel-actions { width: 100%; margin-left: 0; }
-    .db-sel-actions .btn { flex: 1 1 auto; }
+    /* La barra ocupa el ancho y «Borrar» se queda en su icono: así caben
+       recuento y acciones sin desplazar la tira. */
+    .db-sel-bar { right: 0; }
+    .db-sel-bar .btn { min-height: 40px; }
+    .db-sel-bar .btn-danger span { display: none; }
     .rows-table th.row-sel-head,
     .rows-table td.row-sel-cell { width: 44px; padding: 4px 6px; }
     .row-check { width: 22px; height: 22px; }
-    /* A 375 px la tabla se desplaza de lado y la columna de acciones queda
-       fuera: con la casilla pegada al borde derecho, marcar una fila no obliga
-       a desplazar la tabla (y la casilla de la cabecera se ve siempre). El
+    /* A 375 px la tabla se desplaza de lado: la casilla se queda pegada al
+       borde izquierdo, así marcar una fila no depende de dónde esté el
+       desplazamiento (y la casilla de la cabecera se ve siempre). El
        fondo hay que ponerlo a mano: `border-collapse` no arrastra el del <tr>
        a una celda que se pega. */
     .rows-table th.row-sel-head,
     .rows-table td.row-sel-cell {
       position: sticky;
-      right: 0;
+      left: 0;
+      z-index: 1;
       background: var(--bg);
-      box-shadow: -1px 0 0 var(--panel-border);
+      box-shadow: 1px 0 0 var(--panel-border);
     }
     /* El velo del hover y el tinte de la selección son translúcidos: sobre una
        celda pegada dejaban ver el texto que pasa por debajo al desplazar. Se

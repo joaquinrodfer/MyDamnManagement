@@ -8590,10 +8590,12 @@ function crearSeleccionDeFilas({
     barra.hidden = total === 0;
     cuenta.textContent = `${total} ${total === 1 ? "seleccionada" : "seleccionadas"}`;
     fuera.hidden = fueraDeVista === 0;
-    fuera.textContent =
+    // Corto, que la barra es de una línea; la frase entera va en el `title`.
+    fuera.textContent = fueraDeVista === 0 ? "" : `${fueraDeVista} fuera de la vista`;
+    fuera.title =
       fueraDeVista === 0
         ? ""
-        : `· ${fueraDeVista} de ellas ${fueraDeVista === 1 ? "no está" : "no están"} en esta vista: ${
+        : `${fueraDeVista} de ellas ${fueraDeVista === 1 ? "no está" : "no están"} en esta vista: ${
             fueraDeVista === 1 ? "entra" : "entran"
           } igual en la acción`;
     for (const [id, caja] of cajas) {
@@ -8867,16 +8869,21 @@ function crearSeleccionDeFilas({
     btnPropiedad.title = "La base no tiene propiedades: no hay nada que cambiar.";
   }
 
-  const btnQuitar = botonDeBarra("Quitar selección", "quitar-seleccion", () => limpiar());
+  const btnQuitar = botonDeBarra("Quitar selección", "quitar-seleccion", () => limpiar(), "btn db-sel-icon");
+  btnQuitar.innerHTML = svgIcon("i-x");
+  btnQuitar.title = "Quitar selección (Esc)";
+  btnQuitar.setAttribute("aria-label", "Quitar selección");
   acciones.append(btnPropiedad);
   if (puedeBorrar) {
     const btnBorrar = botonDeBarra("Borrar", "borrar-seleccion", () => borrarSeleccion(), "btn btn-danger");
+    btnBorrar.innerHTML = `${svgIcon("i-trash")}<span>Borrar</span>`;
+    btnBorrar.title = "Borrar las filas seleccionadas (Supr)";
     acciones.append(btnBorrar);
   } else {
     // En la tabla de una nota no se borran filas: borrar se hace en la base.
     const nota = document.createElement("span");
     nota.className = "db-sel-note";
-    nota.textContent = "Para borrar, abre la base.";
+    nota.textContent = "Para borrar, abre la base";
     acciones.append(nota);
   }
   acciones.append(btnQuitar);
@@ -10584,7 +10591,10 @@ function renderTable(
   abrirSolo.className = "sr-only";
   abrirSolo.textContent = "Abrir";
   abrirHead.appendChild(abrirSolo);
-  headRow.appendChild(abrirHead);
+  // Con la columna del título a la vista, «Abrir» va DENTRO de su celda (como
+  // en Notion) y esta columna sobra. Solo con el título oculto (`title_hidden`)
+  // hace falta su propia columna.
+  if (!muestraTitulo) headRow.appendChild(abrirHead);
   if (muestraTitulo) {
     // El título no ordena (el servidor no ordena por él: una flecha que no
     // hace nada sería mentir) pero sí tiene menú, para renombrarlo y quitarlo.
@@ -10623,10 +10633,10 @@ function renderTable(
     addHead.appendChild(addBtn);
     headRow.appendChild(addHead);
   }
-  // Fila de acciones: la casilla de la fila —que está SIEMPRE, también en la
-  // tabla incrustada, donde marcar en bloque sí vale— y, cuando la vista deja
-  // borrar (`deletable`), el botón de borrar. Su cabecera es la casilla de
-  // «seleccionar todas las visibles».
+  // La columna de la casilla, la PRIMERA (a la izquierda, como en Notion). Está
+  // también en la tabla incrustada, donde marcar en bloque sí vale. Su cabecera
+  // es la casilla de «seleccionar todas las visibles». Con ratón, las casillas
+  // solo se ven en la fila por la que se pasa o cuando ya hay algo marcado.
   {
     const th = document.createElement("th");
     th.scope = "col";
@@ -10636,7 +10646,7 @@ function renderTable(
     soloTexto.className = "sr-only";
     soloTexto.textContent = "Seleccionar";
     th.append(sel.casillaDeCabecera(), soloTexto);
-    headRow.appendChild(th);
+    headRow.insertBefore(th, headRow.firstChild);
   }
   // El ancho y el orden viven en la vista del `.md`: sin vista activa no hay
   // dónde guardarlos, así que «Todas (sin vista)» se queda con el reparto del
@@ -10741,7 +10751,7 @@ function renderTable(
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "row-open";
-    openBtn.innerHTML = svgIcon("i-expand");
+    openBtn.innerHTML = `${svgIcon("i-expand")}<span class="row-open-label">Abrir</span>`;
     // El teclado abre con Ctrl/Cmd+Enter desde la celda: así la tabla sigue
     // teniendo UNA sola parada de Tab (el recorrido de celdas es de cuadrícula)
     // en vez de una más por fila. Vale igual dentro de una nota: allí las
@@ -10757,8 +10767,12 @@ function renderTable(
       openBtn.setAttribute("aria-label", nombre);
     };
     etiquetar();
-    openTd.appendChild(openBtn);
-    tr.appendChild(openTd);
+    // Con el título oculto, el botón va en su propia columna; si no, dentro de
+    // la celda del título (ver abajo).
+    if (!muestraTitulo) {
+      openTd.appendChild(openBtn);
+      tr.appendChild(openTd);
+    }
 
     // 2) Título y propiedades editables en el sitio: lo que se ve es el valor
     // del `.md`, y un clic abre el control del tipo de esa propiedad. Dentro de
@@ -10783,15 +10797,23 @@ function renderTable(
       // agrupe o no la vista. Lo que la agrupación desmiente es la sangría,
       // que es una posición (la fila cae en su grupo, no bajo su madre).
       const cuenta = contadorDeSubtareas(row);
+      let badge = null;
       if (cuenta) {
         // El contador es un dato, no un control: no puede quitarle el clic a
         // la celda (que edita el título). El `title` dice qué cuenta.
-        const badge = document.createElement("span");
+        badge = document.createElement("span");
         badge.className = "cell-subtasks";
         badge.textContent = cuenta;
         badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
-        titleTd.appendChild(badge);
       }
+      // Lo que la celda del título lleva además del texto: el contador y el
+      // botón «Abrir». `paintCell` rehace el contenido de la celda en cada
+      // guardado, así que los vuelve a poner con esto (ver `adornarTitulo`).
+      titleTd.adornarTitulo = () => {
+        if (badge) titleTd.appendChild(badge);
+        titleTd.appendChild(openBtn);
+      };
+      titleTd.adornarTitulo();
       celdas.set(null, titleTd);
       tr.appendChild(titleTd);
     }
@@ -10847,7 +10869,7 @@ function renderTable(
       abrir();
     });
 
-    // La casilla de la fila, en su columna. Dentro de una nota, `data-db-action` deja pasar el clic: sin él
+    // La casilla de la fila, en la primera columna. Dentro de una nota, `data-db-action` deja pasar el clic: sin él
     // el widget del editor se lo traga y la tabla se desmonta.
     const accTd = document.createElement("td");
     accTd.className = "row-sel-cell";
@@ -10855,7 +10877,7 @@ function renderTable(
     if (hooks?.embed) accTd.dataset.dbAction = "seleccionar-fila";
     const casilla = sel.casillaDeFila(row);
     accTd.appendChild(casilla);
-    tr.appendChild(accTd);
+    tr.insertBefore(accTd, tr.firstChild);
     sel.registrarFila(row, tr, casilla);
 
     // La fila no lleva botón de borrar propio: se marca y se borra desde la
@@ -11025,16 +11047,17 @@ function renderTable(
     input.placeholder = "Nombre de la fila";
     input.setAttribute("aria-label", "Título de la fila nueva");
     td.appendChild(input);
-    tr.append(abrirTd, td);
+    const accTdFantasma = document.createElement("td");
+    accTdFantasma.className = "row-sel-cell";
+    tr.append(accTdFantasma);
+    if (!muestraTitulo) tr.append(abrirTd);
+    tr.append(td);
     if (muestraTitulo) propiedades.forEach(() => tr.appendChild(document.createElement("td")));
     if (onChanged) {
       const addTd = document.createElement("td");
       addTd.className = "db-col-add-cell";
       tr.appendChild(addTd);
     }
-    const accTd = document.createElement("td");
-    accTd.className = "row-sel-cell";
-    tr.appendChild(accTd);
 
     filaVacia?.remove();
     tbody.appendChild(tr);
@@ -11211,6 +11234,9 @@ function paintCell(td, database, row, prop, hooks = null) {
   // La columna del título se lee como jerarquía (la regla CSS va por clase:
   // la primera columna de la tabla es la de abrir la fila).
   td.classList.toggle("cell-title", !prop);
+  // El contador de subtareas y «Abrir» viven dentro de la celda del título:
+  // el `innerHTML` de arriba se los ha llevado.
+  if (!prop) td.adornarTitulo?.();
   // `cell-rel` deja que los títulos salten de línea: el `td` recorta a 240 px
   // y un id (que ya no se enseña) salía siempre en una sola línea.
   td.classList.toggle("cell-rel", Boolean(esRelacion));
