@@ -31,12 +31,19 @@ Reglas de este backlog:
 | 3 | Orden por tipo, con manual/auto en las selecciones | bajo | hecha (dd0d1ae) |
 | 29 | Plantilla de tarea y de proyecto completo | bajo | hecha (645963c) |
 
-## Lote 3 — «el día a día» (en curso)
+## Lote 3 — «el día a día» (cerrado, v2.6.0)
 
 | # | Función | Coste | Estado |
 |---|---|---|---|
-| 19 | Calendario con rango inicio-fin y arrastre | medio | en tarjeta (`t_56e9655a`) |
-| 12 | Aviso de vencimiento dentro de la app | bajo | en tarjeta (`t_cd70b74e`) |
+| 19 | Calendario con rango inicio-fin y arrastre | medio | hecha (`6c3a8b0`) |
+| 12 | Aviso de vencimiento dentro de la app | bajo | hecha (`c88e9a6`) |
+
+## Fuera de lote, ya hecho
+
+| Función | Estado |
+|---|---|
+| Añadir fila en el sitio, como en Notion (fila fantasma en vez del formulario, plantillas en el «▾», estado de la columna en el tablero) | hecha (`903c54b`), después de la 2.6.0 |
+| Pulido visual completo (dirección «Mesa de Operaciones»: tabla, tablero, calendario, barra lateral, estados vacíos, foco, móvil 375 px) | hecha (`18da5a6`) |
 
 ## Lote 4 — «memoria del trabajo»
 
