@@ -4553,34 +4553,32 @@ async function pintar(kind, id, { focus = null } = {}) {
   return selectNote(id);
 }
 
-async function goTo(kind, id, { fromHistory = false, replace = false } = {}) {
+async function goTo(kind, id, { replace = false } = {}) {
   // Lo que se esté escribiendo en una fila abierta como página es texto del
   // usuario igual que el de una nota: se manda antes de navegar. Cerrar la
   // fila también lo manda (con `keepalive`), pero eso no espera respuesta.
   if (rowPage) await rowPage.guardar?.();
-  // Abrir una base con una navegación nueva (árbol, recientes, búsqueda, una
-  // plantilla) deja el foco en el primer campo del alta; volver con atrás o
-  // adelante no, que el foco es del usuario, no del historial.
-  const pintada = await pintar(kind, id, { focus: fromHistory ? null : "addRow" });
+  // Abrir una base deja el foco en el primer campo del alta. Volver con atrás o
+  // adelante no pasa por aquí (lo pinta `seguirAlNavegador` sin tocar el foco,
+  // que es del usuario, no del historial).
+  const pintada = await pintar(kind, id, { focus: "addRow" });
   if (!pintada) return false;
   // La sección de la barra lateral se marca (o se desmarca) como la actual con
   // la misma navegación que todo lo demás.
   paintMyTasks();
-  if (!fromHistory) {
-    if (replace) {
-      state.history[state.historyPos] = { kind, id: id ?? null };
-      history.replaceState({ pos: state.historyPos }, "", rutaDe(kind, id));
-    } else {
-      // Como en un navegador: navegar desde una posición anterior descarta el
-      // «adelante» pendiente. En la pila del navegador lo hace él; en nuestra
-      // cuenta, este `slice`.
-      state.history = state.history.slice(0, state.historyPos + 1);
-      state.history.push({ kind, id: id ?? null });
-      state.historyPos = state.history.length - 1;
-      history.pushState({ pos: state.historyPos }, "", rutaDe(kind, id));
-    }
-    guardarPila();
+  if (replace) {
+    state.history[state.historyPos] = { kind, id: id ?? null };
+    history.replaceState({ pos: state.historyPos }, "", rutaDe(kind, id));
+  } else {
+    // Como en un navegador: navegar desde una posición anterior descarta el
+    // «adelante» pendiente. En la pila del navegador lo hace él; en nuestra
+    // cuenta, este `slice`.
+    state.history = state.history.slice(0, state.historyPos + 1);
+    state.history.push({ kind, id: id ?? null });
+    state.historyPos = state.history.length - 1;
+    history.pushState({ pos: state.historyPos }, "", rutaDe(kind, id));
   }
+  guardarPila();
   recordarRuta(kind, id);
   updateNavButtons();
   return true;
