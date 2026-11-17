@@ -57,7 +57,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 
 from app import index as index_mod
 from app import closed as closed_rules
-from app.links import sync_wikilinks
+from app.links import TitleIndex, sync_wikilinks
 from app.vault import fm, names, reader, suggestions, vaultfs, writer
 
 log = logging.getLogger("mdm.vault")
@@ -2387,9 +2387,19 @@ class VaultStore:
             # Enlaces: se recalculan enteros desde los cuerpos (los de una fila
             # también: el `.md` de una fila puede llevar `[[wikilinks]]`).
             self.conn.execute("DELETE FROM links")
+            # El mapa de títulos, UNA vez para todo el reindexado. Pedirlo por
+            # nota era cuadrático (12.000 notas -> 12.000 consultas de 12.000
+            # filas) y se llevaba ~230 s de los ~270 s del arranque en frío.
+            title_index = TitleIndex.load(self.conn, workspace_id)
             avance("enlazando", 0, total, 3)
             for hechas, record in enumerate(records, 1):
-                sync_wikilinks(self.conn, record.id, workspace_id, record.body)
+                sync_wikilinks(
+                    self.conn,
+                    record.id,
+                    workspace_id,
+                    record.body,
+                    title_index=title_index,
+                )
                 if hechas % reader.PROGRESS_EVERY == 0:
                     avance("enlazando", hechas, total, 3)
 
