@@ -24,6 +24,7 @@ const state = {
   ownRemoteEvents: new Map(), // page_id -> ms: cambio en disco que ha hecho esta app (no es «de fuera»)
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
+  myTasks: { count: 0, today: null, counts: { overdue: 0, today: 0 }, tasks: [], closed_values: [] }, // «Mis tareas», de GET /my-tasks
 };
 
 // ---------------------------------------------------------------- helpers
@@ -119,8 +120,13 @@ const MAX_ERROR_TOASTS = 3;
 /** Aviso discreto abajo a la derecha, descartable con su aspa, que se apila
  * si llegan varios y se va solo a los ~6s. El nodo se crea desde aquí (el
  * HTML no lleva nada) y cuelga de body, no de #main, para seguir visible
- * mientras se navega. */
-function showError(message) {
+ * mientras se navega.
+ *
+ * `options.sticky` lo deja hasta que se cierre (para un aviso que hay que
+ * poder leer con calma, como el de las tareas vencidas) y
+ * `options.onDismiss` se llama al cerrarlo, venga del aspa o del temporizador:
+ * quien lo pinta puede apuntar que ya se ha visto. */
+function showError(message, kind = "error", options = {}) {
   let stack = document.getElementById("error-toasts");
   if (!stack) {
     stack = document.createElement("div");
@@ -147,7 +153,10 @@ function showError(message) {
   }
 
   const toast = document.createElement("div");
-  toast.className = "error-toast";
+  // `is-info` es el mismo aviso con el filo de otro color: no es un fallo, es
+  // algo que el usuario tiene que saber (por ejemplo, que su arrastre ha
+  // cambiado el modo de una propiedad).
+  toast.className = kind === "info" ? "error-toast is-info" : "error-toast";
   toast.setAttribute("role", "status"); // los lectores de pantalla lo anuncian sin robar el foco
 
   const text = document.createElement("span");
@@ -163,26 +172,37 @@ function showError(message) {
   close.setAttribute("aria-label", "Descartar aviso");
   close.innerHTML = svgIcon("i-x");
 
-  let timer = setTimeout(dismiss, ERROR_TOAST_MS);
+  let timer = options.sticky ? null : setTimeout(dismiss, ERROR_TOAST_MS);
   function dismiss() {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
     toast.remove();
     // Sin toasts no hay nada que apilar: se va también el contenedor, para no
     // ir dejando nodos vacíos colgando de body.
     if (stack.childElementCount === 0) stack.remove();
+    if (typeof options.onDismiss === "function") options.onDismiss();
   }
   // Retirar sin tocar el contenedor: lo usa el tope de apilado, que va a
   // añadir otro aviso justo después (dismiss() borraría el contenedor vacío
   // y el aviso nuevo se quedaría colgando de un nodo suelto).
   toast.retireToast = () => {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
     toast.remove();
+    if (typeof options.onDismiss === "function") options.onDismiss();
   };
   close.addEventListener("click", dismiss);
 
   toast.append(text, close);
   stack.appendChild(toast);
   return toast;
+}
+
+/** Un aviso informativo (no es un fallo): mismo sitio y misma pila que los
+ * errores, con el filo de color de acento. Se usa cuando algo ha salido bien
+ * pero el usuario tiene que saber que ha cambiado (el modo de orden de una
+ * propiedad, por ejemplo) o cuando hay algo que mirar al entrar («tienes 3
+ * tareas vencidas»). */
+function showNotice(message, options = {}) {
+  return showError(message, "info", options);
 }
 
 /** Deja el detalle técnico en la consola (para depurar) y avisa al usuario
@@ -374,7 +394,9 @@ async function renderDashboard(main) {
   recentSection.appendChild(recentHead);
 
   if (data.recent_pages.length === 0) {
-    recentSection.innerHTML += '<div class="search-empty">Elige una página o crea una nueva.</div>';
+    recentSection.innerHTML +=
+      '<div class="empty-hint"><p class="empty-hint-title">Aquí saldrán las últimas páginas que toques.</p>' +
+      '<p class="empty-hint-note">Para empezar, crea una nota con «+» en la barra lateral, o una base desde el botón de plantilla que tiene al lado.</p></div>';
   } else {
     data.recent_pages.forEach((p) => {
       recentSection.appendChild(
@@ -1663,13 +1685,403 @@ document.getElementById("btn-do-procesar")?.addEventListener("click", procesarNo
 
 initInbox();
 
+// ------------------------------------------------- mis tareas (todas las bases)
+//
+// La pregunta «¿qué me toca hoy?», cruzando TODAS las bases: las filas de
+// cualquier base cuya propiedad de tipo `person` («Responsable») te contenga.
+// El cruce lo hace el servidor de una vez (`GET /my-tasks`: una consulta para
+// los schemas y otra para las filas de las bases que tienen responsables), así
+// que el panel no entra base por base ni pide cuarenta listas en serie.
+//
+// La sección de la barra lateral es un botón que abre la vista y solo existe
+// si hay algo, como la bandeja: quien no usa responsables no ve una sección
+// vacía. A su lado, un contador con lo que **ya se pasó** y lo que **se pasa
+// hoy**, que es la única parte de la vista que hay que ver sin abrirla. La
+// vista agrupa por fecha (vencidas / hoy / esta semana / resto) y cada fila se
+// abre como página, que es el mecanismo que ya hay.
+//
+// **Qué está vencido lo dice el servidor.** La respuesta trae `today` (el día
+// con el que comparó), `counts` (los dos números de la barra) y, por tarea, su
+// bloque (`due`) y los días que le quedan (`days`). Aquí no se mira el reloj ni
+// se repite la resta: con dos portátiles en husos distintos el contador y la
+// lista tendrían dos «hoy» y se contradirían. Lo mismo hace la tabla con
+// `overdue_keys` (ver `paintCell`).
+//
+// Al entrar, si hay algo vencido se avisa una vez por sesión con un aviso
+// discreto y descartable (`avisarDeVencidas`): ni modal ni nada que bloquee, y
+// nada fuera de la app —sin correo, sin push, sin nada en segundo plano—.
+//
+// Las filas **cerradas** no salen. Manda la regla de cada base (`closed:
+// {property, values}` en su `.md`, la misma que cuenta las subtareas); una base
+// sin regla no tiene estado y entra entera. Los valores que las bases declaran
+// llegan en `closed_values` y la vista los dice en una nota: el criterio se lee,
+// no se adivina.
+
+const BLOQUES_DE_MIS_TAREAS = [
+  { key: "vencidas", title: "Vencidas" },
+  { key: "hoy", title: "Hoy" },
+  { key: "semana", title: "Esta semana" },
+  { key: "resto", title: "Resto" },
+];
+
+/** Refresco agrupado de «Mis tareas»: varios avisos seguidos (guardar tres
+ * celdas, una importación) se convierten en una sola consulta. */
+let myTasksRefreshTimer = null;
+function scheduleMyTasksRefresh() {
+  if (myTasksRefreshTimer !== null) return;
+  myTasksRefreshTimer = setTimeout(() => {
+    myTasksRefreshTimer = null;
+    loadMyTasks();
+  }, 200);
+}
+
+/** Pide «Mis tareas» y repinta la sección. La llama `loadTree()`, así que un
+ * evento del vigilante (o un guardado) la refresca sola. */
+async function loadMyTasks() {
+  let datos;
+  try {
+    datos = await api("/my-tasks");
+  } catch (e) {
+    if (e?.status === 401) return; // ya se está yendo al login
+    reportError("No se pudieron cargar tus tareas", e);
+    return;
+  }
+  state.myTasks = datos;
+  paintMyTasks();
+  avisarDeVencidas(datos);
+  // La vista abierta se repinta con lo que acaba de llegar: quitarse de una
+  // tarea o marcarla «Hecho» tiene que verse sin recargar la página. Con una
+  // fila abierta como página NO se toca nada: `clearMain()` la cerraría y el
+  // usuario estaría escribiendo en ella (el refresco llega por el vigilante).
+  if (state.current?.kind === "mytasks" && !rowPage) {
+    renderMisTareas(clearMain());
+  }
+}
+
+/** La clave con la que se recuerda, **en esta sesión**, que el aviso de
+ * vencidas ya salió. `sessionStorage` y no `localStorage`: cerrar la pestaña
+ * vuelve a empezar, y mañana el aviso tiene que volver a decir la verdad de
+ * mañana. */
+const AVISO_VENCIDAS_KEY = "mdm_aviso_vencidas";
+
+/** Aviso de «tienes N tareas vencidas» al entrar, una vez por sesión.
+ *
+ * Discreto y descartable (el aviso informativo de siempre): no es un modal ni
+ * bloquea nada, y si se cierra no vuelve a salir hasta la próxima sesión. La
+ * cuenta la trae el servidor (`counts.overdue`), así que lo que dice el aviso
+ * es exactamente lo que cuenta la barra lateral. Sin nada vencido no se pinta.
+ *
+ * `sticky` porque no se va solo: un aviso que hay que poder leer con calma no
+ * debería desaparecer a los seis segundos. La marca de «ya salió» se pone al
+ * pintarlo —no al cerrarlo— para que un refresco del árbol (que llega cada vez
+ * que cambia algo en el vault) no lo repita tres veces seguidas. */
+function avisarDeVencidas(datos) {
+  const vencidas = Number(datos?.counts?.overdue) || 0;
+  if (vencidas <= 0) return;
+  try {
+    if (sessionStorage.getItem(AVISO_VENCIDAS_KEY)) return;
+    sessionStorage.setItem(AVISO_VENCIDAS_KEY, "1");
+  } catch {
+    // Sin almacenamiento (modo privado estricto) el aviso sale igual: lo que
+    // se pierde es que no se repita, no el aviso.
+  }
+  showNotice(
+    vencidas === 1 ? "Tienes 1 tarea vencida" : `Tienes ${vencidas} tareas vencidas`,
+    { sticky: true },
+  );
+}
+
+function paintMyTasks() {
+  const section = document.getElementById("mytasks-section");
+  const label = document.getElementById("mytasks-label");
+  const boton = document.getElementById("btn-mytasks");
+  const badges = document.getElementById("mytasks-badges");
+  if (!section || !label) return;
+
+  const count = state.myTasks?.count || 0;
+  const vencidas = Number(state.myTasks?.counts?.overdue) || 0;
+  const paraHoy = Number(state.myTasks?.counts?.today) || 0;
+  // Sin nada asignado la sección no existe (ni un «Mis tareas (0)» que no dice
+  // nada): el mismo criterio que la bandeja.
+  section.hidden = count === 0;
+  label.textContent = "Mis tareas";
+  // El total no va en la etiqueta: lo urgente es lo que se ve, y el total está
+  // al abrir la vista. Va en el `title` y en el `aria-label`, para quien no ve
+  // los números o pasa el ratón.
+  const total = count === 1 ? "1 tarea abierta" : `${count} tareas abiertas`;
+  if (badges) {
+    badges.replaceChildren();
+    const piezas = [];
+    if (vencidas > 0) {
+      const texto = vencidas === 1 ? "1 vencida" : `${vencidas} vencidas`;
+      piezas.push(texto);
+      badges.appendChild(
+        badgeDeMisTareas(
+          "is-overdue",
+          texto,
+          vencidas === 1
+            ? "1 tarea vencida (fecha anterior a hoy)"
+            : `${vencidas} tareas vencidas (fecha anterior a hoy)`,
+        ),
+      );
+    }
+    if (paraHoy > 0) {
+      const texto = paraHoy === 1 ? "1 hoy" : `${paraHoy} hoy`;
+      piezas.push(texto);
+      badges.appendChild(
+        badgeDeMisTareas(
+          "is-today",
+          texto,
+          paraHoy === 1 ? "1 tarea vence hoy" : `${paraHoy} tareas vencen hoy`,
+        ),
+      );
+    }
+    badges.hidden = piezas.length === 0;
+    if (boton) {
+      boton.title = piezas.length
+        ? `Mis tareas: ${total} · ${piezas.join(" · ")}`
+        : `Mis tareas: ${total}`;
+      boton.setAttribute(
+        "aria-label",
+        piezas.length ? `Mis tareas, ${piezas.join(" y ")}` : "Mis tareas",
+      );
+    }
+  }
+  if (boton) {
+    boton.setAttribute("aria-current", state.current?.kind === "mytasks" ? "page" : "false");
+  }
+}
+
+/** Una insignia del contador de la barra lateral. El texto visible es corto
+ * («3 vencidas», «1 hoy») y el `title` dice lo mismo con todas las palabras. */
+function badgeDeMisTareas(clase, texto, descripcion) {
+  const badge = document.createElement("span");
+  badge.className = `mytasks-badge ${clase}`;
+  badge.textContent = texto;
+  badge.title = descripcion;
+  return badge;
+}
+
+/** «2026-11-16» -> `Date` local a medianoche, o `null` si no es una fecha.
+ *
+ * Solo para pintar el texto de la fecha (el `toLocaleDateString` de un día
+ * lejano) y para ordenar dentro del bloque: qué bloque es cada tarea y cuántos
+ * días le quedan lo dice el servidor (`due` / `days`), no esta resta. */
+function fechaLocalDe(iso) {
+  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || "").trim());
+  if (!partes) return null;
+  const fecha = new Date(Number(partes[1]), Number(partes[2]) - 1, Number(partes[3]));
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+}
+
+/** El bloque de la vista para cada bloque del servidor (`due` en la respuesta).
+ * El servidor dice `overdue`/`today`/`week`/`later` comparando contra su día;
+ * aquí solo se traduce al nombre que se pinta, y `null` (sin fecha legible) cae
+ * en el «Resto», que es lo que es: una tarea sin fecha no está ni vencida ni
+ * para hoy. */
+const BLOQUE_DEL_SERVIDOR = {
+  overdue: "vencidas",
+  today: "hoy",
+  week: "semana",
+  later: "resto",
+};
+
+/** Reparte las tareas en los cuatro bloques, ordenadas por fecha ascendente
+ * (las que no tienen fecha, al final de «Resto»).
+ *
+ * El reparto NO vuelve a restar fechas: usa `due` (el bloque) y `days` (los
+ * días) que calculó el servidor contra su propio día. Con un portátil en otro
+ * huso, la lista y el contador de la barra lateral seguirían diciendo lo mismo,
+ * porque los dos leen la misma resta; si el cliente la repitiera con su reloj,
+ * un contador de «2 vencidas» podría abrir una lista de «Vencidas: 0». */
+function bloquesDeMisTareas(tasks) {
+  const bloques = new Map(BLOQUES_DE_MIS_TAREAS.map((bloque) => [bloque.key, []]));
+
+  for (const tarea of tasks || []) {
+    const key = BLOQUE_DEL_SERVIDOR[tarea.due] || "resto";
+    const fecha = fechaLocalDe(tarea.date?.value);
+    const dias = Number.isInteger(tarea.days) ? tarea.days : null;
+    bloques.get(key).push({ tarea, fecha, dias });
+  }
+
+  // `sort` es estable: lo que empata (misma fecha) conserva el orden del
+  // servidor, que es por base y título.
+  for (const lista of bloques.values()) {
+    lista.sort((a, b) => {
+      if (a.fecha && b.fecha) return a.fecha - b.fecha;
+      if (a.fecha) return -1;
+      if (b.fecha) return 1;
+      return 0;
+    });
+  }
+  return bloques;
+}
+
+/** «hoy», «mañana», «hace 3 días»… y la fecha a partir de una semana. */
+function etiquetaDeFecha({ fecha, dias }) {
+  if (!fecha) return "";
+  if (Math.abs(dias) <= 7) return formatDueLabel(dias);
+  return fecha.toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** La nota que explica el filtro, con los valores que declaran las bases.
+ *
+ * La lista la arma el servidor leyendo el `.md` de cada base: aquí no hay una
+ * copia del criterio que pueda contradecirlo. Si ninguna declara estado, la
+ * nota lo dice en vez de explicar una lista que no existe. */
+function notaDeTareasAbiertas(closed) {
+  const valores = (closed || []).filter(Boolean);
+  if (!valores.length) {
+    return "Solo tareas abiertas. Ninguna base declara qué cuenta como cerrada: no se esconde nada.";
+  }
+  return `Solo tareas abiertas. Cada base manda: no salen las filas cuyo estado sea ${valores.join(", ")}. Una base sin regla entra entera.`;
+}
+
+function itemDeMiTarea({ tarea, fecha, dias }, abrir) {
+  const item = document.createElement("div");
+  item.className = "dashboard-item";
+  item.title = `Abrir «${tarea.title || "Sin título"}» de «${tarea.database_title}»`;
+
+  const icono = document.createElement("span");
+  icono.className = "dashboard-item-icon";
+  paintPageIcon(icono, "note", tarea.icon);
+
+  const titulo = document.createElement("span");
+  titulo.className = "dashboard-item-title";
+  titulo.textContent = tarea.title || "Sin título";
+
+  // De qué base viene: la lista es mezclada y sin esto no se sabe qué se está
+  // mirando ni dónde está la fila.
+  const base = document.createElement("span");
+  base.className = "my-task-base";
+  base.textContent = tarea.database_title;
+
+  item.append(icono, titulo, base);
+
+  // El estado, solo si la base tiene una propiedad de selección que haga de
+  // estado (lo decide el servidor, que es quien lee el schema).
+  if (tarea.status?.value) {
+    const estado = document.createElement("span");
+    estado.className = "my-task-status";
+    estado.textContent = tarea.status.value;
+    estado.title = `${tarea.status.name}: ${tarea.status.value}`;
+    item.append(estado);
+  }
+
+  const meta = document.createElement("span");
+  // El tono de vencida lo dice el servidor (`due`), no se deduce de `dias`.
+  meta.className = "dashboard-item-meta" + (tarea.due === "overdue" ? " overdue" : "");
+  meta.textContent = etiquetaDeFecha({ fecha, dias });
+  item.append(meta);
+
+  item.addEventListener("click", () => abrir(item));
+  makeKeyboardActivatable(item, "button", 0);
+  return item;
+}
+
+/** Abre una tarea como página: el mecanismo de siempre (`openRowPage`), que
+ * necesita la base para pintar los tipos de sus propiedades. La base se pide al
+ * abrir y no viaja en `/my-tasks`: los schemas de cuarenta bases en cada carga
+ * de la vista serían un payload que casi nunca se usa. */
+async function abrirMiTarea(tarea, origen) {
+  if (!tarea?.row_id || !tarea.database_id) return;
+  try {
+    const base = await api(`/databases/${tarea.database_id}`);
+    await openRowPage(
+      base,
+      {
+        id: tarea.row_id,
+        database_id: tarea.database_id,
+        title: tarea.title || "Sin título",
+        properties: {},
+        related: {},
+        people: {},
+      },
+      { origin: origen, onClose: () => loadMyTasks() },
+    );
+  } catch (e) {
+    reportError("No se pudo abrir la tarea", e);
+  }
+}
+
+function renderMisTareas(main) {
+  const datos = state.myTasks || {};
+  const wrap = document.createElement("div");
+  wrap.className = "dashboard";
+
+  const cabeza = document.createElement("div");
+  cabeza.className = "my-tasks-head";
+  const titulo = document.createElement("h1");
+  titulo.className = "my-tasks-title";
+  titulo.textContent = datos.count ? `Mis tareas (${datos.count})` : "Mis tareas";
+  cabeza.appendChild(titulo);
+  const nota = notaDeTareasAbiertas(datos.closed_values);
+  if (nota) {
+    const parrafo = document.createElement("p");
+    parrafo.className = "my-tasks-note";
+    parrafo.textContent = nota;
+    cabeza.appendChild(parrafo);
+  }
+  wrap.appendChild(cabeza);
+
+  if (!datos.count) {
+    const vacio = document.createElement("div");
+    vacio.className = "my-tasks-empty";
+    vacio.textContent =
+      "No tienes ninguna tarea asignada. Ponte como responsable en una fila de cualquier base y aparecerá aquí.";
+    wrap.appendChild(vacio);
+    main.appendChild(wrap);
+    return;
+  }
+
+  const bloques = bloquesDeMisTareas(datos.tasks);
+  for (const bloque of BLOQUES_DE_MIS_TAREAS) {
+    const lista = bloques.get(bloque.key) || [];
+    if (!lista.length) continue;
+    const seccion = document.createElement("section");
+    seccion.className = "dashboard-section";
+    const head = document.createElement("div");
+    head.className = "dashboard-section-head";
+    head.textContent = `${bloque.title} (${lista.length})`;
+    seccion.appendChild(head);
+    for (const entrada of lista) {
+      seccion.appendChild(
+        itemDeMiTarea(entrada, (origen) => abrirMiTarea(entrada.tarea, origen)),
+      );
+    }
+    wrap.appendChild(seccion);
+  }
+
+  main.appendChild(wrap);
+}
+
+async function showMisTareas() {
+  state.current = { kind: "mytasks", id: null };
+  markActive(null);
+  const main = clearMain();
+  updateNavButtons();
+  paintMyTasks();
+  renderMisTareas(main);
+}
+
+function initMyTasks() {
+  const boton = document.getElementById("btn-mytasks");
+  if (!boton) return;
+  boton.addEventListener("click", () => goTo("mytasks"));
+}
+
+initMyTasks();
+
 // ------------------------------------------------------------------ árbol
 
 async function loadTree() {
   try {
     // La bandeja (P13) se refresca con el árbol: es el mismo momento en el que
-    // puede haber cambiado (un `.md` nuevo, una captura desde un atajo).
+    // puede haber cambiado (un `.md` nuevo, una captura desde un atajo). «Mis
+    // tareas» también: asignar o quitar un responsable, o cerrar una fila,
+    // llega por aquí y el contador de la barra tiene que decir la verdad.
     await loadInbox();
+    await loadMyTasks();
     const tree = await api("/pages/tree");
     state.pagesById.clear();
     indexTree(tree);
@@ -1689,7 +2101,11 @@ async function loadTree() {
     const treeContainer = document.getElementById("tree-container");
     treeContainer.innerHTML = "";
 
-    if (notes.length === 0) treeContainer.innerHTML = '<div class="search-empty">Sin páginas aún.</div>';
+    if (notes.length === 0) {
+      treeContainer.innerHTML =
+        '<div class="empty-hint empty-hint--side"><p class="empty-hint-title">Todavía no hay páginas.</p>' +
+        '<p class="empty-hint-note">Pulsa «+» aquí arriba para escribir la primera nota.</p></div>';
+    }
     notes.forEach((n) => treeContainer.appendChild(renderTreeNode(n)));
 
     if (state.current) markActive(state.current.id);
@@ -2010,10 +2426,20 @@ function openEmojiPicker(anchorEl, onSelect) {
 
 // ------------------------------------------------------------------ notas
 
+/** Mientras llega una página: una línea fina bajo la cabecera (`.is-loading`
+ * en el CSS, que espera 150 ms antes de enseñarla: una carga rápida no
+ * parpadea). Se cuenta, porque dos navegaciones pueden solaparse. */
+let cargasEnCurso = 0;
+function marcarCarga(empieza) {
+  cargasEnCurso = Math.max(0, cargasEnCurso + (empieza ? 1 : -1));
+  document.body.classList.toggle("is-loading", cargasEnCurso > 0);
+}
+
 async function selectNote(id) {
   const previous = state.current;
   state.current = { kind: "note", id };
   markActive(id);
+  marcarCarga(true);
   try {
     const [page, backlinks] = await Promise.all([api(`/pages/${id}`), api(`/pages/${id}/backlinks`)]);
     renderNote(page, backlinks);
@@ -2024,6 +2450,8 @@ async function selectNote(id) {
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la nota", e);
+  } finally {
+    marcarCarga(false);
   }
 }
 
@@ -3757,6 +4185,18 @@ function handleSuggestionEvent(data) {
  * cursor se queda donde estaba y el autoguardado no se entera. */
 function handleDatabaseEvent(data) {
   if (!data || data.type !== "database" || !data.database_id) return;
+
+  // «Mis tareas» cruza TODAS las bases, así que un cambio de filas en
+  // cualquiera de ellas puede cambiar lo que enseña y el contador de la barra:
+  // asignarte una tarea, cerrarla o quitarte de ella desde la tabla (esta
+  // pestaña) o desde otra ventana. Se refresca antes del «¿hay nota abierta?»
+  // de abajo, que no tiene nada que ver con esta vista. El aviso llega una vez
+  // por guardado; el retardo corto junta ráfagas (una importación, varias
+  // celdas seguidas) en una sola consulta.
+  if (data.action === "rows" || data.action === "updated" || data.action === "deleted") {
+    scheduleMyTasksRefresh();
+  }
+
   const session = state.noteSession;
   if (!session) return;
   // El id va dentro de la valla; si no está en esta nota, el aviso no es suyo.
@@ -3889,8 +4329,12 @@ async function goTo(kind, id, { fromHistory = false } = {}) {
   // plantilla) deja el foco en el primer campo del alta; volver con atrás o
   // adelante no, que el foco es del usuario, no del historial.
   if (kind === "database") await selectDatabase(id, { focus: fromHistory ? null : "addRow" });
+  else if (kind === "mytasks") await showMisTareas();
   else if (kind === "home") await showEmpty();
   else await selectNote(id);
+  // La sección de la barra lateral se marca (o se desmarca) como la actual con
+  // la misma navegación que todo lo demás.
+  paintMyTasks();
   updateNavButtons();
 }
 
@@ -4331,6 +4775,7 @@ async function selectDatabase(id, { focus = null } = {}) {
   const previous = state.current;
   state.current = { kind: "database", id };
   markActive(id);
+  marcarCarga(true);
   try {
     const [database, views] = await Promise.all([api(`/databases/${id}`), api(`/databases/${id}/views`)]);
     await renderDatabase(database, views, views[0]?.id ?? null, { focus });
@@ -4340,6 +4785,8 @@ async function selectDatabase(id, { focus = null } = {}) {
     state.current = previous;
     markActive(previous ? previous.id : null);
     reportError("No se pudo abrir la base de datos", e);
+  } finally {
+    marcarCarga(false);
   }
 }
 
@@ -4384,13 +4831,107 @@ const TIPOS_VISIBLES = {
   checkbox: "Casilla",
   url: "Enlace",
   relation: "Relación",
+  parent_row: "Subtarea de",
+  person: "Persona",
 };
 
 function tipoVisible(tipo) {
   return TIPOS_VISIBLES[tipo] || "Texto";
 }
 
+// --------------------------------------------------------------- subtareas
+// Una fila puede colgar de otra de su MISMA base (propiedad `parent_row`). El
+// servidor decide las reglas —madre válida, sin ciclos, qué cuenta como
+// cerrada— y manda la jerarquía resuelta en cada fila: `parent_id` y
+// `children {total, closed}`. Aquí solo se pinta: la indentación, el contador
+// de la tarjeta y la lista de subtareas de la fila abierta. Duplicar la regla
+// de «cerrada» en el cliente sería tener dos verdades que pueden discrepar.
+
+/** La clave de la celda que guarda la fila madre, o `null` si la base no tiene
+ * jerarquía. La propiedad se llama como el usuario quiera («Subtarea de»,
+ * «Paso de»): lo que la identifica es su tipo. */
+function claveDeJerarquia(database) {
+  const prop = (database?.schema_def || []).find(
+    (p) => p && p.key && p.type === "parent_row",
+  );
+  return prop ? String(prop.key) : null;
+}
+
+/** La regla de qué cuenta como fila cerrada en esta base, o `null`.
+ *
+ * La resuelve el servidor (`closed: {property, values, source}`): el bloque
+ * `closed:` del `.md` o, si no lo hay, el marcador `done` viejo (`source:
+ * "done"`, compatibilidad de lectura). El cliente NO vuelve a interpretarlo:
+ * duplicar la regla sería tener dos verdades que pueden discrepar. */
+function reglaDeCierre(database) {
+  const regla = database?.closed;
+  if (!regla || !regla.property) return null;
+  return {
+    property: String(regla.property),
+    values: Array.isArray(regla.values) ? regla.values : [],
+    source: regla.source === "done" ? "done" : "base",
+  };
+}
+
+/** La propiedad que dice si una fila está cerrada, o `null`. Solo sirve para
+ * enseñar el estado en la lista de subtareas: quien cuenta las cerradas es el
+ * servidor. */
+function propiedadDeCierre(database) {
+  const regla = reglaDeCierre(database);
+  if (!regla) return null;
+  return (database?.schema_def || []).find((p) => p.key === regla.property) || null;
+}
+
+/** El nivel de filas de una vista: `roots` (solo madres) o `all`.
+ *
+ * Misma regla que `app.hierarchy.level`: manda lo que diga el `config` de la
+ * vista (en el `.md`); sin la clave, tabla y tablero enseñan solo madres y la
+ * lista y el calendario, todas. Una base sin jerarquía no tiene nivel. */
+function nivelDeVista(view, database) {
+  if (!claveDeJerarquia(database)) return "all";
+  const guardado = String(view?.config?.parent_level || "").toLowerCase();
+  if (guardado === "roots" || guardado === "all") return guardado;
+  const tipo = String(view?.type || "");
+  return tipo === "table" || tipo === "board" ? "roots" : "all";
+}
+
+/** `{id: profundidad}` de las filas VISIBLES: 0 es una raíz, 1 una hija, 2 una
+ * nieta. Se calcula de una pasada por fila y se corta si un `.md` editado a
+ * mano trae un ciclo (el servidor no deja crearlo). */
+function mapaDeProfundidades(rows, clave) {
+  const mapa = new Map();
+  if (!clave || !Array.isArray(rows)) return mapa;
+  const porId = new Map(rows.map((r) => [String(r.id), r]));
+  rows.forEach((row) => {
+    let prof = 0;
+    const vistas = new Set([String(row.id)]);
+    let actual = row.parent_id ? porId.get(String(row.parent_id)) : null;
+    while (actual && !vistas.has(String(actual.id))) {
+      vistas.add(String(actual.id));
+      prof += 1;
+      actual = actual.parent_id ? porId.get(String(actual.parent_id)) : null;
+    }
+    mapa.set(String(row.id), prof);
+  });
+  return mapa;
+}
+
+/** El «1 de 3» de una fila con subtareas, o `null` si no tiene ninguna. */
+function contadorDeSubtareas(row) {
+  const total = row?.children?.total || 0;
+  if (!total) return null;
+  return `${row.children.closed || 0} de ${total}`;
+}
+
 async function renderDatabase(database, views, activeViewId, { focus = null } = {}) {
+  // El selector de una celda de persona necesita el directorio: se pide al
+  // abrir una base que tenga alguna, antes de que nadie pinte una celda.
+  if ((database.schema_def || []).some((p) => p.type === "person")) {
+    // `forzar`: el nombre visible de una persona puede haber cambiado desde el
+    // último pintado (la celda lo lee del servidor, pero los desplegables de
+    // alta y de la ficha salen del directorio cacheado).
+    cargarPersonas({ forzar: true }).catch(() => {});
+  }
   const main = clearMain();
   // Repinta esta misma vista (con la pestaña activa) leyendo del servidor: lo
   // usan el tablero tras mover una tarjeta y el diálogo de propiedades, para no
@@ -4511,6 +5052,15 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const newViewBtn = document.createElement("button");
   newViewBtn.className = "btn";
   newViewBtn.innerHTML = `${svgIcon("i-plus")}Vista`;
+  // Las plantillas de fila se configuran desde la base (función 29): lo que se
+  // guarda es parte de su `.md`, no una preferencia de esta pestaña.
+  const rowTemplatesBtn = document.createElement("button");
+  rowTemplatesBtn.className = "btn";
+  rowTemplatesBtn.textContent = "Plantillas de fila";
+  rowTemplatesBtn.addEventListener("click", () =>
+    openRowTemplatesDialog(database, recargarVistas),
+  );
+
   newViewBtn.addEventListener("click", () => openViewDialog(database));
 
   // Borrar la vista activa: se lleva su filtro, su orden y su tipo, y ninguna
@@ -4569,7 +5119,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     }
   });
 
-  headerActions.append(schemaBtn, newViewBtn);
+  headerActions.append(schemaBtn, rowTemplatesBtn, newViewBtn);
   if (activeView) headerActions.append(deleteViewBtn);
   headerActions.append(deleteDbBtn);
   header.append(title, headerActions);
@@ -4609,6 +5159,17 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // (repintar no es navegar, y el parpadeo se notaría a cada celda).
   content.className = "db-view" + (focus === "viewTab" ? " is-entering" : "");
   main.append(header, hint, tabs, content);
+  // En pantalla estrecha las pestañas van en una línea que se desplaza de lado
+  // (ver el bloque «móvil» del CSS): la activa tiene que quedar a la vista, o
+  // se mira el calendario con «Tabla» en pantalla. Solo se mueve esa línea.
+  const pestanaActiva = tabs.querySelector(".view-tab.active");
+  if (pestanaActiva && tabs.scrollWidth > tabs.clientWidth) {
+    const caja = tabs.getBoundingClientRect();
+    const r = pestanaActiva.getBoundingClientRect();
+    if (r.left < caja.left || r.right > caja.right) {
+      tabs.scrollLeft += r.left - caja.left - (caja.width - r.width) / 2;
+    }
+  }
 
   // El motivo escrito y no en un `title` escondido: un botón apagado sin
   // explicación a la vista es un estado mudo (y en táctil no hay hover).
@@ -4629,9 +5190,15 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   const clavesOrden = clavesDeOrden(activeView?.config);
   let rows;
   let total = null;
+  // «Solo madres» deja fuera las hijas: el «N de M» tiene que seguir contando
+  // la base entera, igual que con un filtro. Se pide también la lista completa.
+  const soloMadres =
+    Boolean(activeView) &&
+    Boolean(claveDeJerarquia(database)) &&
+    nivelDeVista(activeView, database) === "roots";
   if (!activeView) {
     rows = await api(`/databases/${database.id}/rows`);
-  } else if (filtros.length) {
+  } else if (filtros.length || soloMadres) {
     const [deLaVista, todas] = await Promise.all([
       api(`/databases/${database.id}/rows?view=${activeView.id}`),
       api(`/databases/${database.id}/rows`),
@@ -4781,6 +5348,10 @@ const OPERADORES_FILTRO = {
     ["before", "antes de"],
     ["after", "después de"],
     ["is_empty", "está vacío"],
+    // El servidor lo admite en cualquier tipo (`views.SIN_VALOR`); sin esta
+    // fila el chip de un calendario de serie enseñaba el operador en crudo
+    // («Entrega is_not_empty») y el diálogo lo perdía al aplicarlo.
+    ["is_not_empty", "no está vacío"],
   ],
   select: [
     ["eq", "es"],
@@ -4800,34 +5371,103 @@ const OPERADORES_FILTRO = {
     ["is_empty", "está vacío"],
     ["is_not_empty", "no está vacío"],
   ],
+  person: [
+    ["eq", "es"],
+    ["neq", "no es"],
+    ["is_empty", "está vacía"],
+    ["is_not_empty", "no está vacía"],
+  ],
 };
 
 /** Los operadores que no llevan valor: el estado lo dice el propio operador. */
-const OPS_SIN_VALOR = new Set(["is_empty", "is_not_empty", "checked", "unchecked"]);
+const OPS_SIN_VALOR = new Set([
+  "is_empty",
+  "is_not_empty",
+  "checked",
+  "unchecked",
+  "is_closed",
+  "is_open",
+]);
+
+/** Los operadores del estado de la base. No enumeran valores: la regla de la
+ * base (`closed: {property, values}`) es la que sabe qué está cerrado, así que
+ * el filtro no tiene que repetir la lista en cada condición. */
+const OPS_DE_ESTADO = [
+  ["is_closed", "está cerrada"],
+  ["is_open", "está abierta"],
+];
+
+/** Si el operador es de los del estado de la base.
+ *
+ * Son operadores de la VISTA y no de la columna: quién está cerrado lo decide
+ * la regla de la base (`closed: {property, values}`), así que la condición no
+ * tiene que nombrar la columna donde vive la regla —el `.md` puede traerla sin
+ * `key` y el servidor la aplica igual (`app.views.apply_view`)—. */
+function esOperadorDeEstado(op) {
+  return OPS_DE_ESTADO.some(([valor]) => valor === op);
+}
+
+/** Si la condición es la de la vista: un operador de estado y ninguna columna. */
+function esCondicionDeEstadoSinColumna(cond) {
+  return !cond?.key && esOperadorDeEstado(cond?.op);
+}
 
 // Los títulos de las filas de las bases destino de una relación, para que el
 // valor de «incluye» sea un nombre y no un id. Se cachea por clave de
 // propiedad; si la base destino no se puede leer, el control pide el id.
 const titulosDeRelacion = new Map();
 
-function operadoresDe(prop) {
-  return OPERADORES_FILTRO[prop?.type] || OPERADORES_TEXTO;
+/** Los operadores de una propiedad. `regla` es la regla de cierre de la base:
+ * la columna que la base declara como estado ofrece además «está cerrada» y
+ * «está abierta» (que son de la vista, aunque se lean desde su columna; el
+ * panel los ofrece en cualquier condición con `operadoresDeCondicion`). */
+function operadoresDe(prop, regla = null) {
+  const ops = [...(OPERADORES_FILTRO[prop?.type] || OPERADORES_TEXTO)];
+  if (regla && prop?.key && String(regla.property) === String(prop.key)) {
+    ops.push(...OPS_DE_ESTADO);
+  }
+  return ops;
 }
 
-function etiquetaDeOperador(prop, op) {
-  const par = operadoresDe(prop).find(([valor]) => valor === op);
-  return par ? par[1] : op;
+function etiquetaDeOperador(prop, op, regla = null) {
+  const par = operadoresDe(prop, regla).find(([valor]) => valor === op);
+  if (par) return par[1];
+  return (OPS_DE_ESTADO.find(([valor]) => valor === op) || [op, op])[1];
 }
 
-function operadorPorDefecto(prop) {
-  return operadoresDe(prop)[0][0];
+function operadorPorDefecto(prop, regla = null) {
+  return operadoresDe(prop, regla)[0][0];
 }
 
-/** Los filtros de una vista, normalizados (una vista vieja puede no tener). */
+/** Los operadores que ofrece UNA condición del panel de filtros.
+ *
+ * Los de estado (`is_closed`/`is_open`) son de la vista: se ofrecen siempre,
+ * también cuando la condición no nombra ninguna columna. Y una condición que ya
+ * es de estado conserva su operador aunque la regla de la base se haya movido a
+ * otra columna: al abrir el panel no puede convertirse en un `eq` con el valor
+ * vacío (`Estado es «—»`), que es lo que pasaba antes de esto. */
+function operadoresDeCondicion(prop, cond, regla) {
+  const ops = operadoresDe(prop, regla);
+  if (!prop?.key) return [...OPS_DE_ESTADO];
+  if (esOperadorDeEstado(cond.op) && !ops.some(([valor]) => valor === cond.op)) {
+    ops.push(...OPS_DE_ESTADO);
+  }
+  return ops;
+}
+
+/** Los filtros de una vista, normalizados (una vista vieja puede no tener).
+ *
+ * Una condición de estado (`is_closed`/`is_open`) vale sin `key`: la regla de la
+ * base es la que sabe qué está cerrado. Descartarla aquí dejaba la vista
+ * filtrada por el servidor sin chip y con el panel diciendo «sin condiciones»,
+ * así que aplicar cualquier cambio en el panel borraba el filtro del `.md` sin
+ * avisar. */
 function filtrosDeVista(view) {
   const filtros = view?.config?.filters;
   if (!Array.isArray(filtros)) return [];
-  return filtros.filter((f) => f && typeof f === "object" && f.key && f.op);
+  return filtros.filter(
+    (f) => f && typeof f === "object" && f.op && (f.key || esCondicionDeEstadoSinColumna(f)),
+  );
 }
 
 /** Las claves de orden, aceptando la forma antigua de una sola clave
@@ -4875,19 +5515,30 @@ async function guardarConfigDeVista(database, view, cambios) {
 }
 
 function nombreDePropiedad(database, key) {
+  // El título no es una propiedad del `schema`: su nombre vive en `title_name`
+  // (y el servidor ordena por él con la clave `title`).
+  if (key === "title") return database.title_name || "Título";
   return database.schema_def.find((p) => p.key === key)?.name || key;
 }
 
 /** Una condición en palabras, para el chip: «Fase es «lead»». */
 function textoDeCondicion(cond, database) {
   const prop = database.schema_def.find((p) => p.key === cond.key);
-  if (!prop) return `${cond.key} ${cond.op}`;
-  const operador = etiquetaDeOperador(prop, cond.op);
+  if (!prop) {
+    // Una condición de la VISTA, sin columna: «Está abierta». Es lo que deja un
+    // filtro sin `key`, y hay que pintarlo o el chip desaparece y el panel de
+    // filtros borra la condición al aplicarse.
+    const texto = `${cond.key ? cond.key + " " : ""}${etiquetaDeOperador(null, cond.op)}`;
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
+  }
+  const operador = etiquetaDeOperador(prop, cond.op, reglaDeCierre(database));
   if (OPS_SIN_VALOR.has(cond.op)) return `${prop.name} ${operador}`;
   const valor =
     prop.type === "relation"
       ? titulosDeRelacion.get(prop.key)?.get(cond.value) || String(cond.value ?? "")
-      : String(cond.value ?? "");
+      : prop.type === "person"
+        ? nombreDePersona(cond.value) || String(cond.value ?? "")
+        : String(cond.value ?? "");
   return `${prop.name} ${operador} «${valor}»`;
 }
 
@@ -4974,11 +5625,42 @@ function renderViewTools({ database, view, visibles, total, onCambio }) {
     ordenar.addEventListener("click", () => openSortDialog(database, view, onCambio));
   }
 
+  // El nivel de filas es de la vista y solo existe si la base tiene jerarquía:
+  // una base sin subtareas no enseña un control que no haría nada. Se guarda en
+  // el `config` de la vista (el `.md`), como el filtro y el orden.
+  const nivel = nivelDeVista(view, database);
+  let nivelCtl = null;
+  if (claveDeJerarquia(database)) {
+    nivelCtl = document.createElement("label");
+    nivelCtl.className = "db-level";
+    const rotulo = document.createElement("span");
+    rotulo.className = "db-level-label";
+    rotulo.textContent = "Filas";
+    const select = document.createElement("select");
+    select.className = "db-level-select";
+    select.setAttribute("aria-label", "Qué filas enseña la vista");
+    [
+      ["roots", "Solo madres"],
+      ["all", "Todas las filas"],
+    ].forEach(([valor, etiqueta]) => {
+      const opcion = document.createElement("option");
+      opcion.value = valor;
+      opcion.textContent = etiqueta;
+      select.appendChild(opcion);
+    });
+    select.value = nivel;
+    select.addEventListener("change", () => onCambio({ parent_level: select.value }));
+    nivelCtl.append(rotulo, select);
+  }
+
   const cuenta = document.createElement("span");
   cuenta.className = "db-count";
-  cuenta.textContent = textoDeRecuento(visibles, filtros.length ? total : null);
+  // «Solo madres» deja fuera las hijas igual que un filtro: el recuento sigue
+  // diciendo cuántas hay en la base, o «1 fila» parecería que solo hay una.
+  const filtraAlgo = filtros.length > 0 || nivel === "roots";
+  cuenta.textContent = textoDeRecuento(visibles, filtraAlgo ? total : null);
 
-  cabeza.append(filtrar, ordenar, cuenta);
+  cabeza.append(filtrar, ordenar, ...(nivelCtl ? [nivelCtl] : []), cuenta);
   tools.appendChild(cabeza);
 
   const chips = document.createElement("div");
@@ -4993,6 +5675,17 @@ function renderViewTools({ database, view, visibles, total, onCambio }) {
       if (!chips.isConnected) return;
       pintarChipsDeVista(chips, database, filtros, claves, onCambio);
     });
+  }
+  // Un filtro sobre una persona enseña el id hasta que llega el directorio.
+  if (
+    filtros.some((f) => database.schema_def.find((p) => p.key === f.key)?.type === "person")
+  ) {
+    cargarPersonas()
+      .then(() => {
+        if (!chips.isConnected) return;
+        pintarChipsDeVista(chips, database, filtros, claves, onCambio);
+      })
+      .catch(() => {});
   }
 
   return tools;
@@ -5131,6 +5824,13 @@ function openFilterDialog(database, view, onCambio) {
   cargarTitulosDeRelacion(database).then(() => {
     if (filterDialog.open) pintarFilasDeFiltro();
   });
+  if (database.schema_def.some((p) => p.type === "person")) {
+    cargarPersonas()
+      .then(() => {
+        if (filterDialog.open) pintarFilasDeFiltro();
+      })
+      .catch(() => {});
+  }
 }
 
 function pintarFilasDeFiltro() {
@@ -5164,20 +5864,49 @@ function filaDeCondicion(database, cond, indice) {
   // la primera propiedad de la base cambiaría el filtro sin decirlo.
   const prop = database.schema_def.find((p) => p.key === cond.key) || null;
   const opciones = [...database.schema_def];
-  if (!prop) opciones.unshift({ key: cond.key, name: `${cond.key} (ya no existe)` });
+  if (!prop && cond.key) {
+    opciones.unshift({ key: cond.key, name: `${cond.key} (ya no existe)` });
+  }
   opciones.forEach((p) => {
     const opcion = document.createElement("option");
     opcion.value = p.key;
     opcion.textContent = p.name;
     propSelect.appendChild(opcion);
   });
-  const propParaElControl = prop || { key: cond.key, name: cond.key, type: "text" };
-  propSelect.value = propParaElControl.key;
+  const regla = reglaDeCierre(database);
+  // «Estado de la base»: la condición de la vista, sin columna. Es la forma que
+  // trae un `.md` escrito a mano (`filters: [{op: is_open}]`) y la que sobrevive
+  // a que la regla se mueva de columna: el filtro se abre y se guarda igual.
+  // Solo se ofrece si la base declara la regla de cierre: sin ella nada está
+  // cerrado, así que «está cerrada» dejaría la vista en 0 filas sin explicación
+  // (`app.views.apply_view` no deja pasar ninguna fila). Una condición de estado
+  // que YA viene guardada se sigue abriendo aunque no haya regla, para no
+  // convertirla en un `eq` con el valor vacío al aplicar.
+  if (regla || esCondicionDeEstadoSinColumna(cond)) {
+    const sinColumna = document.createElement("option");
+    sinColumna.value = "";
+    sinColumna.textContent = "Estado de la base";
+    propSelect.appendChild(sinColumna);
+  }
+  const propParaElControl = prop || {
+    key: cond.key || "",
+    name: cond.key || "Estado de la base",
+    type: "text",
+  };
+  propSelect.value = cond.key || "";
+  if (propSelect.selectedIndex < 0 && prop) propSelect.value = prop.key;
   propSelect.addEventListener("change", () => {
+    if (propSelect.value === "") {
+      cond.key = "";
+      cond.op = OPS_DE_ESTADO[0][0];
+      cond.value = "";
+      pintarFilasDeFiltro();
+      return;
+    }
     const nueva = database.schema_def.find((p) => p.key === propSelect.value);
     if (!nueva) return;
     cond.key = nueva.key;
-    cond.op = operadorPorDefecto(nueva);
+    cond.op = operadorPorDefecto(nueva, regla);
     cond.value = "";
     pintarFilasDeFiltro();
   });
@@ -5185,14 +5914,15 @@ function filaDeCondicion(database, cond, indice) {
   const opSelect = document.createElement("select");
   opSelect.className = "filter-op";
   opSelect.setAttribute("aria-label", `Operador de la condición ${indice + 1}`);
-  operadoresDe(propParaElControl).forEach(([valor, etiqueta]) => {
+  const ops = operadoresDeCondicion(propParaElControl, cond, regla);
+  ops.forEach(([valor, etiqueta]) => {
     const opcion = document.createElement("option");
     opcion.value = valor;
     opcion.textContent = etiqueta;
     opSelect.appendChild(opcion);
   });
-  if (!operadoresDe(propParaElControl).some(([valor]) => valor === cond.op)) {
-    cond.op = operadorPorDefecto(propParaElControl);
+  if (!ops.some(([valor]) => valor === cond.op)) {
+    cond.op = operadorPorDefecto(propParaElControl, regla);
   }
   opSelect.value = cond.op;
   opSelect.addEventListener("change", () => {
@@ -5241,6 +5971,8 @@ function controlDeValor(prop, cond, indice) {
     control.value = cond.value || "";
   } else if (prop.type === "relation") {
     control = controlDeRelacion(prop, cond);
+  } else if (prop.type === "person") {
+    control = controlDePersona(prop, cond);
   } else if (prop.type === "date") {
     control = document.createElement("input");
     control.type = "date";
@@ -5266,6 +5998,42 @@ function controlDeValor(prop, cond, indice) {
   control.addEventListener("change", leer);
   caja.appendChild(control);
   return caja;
+}
+
+/** El valor de un filtro sobre una persona: el desplegable del directorio.
+ *
+ * Se guarda el **id** (lo que dice la celda), pero se elige por nombre. Si el
+ * directorio aún no está, se pide y el panel se repinta al llegar; mientras
+ * tanto el desplegable sale con «sin asignar» y el valor guardado, que no se
+ * pierde.
+ */
+function controlDePersona(prop, cond) {
+  if (!personasCache.size) {
+    cargarPersonas()
+      .then(() => {
+        if (filterDialog.open) pintarFilasDeFiltro();
+      })
+      .catch(() => {});
+  }
+  const select = document.createElement("select");
+  const vacio = document.createElement("option");
+  vacio.value = "";
+  vacio.textContent = "— sin asignar";
+  select.appendChild(vacio);
+  personasCache.forEach((persona, id) => {
+    const opcion = document.createElement("option");
+    opcion.value = id;
+    opcion.textContent = persona.display_name || id;
+    select.appendChild(opcion);
+  });
+  if (cond.value && !personasCache.has(String(cond.value))) {
+    const huerfana = document.createElement("option");
+    huerfana.value = String(cond.value);
+    huerfana.textContent = String(cond.value);
+    select.appendChild(huerfana);
+  }
+  select.value = cond.value || "";
+  return select;
 }
 
 function controlDeRelacion(prop, cond) {
@@ -5304,7 +6072,11 @@ document.getElementById("btn-add-filter").addEventListener("click", () => {
   const ctx = filterDialogCtx;
   const prop = ctx?.database.schema_def[0];
   if (!ctx || !prop) return;
-  ctx.condiciones.push({ key: prop.key, op: operadorPorDefecto(prop), value: "" });
+  ctx.condiciones.push({
+    key: prop.key,
+    op: operadorPorDefecto(prop, reglaDeCierre(ctx.database)),
+    value: "",
+  });
   filterStatusEl.textContent = "";
   pintarFilasDeFiltro();
 });
@@ -5326,6 +6098,14 @@ document.getElementById("btn-apply-filter").addEventListener("click", async () =
   const filtros = [];
   const sinValor = [];
   ctx.condiciones.forEach((cond, indice) => {
+    if (esOperadorDeEstado(cond.op)) {
+      // Operador de la vista: la regla de la base decide qué está cerrado, así
+      // que se guarda sin `key` cuando la condición no nombra columna (la forma
+      // que acepta `apply_view`). Con `key` también vale: una regla que se mueve
+      // de columna no invalida el filtro.
+      filtros.push(cond.key ? { key: cond.key, op: cond.op } : { op: cond.op });
+      return;
+    }
     if (!cond.key) return;
     if (OPS_SIN_VALOR.has(cond.op)) {
       filtros.push({ key: cond.key, op: cond.op });
@@ -5383,7 +6163,10 @@ function filaDeOrden(database, claves, clave, indice) {
   propSelect.className = "filter-prop";
   propSelect.setAttribute("aria-label", `Propiedad de la clave ${indice + 1}`);
   const usadas = new Set(claves.filter((_, i) => i !== indice).map((otra) => otra.key));
-  database.schema_def.forEach((prop) => {
+  // El título se puede ordenar como cualquier columna (texto natural): no es
+  // una propiedad del `schema`, pero el servidor lo conoce con la clave
+  // `title`, así que se ofrece el primero.
+  [{ key: "title", name: database.title_name || "Título" }, ...database.schema_def].forEach((prop) => {
     if (usadas.has(prop.key)) return; // una propiedad, una clave
     const opcion = document.createElement("option");
     opcion.value = prop.key;
@@ -5459,7 +6242,11 @@ document.getElementById("btn-add-sort").addEventListener("click", () => {
   const ctx = sortDialogCtx;
   if (!ctx) return;
   const usadas = new Set(ctx.claves.map((clave) => clave.key));
-  const libre = ctx.database.schema_def.find((prop) => !usadas.has(prop.key));
+  const libres = [
+    { key: "title", name: ctx.database.title_name || "Título" },
+    ...ctx.database.schema_def,
+  ];
+  const libre = libres.find((prop) => !usadas.has(prop.key));
   if (!libre) {
     sortStatusEl.textContent = "Ya están todas las propiedades en el orden.";
     return;
@@ -5706,7 +6493,15 @@ async function renderDatabaseEmbed(block, container) {
     // tabla. El aviso de «el filtro la deja fuera» vive dentro del control.
     renderAddRowControl({
       vista: activeView,
-      onCreate: (titulo) => crearFilaEnVista(database, activeView, titulo),
+      plantillas: database.row_templates || [],
+      onCreate: (titulo, plantilla) =>
+        crearFilaEnVista(
+          database,
+          activeView,
+          titulo,
+          plantilla?.properties || {},
+          plantilla?.body || "",
+        ),
       onDone: (res) => {
         // Con el total de la base: si la vista filtra, el contador sigue
         // diciendo «N de M» en vez de perder el «de M» al crear la fila.
@@ -5823,7 +6618,7 @@ let ultimoCambioPropio = { databaseId: null, ts: 0 };
  * ordenada, y `total` (nulo si la vista no filtra) es el tamaño de la base,
  * que es lo que hace honesto el recuento «N de M» tras un alta.
  */
-async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
+async function crearFilaEnVista(database, activeView, titulo, extra = {}, body = "") {
   // ANTES del POST: el servidor publica `rows` en /events (M2) antes de
   // responder, así que el aviso le llega a esta pestaña antes que la fila. Se
   // apunta que el cambio es de aquí para ignorar el eco (si no, el editor
@@ -5832,7 +6627,13 @@ async function crearFilaEnVista(database, activeView, titulo, extra = {}) {
   ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
   const fila = await api(`/databases/${database.id}/rows`, {
     method: "POST",
-    body: JSON.stringify({ title: titulo, properties: extra }),
+    // `body_markdown` viaja cuando la fila nace de una plantilla de fila: es su
+    // cuerpo inicial. Sin plantilla no se manda la clave (cuerpo vacío).
+    body: JSON.stringify({
+      title: titulo,
+      properties: extra,
+      ...(body ? { body_markdown: body } : {}),
+    }),
   });
   const filas = await api(
     `/databases/${database.id}/rows` + (activeView ? `?view=${activeView.id}` : ""),
@@ -5895,9 +6696,19 @@ function avisoDeFilaOculta(titulo, nombreVista) {
 /** El foco, en el nombre de la fila que se acaba de crear: el `<tr>` de la
  * tabla, la línea de la lista o el chip del calendario (los tres llevan
  * `data-row-id`). Devuelve si la encontró. */
+/** La fila recién creada entra con un fundido (`.is-new` en el CSS) para que se
+ * vea DÓNDE ha caído: el orden de la vista puede dejarla en medio. Solo
+ * presentación; la clase se quita sola. */
+function marcarComoNueva(el) {
+  if (!el) return;
+  el.classList.add("is-new");
+  setTimeout(() => el.classList.remove("is-new"), 400);
+}
+
 function enfocarFila(container, rowId) {
   const el = container.querySelector(`[data-row-id="${rowId}"]`);
   if (!el) return false;
+  marcarComoNueva(el);
   if (el.tagName === "TR") {
     // La tabla no tiene filas enfocables: el nombre es la primera celda, que ya
     // es editable (también en la incrustada). Si por lo que sea no lo es, la
@@ -5927,7 +6738,13 @@ function enfocarFila(container, rowId) {
  * El aviso (`role=status`) vive aquí dentro, así que sobrevive al repintado de
  * las filas y se lee sin mover el foco.
  */
-function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row" }) {
+function renderAddRowControl({
+  vista,
+  plantillas = [],
+  onCreate,
+  onDone,
+  className = "db-add-row",
+}) {
   const wrap = document.createElement("div");
   wrap.className = className;
   // Dentro de una nota, el bloque de la base es un widget del editor con un
@@ -5954,6 +6771,33 @@ function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row"
   submit.type = "submit";
   submit.className = "btn btn-primary";
   submit.textContent = "Añadir";
+  // El desplegable de plantillas de fila (función 29): elegir una rellena el
+  // alta con sus valores por defecto y su cuerpo. Sin plantillas en la base no
+  // se pinta nada: un desplegable con una sola opción vacía es ruido.
+  const selectorPlantilla = document.createElement("select");
+  selectorPlantilla.className = "db-add-row-template";
+  selectorPlantilla.setAttribute("aria-label", "Plantilla de fila");
+  if (plantillas.length) {
+    const vacia = document.createElement("option");
+    vacia.value = "";
+    vacia.textContent = "Sin plantilla";
+    selectorPlantilla.appendChild(vacia);
+    plantillas.forEach((plantilla) => {
+      const opcion = document.createElement("option");
+      opcion.value = plantilla.name;
+      opcion.textContent = plantilla.name;
+      selectorPlantilla.appendChild(opcion);
+    });
+    selectorPlantilla.addEventListener("change", () => input.focus());
+    // Va delante del nombre: primero se elige la plantilla y luego se escribe
+    // el nombre. `append` y no `insertBefore`: el `input` aún no es hijo del
+    // formulario en este punto (se añade justo abajo).
+    form.append(selectorPlantilla);
+  } else {
+    selectorPlantilla.hidden = true;
+  }
+  const plantillaElegida = () =>
+    plantillas.find((plantilla) => plantilla.name === selectorPlantilla.value) || null;
   form.append(input, submit);
 
   const status = document.createElement("p");
@@ -5970,6 +6814,7 @@ function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row"
   };
   const cerrar = () => {
     input.value = "";
+    selectorPlantilla.value = "";
     form.hidden = true;
     btn.hidden = false;
     btn.focus();
@@ -6024,7 +6869,7 @@ function renderAddRowControl({ vista, onCreate, onDone, className = "db-add-row"
     input.disabled = true;
     submit.disabled = true;
     try {
-      const res = await onCreate(titulo);
+      const res = await onCreate(titulo, plantillaElegida());
       cerrar();
       status.textContent = res.visible
         ? `Fila «${titulo}» añadida.`
@@ -6557,11 +7402,372 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
   }
 }
 
+// ------------------------------------------------------------------ personas
+// Una celda `person` guarda en el `.md` el **id** de un usuario (tabla
+// `users`); el servidor devuelve además `people`, con su nombre visible y su
+// color (una consulta por respuesta, como `related`). Aquí vive lo que la
+// interfaz hace con eso: enseñar el nombre y nunca el id, decir «(ya no está)»
+// cuando el id ya no resuelve, y elegir la persona en la celda.
+
+/** El tope de personas que ofrece el selector: mismo criterio que las filas de
+ * una relación, no es una lista que se recorra entera escribiendo. */
+const PERSONAS_CHOICES_LIMIT = 50;
+
+/** `id -> {id, display_name, username, color}` de `GET /people`, y la promesa en
+ * curso (una sola petición aunque haya diez celdas esperando). */
+const personasCache = new Map();
+let personasPromesa = null;
+
+function cargarPersonas({ forzar = false } = {}) {
+  if (personasPromesa && !forzar) return personasPromesa;
+  personasPromesa = api("/people")
+    .then((gente) => {
+      personasCache.clear();
+      (Array.isArray(gente) ? gente : []).forEach((p) => {
+        if (p && p.id != null) personasCache.set(String(p.id), p);
+      });
+      return [...personasCache.values()];
+    })
+    .catch((e) => {
+      personasPromesa = null; // el siguiente intento vuelve a pedirlas
+      throw e;
+    });
+  return personasPromesa;
+}
+
+/** La persona que el servidor resolvió para una fila (`people`), o `null`. */
+function personaDeFila(row, key) {
+  const ref = row?.people?.[key];
+  return ref && ref.id != null && ref.display_name ? ref : null;
+}
+
+/** El id de usuario que guarda una celda de persona ('' si está vacía). */
+function personaIdDeFila(row, key) {
+  return String(row?.properties?.[key] ?? "").trim();
+}
+
+/** El nombre visible de un id de usuario: el de la fila, o el del directorio. */
+function nombreDePersona(id, row = null, key = null) {
+  const ref = row && key ? row?.people?.[key] : null;
+  if (ref?.display_name) return ref.display_name;
+  return personasCache.get(String(id ?? ""))?.display_name || null;
+}
+
+/** Una celda de persona en HTML plano (la lista, la tarjeta del tablero, la
+ * ficha de la fila): el NOMBRE con su color; nunca el id. */
+function htmlDePersona(value, prop, row) {
+  const id = String(value ?? "").trim();
+  if (!id) return "—";
+  const ref = personaDeFila(row, prop.key);
+  if (!ref) {
+    return `<span class="rel-cell"><span class="rel-chip rel-borrada person-gone" title="${escapeHtml(id)}">(ya no está)</span></span>`;
+  }
+  const color = ref.color ? ` style="background:${escapeHtml(ref.color)}"` : "";
+  return `<span class="person-cell"><span class="person-dot"${color} aria-hidden="true"></span><span class="person-name">${escapeHtml(ref.display_name)}</span></span>`;
+}
+
+/** Pinta la celda de una persona (tabla y tabla incrustada). El clic abre el
+ * selector; el lápiz hace lo mismo sin depender de que haya hueco. */
+function pintarPersonaEnCelda(td, database, row, prop, hooks = null) {
+  const id = personaIdDeFila(row, prop.key);
+  td.textContent = "";
+  if (!id) {
+    td.textContent = "—";
+    return;
+  }
+  const ref = personaDeFila(row, prop.key);
+  const caja = document.createElement("span");
+  caja.className = "person-cell";
+  if (!ref) {
+    const roto = document.createElement("span");
+    roto.className = "person-gone";
+    roto.textContent = "(ya no está)";
+    roto.title = id;
+    roto.setAttribute("aria-label", `El usuario ${id} ya no existe`);
+    caja.appendChild(roto);
+  } else {
+    const punto = document.createElement("span");
+    punto.className = "person-dot";
+    if (ref.color) punto.style.background = ref.color;
+    punto.setAttribute("aria-hidden", "true");
+    const nombre = document.createElement("span");
+    nombre.className = "person-name";
+    nombre.textContent = ref.display_name;
+    caja.title = ref.username ? `${ref.display_name} (@${ref.username})` : ref.display_name;
+    caja.append(punto, nombre);
+  }
+  td.appendChild(caja);
+  const lapiz = document.createElement("button");
+  lapiz.type = "button";
+  lapiz.className = "rel-edit";
+  lapiz.innerHTML = svgIcon("i-pencil");
+  lapiz.title = `Elegir la persona de «${prop.name}»`;
+  lapiz.setAttribute("aria-label", `Elegir la persona de «${prop.name}»`);
+  lapiz.tabIndex = -1;
+  if (hooks?.embed) lapiz.dataset.dbAction = "editar-persona";
+  lapiz.addEventListener("click", (e) => {
+    e.stopPropagation();
+    editarCeldaDePersona(td, database, row, prop, hooks).catch((err) =>
+      reportError("No se pudo abrir el selector de personas", err),
+    );
+  });
+  lapiz.addEventListener("keydown", (e) => e.stopPropagation());
+  td.appendChild(lapiz);
+}
+
+// --- el selector de personas de una celda --------------------------------
+
+let selectorDePersona = null;
+
+function cerrarSelectorDePersona({ foco = false } = {}) {
+  const abierto = selectorDePersona;
+  if (!abierto) return;
+  selectorDePersona = null;
+  abierto.limpiar();
+  abierto.panel.remove();
+  if (foco && abierto.ancla?.isConnected) abierto.ancla.focus({ preventScroll: true });
+}
+
+/** Abre el selector de personas sobre una celda `person`.
+ *
+ * Se filtra escribiendo (sin mayúsculas ni tildes), como el de relaciones, y la
+ * primera opción es «Sin asignar»: una celda vacía es un valor legítimo —es lo
+ * que hace que `is_empty` del filtro sirva—. Elegir guarda por el mismo PATCH
+ * que cualquier otra celda.
+ */
+async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
+  if (selectorDePersona) return;
+  cerrarSelectorDeRelacion();
+  let gente = [];
+  let error = "";
+  try {
+    gente = await cargarPersonas({ forzar: true });
+  } catch (e) {
+    // Con una lista ya cargada, se sigue con ella: elegir a alguien de un
+    // directorio de hace un rato es mejor que no poder elegir.
+    gente = [...personasCache.values()];
+    if (!gente.length) error = `No se pudo leer la lista de personas: ${describeError(e)}`;
+  }
+  // La tabla pudo repintarse mientras llegaba la respuesta.
+  if (!td.isConnected) return;
+
+  const panel = document.createElement("div");
+  panel.className = "rel-picker person-picker";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", `Elegir la persona de «${prop.name}»`);
+
+  const cabecera = document.createElement("div");
+  cabecera.className = "rel-picker-head";
+  const nombre = document.createElement("span");
+  nombre.className = "rel-picker-name";
+  nombre.textContent = prop.name;
+  const modo = document.createElement("span");
+  modo.className = "rel-picker-mode";
+  modo.textContent = "una persona";
+  cabecera.append(nombre, modo);
+
+  const buscar = document.createElement("input");
+  buscar.type = "search";
+  buscar.className = "rel-picker-search";
+  buscar.placeholder = "Buscar por nombre o @usuario…";
+  buscar.autocomplete = "off";
+  buscar.setAttribute("aria-label", "Buscar una persona");
+  buscar.disabled = Boolean(error) || !gente.length;
+
+  const lista = document.createElement("div");
+  lista.className = "rel-picker-list";
+  lista.setAttribute("role", "listbox");
+
+  const nota = document.createElement("p");
+  nota.className = "rel-picker-note";
+  nota.setAttribute("role", "status");
+
+  panel.append(cabecera);
+  if (!error) panel.append(buscar);
+  panel.append(lista, nota);
+
+  const estado = { activo: -1, opciones: [] };
+  const actual = () => personaIdDeFila(row, prop.key);
+
+  const guardar = async (id) => {
+    const valor = id || null;
+    if (sameValue(valor, row.properties?.[prop.key] ?? null)) {
+      cerrarSelectorDePersona({ foco: true });
+      return;
+    }
+    try {
+      await saveRow(database, row, { properties: { [prop.key]: valor } }, hooks);
+      nota.textContent = "Guardado.";
+      repaintCell(td, database, row, prop, false, hooks);
+      cerrarSelectorDePersona({ foco: true });
+    } catch (e) {
+      // Se queda abierto con el motivo dentro: cerrarlo dejaría al usuario con
+      // un aviso y sin el sitio donde arreglarlo.
+      nota.textContent = `No se pudo guardar: ${describeError(e)}`;
+      reportError("No se pudo guardar la persona", e);
+      repaintCell(td, database, row, prop, false, hooks);
+    }
+  };
+
+  function pintarOpciones() {
+    lista.textContent = "";
+    estado.opciones = [];
+    estado.activo = -1;
+    if (error) {
+      const p = document.createElement("p");
+      p.className = "rel-picker-note";
+      p.textContent = error;
+      lista.appendChild(p);
+      return;
+    }
+    const consulta = plegarTexto(buscar.value.trim());
+    const candidatas = [{ id: "", display_name: "Sin asignar", username: "" }, ...gente].filter(
+      (p) =>
+        !consulta ||
+        plegarTexto(p.display_name || "").includes(consulta) ||
+        plegarTexto(p.username || "").includes(consulta),
+    );
+    const visibles = candidatas.slice(0, PERSONAS_CHOICES_LIMIT);
+    if (!visibles.length) {
+      const p = document.createElement("p");
+      p.className = "rel-picker-note";
+      p.textContent = "Nadie coincide con lo escrito.";
+      lista.appendChild(p);
+      return;
+    }
+    const elegida = actual();
+    visibles.forEach((persona) => {
+      const esVacio = !persona.id;
+      const marcada = esVacio ? !elegida : String(persona.id) === elegida;
+      const opcion = document.createElement("button");
+      opcion.type = "button";
+      opcion.className = "rel-picker-option" + (marcada ? " is-chosen" : "");
+      opcion.setAttribute("role", "option");
+      opcion.setAttribute("aria-selected", marcada ? "true" : "false");
+      const titulo = document.createElement("span");
+      titulo.className = "rel-picker-option-title";
+      if (!esVacio) {
+        const punto = document.createElement("span");
+        punto.className = "person-dot";
+        if (persona.color) punto.style.background = persona.color;
+        punto.setAttribute("aria-hidden", "true");
+        titulo.appendChild(punto);
+      }
+      const texto = document.createElement("span");
+      texto.textContent = esVacio ? "Sin asignar" : persona.display_name || "(sin nombre)";
+      titulo.appendChild(texto);
+      const suyo = document.createElement("span");
+      suyo.className = "rel-picker-option-base";
+      suyo.textContent = esVacio ? "la celda queda vacía" : `@${persona.username || "usuario"}`;
+      opcion.append(titulo, suyo);
+      if (marcada) {
+        const marca = document.createElement("span");
+        marca.className = "rel-picker-check";
+        marca.setAttribute("aria-hidden", "true");
+        marca.textContent = "✓";
+        opcion.appendChild(marca);
+      }
+      opcion.addEventListener("click", (e) => {
+        e.stopPropagation();
+        guardar(persona.id || null);
+      });
+      estado.opciones.push(opcion);
+      lista.appendChild(opcion);
+    });
+    if (candidatas.length > visibles.length) {
+      const mas = document.createElement("p");
+      mas.className = "rel-picker-more";
+      mas.textContent = `… y ${candidatas.length - visibles.length} más, sigue escribiendo`;
+      lista.appendChild(mas);
+    }
+  }
+
+  buscar.addEventListener("input", () => pintarOpciones());
+  buscar.addEventListener("keydown", (e) => {
+    // Dentro de una nota, lo que no se consuma acaba en el keymap de
+    // CodeMirror (su Enter insertaría un salto en el `.md`).
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      estado.opciones[Math.max(estado.activo, 0)]?.click();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if (!estado.opciones.length) return;
+    e.preventDefault();
+    estado.activo =
+      e.key === "ArrowDown"
+        ? (estado.activo + 1) % estado.opciones.length
+        : (estado.activo - 1 + estado.opciones.length) % estado.opciones.length;
+    estado.opciones.forEach((op, i) => op.classList.toggle("is-active", i === estado.activo));
+    estado.opciones[estado.activo].scrollIntoView({ block: "nearest" });
+  });
+
+  document.body.appendChild(panel);
+  colocarPanelFlotante(panel, td);
+  const fuera = (e) => {
+    if (panel.contains(e.target) || td.contains(e.target)) return;
+    cerrarSelectorDePersona();
+  };
+  // Escape en el documento: cuando la lista de personas no se pudo leer no hay
+  // buscador que lo reciba, y un panel que solo se cierra con el ratón deja
+  // tirado a quien va con el teclado.
+  const teclas = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    cerrarSelectorDePersona({ foco: true });
+  };
+  const recolocar = () => {
+    if (!td.isConnected) {
+      cerrarSelectorDePersona();
+      return;
+    }
+    colocarPanelFlotante(panel, td);
+  };
+  document.addEventListener("mousedown", fuera, true);
+  document.addEventListener("keydown", teclas, true);
+  window.addEventListener("scroll", recolocar, true);
+  window.addEventListener("resize", recolocar);
+  const observador =
+    typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => recolocar());
+  observador?.observe(panel);
+  selectorDePersona = {
+    panel,
+    ancla: td,
+    limpiar: () => {
+      observador?.disconnect();
+      document.removeEventListener("mousedown", fuera, true);
+      document.removeEventListener("keydown", teclas, true);
+      window.removeEventListener("scroll", recolocar, true);
+      window.removeEventListener("resize", recolocar);
+    },
+  };
+  pintarOpciones();
+  if (error) {
+    panel.tabIndex = -1;
+    panel.focus({ preventScroll: true });
+  } else {
+    buscar.focus({ preventScroll: true });
+  }
+}
+
 function formatPropValue(value, prop) {
   if (value === undefined || value === null || value === "") return "—";
   if (prop.type === "checkbox") return value ? "✓" : "—";
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
+}
+
+/** Un valor de selección, como etiqueta. El tono sale de la POSICIÓN del valor
+ * en las opciones de la propiedad (`prop.options`), así que el mismo valor
+ * lleva el mismo color en la tabla, en la lista y en el tablero, y no hay nada
+ * que guardar: es presentación. Un valor que no está entre las opciones (texto
+ * libre heredado) va en el tono neutro. Los tonos son los `--tag-N` del CSS. */
+const TONOS_DE_ETIQUETA = 7;
+function htmlDeEtiqueta(valor, prop) {
+  const posicion = (prop.options || []).indexOf(valor);
+  const tono = posicion < 0 ? 1 : (posicion % TONOS_DE_ETIQUETA) + 1;
+  return `<span class="prop-tag prop-tag-${tono}">${escapeHtml(String(valor))}</span>`;
 }
 
 /** Igual que formatPropValue, pero listo para innerHTML: el "sí" de un
@@ -6572,7 +7778,14 @@ function formatPropValueHtml(value, prop, row = null) {
   if (prop.type === "checkbox") {
     return value ? `${svgIcon("i-check")}<span class="sr-only">Sí</span>` : "—";
   }
+  if (prop.type === "select" || prop.type === "multiselect") {
+    const valores = (Array.isArray(value) ? value : [value]).filter(
+      (v) => v !== undefined && v !== null && v !== "",
+    );
+    if (valores.length) return valores.map((v) => htmlDeEtiqueta(v, prop)).join("");
+  }
   if (prop.type === "relation") return htmlDeRelacion(value, prop, row);
+  if (prop.type === "person") return htmlDePersona(value, prop, row);
   return escapeHtml(formatPropValue(value, prop));
 }
 
@@ -6600,7 +7813,7 @@ function readPropertyValue(prop, input) {
  * que decide qué control usa cada tipo: lo comparten el alta de fila, la
  * edición de una celda y el panel de fila del tablero. Devuelve también
  * `read()`, que traduce el control a valor (`null` = sin valor). */
-function buildPropertyInput(prop, value) {
+function buildPropertyInput(prop, value, ref = null) {
   let input;
   if (prop.type === "select") {
     input = document.createElement("select");
@@ -6634,6 +7847,47 @@ function buildPropertyInput(prop, value) {
     input = document.createElement("input");
     input.type = "date";
     input.value = value ?? "";
+  } else if (prop.type === "person") {
+    // Una persona se elige de la lista, no se escribe: el valor es el id de un
+    // usuario y el `.md` no admite texto libre. El valor guardado se conserva
+    // como opción aunque el directorio no haya llegado todavía.
+    input = document.createElement("select");
+    const vacio = document.createElement("option");
+    vacio.value = "";
+    vacio.textContent = "— sin asignar";
+    input.appendChild(vacio);
+    const sembrado = value === undefined || value === null ? "" : String(value);
+    if (sembrado) {
+      const suya = document.createElement("option");
+      suya.value = sembrado;
+      // El nombre que trae la fila (`people`, resuelto por el servidor) manda
+      // sobre el directorio: es el que se acaba de leer.
+      suya.textContent = ref?.display_name || nombreDePersona(sembrado) || sembrado;
+      input.appendChild(suya);
+    }
+    input.value = sembrado;
+    const pintarGente = (gente) => {
+      const elegido = input.value;
+      [...input.querySelectorAll("option")].slice(1).forEach((opcion) => opcion.remove());
+      (gente || []).forEach((persona) => {
+        const opcion = document.createElement("option");
+        opcion.value = String(persona.id);
+        opcion.textContent = persona.display_name || persona.username || String(persona.id);
+        input.appendChild(opcion);
+      });
+      if (elegido && ![...input.options].some((opcion) => opcion.value === elegido)) {
+        const suya = document.createElement("option");
+        suya.value = elegido;
+        suya.textContent = nombreDePersona(elegido) || elegido;
+        input.appendChild(suya);
+      }
+      input.value = elegido;
+    };
+    if (personasCache.size) {
+      pintarGente([...personasCache.values()]);
+    } else {
+      cargarPersonas().then(pintarGente).catch(() => {});
+    }
   } else {
     input = document.createElement("input");
     input.type = "text";
@@ -7417,7 +8671,12 @@ function anchosDeVista(view) {
  * se saltan sin más: el `.md` es del usuario y puede hablar de una columna que
  * la app ya no tiene. */
 function columnasEnOrden(database, view) {
-  const schema = database.schema_def || [];
+  // La celda de subtareas no es una columna: es el vínculo con la fila madre y
+  // su valor es un id, que no dice nada en una celda. La jerarquía se lee en la
+  // indentación y en el contador de la tarjeta.
+  const schema = (database.schema_def || []).filter(
+    (p) => p && p.type !== "parent_row",
+  );
   if (!view) return schema.slice();
   const porClave = new Map(schema.map((p) => [p.key, p]));
   const orden = Array.isArray(view.config?.order) ? view.config.order : [];
@@ -7870,7 +9129,12 @@ function esquemaConPropiedad(database, key, cambios) {
   return (database.schema_def || []).map((p) => {
     if (p.key !== key) return { ...p };
     const nueva = { ...p, ...cambios };
-    if (nueva.type !== "select" && nueva.type !== "multiselect") delete nueva.options;
+    if (nueva.type !== "select" && nueva.type !== "multiselect") {
+      // El orden declarado, su modo y las opciones solo existen en una selección.
+      delete nueva.options;
+      delete nueva.sort_mode;
+      delete nueva.sort_order;
+    }
     if (nueva.type !== "relation") {
       delete nueva.target_database;
       delete nueva.multiple;
@@ -8361,6 +9625,132 @@ function mostrarTiposDeColumna(menu, contexto, anchor) {
   menu.querySelector('[role^="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
 }
 
+/** El submenú del estado de la base: «esta columna dice si está hecha», con
+ * sus valores marcables.
+ *
+ * La regla es de la BASE, no de la columna (`closed: {property, values}` en su
+ * `.md`): una sola por base, así que marcar otra columna mueve la regla y el
+ * menú lo dice. Aquí solo se elige; quién cuenta como cerrada lo decide el
+ * servidor con esa misma regla.
+ *
+ * El panel se queda abierto tras guardar (con las marcas nuevas y una nota) y
+ * repinta la tabla al cerrarse: los contadores de las madres cambian en cuanto
+ * la regla cambia, y el `.md` de ninguna fila se toca.
+ */
+function mostrarEstadoDeColumna(menu, contexto, anchor) {
+  pintarEstadoDeColumna(menu, contexto, anchor);
+  abrirPanelFlotante(anchor, menu, {
+    etiqueta: `Estado de la base según «${contexto.prop.name}»`,
+    alCerrar: () => contexto.onChanged?.(),
+  });
+}
+
+/** Pinta las opciones del estado sin abrir ni recolocar el panel: lo usan la
+ * primera apertura y cada guardado (para enseñar las marcas nuevas). */
+function pintarEstadoDeColumna(menu, contexto, anchor) {
+  const { database, prop } = contexto;
+  menu.textContent = "";
+  const cabecera = document.createElement("div");
+  cabecera.className = "db-col-menu-label";
+  cabecera.textContent = `«${prop.name}» dice si está hecha`;
+  menu.appendChild(cabecera);
+  menu.appendChild(
+    itemDeColumna("‹ Volver", { alElegir: () => abrirMenuDeColumna(contexto.th, contexto) }),
+  );
+
+  const regla = reglaDeCierre(database);
+  const activa = Boolean(regla && regla.property === prop.key);
+  const valores = activa ? regla.values : [];
+  const mismo = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
+  const avisar = (texto) => {
+    const nota = notaDeMenu(menu);
+    nota.textContent = texto;
+    nota.hidden = false;
+  };
+
+  const aplicar = async (nuevos) => {
+    const otra =
+      regla && regla.property !== prop.key ? nombreDePropiedad(database, regla.property) : null;
+    try {
+      const actualizada =
+        nuevos === null
+          ? await api(`/databases/${database.id}/closed`, { method: "DELETE" })
+          : await api(`/databases/${database.id}/closed`, {
+              method: "PUT",
+              body: JSON.stringify({ property: prop.key, values: nuevos }),
+            });
+      Object.assign(database, actualizada);
+      pintarEstadoDeColumna(menu, contexto, anchor);
+      colocarPanelFlotante(menu, anchor);
+      avisar(
+        nuevos === null
+          ? `«${prop.name}» deja de decir si una fila está hecha: la base no tiene estado y nada cuenta como cerrado.`
+          : otra
+            ? `«${prop.name}» pasa a ser el estado de la base y «${otra}» deja de decirlo: una base tiene un solo estado.`
+            : "Guardado en el `.md` de la base: no se ha tocado ninguna fila.",
+      );
+    } catch (e) {
+      reportError("No se pudo guardar el estado de la base", e);
+      avisar(describeError(e));
+    }
+  };
+
+  if (prop.type === "checkbox") {
+    menu.appendChild(
+      itemDeColumna("Marcada cuenta como hecha", {
+        radio: true,
+        marca: activa ? "✓" : "",
+        alElegir: () => aplicar(activa ? null : []),
+      }),
+    );
+  } else {
+    const opciones = Array.isArray(prop.options) ? prop.options : [];
+    if (!opciones.length) {
+      menu.appendChild(
+        itemDeColumna("Esta columna no tiene valores", {
+          motivo: "Añade opciones a la columna («Propiedades…») antes de usarla como estado.",
+          alElegir: () =>
+            avisar("Añade opciones a la columna («Propiedades…») antes de usarla como estado."),
+        }),
+      );
+    }
+    opciones.forEach((valor) => {
+      const marcada = activa && valores.some((v) => mismo(v, valor));
+      menu.appendChild(
+        itemDeColumna(valor, {
+          radio: true,
+          marca: marcada ? "✓" : "",
+          alElegir: () => {
+            const resto = activa ? valores.filter((v) => !mismo(v, valor)) : [];
+            const nuevos = marcada ? resto : [...resto, valor];
+            if (!nuevos.length) {
+              avisar("Marca al menos un valor: sin valores no hay nada que cuente como cerrado.");
+              return;
+            }
+            aplicar(nuevos);
+          },
+        }),
+      );
+    });
+    if (activa) {
+      menu.appendChild(separadorDeMenu());
+      menu.appendChild(
+        itemDeColumna("Esta columna deja de decir si está hecha", {
+          peligro: true,
+          alElegir: () => aplicar(null),
+        }),
+      );
+    }
+  }
+
+  if (activa && regla.source === "done") {
+    avisar(
+      "Esta base lo dice con el marcador «done» anterior. Se sigue leyendo; al marcar aquí se guarda como regla de la base.",
+    );
+  }
+}
+
 /** El menú de la cabecera: renombrar, ocultar (en la vista), tipo, borrar y el
  * acceso al diálogo de siempre. `prop` nulo es la columna del título, que
  * comparte el gesto pero no tiene tipo ni se borra. */
@@ -8463,6 +9853,16 @@ function abrirMenuDeColumna(anchor, contexto) {
         alElegir: () => mostrarTiposDeColumna(menu, contexto, anchor),
       }),
     );
+    if (["checkbox", "select", "multiselect"].includes(prop.type)) {
+      const regla = reglaDeCierre(database);
+      menu.appendChild(
+        itemDeColumna("Esta columna dice si está hecha", {
+          radio: true,
+          marca: regla && regla.property === prop.key ? "✓" : "",
+          alElegir: () => mostrarEstadoDeColumna(menu, contexto, anchor),
+        }),
+      );
+    }
     menu.appendChild(
       itemDeColumna("Borrar la propiedad", {
         peligro: true,
@@ -8652,11 +10052,14 @@ function abrirFormularioDeColumna(anchor, contexto) {
  * servidor no ordena, o una tabla sin vista) el rótulo es el que abre el menú:
  * un `<th>` que no hace nada al pincharlo parece roto.
  */
-function cabeceraDeColumna(contexto, prop, nombre) {
+function cabeceraDeColumna(contexto, prop, nombre, paraOrdenar = prop) {
   // El `<th>` de ordenar es el de siempre: así la flecha, el «N de M» de la
-  // prioridad y el `aria-sort` no se reimplementan aquí.
-  const th = prop
-    ? celdaDeCabecera(prop, contexto.sort || [], contexto.onToggleSort)
+  // prioridad y el `aria-sort` no se reimplementan aquí. `paraOrdenar` es la
+  // propiedad con la que ordena una columna que no está en el `schema`: la del
+  // título, que el servidor ordena con la clave `title` (texto natural) aunque
+  // su `<th>` siga siendo `@title`.
+  const th = paraOrdenar
+    ? celdaDeCabecera(paraOrdenar, contexto.sort || [], contexto.onToggleSort)
     : document.createElement("th");
   th.scope = "col";
   th.classList.add("db-col-head");
@@ -8861,7 +10264,12 @@ function renderTable(
   if (muestraTitulo) {
     // El título no ordena (el servidor no ordena por él: una flecha que no
     // hace nada sería mentir) pero sí tiene menú, para renombrarlo y quitarlo.
-    headRow.appendChild(cabeceraDeColumna(contextoDeColumna, null, rotuloTitulo));
+    headRow.appendChild(
+      cabeceraDeColumna(contextoDeColumna, null, rotuloTitulo, {
+        key: "title",
+        name: rotuloTitulo,
+      }),
+    );
   }
   // Cada propiedad es una cabecera que ordena (`filtros-vista`) y, además, el
   // menú de la columna: el rótulo ordena y el botón de tres puntos abre el menú.
@@ -8947,7 +10355,10 @@ function renderTable(
   // Por qué una columna no está: con la lista de la vista en el `.md`, lo que
   // se ha ocultado tiene un camino de vuelta a la vista, no al diálogo.
   const ocultas = (database.schema_def || []).filter(
-    (p) => !propiedades.some((visible) => visible.key === p.key),
+    (p) =>
+      p &&
+      p.type !== "parent_row" &&
+      !propiedades.some((visible) => visible.key === p.key),
   );
   if (view && ocultas.length) wrap.appendChild(barraDeColumnasOcultas(contextoDeColumna, ocultas));
 
@@ -8962,12 +10373,31 @@ function renderTable(
     // repintar) + la columna de acciones, que ahora está siempre.
     td.colSpan =
       propiedades.length + (muestraTitulo ? 1 : 0) + 2 + (onChanged ? 1 : 0);
-    td.className = "search-empty";
-    td.textContent = vacio || "Sin filas todavía.";
+    // Un vacío dice qué hacer: con filtro, que es el filtro; sin él, dónde se
+    // añade la primera fila (el alta está justo debajo de la tabla).
+    td.className = "search-empty rows-empty";
+    const tituloVacio = document.createElement("span");
+    tituloVacio.className = "empty-hint-title";
+    tituloVacio.textContent = vacio || "Esta base aún no tiene filas.";
+    const notaVacio = document.createElement("span");
+    notaVacio.className = "empty-hint-note";
+    notaVacio.textContent = vacio
+      ? "Cambia o quita una condición en «Filtrar» para ver más."
+      : "Añade la primera en «Nueva fila», aquí debajo.";
+    td.append(tituloVacio, notaVacio);
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
 
+  // La jerarquía, calculada una vez para toda la tabla: el servidor ya manda
+  // las hijas detrás de su madre, así que aquí solo falta cuánto indentar y el
+  // contador de cada madre.
+  const claveJerarquia = claveDeJerarquia(database);
+  const profundidades = mapaDeProfundidades(rows, claveJerarquia);
+  // Una vista agrupada pinta cada fila donde cae su grupo, no bajo su madre:
+  // ahí la sangría mentiría sobre dónde está la jerarquía. El contador sí se
+  // pinta igual (es un dato de la fila, no una posición).
+  const indenta = Boolean(claveJerarquia) && !view?.config?.group_by;
   rows.forEach((row) => {
     const tr = document.createElement("tr");
     // `data-row-id`: el «+ Nueva fila» de la vista deja el foco en el nombre de
@@ -9011,6 +10441,29 @@ function renderTable(
       const titleTd = document.createElement("td");
       titleTd.dataset.colKey = "@title";
       paintCell(titleTd, database, row, null, hooks);
+      if (indenta) {
+        const prof = profundidades.get(String(row.id)) || 0;
+        if (prof) {
+          // Hija: se sangra bajo su madre. La sangría es de la celda y no del
+          // `tr` para que la casilla de selección siga en su columna.
+          titleTd.classList.add("is-subtask");
+          titleTd.style.paddingLeft = `${10 + 20 * prof}px`;
+          tr.dataset.depth = String(prof);
+        }
+      }
+      // El contador va FUERA de `indenta`: es un dato de la fila y se pinta
+      // agrupe o no la vista. Lo que la agrupación desmiente es la sangría,
+      // que es una posición (la fila cae en su grupo, no bajo su madre).
+      const cuenta = contadorDeSubtareas(row);
+      if (cuenta) {
+        // El contador es un dato, no un control: no puede quitarle el clic a
+        // la celda (que edita el título). El `title` dice qué cuenta.
+        const badge = document.createElement("span");
+        badge.className = "cell-subtasks";
+        badge.textContent = cuenta;
+        badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
+        titleTd.appendChild(badge);
+      }
       celdas.set(null, titleTd);
       tr.appendChild(titleTd);
     }
@@ -9190,31 +10643,83 @@ function repaintCell(td, database, row, prop, focus, hooks = null) {
   const ownedFocus = td.contains(document.activeElement);
   paintCell(td, database, row, prop, hooks);
   if (!td.isConnected) return;
+  repintarFechasDeLaFila(td, database, row, hooks);
   setRovingCell(td);
   const shouldFocus = focus === undefined ? ownedFocus || document.activeElement === document.body : focus;
   if (shouldFocus) td.focus();
+}
+
+/** Repinta las celdas de fecha de la fila, menos la que se acaba de guardar.
+ *
+ * La marca de «fecha vencida» depende de si la **fila** está cerrada —una tarea
+ * hecha tarde no está vencida—, así que guardar el estado cambia celdas que no
+ * se han tocado. Sin esto, cerrar una tarea desde la tabla dejaba su fecha en
+ * tono de aviso hasta el siguiente repintado de la vista: el servidor ya había
+ * dicho que no estaba vencida y la fila decía que sí. Solo se hace en bases que
+ * declaran regla de cierre (en las demás no hay marca que cambiar) y solo con
+ * las propiedades de tipo `date` de esa fila. */
+function repintarFechasDeLaFila(td, database, row, hooks = null) {
+  if (!reglaDeCierre(database)) return;
+  const tr = td?.closest("tr");
+  if (!tr) return;
+  for (const otra of tr.querySelectorAll("td[data-col-key]")) {
+    if (otra === td) continue;
+    const clave = otra.dataset.colKey;
+    if (!clave || clave === "@title") continue;
+    const prop = (database.schema_def || []).find((p) => p && p.key === clave);
+    if (prop?.type !== "date") continue;
+    paintCell(otra, database, row, prop, hooks);
+  }
 }
 
 /** Pinta el valor de una celda y la deja lista para editarse con un clic.
  * `prop === null` es la celda del título. */
 function paintCell(td, database, row, prop, hooks = null) {
   const esRelacion = prop?.type === "relation";
+  const esPersona = prop?.type === "person";
   if (esRelacion) {
     pintarRelacionEnCelda(td, database, row, prop, hooks);
+  } else if (esPersona) {
+    pintarPersonaEnCelda(td, database, row, prop, hooks);
   } else {
     td.innerHTML = prop
       ? formatPropValueHtml(row.properties?.[prop.key], prop, row)
       : escapeHtml(row.title || "Sin título");
   }
+  // Una fecha que ya pasó se marca con el tono de aviso del panel. Qué fechas
+  // son lo dice el servidor en `overdue_keys`, que ya aplicó las dos reglas: la
+  // base tiene que declarar regla de cierre (sin estado no hay «sin terminar») y
+  // la fila no puede estar cerrada (una tarea hecha tarde no está vencida). Aquí
+  // no se compara ninguna fecha con el reloj del navegador.
+  const vencida = Boolean(
+    prop?.type === "date" && (row.overdue_keys || []).includes(prop.key),
+  );
+  td.classList.toggle("cell-overdue", vencida);
+  // Sin valor: la raya se pinta apagada (solo presentación, ver `.cell-empty`).
+  const valorDeCelda = prop ? row.properties?.[prop.key] : row.title;
+  td.classList.toggle(
+    "cell-empty",
+    Boolean(prop) &&
+      prop.type !== "checkbox" &&
+      (valorDeCelda === undefined ||
+        valorDeCelda === null ||
+        valorDeCelda === "" ||
+        (Array.isArray(valorDeCelda) && valorDeCelda.length === 0)),
+  );
   // La columna del título se lee como jerarquía (la regla CSS va por clase:
   // la primera columna de la tabla es la de abrir la fila).
   td.classList.toggle("cell-title", !prop);
   // `cell-rel` deja que los títulos salten de línea: el `td` recorta a 240 px
   // y un id (que ya no se enseña) salía siempre en una sola línea.
   td.classList.toggle("cell-rel", Boolean(esRelacion));
-  td.title = esRelacion
-    ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
-    : "Clic para editar";
+  td.classList.toggle("cell-person", Boolean(esPersona));
+  td.title = vencida
+    ? "Fecha vencida (la fila sigue abierta) · clic para editar"
+    : esRelacion
+      ? "Clic para elegir filas · los títulos abren su fila · el lápiz edita"
+      : esPersona
+        ? "Clic para asignar una persona · el lápiz edita"
+        : "Clic para editar";
   td.style.cursor = "pointer";
   td.dataset.editable = "1";
   // Dentro de una nota, el widget del editor se lleva el `mousedown` del bloque
@@ -9357,6 +10862,14 @@ function editCell(td, database, row, prop, hooks = null) {
     );
     return;
   }
+  // Una persona tampoco se edita escribiendo: se elige de la lista (el valor es
+  // el id de un usuario, y el `.md` no admite texto libre).
+  if (prop?.type === "person") {
+    editarCeldaDePersona(td, database, row, prop, hooks).catch((e) =>
+      reportError("No se pudo abrir el selector de personas", e),
+    );
+    return;
+  }
   const isTitle = !prop;
   const def = isTitle ? { key: "title", name: "Título", type: "text" } : prop;
   const { input, read } = buildPropertyInput(def, isTitle ? row.title : row.properties?.[def.key]);
@@ -9459,17 +10972,134 @@ function editCell(td, database, row, prop, hooks = null) {
  * eventos lo traen y además se rellena por si lo lee alguien más. */
 let boardDrag = null;
 
+/** Columna que se está arrastrando para recolocarla. Es un arrastre distinto
+ * del de las tarjetas: `boardDrag` mueve una fila a otra columna, este mueve la
+ * columna de sitio (y lo que cambia es el `sort_order` de la propiedad). */
+let boardColumnDrag = null;
+
+/** Quita las marcas de un arrastre de columnas que se canceló (Esc). */
+function limpiarArrastreDeColumnas() {
+  document
+    .querySelectorAll(".board-col.is-col-dragover, .board-col.is-col-dragging")
+    .forEach((c) => c.classList.remove("is-col-dragover", "is-col-dragging"));
+}
+
+/** `lista` con `movido` en el sitio de `destino`.
+ *
+ * Se mueve el valor, no se intercambian dos: lo que el usuario ve al soltar es
+ * que su columna cae donde apuntaba y las demás se corren un puesto. Si va
+ * hacia la derecha cae DESPUÉS de la de destino y si va hacia la izquierda,
+ * antes — así arrastrar un puesto a la derecha mueve de verdad en vez de
+ * dejarla donde estaba.
+ */
+function moverEnLista(lista, movido, destino) {
+  const desde = lista.findIndex((v) => mismoValorDeColumna(v, movido));
+  const hasta = lista.findIndex((v) => mismoValorDeColumna(v, destino));
+  if (desde < 0 || hasta < 0 || desde === hasta) return [...lista];
+  const resto = lista.filter((_, i) => i !== desde);
+  const antes = lista.slice(0, hasta).filter((_, i) => i !== desde).length;
+  const posicion = antes + (desde < hasta ? 1 : 0);
+  return [...resto.slice(0, posicion), lista[desde], ...resto.slice(posicion)];
+}
+
+/** En qué modo ordena una selección: `manual` (el orden declarado, que se
+ * arrastra) o `auto` (alfabético natural). Es la misma regla que el backend
+ * (`app.properties.sort_mode`): sin `sort_mode`, una propiedad que declara
+ * `sort_order` está en manual y una que no declara nada en automático. */
+function modoDeOrden(prop) {
+  const modo = String(prop?.sort_mode || "").trim().toLowerCase();
+  if (modo === "manual" || modo === "auto") return modo;
+  return (prop?.sort_order || []).length ? "manual" : "auto";
+}
+
+/** Guarda el orden de las columnas en la PROPIEDAD (`sort_mode: manual` y
+ * `sort_order`), no en la vista: es el mismo PATCH del `schema_def` que usa el
+ * menú de una columna, con la lista limpia de valores vacíos («Sin valor» no es
+ * un valor de la propiedad). El `.md` de la base es la verdad, así que recargar
+ * lo mantiene.
+ *
+ * Si la propiedad estaba en **automático**, arrastrar una columna la pasa a
+ * manual con el orden que el usuario acaba de poner, y se le dice: un arrastre
+ * que no hace nada (porque el modo sigue ordenando por alfabeto) sería peor.
+ */
+async function guardarOrdenDeColumnas(database, groupKey, orden, refresh) {
+  const limpio = (orden || []).filter(
+    (v) => v !== null && v !== undefined && String(v).trim() !== "",
+  );
+  const prop = (database.schema_def || []).find((p) => p.key === groupKey);
+  const eraAuto = modoDeOrden(prop) === "auto";
+  try {
+    await guardarEsquemaDeColumnas(
+      database,
+      esquemaConPropiedad(database, groupKey, {
+        sort_mode: "manual",
+        sort_order: limpio,
+      }),
+    );
+    refresh?.();
+    if (eraAuto) {
+      showNotice(
+        `«${prop?.name || "Esta propiedad"}» pasa a orden manual: se guarda el orden de columnas que acabas de poner.`,
+      );
+    }
+  } catch (e) {
+    reportError("No se pudo guardar el orden de las columnas", e);
+  }
+}
+
 function renderBoard(database, rows, view, refresh) {
   const groupKey = view.config.group_by;
   const prop = database.schema_def.find((p) => p.key === groupKey);
 
   const board = document.createElement("div");
   board.className = "board";
+  // Las filas que se están pintando, por id: una tarjeta dice de qué fila es
+  // subtarea sin pedir nada al servidor (su madre puede estar en otra columna).
+  const porId = new Map(rows.map((r) => [String(r.id), r]));
 
   // Una relación agrupa por el TÍTULO de la fila destino: una columna por
   // título, no por id (un id no se lee). Solo vale con una relación simple;
   // con `multiple` una fila caería en varias columnas y arrastrarla escribiría
   // un id suelto encima de la lista, así que se dice en vez de romper el dato.
+  // Una persona agrupa por su NOMBRE visible, como una relación por el título:
+  // una columna por persona, y el valor que se escribe al soltar una tarjeta es
+  // el id (lo que guarda el `.md`).
+  if (prop?.type === "person") {
+    const etiquetas = new Map();
+    rows.forEach((r) => {
+      const id = personaIdDeFila(r, groupKey);
+      if (id && !etiquetas.has(id)) {
+        etiquetas.set(id, nombreDePersona(id, r, groupKey) || "(ya no está)");
+      }
+    });
+    const grupos = new Map();
+    const sueltas = [];
+    rows.forEach((r) => {
+      const id = personaIdDeFila(r, groupKey);
+      if (!id) {
+        sueltas.push(r);
+        return;
+      }
+      if (!grupos.has(id)) grupos.set(id, []);
+      grupos.get(id).push(r);
+    });
+    grupos.forEach((filas, id) =>
+      board.appendChild(
+        renderBoardColumn(database, etiquetas.get(id) || "(ya no está)", filas, {
+          groupKey,
+          refresh,
+          value: id,
+        }),
+      ),
+    );
+    if (sueltas.length) {
+      board.appendChild(
+        renderBoardColumn(database, "Sin valor", sueltas, { groupKey, refresh, value: null }),
+      );
+    }
+    return board;
+  }
+
   if (prop?.type === "relation") {
     if (relacionMultiple(prop)) {
       return avisoDeVista(
@@ -9499,6 +11129,7 @@ function renderBoard(database, rows, view, refresh) {
         renderBoardColumn(database, etiquetas.get(id) || "(borrada)", filas, {
           groupKey,
           refresh,
+          porId,
           // El valor que se escribe al soltar una tarjeta es el ID (lo que
           // guarda el `.md`); lo que se lee en la columna es el título.
           value: id,
@@ -9507,25 +11138,54 @@ function renderBoard(database, rows, view, refresh) {
     );
     if (sueltas.length) {
       board.appendChild(
-        renderBoardColumn(database, "Sin valor", sueltas, { groupKey, refresh, value: null }),
+        renderBoardColumn(database, "Sin valor", sueltas, { groupKey, refresh, porId, value: null }),
       );
     }
     return board;
   }
 
-  const columns = prop?.options?.length ? prop.options : uniqueValues(rows, groupKey);
+  // Las columnas, en el orden que declara la propiedad (`sort_order` en el
+  // `schema` de la base): `[alta, media, baja]` se lee por importancia y no por
+  // alfabeto, y el tablero es donde eso se ve. Sin orden declarado, el de
+  // `options` (el de siempre) y después los valores que solo están en filas.
+  const modo = modoDeOrden(prop);
+  const columnas = columnasDelTablero(prop, rows, groupKey, modo);
+  // Solo los valores de la propiedad: recolocar escribe el orden de esos (un
+  // valor que solo está en una fila no pasa a estar declarado por arrastrar).
+  const valoresDeColumnas = columnas.filter((c) => c.declarada).map((c) => c.valor);
+  // Solo una selección puede declarar el orden de sus valores, así que solo
+  // ahí la cabecera de la columna se arrastra: el orden se guarda en la
+  // PROPIEDAD (no en la vista) para que lo vean todas las vistas del tablero.
+  const reordenable = prop?.type === "select" || prop?.type === "multiselect";
 
-  const grouped = new Map(columns.map((c) => [c, []]));
+  // Las filas se agrupan por la MISMA clave normalizada con la que se
+  // construyen las columnas (sin mayúsculas ni espacios). Antes se hacía con
+  // igualdad exacta: un `sort_order: [Baja, ...]` escrito a mano dejaba todas
+  // las columnas vacías y las filas en «Sin valor», mientras la tabla de la
+  // misma base ordenaba bien.
+  const grouped = new Map(columnas.map((c) => [claveDeColumna(c.valor), []]));
   const other = [];
   rows.forEach((r) => {
-    const v = r.properties?.[groupKey];
-    if (grouped.has(v)) grouped.get(v).push(r);
+    const clave = claveDeColumna(r.properties?.[groupKey]);
+    if (clave && grouped.has(clave)) grouped.get(clave).push(r);
     else other.push(r);
   });
 
-  const options = { groupKey, refresh };
-  columns.forEach((col) =>
-    board.appendChild(renderBoardColumn(database, col, grouped.get(col) || [], options))
+  const options = { groupKey, refresh, porId };
+  columnas.forEach((columna) =>
+    board.appendChild(
+      renderBoardColumn(database, columna.valor, grouped.get(claveDeColumna(columna.valor)) || [], {
+        ...options,
+        soltar: columna.soltar,
+        // Solo las columnas de un valor de la propiedad se recolocan: un valor
+        // que únicamente está en una fila va al final por la regla de siempre,
+        // así que su columna no tiene sitio que guardar.
+        columna:
+          reordenable && columna.declarada
+            ? { valor: columna.valor, valores: valoresDeColumnas }
+            : null,
+      }),
+    ),
   );
   // "Sin valor" también es destino: soltar ahí vacía la propiedad, que es lo
   // mismo que sacar la tarjeta de cualquier columna.
@@ -9545,22 +11205,155 @@ function uniqueValues(rows, key) {
   return seen;
 }
 
-function renderBoardColumn(database, label, rows, { groupKey, refresh, value = label }) {
+/** Las columnas de un tablero, en orden: `[{ valor, soltar, declarada }]`.
+ *
+ * Primero los valores que declara `sort_order` (el orden semántico: alta,
+ * media, baja), después los de `options` que no estén declarados y al final los
+ * que solo existen en las filas (escritos a mano en un `.md`, o de una opción
+ * borrada). Un valor sin sitio va al final y no al principio: es la misma regla
+ * que la ordenación de la tabla, y por lo mismo — lo que apareció después no es
+ * «lo más importante».
+ *
+ * `soltar` dice si una tarjeta puede caer en esa columna. Con `options`
+ * declaradas el servidor rechaza un valor que no esté en la lista (400), así
+ * que una columna de un valor suelto no es un destino: se pinta para que la
+ * fila se pueda leer, no para soltarle cosas encima.
+ *
+ * `declarada` dice si el valor es de la propiedad (`options`/`sort_order`) o
+ * solo aparece en una fila. Recolocar las columnas guarda el orden de las
+ * declaradas: un valor que nadie declaró no se queda escrito en el `schema` por
+ * haber arrastrado otra columna (seguirá al final por la regla de siempre).
+ */
+function columnasDelTablero(prop, rows, groupKey, modo = modoDeOrden(prop)) {
+  const opciones = new Set((prop?.options || []).map((v) => String(v).trim().toLowerCase()));
+  const conOpciones = opciones.size > 0;
+  const vistas = new Set();
+  const columnas = [];
+  const anadir = (valor, declarada) => {
+    // Una multiselección guarda una lista: no es un valor de columna.
+    if (typeof valor !== "string" && typeof valor !== "number") return;
+    const texto = String(valor);
+    const clave = texto.trim().toLowerCase();
+    if (!clave || vistas.has(clave)) return;
+    vistas.add(clave);
+    columnas.push({
+      valor: texto,
+      soltar: !conOpciones || opciones.has(clave),
+      declarada,
+    });
+  };
+  // En manual manda el orden declarado; en automático, el de `options` (el de
+  // creación), que es lo de siempre. Después, los valores que solo están en
+  // las filas.
+  if (modo === "manual") (prop?.sort_order || []).forEach((v) => anadir(v, true));
+  (prop?.options || []).forEach((v) => anadir(v, true));
+  uniqueValues(rows, groupKey).forEach((v) => anadir(v, false));
+  return columnas;
+}
+
+/** La clave con la que se comparan una columna y el valor de una fila: sin
+ * mayúsculas ni espacios, como `option_key` en el backend. Una lista (una
+ * multiselección) no es un valor de columna: devuelve `""`. */
+function claveDeColumna(valor) {
+  if (typeof valor !== "string" && typeof valor !== "number") return "";
+  return String(valor).trim().toLowerCase();
+}
+
+/** Dos valores de columna son el mismo si lo son sin mayúsculas ni espacios:
+ * el `.md` lo escribe una persona y `Alta` y `alta` son la misma opción. */
+function mismoValorDeColumna(a, b) {
+  return String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+}
+
+function renderBoardColumn(
+  database,
+  label,
+  rows,
+  { groupKey, refresh, value = label, porId = null, soltar = true, columna = null },
+) {
   const col = document.createElement("div");
   col.className = "board-col";
+  col.dataset.columna = String(label);
 
   const head = document.createElement("div");
   head.className = "board-col-head";
   const labelSpan = document.createElement("span");
+  labelSpan.className = "board-col-label";
   labelSpan.textContent = String(label);
+  // El punto de la cabecera lleva el mismo tono que la etiqueta de ese valor
+  // en la tabla (ver `htmlDeEtiqueta`). Solo presentación: sin opción que
+  // coincida («(sin valor)», un texto libre) se queda en el tono neutro.
+  const propDeGrupo = groupKey ? database.schema_def.find((p) => p.key === groupKey) : null;
+  const posicionDeTono = (propDeGrupo?.options || []).indexOf(value);
+  if (posicionDeTono >= 0) {
+    labelSpan.classList.add(`prop-tag-${(posicionDeTono % TONOS_DE_ETIQUETA) + 1}`);
+  }
   const countSpan = document.createElement("span");
+  countSpan.className = "board-col-count";
   countSpan.textContent = String(rows.length);
   head.append(labelSpan, countSpan);
   col.appendChild(head);
 
+  // El asa de la cabecera recoloca la columna. El orden se guarda en el
+  // `schema` de la base (`sort_order`), así que sobrevive a recargar y lo ven
+  // todas las vistas de este tablero: no es un orden de la vista.
+  if (columna && groupKey) {
+    const asa = document.createElement("span");
+    asa.className = "board-col-grip";
+    asa.textContent = "⠿";
+    asa.title = "Arrastra para recolocar la columna";
+    asa.setAttribute("aria-hidden", "true");
+    head.prepend(asa);
+    head.classList.add("is-reorderable");
+    head.draggable = true;
+    head.addEventListener("dragstart", (e) => {
+      boardColumnDrag = {
+        databaseId: database.id,
+        valor: columna.valor,
+        valores: columna.valores,
+      };
+      col.classList.add("is-col-dragging");
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        try {
+          e.dataTransfer.setData("text/plain", String(columna.valor));
+        } catch {
+          // algunos navegadores no dejan tocar dataTransfer en dragstart
+        }
+      }
+    });
+    head.addEventListener("dragend", () => {
+      boardColumnDrag = null;
+      limpiarArrastreDeColumnas();
+    });
+    col.addEventListener("dragover", (e) => {
+      if (!boardColumnDrag || boardColumnDrag.databaseId !== database.id) return;
+      e.preventDefault();
+      col.classList.add("is-col-dragover");
+    });
+    col.addEventListener("dragleave", (e) => {
+      if (e.relatedTarget && col.contains(e.relatedTarget)) return;
+      col.classList.remove("is-col-dragover");
+    });
+    col.addEventListener("drop", (e) => {
+      const drag = boardColumnDrag;
+      if (!drag || drag.databaseId !== database.id) return;
+      e.preventDefault();
+      boardColumnDrag = null;
+      limpiarArrastreDeColumnas();
+      if (mismoValorDeColumna(drag.valor, columna.valor)) return;
+      guardarOrdenDeColumnas(
+        database,
+        groupKey,
+        moverEnLista(drag.valores, drag.valor, columna.valor),
+        refresh,
+      );
+    });
+  }
+
   // Sin `group_by` no hay arrastre: sin clave no se escribe nada, así que la
   // columna no acepta drops.
-  if (groupKey) {
+  if (groupKey && soltar) {
     col.addEventListener("dragover", (e) => {
       if (!boardDrag || boardDrag.databaseId !== database.id) return;
       e.preventDefault();
@@ -9592,14 +11385,40 @@ function renderBoardColumn(database, label, rows, { groupKey, refresh, value = l
     t.textContent = row.title;
     card.appendChild(t);
 
+    // La tarjeta de una subtarea dice de quién es: en el tablero la columna es
+    // la agrupación de la vista, así que la madre puede estar en otra columna y
+    // sin esta línea la jerarquía no se leería.
+    const madre = row.parent_id ? porId?.get(String(row.parent_id)) : null;
+    if (madre) {
+      const sub = document.createElement("div");
+      sub.className = "board-card-parent";
+      sub.textContent = `↳ ${madre.title || "Sin título"}`;
+      card.appendChild(sub);
+    }
+
     Object.entries(row.properties || {}).forEach(([k, v]) => {
       const propDef = database.schema_def.find((p) => p.key === k);
-      if (!propDef || v === null || v === "" || v === undefined) return;
+      if (!propDef || propDef.type === "parent_row") return;
+      if (v === null || v === "" || v === undefined) return;
       const line = document.createElement("div");
-      line.className = "board-card-prop";
-      line.innerHTML = `${escapeHtml(propDef.name)}: ${formatPropValueHtml(v, propDef, row)}`;
+      // La propiedad por la que agrupa el tablero ya la dice la columna: en la
+      // tarjeta se marca para que el CSS no la repita.
+      line.className = "board-card-prop" + (k === groupKey ? " is-group-key" : "");
+      line.innerHTML =
+        `<span class="board-card-key">${escapeHtml(propDef.name)}</span>` +
+        `<span class="sr-only">: </span>` +
+        `<span class="board-card-val">${formatPropValueHtml(v, propDef, row)}</span>`;
       card.appendChild(line);
     });
+
+    const cuenta = contadorDeSubtareas(row);
+    if (cuenta) {
+      const badge = document.createElement("div");
+      badge.className = "board-card-subtasks";
+      badge.textContent = cuenta;
+      badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
+      card.appendChild(badge);
+    }
 
     if (groupKey) {
       card.draggable = true;
@@ -9694,6 +11513,227 @@ const MESES = [
 ];
 // Semana que empieza en lunes, como los calendarios de aquí.
 const DIAS_SEMANA = ["L", "M", "X", "J", "V", "S", "D"];
+// Para la etiqueta de una barra: «10 nov – 20 nov» cabe donde «10 de
+// noviembre» no.
+const MESES_CORTOS = [
+  "ene", "feb", "mar", "abr", "may", "jun",
+  "jul", "ago", "sep", "oct", "nov", "dic",
+];
+
+// --- fechas civiles, sin husos ni `Date` --------------------------------
+//
+// Una fecha del vault es un día civil. `Date` no sirve para hacer cuentas con
+// ella: `new Date("2026-11-10")` es medianoche UTC (un día menos al oeste de
+// Greenwich) y `Date.UTC(99, …)` convierte el año 99 en 1999. Estas dos
+// funciones son el algoritmo de Hinnant (`days_from_civil`/`civil_from_days`),
+// el mismo que usan las bibliotecas de fechas: días enteros desde el 1 de
+// enero de 1970 y vuelta, exactos para cualquier año de cuatro cifras.
+
+/** Días desde 1970-01-01 hasta una clave `YYYY-MM-DD`. */
+function diasDeClave(clave) {
+  const [textoAnio, textoMes, textoDia] = String(clave).split("-");
+  let anio = Number(textoAnio);
+  let mes = Number(textoMes);
+  const dia = Number(textoDia);
+  if (mes <= 2) {
+    anio -= 1;
+    mes += 12;
+  }
+  const era = Math.floor(anio / 400);
+  const anioDeEra = anio - era * 400;
+  const diaDelAnio = Math.floor((153 * (mes - 3) + 2) / 5) + dia - 1;
+  const diaDeEra =
+    anioDeEra * 365 + Math.floor(anioDeEra / 4) - Math.floor(anioDeEra / 100) + diaDelAnio;
+  return era * 146097 + diaDeEra - 719468;
+}
+
+/** La clave `YYYY-MM-DD` que cae `dias` días después de 1970-01-01. */
+function claveDeDias(dias) {
+  const n = dias + 719468;
+  const era = Math.floor(n / 146097);
+  const diaDeEra = n - era * 146097;
+  const anioDeEra = Math.floor(
+    (diaDeEra -
+      Math.floor(diaDeEra / 1460) +
+      Math.floor(diaDeEra / 36524) -
+      Math.floor(diaDeEra / 146096)) /
+      365,
+  );
+  const anio = anioDeEra + era * 400;
+  const diaDelAnio =
+    diaDeEra - (365 * anioDeEra + Math.floor(anioDeEra / 4) - Math.floor(anioDeEra / 100));
+  const mesAproximado = Math.floor((5 * diaDelAnio + 2) / 153);
+  const dia = diaDelAnio - Math.floor((153 * mesAproximado + 2) / 5) + 1;
+  const mes = mesAproximado < 10 ? mesAproximado + 3 : mesAproximado - 9;
+  return `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+}
+
+/** El valor de una fecha (con su posible hora) puesto en el día `clave`.
+ *
+ * Mover una barra cambia el DÍA, no el valor entero: un `2026-11-10T23:00` que
+ * se arrastra al 15 sigue siendo de las once de la noche del 15.
+ */
+function fechaEnDia(valor, clave) {
+  const m = String(valor ?? "").match(/^\d{4}-\d{2}-\d{2}(.*)$/);
+  return m ? clave + m[1] : clave;
+}
+
+/** «10 nov» para la etiqueta de una barra. */
+function fechaCorta(clave) {
+  const mes = Number(clave.slice(5, 7));
+  return `${Number(clave.slice(8, 10))} ${MESES_CORTOS[mes - 1] || ""}`.trim();
+}
+
+/** «10 nov – 20 nov», o «10 nov» si el tramo dura un día. */
+function textoDeTramo(desde, hasta) {
+  return desde === hasta ? fechaCorta(desde) : `${fechaCorta(desde)} – ${fechaCorta(hasta)}`;
+}
+
+// --- el rango de una vista de calendario --------------------------------
+//
+// `config.start_property` y `config.end_property` son la clave de dos
+// propiedades de fecha: la fila se pinta como una barra del primer día al
+// último, los dos incluidos. Sin ninguna de las dos claves la vista no declara
+// rango y el calendario sigue pintando un punto por fila (`date_property`),
+// como siempre.
+
+/** Las dos propiedades que dibujan la barra, o `null` si la vista no declara
+ * rango.
+ *
+ * `end_property` puede faltar (filas de un día) y una vista que solo declara
+ * `end_property` coloca la fila en el día de fin: una barra de un día no
+ * necesita un inicio inventado.
+ */
+function rangoDeVista(database, view) {
+  const fechas = (database.schema_def || []).filter((p) => p.type === "date");
+  const buscar = (clave) => fechas.find((p) => p.key === clave) || null;
+  const inicio = buscar(view.config?.start_property);
+  const fin = buscar(view.config?.end_property);
+  if (!inicio && !fin) return null;
+  if (!inicio) return { inicio: fin, fin: null };
+  return { inicio, fin: fin && fin.key !== inicio.key ? fin : null };
+}
+
+/** Los días que ocupa una fila en un calendario con rango.
+ *
+ * Devuelve `{desde, hasta}` con claves civiles y `hasta >= desde`, o el motivo
+ * por el que no se puede pintar: `{falta}` (no hay ninguna de las dos fechas) o
+ * `{invalida}` (hay un valor que no es un día real —31-nov—, un fin sin inicio
+ * que no es fecha, o un fin ANTES del inicio: una barra al revés no se pinta y
+ * la fila cuenta como «fecha no válida», igual que la imposible).
+ */
+function tramoDeFila(row, rango) {
+  const vacio = (v) => v === null || v === undefined || String(v).trim() === "";
+  const crudoInicio = row.properties?.[rango.inicio.key];
+  const crudoFin = rango.fin ? row.properties?.[rango.fin.key] : null;
+  const inicio = claveDeFecha(crudoInicio);
+  const fin = claveDeFecha(crudoFin);
+  if (vacio(crudoInicio)) {
+    // Sin inicio: si hay fin, la fila se coloca en su día de fin (un día).
+    if (!rango.fin || vacio(crudoFin)) return { falta: true };
+    return fin ? { desde: fin, hasta: fin } : { invalida: true };
+  }
+  if (!inicio) return { invalida: true };
+  if (!rango.fin || vacio(crudoFin)) return { desde: inicio, hasta: inicio };
+  if (!fin) return { invalida: true };
+  if (diasDeClave(fin) < diasDeClave(inicio)) return { invalida: true };
+  return { desde: inicio, hasta: fin };
+}
+
+/** Reparte las filas del mes en carriles para que dos barras que se pisan no
+ * se tapen, y para que una barra que cruza de semana no cambie de altura al
+ * pasar el domingo: el carril se decide sobre el tramo entero, no por trozos. */
+function asignarCarriles(filas) {
+  const ocupados = [];
+  [...filas]
+    .sort((a, b) =>
+      a.desde < b.desde ? -1 : a.desde > b.desde ? 1 : a.hasta < b.hasta ? -1 : 1,
+    )
+    .forEach((f) => {
+      let carril = 0;
+      for (;;) {
+        if (!ocupados[carril]) ocupados[carril] = [];
+        const franjas = ocupados[carril];
+        if (!franjas.some(([desde, hasta]) => !(f.hasta < desde || f.desde > hasta))) {
+          f.carril = carril;
+          franjas.push([f.desde, f.hasta]);
+          break;
+        }
+        carril += 1;
+      }
+    });
+  return filas;
+}
+
+/** Las semanas que pinta la rejilla de un mes: filas de siete días civiles,
+ * con los días del mes anterior al principio y los del siguiente al final.
+ *
+ * Se devuelven enteras (huecos incluidos) porque una barra que empieza el 28
+ * del mes anterior y acaba el 3 se ve en los dos sitios: recortarla a los días
+ * del mes la haría desaparecer de la semana en la que de verdad empieza.
+ */
+function semanasDeMes(anio, mes) {
+  const dias = new Date(anio, mes + 1, 0).getDate(); // día 0 del mes siguiente
+  const primerDia = new Date(anio, mes, 1);
+  const hueco = (primerDia.getDay() + 6) % 7; // lunes = 0
+  const inicio = diasDeClave(`${anio}-${String(mes + 1).padStart(2, "0")}-01`) - hueco;
+  const total = Math.ceil((hueco + dias) / 7) * 7;
+  const semanas = [];
+  for (let i = 0; i < total; i += 7) {
+    const semana = [];
+    for (let d = 0; d < 7; d++) semana.push(claveDeDias(inicio + i + d));
+    semanas.push(semana);
+  }
+  return semanas;
+}
+
+// Alto de una barra y separación entre carriles, en píxeles: el alto de la
+// semana se calcula con ellos (`TOPE_DE_BARRAS` es la línea del número del
+// día, que la capa de barras no tapa).
+const ALTO_DE_BARRA = 18;
+const HUECO_DE_BARRAS = 3;
+const TOPE_DE_BARRAS = 22;
+
+// El último gesto del calendario, para deshacerlo con UN `Ctrl+Z`: se guarda el
+// valor que tenían las dos fechas antes del arrastre, así que un solo atajo
+// devuelve el gesto entero (no hay un paso por fecha). Una sola casilla: se
+// deshace lo último, y solo en el calendario donde se hizo (`clave`).
+let ultimoGestoDeRango = null;
+
+/** Deshacer el gesto del calendario: un PATCH con las dos fechas de antes. */
+async function deshacerGestoDeRango(gesto) {
+  try {
+    await saveRow(gesto.database, gesto.row, { properties: gesto.antes });
+    gesto.repintar?.();
+  } catch (e) {
+    reportError("No se pudo deshacer el movimiento del calendario", e);
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  if (e.key !== "z" && e.key !== "Z") return;
+  const gesto = ultimoGestoDeRango;
+  if (!gesto) return;
+  // Solo en el calendario donde se hizo y que se está mirando: si el usuario se
+  // ha ido a una nota, el Ctrl+Z ya no es de este gesto.
+  if (!calendarioVivo?.wrap?.isConnected || calendarioVivo.clave !== gesto.clave) return;
+  // Dentro de un campo (el nombre de una fila nueva, un selector, el editor de
+  // la nota) el Ctrl+Z es del campo: deshacer el arrastre desde ahí sería un
+  // secuestro.
+  const destino = e.target;
+  if (
+    destino &&
+    destino.closest &&
+    destino.closest("input, textarea, select, [contenteditable='true']")
+  ) {
+    return;
+  }
+  e.preventDefault();
+  ultimoGestoDeRango = null;
+  deshacerGestoDeRango(gesto);
+});
+
 
 // El mes que está mirando el usuario, por vista. `refresh` (guardar una fila,
 // mover una tarjeta) reconstruye la vista entera; sin esto, editar un evento
@@ -9751,14 +11791,24 @@ function textoDeFilasFuera(sueltas, invalidas) {
   return partes.join(" · ");
 }
 
-/** Vista de calendario: cada fila en el día que tiene en una propiedad de
- * fecha, en una rejilla mensual con navegación.
+/** Vista de calendario.
  *
- * Qué fecha se usa lo dice `config.date_property` (lo elige el diálogo de la
- * vista); una vista antigua sin esa clave, o con una propiedad que ya no
- * existe, cae en la primera propiedad de fecha del esquema. Si la base no
- * tiene ninguna, no se pinta una tabla por debajo ni una caja vacía: se dice
- * lo que pasa y cómo arreglarlo.
+ * Dos modos, según lo que declare la vista:
+ *
+ * - **rango** (`config.start_property`/`end_property`): cada fila es una barra
+ *   continua de su primer día a su último día, con el título dentro. La barra
+ *   se corta en el borde de la semana y SIGUE en la siguiente (el trozo del
+ *   lunes no lleva asa de inicio: el inicio está en otra semana) y se arrastra:
+ *   el cuerpo mueve la tarea entera —las dos fechas, los mismos días— y las
+ *   asas de los bordes estiran o encogen una sola. Un gesto es UN PATCH, así
+ *   que un solo `Ctrl+Z` lo deshace.
+ * - **un día** (sin rango, como siempre): cada fila es un chip en el día que
+ *   tiene en `config.date_property`.
+ *
+ * Qué fecha se usa lo dice la vista; una vista antigua sin esa clave, o con una
+ * propiedad que ya no existe, cae en la primera propiedad de fecha del esquema.
+ * Si la base no tiene ninguna, no se pinta una tabla por debajo ni una caja
+ * vacía: se dice lo que pasa y cómo arreglarlo.
  */
 function renderCalendar(database, rows, view, refresh) {
   const dateProps = database.schema_def.filter((p) => p.type === "date");
@@ -9769,17 +11819,29 @@ function renderCalendar(database, rows, view, refresh) {
     );
   }
 
-  // La elegida por la vista, si sigue existiendo; si no, la primera.
-  let dateProp = dateProps.find((p) => p.key === view.config?.date_property) || dateProps[0];
+  // Un gesto de OTRO calendario no se deshace desde aquí: el Ctrl+Z es del
+  // calendario que se está mirando.
+  const claveDeVista = claveDeMesDeVista(database, view);
+  if (ultimoGestoDeRango && ultimoGestoDeRango.clave !== claveDeVista) {
+    ultimoGestoDeRango = null;
+  }
+
+  // El rango, si la vista lo declara; sin él, la fecha de siempre. La fecha
+  // «base» —donde nace una fila nueva y donde se cuentan las que no se pueden
+  // colocar— es el inicio del rango cuando lo hay.
+  let rango = rangoDeVista(database, view);
+  let dateProp = rango
+    ? rango.inicio
+    : dateProps.find((p) => p.key === view.config?.date_property) || dateProps[0];
 
   const hoy = claveDeHoy();
   const [anioHoy, mesHoy] = [Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1];
   // Si esta vista ya estaba abierta en otro mes, se vuelve a ese mes: un
   // repintado (guardar una fila desde un chip) no puede devolver al de hoy.
-  const mesGuardado = mesDeCalendario.get(claveDeMesDeVista(database, view));
+  const mesGuardado = mesDeCalendario.get(claveDeVista);
   let anio = mesGuardado?.anio ?? anioHoy;
   let mes = mesGuardado?.mes ?? mesHoy;
-  const recordarMes = () => mesDeCalendario.set(claveDeMesDeVista(database, view), { anio, mes });
+  const recordarMes = () => mesDeCalendario.set(claveDeVista, { anio, mes });
 
   const wrap = document.createElement("div");
   wrap.className = "calendar-wrap";
@@ -9807,6 +11869,24 @@ function renderCalendar(database, rows, view, refresh) {
 
   const lado = document.createElement("div");
   lado.className = "cal-side";
+
+  /** Guardar el `config` de la vista y repintar la base entera: el rango cambia
+   * la forma de la vista (barra o punto), así que se vuelve a pedir todo en vez
+   * de repintar con una copia que ya no vale. */
+  const guardarConfig = async (config, aviso) => {
+    try {
+      await api(`/databases/${database.id}/views/${view.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ config }),
+      });
+      view.config = config;
+      if (refresh) refresh();
+      else repaint();
+    } catch (e) {
+      reportError(aviso, e);
+    }
+  };
+
   // Con una sola propiedad de fecha no hay nada que elegir; con dos o más, se
   // elige aquí y la elección se guarda en la vista.
   if (dateProps.length > 1) {
@@ -9825,24 +11905,57 @@ function renderCalendar(database, rows, view, refresh) {
     });
     sel.value = dateProp.key;
     pick.append(pickText, sel);
-    sel.addEventListener("change", async () => {
-      dateProp = dateProps.find((p) => p.key === sel.value) || dateProps[0];
-      repaint();
-      const config = { ...(view.config || {}), date_property: dateProp.key };
-      try {
-        await api(`/databases/${database.id}/views/${view.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ config }),
-        });
-        view.config = config;
-      } catch (e) {
-        // El calendario ya está pintado con la fecha nueva; lo que no se pudo
-        // guardar es que la vista se acuerde la próxima vez.
-        reportError("No se pudo guardar la fecha de la vista", e);
+    sel.addEventListener("change", () => {
+      const config = { ...(view.config || {}) };
+      if (rango) {
+        // En una vista con rango, esta es la propiedad del INICIO de la barra.
+        config.start_property = sel.value;
+        if (config.end_property === sel.value) delete config.end_property;
+      } else {
+        config.date_property = sel.value;
       }
+      guardarConfig(config, "No se pudo guardar la fecha de la vista");
     });
     lado.appendChild(pick);
+
+    // El fin del rango. «—» deja la vista en barras de un día (o en el punto de
+    // siempre si nunca declaró inicio).
+    const pickFin = document.createElement("label");
+    pickFin.className = "cal-date-pick";
+    const finText = document.createElement("span");
+    finText.textContent = "Hasta";
+    const selFin = document.createElement("select");
+    selFin.className = "cal-date-select";
+    selFin.setAttribute("aria-label", "Propiedad de fin del rango del calendario");
+    const sinFin = document.createElement("option");
+    sinFin.value = "";
+    sinFin.textContent = "—";
+    selFin.appendChild(sinFin);
+    dateProps.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.name;
+      selFin.appendChild(opt);
+    });
+    selFin.value = rango?.fin?.key || "";
+    pickFin.append(finText, selFin);
+    selFin.addEventListener("change", () => {
+      const config = { ...(view.config || {}) };
+      if (!selFin.value) {
+        if (!rango) return; // no declaraba rango: no hay nada que quitar
+        delete config.end_property;
+        // La vista se queda con la fecha que estaba usando: si solo tenía
+        // fin, esa fecha es la de sus barras de un día.
+        config.start_property = rango.inicio.key;
+      } else {
+        config.start_property = rango ? rango.inicio.key : dateProp.key;
+        config.end_property = selFin.value;
+      }
+      guardarConfig(config, "No se pudo guardar el rango de la vista");
+    });
+    lado.appendChild(pickFin);
   }
+
   const sinFecha = document.createElement("span");
   sinFecha.className = "cal-undated";
   lado.appendChild(sinFecha);
@@ -9874,83 +11987,359 @@ function renderCalendar(database, rows, view, refresh) {
     return chip;
   };
 
-  const repaintAgenda = (porDia, dias, sueltas, invalidas) => {
-    let pintados = 0;
-    for (let dia = 1; dia <= dias; dia++) {
-      const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
-      const delDia = porDia.get(clave) || [];
-      if (!delDia.length) continue; // en la agenda, los días vacíos no ocupan
-      pintados += 1;
-      const bloque = document.createElement("div");
-      bloque.className = "cal-agenda-day" + (clave === hoy ? " is-today" : "");
-      const fecha = document.createElement("span");
-      fecha.className = "cal-agenda-date";
-      fecha.textContent = `${dia} de ${MESES[mes]}`;
-      const eventos = document.createElement("div");
-      eventos.className = "cal-events";
-      delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
-      bloque.append(fecha, eventos);
-      grid.appendChild(bloque);
+  // ---------------------------------------------------------- arrastre
+  // Un gesto empieza en una barra (el cuerpo mueve, un asa estira) y termina al
+  // soltar: mientras dura se marca el día de destino bajo el puntero y no se
+  // escribe nada. Al soltar se manda UN PATCH con las fechas que cambian.
+  let gesto = null;
+  let suprimirClic = false;
+
+  /** La clave del día que hay debajo del puntero, mirando la semana por
+   * geometría: así sirve también cuando lo que hay debajo es la capa de barras
+   * (que tapa las celdas) o el hueco entre dos días. */
+  const diaEnPunto = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    const semanaEl = el?.closest?.(".cal-week");
+    if (!semanaEl) return null;
+    const caja = semanaEl.getBoundingClientRect();
+    const col = Math.min(6, Math.max(0, Math.floor(((x - caja.left) / caja.width) * 7)));
+    const celda = semanaEl.querySelectorAll(".cal-day")[col];
+    return celda?.dataset.dia || null;
+  };
+
+  /** Los días que resultarían del gesto si se soltara en el día `destino`. */
+  const prevision = (g, destino) => {
+    if (!destino) return null;
+    if (g.modo === "mover") {
+      // Mover la tarea entera: las dos fechas se desplazan los mismos días.
+      const delta = diasDeClave(destino) - diasDeClave(g.diaEnPuntero);
+      return {
+        desde: claveDeDias(diasDeClave(g.desde) + delta),
+        hasta: claveDeDias(diasDeClave(g.hasta) + delta),
+      };
     }
-    if (pintados === 0) {
-      const vacio = document.createElement("p");
-      vacio.className = "cal-agenda-empty";
-      vacio.textContent = `Ninguna fila en ${MESES[mes]} de ${anio}.`;
-      grid.appendChild(vacio);
+    // Los bordes cambian SOLO su fecha, y no se cruzan: arrastrar el inicio más
+    // allá del fin lo deja pegado al fin (la barra no se da la vuelta).
+    if (g.modo === "inicio") {
+      return {
+        desde: diasDeClave(destino) <= diasDeClave(g.hasta) ? destino : g.hasta,
+        hasta: g.hasta,
+      };
     }
-    if (sueltas) {
-      const nota = document.createElement("p");
-      nota.className = "cal-agenda-empty";
-      nota.textContent =
-        sueltas === 1
-          ? "1 fila sin fecha no se puede colocar: rellena «" + dateProp.name + "»."
-          : `${sueltas} filas sin fecha no se pueden colocar: rellena «${dateProp.name}».`;
-      grid.appendChild(nota);
+    return {
+      desde: g.desde,
+      hasta: diasDeClave(destino) >= diasDeClave(g.desde) ? destino : g.desde,
+    };
+  };
+
+  const marcarDestino = (tramo) => {
+    grid.querySelectorAll(".cal-day.is-destino").forEach((c) => c.classList.remove("is-destino"));
+    if (!tramo) return;
+    const desde = diasDeClave(tramo.desde);
+    const hasta = diasDeClave(tramo.hasta);
+    grid.querySelectorAll(".cal-day[data-dia]").forEach((c) => {
+      const n = diasDeClave(c.dataset.dia);
+      if (n >= desde && n <= hasta) c.classList.add("is-destino");
+    });
+  };
+
+  const escucharArrastre = (activar) => {
+    const metodo = activar ? "addEventListener" : "removeEventListener";
+    document[metodo]("pointermove", moverArrastre, true);
+    document[metodo]("pointerup", soltarArrastre, true);
+    document[metodo]("pointercancel", soltarArrastre, true);
+    document[metodo]("keydown", teclaDeArrastre, true);
+  };
+
+  /** Escribir el gesto: un PATCH con la fecha de inicio, la de fin, o las dos.
+   *
+   * `modo` dice qué se está haciendo —`mover`, `inicio` o `fin`—, y con eso se
+   * decide qué fechas se escriben. Al MOVER solo se desplazan las que la fila
+   * ya tenía: rellenar la que faltaba convertía una fila de un día (solo
+   * `inicio`) en una con `entrega`, y el `.md` es la verdad del repo —los
+   * filtros `is_empty`/`is_not_empty`, el orden y la tabla leen esa clave—, así
+   * que el gesto no debe inventar propiedades. Un asa sí crea la suya: es la
+   * fecha que se está estirando.
+   */
+  const aplicarGesto = async (row, desde, hasta, modo) => {
+    const properties = {};
+    const antes = {};
+    const claveActual = (prop) => claveDeFecha(row.properties?.[prop.key]);
+    // Solo se toca la fecha que cambia y, según el gesto, solo la que le toca:
+    // mover las que existen; un asa, la suya (aunque la fila no la tuviera).
+    const seEscribe = (prop, clave, modoPropio) =>
+      clave !== claveActual(prop) &&
+      (modo === "mover" ? claveActual(prop) !== null : modo === modoPropio);
+    if (seEscribe(rango.inicio, desde, "inicio")) {
+      antes[rango.inicio.key] = row.properties?.[rango.inicio.key] ?? null;
+      properties[rango.inicio.key] = fechaEnDia(row.properties?.[rango.inicio.key], desde);
     }
-    if (invalidas) {
-      const nota = document.createElement("p");
-      nota.className = "cal-agenda-empty is-warn";
-      nota.textContent =
-        invalidas === 1
-          ? `1 fila tiene una fecha no válida en «${dateProp.name}» y no se puede colocar: corrige el día y el mes.`
-          : `${invalidas} filas tienen una fecha no válida en «${dateProp.name}» y no se pueden colocar: corrige el día y el mes.`;
-      grid.appendChild(nota);
+    if (rango.fin && seEscribe(rango.fin, hasta, "fin")) {
+      antes[rango.fin.key] = row.properties?.[rango.fin.key] ?? null;
+      properties[rango.fin.key] = fechaEnDia(row.properties?.[rango.fin.key], hasta);
+    }
+    if (!Object.keys(properties).length) return;
+    try {
+      await saveRow(database, row, { properties });
+      // Un solo PATCH por gesto: el Ctrl+Z devuelve las dos fechas de una vez,
+      // no una por fecha.
+      ultimoGestoDeRango = {
+        clave: claveDeVista,
+        database,
+        row,
+        antes,
+        repintar: () => (refresh ? refresh() : repaint()),
+      };
+      if (refresh) refresh();
+      else repaint();
+    } catch (e) {
+      reportError("No se pudo mover la fila en el calendario", e);
     }
   };
 
-  const repaint = () => {
-    // Una pasada por fila: las que no tienen fecha o tienen una imposible no se
-    // colocan, se cuentan y se avisa de cada grupo por separado.
-    const porDia = new Map();
-    let sueltas = 0;
-    let invalidas = 0;
-    rows.forEach((row) => {
-      const valor = row.properties?.[dateProp.key];
-      const key = claveDeFecha(valor);
-      if (!key) {
-        if (valor === null || valor === undefined || String(valor).trim() === "") sueltas += 1;
-        else invalidas += 1;
+  const soltarArrastre = (e) => {
+    const g = gesto;
+    if (!g) return;
+    gesto = null;
+    escucharArrastre(false);
+    g.barra.classList.remove("is-dragging");
+    wrap.classList.remove("is-arrastrando");
+    marcarDestino(null);
+    const destino = diaEnPunto(e.clientX, e.clientY) || g.destino || g.diaEnPuntero;
+    const fin = prevision(g, destino);
+    if (!fin) return;
+    if (fin.desde === g.desde && fin.hasta === g.hasta) return; // un clic, no un gesto
+    suprimirClic = true;
+    aplicarGesto(g.row, fin.desde, fin.hasta, g.modo);
+  };
+
+  function moverArrastre(e) {
+    if (!gesto) return;
+    gesto.destino = diaEnPunto(e.clientX, e.clientY);
+    marcarDestino(prevision(gesto, gesto.destino));
+  }
+
+  /** Esc cancela el gesto: la barra se queda donde estaba y no se escribe nada. */
+  function teclaDeArrastre(e) {
+    if (e.key !== "Escape" || !gesto) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const g = gesto;
+    gesto = null;
+    escucharArrastre(false);
+    g.barra.classList.remove("is-dragging");
+    wrap.classList.remove("is-arrastrando");
+    marcarDestino(null);
+  }
+
+  /** Una barra de la rejilla: un trozo del tramo de una fila dentro de UNA
+   * semana. Los asideros solo se pintan donde está el borde de verdad: el trozo
+   * que sigue la semana siguiente no lleva el asa de inicio. */
+  const barraDeTramo = (tramo, semana, colIni, colFin) => {
+    const barra = document.createElement("div");
+    barra.className = "cal-bar";
+    barra.dataset.rowId = String(tramo.row.id);
+    barra.dataset.desde = tramo.desde;
+    barra.dataset.hasta = tramo.hasta;
+    const cortaIzq = tramo.desde < semana[0];
+    const cortaDer = tramo.hasta > semana[6];
+    if (cortaIzq) barra.classList.add("is-corta-izq");
+    if (cortaDer) barra.classList.add("is-corta-der");
+    barra.style.left = `calc(${(colIni * 100) / 7}% + 1px)`;
+    barra.style.width = `calc(${((colFin - colIni + 1) * 100) / 7}% - 2px)`;
+    barra.style.top = `${TOPE_DE_BARRAS + tramo.carril * (ALTO_DE_BARRA + HUECO_DE_BARRAS)}px`;
+    barra.style.height = `${ALTO_DE_BARRA}px`;
+    barra.title = `${tramo.row.title || "Sin título"} · ${textoDeTramo(tramo.desde, tramo.hasta)}`;
+
+    const texto = document.createElement("span");
+    texto.className = "cal-bar-title";
+    texto.textContent = tramo.row.title || "Sin título";
+    barra.appendChild(texto);
+
+    const empezar = (modo) => (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (gesto) return;
+      const dia = diaEnPunto(e.clientX, e.clientY);
+      if (!dia) return;
+      gesto = {
+        modo,
+        row: tramo.row,
+        barra,
+        desde: tramo.desde,
+        hasta: tramo.hasta,
+        diaEnPuntero: dia,
+        destino: dia,
+      };
+      suprimirClic = false;
+      barra.classList.add("is-dragging");
+      wrap.classList.add("is-arrastrando");
+      escucharArrastre(true);
+    };
+    barra.addEventListener("pointerdown", empezar("mover"));
+
+    if (rango.fin) {
+      const asa = (modo, etiqueta) => {
+        const el = document.createElement("span");
+        el.className = `cal-bar-handle is-${modo}`;
+        el.setAttribute("aria-hidden", "true");
+        el.title = etiqueta;
+        // El asa vive DENTRO de la barra: sin parar el `pointerdown` aquí, el
+        // de la barra empezaría un «mover» a la vez que el «estirar».
+        el.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          empezar(modo)(e);
+        });
+        return el;
+      };
+      // El asa de inicio va DELANTE del título (borde izquierdo de la barra) y
+      // la de fin detrás (borde derecho): el orden del flex es el orden en que
+      // se pintan.
+      if (!cortaIzq) {
+        barra.insertBefore(asa("inicio", "Arrastra para cambiar el día de inicio"), barra.firstChild);
+      }
+      if (!cortaDer) barra.appendChild(asa("fin", "Arrastra para cambiar el día de fin"));
+    }
+
+    barra.addEventListener("click", (e) => {
+      if (suprimirClic) {
+        suprimirClic = false;
+        e.preventDefault();
         return;
       }
-      if (!porDia.has(key)) porDia.set(key, []);
-      porDia.get(key).push(row);
+      openRowPage(database, tramo.row, { origin: barra, onClose: () => refresh?.() });
     });
+    makeKeyboardActivatable(barra, "button", 0);
+    return barra;
+  };
+
+  const repaint = () => {
+    // La vista puede haber cambiado de fecha sin que se reconstruya el
+    // calendario (un repintado por el ancho): se resuelve otra vez.
+    rango = rangoDeVista(database, view);
+    dateProp = rango
+      ? rango.inicio
+      : dateProps.find((p) => p.key === view.config?.date_property) || dateProps[0];
+
+    // Una pasada por fila: las que no tienen fecha o tienen una imposible no se
+    // colocan, se cuentan y se avisa de cada grupo por separado.
+    let sueltas = 0;
+    let invalidas = 0;
+    const tramos = [];
+    const porDia = new Map();
+    if (rango) {
+      rows.forEach((row) => {
+        const tramo = tramoDeFila(row, rango);
+        if (tramo.falta) {
+          sueltas += 1;
+          return;
+        }
+        if (tramo.invalida) {
+          invalidas += 1;
+          return;
+        }
+        tramos.push({ row, desde: tramo.desde, hasta: tramo.hasta });
+      });
+      asignarCarriles(tramos);
+    } else {
+      rows.forEach((row) => {
+        const valor = row.properties?.[dateProp.key];
+        const key = claveDeFecha(valor);
+        if (!key) {
+          if (valor === null || valor === undefined || String(valor).trim() === "") sueltas += 1;
+          else invalidas += 1;
+          return;
+        }
+        if (!porDia.has(key)) porDia.set(key, []);
+        porDia.get(key).push(row);
+      });
+    }
+
+    /** Las filas que tocan un día: en modo rango, todas las barras que lo
+     * cubren (una tarea del 10 al 20 está en los once días). */
+    const filasDelDia = (clave) => {
+      if (!rango) return porDia.get(clave) || [];
+      return tramos.filter((t) => t.desde <= clave && t.hasta >= clave).map((t) => t.row);
+    };
+
+    const etiquetaDeFechas = rango
+      ? rango.fin
+        ? `«${rango.inicio.name}» y «${rango.fin.name}»`
+        : `«${rango.inicio.name}»`
+      : `«${dateProp.name}»`;
 
     titulo.textContent = `${MESES[mes]} de ${anio}`;
     sinFecha.textContent = textoDeFilasFuera(sueltas, invalidas);
     sinFecha.title = invalidas
-      ? "«Sin fecha»: no tienen valor en esta propiedad. «Fecha no válida»: el valor no es un día real (por ejemplo, 31 de noviembre) y hay que corregirlo."
-      : "Filas que no se pueden colocar: no tienen valor en esta propiedad de fecha.";
+      ? `«Sin fecha»: no tienen valor en ${etiquetaDeFechas}. «Fecha no válida»: el valor no es un día real (por ejemplo, 31 de noviembre)` +
+        (rango?.fin ? ", o el fin es anterior al inicio," : "") +
+        " y hay que corregirlo."
+      : `Filas que no se pueden colocar: no tienen valor en ${etiquetaDeFechas}.`;
     sinFecha.classList.toggle("is-warn", invalidas > 0);
     sinFecha.hidden = sueltas + invalidas === 0 || calendarQuery.matches;
 
     grid.innerHTML = "";
     const dias = new Date(anio, mes + 1, 0).getDate(); // día 0 del mes siguiente
+
     if (calendarQuery.matches) {
       grid.className = "calendar-agenda";
-      repaintAgenda(porDia, dias, sueltas, invalidas);
+      let pintados = 0;
+      for (let dia = 1; dia <= dias; dia++) {
+        const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+        const delDia = filasDelDia(clave);
+        if (!delDia.length) continue; // en la agenda, los días vacíos no ocupan
+        pintados += 1;
+        const bloque = document.createElement("div");
+        bloque.className = "cal-agenda-day" + (clave === hoy ? " is-today" : "");
+        const fecha = document.createElement("span");
+        fecha.className = "cal-agenda-date";
+        fecha.textContent = `${dia} de ${MESES[mes]}`;
+        const eventos = document.createElement("div");
+        eventos.className = "cal-events";
+        delDia.forEach((row) => {
+          const chip = chipDeFila(row);
+          // En una agenda una barra no cabe: se dice que sigue, para que una
+          // tarea de once días no parezca once tareas de un día.
+          const tramo = rango ? tramos.find((t) => t.row === row) : null;
+          if (tramo && (tramo.desde < clave || tramo.hasta > clave)) {
+            chip.textContent =
+              (tramo.desde < clave ? "← " : "") +
+              (row.title || "Sin título") +
+              (tramo.hasta > clave ? " →" : "");
+            chip.title = `${row.title || "Sin título"} · ${textoDeTramo(tramo.desde, tramo.hasta)}`;
+            chip.classList.add("is-continua");
+          }
+          eventos.appendChild(chip);
+        });
+        bloque.append(fecha, eventos);
+        grid.appendChild(bloque);
+      }
+      if (pintados === 0) {
+        const vacio = document.createElement("p");
+        vacio.className = "cal-agenda-empty";
+        vacio.textContent = `Ninguna fila en ${MESES[mes]} de ${anio}.`;
+        grid.appendChild(vacio);
+      }
+      if (sueltas) {
+        const nota = document.createElement("p");
+        nota.className = "cal-agenda-empty";
+        nota.textContent =
+          sueltas === 1
+            ? `1 fila sin fecha no se puede colocar: rellena ${etiquetaDeFechas}.`
+            : `${sueltas} filas sin fecha no se pueden colocar: rellena ${etiquetaDeFechas}.`;
+        grid.appendChild(nota);
+      }
+      if (invalidas) {
+        const nota = document.createElement("p");
+        nota.className = "cal-agenda-empty is-warn";
+        nota.textContent =
+          invalidas === 1
+            ? `1 fila tiene una fecha no válida en ${etiquetaDeFechas} y no se puede colocar: corrige el día y el mes.`
+            : `${invalidas} filas tienen una fecha no válida en ${etiquetaDeFechas} y no se pueden colocar: corrige el día y el mes.`;
+        grid.appendChild(nota);
+      }
       return;
     }
+
     grid.className = "calendar-grid";
 
     DIAS_SEMANA.forEach((d) => {
@@ -9960,42 +12349,94 @@ function renderCalendar(database, rows, view, refresh) {
       grid.appendChild(head);
     });
 
-    // Hueco de los días de la semana anterior al día 1 (lunes = 0).
-    const primerDia = new Date(anio, mes, 1);
-    const hueco = (primerDia.getDay() + 6) % 7;
-    for (let i = 0; i < hueco; i++) {
-      const vacia = document.createElement("div");
-      vacia.className = "cal-day is-out";
-      grid.appendChild(vacia);
+    if (!rango) {
+      // El calendario de un punto por fila, como siempre.
+      // Hueco de los días de la semana anterior al día 1 (lunes = 0).
+      const primerDia = new Date(anio, mes, 1);
+      const hueco = (primerDia.getDay() + 6) % 7;
+      for (let i = 0; i < hueco; i++) {
+        const vacia = document.createElement("div");
+        vacia.className = "cal-day is-out";
+        grid.appendChild(vacia);
+      }
+
+      for (let dia = 1; dia <= dias; dia++) {
+        const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+        const delDia = porDia.get(clave) || [];
+        const celda = document.createElement("div");
+        celda.className = "cal-day" + (clave === hoy ? " is-today" : "");
+        celda.dataset.dia = clave;
+        celda.setAttribute(
+          "aria-label",
+          `${dia} de ${MESES[mes]}` +
+            (delDia.length ? `, ${delDia.length === 1 ? "1 fila" : `${delDia.length} filas`}` : ""),
+        );
+        const num = document.createElement("span");
+        num.className = "cal-daynum";
+        num.textContent = String(dia);
+        celda.appendChild(num);
+        const eventos = document.createElement("div");
+        eventos.className = "cal-events";
+        delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
+        celda.appendChild(eventos);
+        grid.appendChild(celda);
+      }
+      // Completa la última semana: la rejilla no deja huecos a la derecha.
+      while (grid.children.length % 7 !== 0) {
+        const vacia = document.createElement("div");
+        vacia.className = "cal-day is-out";
+        grid.appendChild(vacia);
+      }
+      return;
     }
 
-    for (let dia = 1; dia <= dias; dia++) {
-      const clave = `${anio}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
-      const delDia = porDia.get(clave) || [];
-      const celda = document.createElement("div");
-      celda.className = "cal-day" + (clave === hoy ? " is-today" : "");
-      celda.dataset.dia = clave;
-      celda.setAttribute(
-        "aria-label",
-        `${dia} de ${MESES[mes]}` +
-          (delDia.length ? `, ${delDia.length === 1 ? "1 fila" : `${delDia.length} filas`}` : ""),
+    // Modo rango: una fila de la rejilla por semana, con sus siete días y una
+    // capa encima para las barras. Así una barra cruza de día de una pieza y el
+    // recorte al borde de la semana es solo su `left`/`width` en porcentaje.
+    semanasDeMes(anio, mes).forEach((semana) => {
+      const semanaEl = document.createElement("div");
+      semanaEl.className = "cal-week";
+      const delMes = `${anio}-${String(mes + 1).padStart(2, "0")}`;
+      const tramosDeLaSemana = tramos.filter(
+        (t) => t.desde <= semana[6] && t.hasta >= semana[0],
       );
-      const num = document.createElement("span");
-      num.className = "cal-daynum";
-      num.textContent = String(dia);
-      celda.appendChild(num);
-      const eventos = document.createElement("div");
-      eventos.className = "cal-events";
-      delDia.forEach((row) => eventos.appendChild(chipDeFila(row)));
-      celda.appendChild(eventos);
-      grid.appendChild(celda);
-    }
-    // Completa la última semana: la rejilla no deja huecos a la derecha.
-    while (grid.children.length % 7 !== 0) {
-      const vacia = document.createElement("div");
-      vacia.className = "cal-day is-out";
-      grid.appendChild(vacia);
-    }
+      const carriles = tramosDeLaSemana.length
+        ? Math.max(...tramosDeLaSemana.map((t) => t.carril)) + 1
+        : 0;
+      semanaEl.style.minHeight = `${Math.max(
+        84,
+        TOPE_DE_BARRAS + carriles * (ALTO_DE_BARRA + HUECO_DE_BARRAS) + 10,
+      )}px`;
+
+      semana.forEach((clave) => {
+        const esDelMes = clave.slice(0, 7) === delMes;
+        const cuantas = filasDelDia(clave).length;
+        const celda = document.createElement("div");
+        celda.className =
+          "cal-day" + (esDelMes ? "" : " is-out") + (clave === hoy ? " is-today" : "");
+        celda.dataset.dia = clave;
+        celda.setAttribute(
+          "aria-label",
+          `${Number(clave.slice(8, 10))} de ${MESES[Number(clave.slice(5, 7)) - 1]}` +
+            (cuantas ? `, ${cuantas === 1 ? "1 fila" : `${cuantas} filas`}` : ""),
+        );
+        const num = document.createElement("span");
+        num.className = "cal-daynum";
+        num.textContent = String(Number(clave.slice(8, 10)));
+        celda.appendChild(num);
+        semanaEl.appendChild(celda);
+      });
+
+      const capa = document.createElement("div");
+      capa.className = "cal-week-bars";
+      tramosDeLaSemana.forEach((tramo) => {
+        const colIni = Math.max(0, diasDeClave(tramo.desde) - diasDeClave(semana[0]));
+        const colFin = Math.min(6, diasDeClave(tramo.hasta) - diasDeClave(semana[0]));
+        capa.appendChild(barraDeTramo(tramo, semana, colIni, colFin));
+      });
+      semanaEl.appendChild(capa);
+      grid.appendChild(semanaEl);
+    });
   };
 
   const mover = (delta) => {
@@ -10026,8 +12467,16 @@ function renderCalendar(database, rows, view, refresh) {
   // hoy para enseñarla; el filtro de la vista, si la deja fuera, se dice.
   const addRow = renderAddRowControl({
     vista: view,
-    onCreate: (titulo) =>
-      crearFilaEnVista(database, view, titulo, { [dateProp.key]: claveDeHoy() }),
+    plantillas: database.row_templates || [],
+    onCreate: (titulo, plantilla) => {
+      const extra = { ...(plantilla?.properties || {}) };
+      // Un evento sin fecha no cae en ningún día y no se vería: si la plantilla
+      // no trae la fecha, se pone la de hoy (el día en que se añade). Con rango,
+      // en la propiedad de inicio: una barra de un día.
+      const propDeAlta = rango ? rango.inicio : dateProp;
+      if (extra[propDeAlta.key] === undefined) extra[propDeAlta.key] = claveDeHoy();
+      return crearFilaEnVista(database, view, titulo, extra, plantilla?.body || "");
+    },
     onDone: (res) => {
       refrescarRecuentoDeVista(grid, res.filas.length, res.total);
       if (!res.visible) return; // el aviso del control ya dice por qué no se ve
@@ -10045,8 +12494,9 @@ function renderCalendar(database, rows, view, refresh) {
   repaint();
   // Este es el calendario que hay que repintar al cambiar el ancho. El anterior
   // (otra pestaña, la misma vista repintada tras guardar) queda sin
-  // referencias y se puede recoger.
-  calendarioVivo = { wrap, repaint };
+  // referencias y se puede recoger. `clave` dice cuál es, para que el Ctrl+Z de
+  // un gesto no se dispare desde otro calendario.
+  calendarioVivo = { wrap, repaint, clave: claveDeVista };
   return wrap;
 }
 
@@ -10077,8 +12527,20 @@ function renderList(database, rows, view, refresh) {
   // El contenido de una línea se pinta aparte para poder REPINTARLA en el
   // sitio tras guardar en la vista de fila: el botón (que es el que tiene el
   // foco al volver) no se reemplaza, solo lo de dentro.
+  // La jerarquía: el servidor ya manda las hijas detrás de su madre, así que
+  // aquí solo se sangra y se pone el contador de cada madre.
+  const claveJerarquia = claveDeJerarquia(database);
+  const profundidades = mapaDeProfundidades(rows, claveJerarquia);
   const pintarLinea = (item, row) => {
     item.textContent = "";
+    const prof = profundidades.get(String(row.id)) || 0;
+    if (prof) {
+      const hueco = document.createElement("span");
+      hueco.className = "list-row-indent";
+      hueco.style.width = `${14 * prof}px`;
+      hueco.setAttribute("aria-hidden", "true");
+      item.appendChild(hueco);
+    }
     const title = document.createElement("span");
     title.className = "list-row-title";
     title.textContent = row.title || "Sin título";
@@ -10092,6 +12554,14 @@ function renderList(database, rows, view, refresh) {
       span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p, row)}`;
       item.appendChild(span);
     });
+    const cuenta = contadorDeSubtareas(row);
+    if (cuenta) {
+      const badge = document.createElement("span");
+      badge.className = "list-row-count";
+      badge.textContent = cuenta;
+      badge.title = `${row.children.closed} de ${row.children.total} subtareas cerradas`;
+      item.appendChild(badge);
+    }
     const nombre = `Abrir «${row.title || "Sin título"}» como página`;
     item.title = nombre;
     item.setAttribute("aria-label", nombre);
@@ -10123,7 +12593,11 @@ function renderList(database, rows, view, refresh) {
     return item;
   };
 
-  const avisoVacio = () => avisoDeVista("Sin filas todavía.", null);
+  const avisoVacio = () =>
+    avisoDeVista(
+      "Aquí no hay filas todavía.",
+      "Añade una con «Nueva fila», aquí debajo. Si la base ya tiene filas, las está dejando fuera el filtro de la vista.",
+    );
   rows.forEach((row) => wrap.appendChild(lineaDeFila(row)));
   if (rows.length === 0) wrap.appendChild(avisoVacio());
 
@@ -10134,7 +12608,15 @@ function renderList(database, rows, view, refresh) {
   const addRow = renderAddRowControl({
     vista: view,
     className: "db-add-row db-add-row--list",
-    onCreate: (titulo) => crearFilaEnVista(database, view, titulo),
+    plantillas: database.row_templates || [],
+    onCreate: (titulo, plantilla) =>
+      crearFilaEnVista(
+        database,
+        view,
+        titulo,
+        plantilla?.properties || {},
+        plantilla?.body || "",
+      ),
     onDone: (res) => {
       // La cabecera (la casilla de «todas») se queda: se rehacen las filas.
       for (const hijo of [...wrap.children]) {
@@ -10233,6 +12715,14 @@ function cerrarRowPage({ devolverFoco = true, avisar = true } = {}) {
   stopLinkPreview();
   ctx.caja.remove();
   const main = document.getElementById("main");
+  // La vuelta se nota: lo que queda a la vista (la fila de debajo o la vista de
+  // la que se vino) reaparece con un fundido corto (`.is-returning` en el CSS).
+  // Solo presentación; la clase se quita sola al acabar.
+  for (const el of rowPage ? [rowPage.caja] : ctx.debajo.map((d) => d.el)) {
+    if (!(el instanceof HTMLElement)) continue;
+    el.classList.add("is-returning");
+    setTimeout(() => el.classList.remove("is-returning"), 200);
+  }
   if (rowPage) {
     // Debajo hay otra fila: vuelve a estar disponible y se queda a la vista
     // (está justo debajo en #main, que no se ha desplazado mientras tanto).
@@ -10459,10 +12949,16 @@ async function openRowPage(
   titulo.setAttribute("aria-label", "Título de la fila");
   const propsEl = document.createElement("div");
   propsEl.className = "row-page-props";
+  // Las subtareas van entre las propiedades y el cuerpo: es donde se trabaja
+  // un entregable (lo de arriba dice qué es, lo de abajo lo que se cuenta, y
+  // los pasos van en medio, a la vista).
+  const subtareasEl = document.createElement("section");
+  subtareasEl.className = "row-page-subtasks";
+  subtareasEl.setAttribute("aria-label", "Subtareas de la fila");
   const cuerpoEl = document.createElement("div");
   cuerpoEl.id = "row-page-body";
   cuerpoEl.className = "row-page-body";
-  scroll.append(titulo, propsEl, cuerpoEl);
+  scroll.append(titulo, propsEl, subtareasEl, cuerpoEl);
   caja.append(barra, scroll);
 
   const ctx = {
@@ -10479,6 +12975,7 @@ async function openRowPage(
     caja,
     titulo,
     propsEl,
+    subtareasEl,
     cuerpoEl,
     estado,
     debajo,
@@ -10660,19 +13157,29 @@ async function openRowPage(
   function montarPropiedades(detalle) {
     propsEl.textContent = "";
     ctx.campos = [];
-    if (!database.schema_def.length) {
+    // La celda de subtareas no es un campo de la fila: guarda el id de su
+    // madre, y lo que se enseña es la lista de abajo (y «Subtarea de», si es
+    // una hija). Un input con un uuid no se puede editar a mano.
+    const campos = (database.schema_def || []).filter(
+      (p) => p && p.type !== "parent_row",
+    );
+    if (!campos.length) {
       const vacio = document.createElement("p");
       vacio.className = "row-page-prop-empty";
       vacio.textContent = "Esta base no tiene propiedades.";
       propsEl.appendChild(vacio);
       return;
     }
-    database.schema_def.forEach((prop, i) => {
+    campos.forEach((prop, i) => {
       const campo = document.createElement("div");
       campo.className = "row-page-prop";
       const label = document.createElement("label");
       label.textContent = prop.name;
-      const { input, read } = buildPropertyInput(prop, detalle.properties?.[prop.key]);
+      const { input, read } = buildPropertyInput(
+        prop,
+        detalle.properties?.[prop.key],
+        detalle.people?.[prop.key] || null,
+      );
       const inputId = idDeCampo(`fila-pagina-${ctx.seq}`, i, prop.key);
       input.id = inputId;
       label.htmlFor = inputId;
@@ -10703,6 +13210,197 @@ async function openRowPage(
     await navigateToPage(pageId);
   }
 
+  // ------------------------------------------------ subtareas de la fila
+  // La fila es una página y lo que cuelga de ella es un plan: las hijas se
+  // trabajan aquí, no en la tabla (donde una hija es una línea más). La lista
+  // la trae el servidor en la lectura de la fila (`subtasks`), en orden de
+  // creación; el estado y la fecha salen de las propiedades de cada hija. Quién
+  // está cerrada lo dice el servidor (`closed`, con la regla de la base): esa
+  // regla no se repite en el cliente.
+  const claveJerarquia = claveDeJerarquia(database);
+  const propEstado = propiedadDeCierre(database);
+  const propFecha =
+    (database.schema_def || []).find((p) => p && p.key && p.type === "date") || null;
+
+  /** La fecha de la mini-tabla: la de la primera propiedad de fecha de la
+   * base, o la de la última edición si la base no tiene ninguna. */
+  function fechaDeSubtarea(hija) {
+    const valor = propFecha ? hija.properties?.[propFecha.key] : null;
+    const texto = String(valor || hija.updated_at || "");
+    const partes = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return partes ? `${partes[3]}/${partes[2]}/${partes[1]}` : "";
+  }
+
+  function filaDeSubtarea(hija) {
+    const fila = document.createElement("div");
+    fila.className = "row-subtask";
+    fila.dataset.rowId = hija.id;
+
+    const abrir = document.createElement("button");
+    abrir.type = "button";
+    abrir.className = "row-subtask-title";
+    abrir.textContent = hija.title || "Sin título";
+    abrir.title = `Abrir «${hija.title || "sin título"}»`;
+    // Se abre como una fila más, apilada encima de esta: al cerrarla se vuelve
+    // aquí, con la lista al día.
+    abrir.addEventListener("click", () =>
+      openRowPage(database, hija, {
+        origin: abrir,
+        onSaved: () => recargarSubtareas(),
+        onClose: () => recargarSubtareas(),
+      }),
+    );
+    fila.appendChild(abrir);
+
+    const estado = document.createElement("span");
+    estado.className = "row-subtask-state" + (hija.closed ? " is-closed" : "");
+    estado.innerHTML = propEstado
+      ? formatPropValueHtml(hija.properties?.[propEstado.key], propEstado, hija)
+      : hija.closed
+        ? "Cerrada"
+        : "—";
+    fila.appendChild(estado);
+
+    const fecha = document.createElement("span");
+    fecha.className = "row-subtask-date";
+    fecha.textContent = fechaDeSubtarea(hija);
+    fila.appendChild(fecha);
+    return fila;
+  }
+
+  /** «+ Añadir subtarea»: crea la fila YA enlazada (el id de esta fila va en la
+   * celda de jerarquía) y recarga la lista. Se queda abierto para encadenar
+   * varios pasos, que es como se escribe un plan. */
+  function controlDeAlta() {
+    const caja = document.createElement("div");
+    caja.className = "row-subtasks-add";
+
+    const boton = document.createElement("button");
+    boton.type = "button";
+    boton.className = "btn row-subtasks-add-btn";
+    boton.textContent = "+ Añadir subtarea";
+
+    const form = document.createElement("form");
+    form.className = "row-subtasks-form";
+    form.hidden = true;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "row-subtasks-input";
+    input.placeholder = "Título de la subtarea";
+    input.setAttribute("aria-label", "Título de la subtarea nueva");
+    const guardar = document.createElement("button");
+    guardar.type = "submit";
+    guardar.className = "btn btn-primary";
+    guardar.textContent = "Añadir";
+    const cancelar = document.createElement("button");
+    cancelar.type = "button";
+    cancelar.className = "btn";
+    cancelar.textContent = "Cancelar";
+    form.append(input, guardar, cancelar);
+
+    boton.addEventListener("click", () => {
+      boton.hidden = true;
+      form.hidden = false;
+      input.value = "";
+      input.focus();
+    });
+    cancelar.addEventListener("click", () => {
+      form.hidden = true;
+      boton.hidden = false;
+      boton.focus();
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const nombre = input.value.trim();
+      if (!nombre) {
+        input.focus();
+        return;
+      }
+      guardar.disabled = true;
+      try {
+        await api(`/databases/${database.id}/rows`, {
+          method: "POST",
+          body: JSON.stringify({
+            title: nombre,
+            properties: { [claveJerarquia]: ctx.resumen.id },
+          }),
+        });
+        // La lista se relee del servidor (no se pinta a mano): así entra donde
+        // el servidor la haya dejado y el contador sale de la misma cuenta.
+        await recargarSubtareas();
+        ctx.subtareasEl.querySelector(".row-subtasks-add-btn")?.click();
+      } catch (err) {
+        reportError("No se pudo crear la subtarea", err);
+      } finally {
+        guardar.disabled = false;
+      }
+    });
+    caja.append(boton, form);
+    return caja;
+  }
+
+  async function recargarSubtareas() {
+    try {
+      const fresca = await api(`/databases/${database.id}/rows/${ctx.resumen.id}`);
+      ctx.resumen.children = fresca.children;
+      ctx.resumen.closed = fresca.closed;
+      montarSubtareas(fresca);
+    } catch (e) {
+      reportError("No se pudieron leer las subtareas", e);
+    }
+  }
+
+  function montarSubtareas(detalle) {
+    const seccion = ctx.subtareasEl;
+    seccion.textContent = "";
+    if (!claveJerarquia) return; // base sin jerarquía: ni rastro de la sección
+
+    const hijas = Array.isArray(detalle.subtasks) ? detalle.subtasks : [];
+    const cerradas = hijas.filter((h) => h.closed).length;
+
+    // Si esta fila es hija de otra, se dice de quién: sin eso, una subtarea
+    // abierta parece una fila suelta de la base.
+    if (detalle.parent_title) {
+      const deQuien = document.createElement("p");
+      deQuien.className = "row-subtasks-parent";
+      deQuien.textContent = `↳ Subtarea de «${detalle.parent_title}»`;
+      seccion.appendChild(deQuien);
+    }
+
+    const cabeza = document.createElement("div");
+    cabeza.className = "row-subtasks-head";
+    const rotulo = document.createElement("h2");
+    rotulo.className = "row-subtasks-title";
+    rotulo.textContent = "Subtareas";
+    cabeza.appendChild(rotulo);
+    if (hijas.length) {
+      const cuenta = document.createElement("span");
+      cuenta.className = "row-subtasks-count";
+      cuenta.textContent = `${cerradas} de ${hijas.length}`;
+      cuenta.title = `${cerradas} de ${hijas.length} subtareas cerradas`;
+      cabeza.appendChild(cuenta);
+    }
+    seccion.appendChild(cabeza);
+
+    if (hijas.length) {
+      const cabecera = document.createElement("div");
+      cabecera.className = "row-subtasks-row is-head";
+      ["Título", "Estado", "Fecha"].forEach((texto) => {
+        const celda = document.createElement("span");
+        celda.textContent = texto;
+        cabecera.appendChild(celda);
+      });
+      seccion.appendChild(cabecera);
+      hijas.forEach((hija) => seccion.appendChild(filaDeSubtarea(hija)));
+    } else {
+      const vacio = document.createElement("p");
+      vacio.className = "row-subtasks-empty";
+      vacio.textContent = "Todavía no tiene subtareas: los pasos de esta fila van aquí.";
+      seccion.appendChild(vacio);
+    }
+    seccion.appendChild(controlDeAlta());
+  }
+
   function montar(detalle) {
     // El objeto de la tabla/lista es el mismo que se queda al día con cada
     // PATCH (`ctx.resumen`): el repintado en el sitio lee de aquí.
@@ -10715,6 +13413,7 @@ async function openRowPage(
     ajustarTitulo();
     migaFila.textContent = detalle.title || "Sin título";
     montarPropiedades(detalle);
+    montarSubtareas(detalle);
 
     cuerpoEl.textContent = "";
     try {
@@ -10866,7 +13565,12 @@ function renderAddRowForm(database) {
   wrap.appendChild(titleField);
 
   const propInputs = [];
-  database.schema_def.forEach((p, index) => {
+  // La celda de subtareas no se pide en el alta: una fila nueva de la base es
+  // una raíz, y una hija se crea desde la página de su madre («+ Añadir
+  // subtarea»), donde el vínculo lo pone la app y no un id tecleado.
+  (database.schema_def || [])
+    .filter((p) => p && p.type !== "parent_row")
+    .forEach((p, index) => {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
@@ -10880,7 +13584,83 @@ function renderAddRowForm(database) {
     field.append(label, input);
     wrap.appendChild(field);
     propInputs.push({ prop: p, input, read });
-  });
+    });
+
+  // Plantillas de fila de ESTA base (función 29). Elegir una rellena los
+  // valores por defecto y el cuerpo con el que nace la fila. El título no se
+  // rellena: la plantilla es una forma de empezar, no un nombre en serie (dos
+  // «Revisión semanal» acabarían compartiendo carpeta y nombre).
+  //
+  // Los valores llegan **ya coaccionados por el servidor** (`values`): el `.md`
+  // no infiere tipos y `Boolean("false")` marcaba la casilla de una plantilla
+  // que decía `false`. Si la plantilla ya no encaja con la base (`error`), el
+  // alta lo dice con el motivo y no deja crear la fila a medias.
+  const plantillas = Array.isArray(database.row_templates) ? database.row_templates : [];
+  let plantillaElegida = null;
+  let cuerpoDePlantilla = "";
+  let avisoDePlantilla = null;
+  if (plantillas.length) {
+    const templateField = document.createElement("div");
+    templateField.className = "field";
+    const templateLabel = document.createElement("label");
+    templateLabel.textContent = "Plantilla";
+    templateLabel.htmlFor = "nueva-fila-plantilla";
+    const templateSelect = document.createElement("select");
+    templateSelect.id = "nueva-fila-plantilla";
+    const vacia = document.createElement("option");
+    vacia.value = "";
+    vacia.textContent = "Sin plantilla";
+    templateSelect.appendChild(vacia);
+    plantillas.forEach((plantilla) => {
+      const opcion = document.createElement("option");
+      opcion.value = plantilla.name;
+      opcion.textContent = plantilla.name;
+      templateSelect.appendChild(opcion);
+    });
+    templateSelect.addEventListener("change", () => {
+      plantillaElegida =
+        plantillas.find((plantilla) => plantilla.name === templateSelect.value) || null;
+      // Al volver a «Sin plantilla» no se borra lo que ya hay escrito: solo se
+      // deja de enviar el cuerpo. Deshacer lo tecleado sin avisar sería peor.
+      cuerpoDePlantilla = "";
+      avisoDePlantilla.hidden = true;
+      avisoDePlantilla.textContent = "";
+      if (!plantillaElegida) {
+        refrescarBoton();
+        return;
+      }
+      if (plantillaElegida.error) {
+        // El servidor dice qué valor o qué columna ya no existe. Pintarlo en un
+        // control que no lo puede representar lo perdería en silencio, así que
+        // no se rellena nada y se explica por qué no se puede usar.
+        avisoDePlantilla.textContent =
+          "Esta plantilla ya no encaja con la base: " + plantillaElegida.error;
+        avisoDePlantilla.hidden = false;
+        refrescarBoton();
+        return;
+      }
+      cuerpoDePlantilla = plantillaElegida.body || "";
+      const valores = plantillaElegida.values || {};
+      propInputs.forEach(({ prop, input }) => {
+        if (!Object.prototype.hasOwnProperty.call(valores, prop.key)) return;
+        const valor = valores[prop.key];
+        if (prop.type === "checkbox") input.checked = Boolean(valor);
+        else if (Array.isArray(valor)) input.value = valor.join(", ");
+        else input.value = valor === null || valor === undefined ? "" : String(valor);
+      });
+      refrescarBoton();
+    });
+    templateField.append(templateLabel, templateSelect);
+    // El motivo va a lo ancho de la rejilla, no en la celda del desplegable: a
+    // 375 px la columna mide ~150 px y el aviso quedaba en un hilo vertical.
+    avisoDePlantilla = document.createElement("p");
+    avisoDePlantilla.className = "db-save-hint inline-form-hint";
+    avisoDePlantilla.setAttribute("role", "status");
+    avisoDePlantilla.hidden = true;
+    // Justo debajo del título: es lo primero que se elige al añadir una fila.
+    wrap.insertBefore(templateField, titleField.nextSibling);
+    wrap.insertBefore(avisoDePlantilla, templateField.nextSibling);
+  }
 
   const submitBtn = document.createElement("button");
   submitBtn.className = "btn btn-primary";
@@ -10890,8 +13670,13 @@ function renderAddRowForm(database) {
   // de frontmatter y nada más que había que borrar a mano (M4).
   const SIN_TITULO = "Escribe un título: es el nombre del fichero de la fila.";
   const refrescarBoton = () => {
-    submitBtn.disabled = !titleInput.value.trim();
-    submitBtn.title = submitBtn.disabled ? SIN_TITULO : "";
+    const bloqueada = Boolean(plantillaElegida && plantillaElegida.error);
+    submitBtn.disabled = bloqueada || !titleInput.value.trim();
+    submitBtn.title = bloqueada
+      ? "Esa plantilla ya no encaja con la base: elige otra o «Sin plantilla»."
+      : submitBtn.disabled
+        ? SIN_TITULO
+        : "";
   };
   submitBtn.disabled = true;
   submitBtn.title = SIN_TITULO;
@@ -10904,6 +13689,13 @@ function renderAddRowForm(database) {
       return;
     }
     const properties = {};
+    // Las claves que la plantilla rellena se mandan siempre, aunque el usuario
+    // las haya vaciado: un `null` es «no quiero este valor» y sin él el
+    // servidor volvería a poner el de la plantilla, deshaciendo el cambio en
+    // silencio (`properties` manda sobre la plantilla, y el vacío también).
+    const declaradas = plantillaElegida
+      ? Object.keys(plantillaElegida.values || {})
+      : [];
     for (const { prop, input, read } of propInputs) {
       // Al crear se guarda también un checkbox desmarcado; el resto de tipos
       // sin valor no se escriben (no hay que dejar `null` en el fichero).
@@ -10912,14 +13704,29 @@ function renderAddRowForm(database) {
       } else {
         const value = read();
         if (value !== null) properties[prop.key] = value;
+        else if (declaradas.includes(prop.key)) properties[prop.key] = null;
       }
     }
     try {
-      await api(`/databases/${database.id}/rows`, {
+      const nueva = await api(`/databases/${database.id}/rows`, {
         method: "POST",
-        body: JSON.stringify({ title: titulo, properties }),
+        body: JSON.stringify({
+          title: titulo,
+          properties,
+          // La plantilla viaja por su nombre: el servidor la valida otra vez
+          // (última puerta antes de escribir) y rellena lo que el formulario no
+          // haya mandado. Lo editado aquí manda sobre el valor por defecto.
+          ...(plantillaElegida && !plantillaElegida.error
+            ? { template: plantillaElegida.name }
+            : {}),
+          ...(cuerpoDePlantilla ? { body_markdown: cuerpoDePlantilla } : {}),
+        }),
       });
-      selectDatabase(database.id, { focus: "addRow" });
+      // Al repintar, la fila nueva entra marcada (si la vista la enseña).
+      Promise.resolve(selectDatabase(database.id, { focus: "addRow" })).then(() => {
+        if (!nueva?.id) return;
+        marcarComoNueva(document.querySelector(`#main tr[data-row-id="${nueva.id}"]`));
+      });
     } catch (e) {
       alert("Error al crear la fila: " + e.message);
     }
@@ -10974,23 +13781,30 @@ function actualizarGuardadoDelDialogo() {
   if (!guardar || !aviso) return;
   const sinDestino = [];
   propRowsContainer.querySelectorAll(".prop-row-wrap:not(.prop-title-row)").forEach((wrap) => {
-    if (wrap.querySelector(".prop-type")?.value !== "relation") return;
-    if (wrap.querySelector(".prop-target")?.value) return;
-    sinDestino.push(wrap.querySelector(".prop-name")?.value.trim() || "una propiedad");
+    const tipo = wrap.querySelector(".prop-type")?.value;
+    const nombre = wrap.querySelector(".prop-name")?.value.trim() || "una propiedad";
+    if (tipo === "relation" && !wrap.querySelector(".prop-target")?.value) {
+      sinDestino.push(nombre);
+    }
   });
-  if (!sinDestino.length) {
+  const avisos = [];
+  if (sinDestino.length) {
+    avisos.push(
+      sinDestino.length === 1
+        ? `Elige la base destino de «${sinDestino[0]}» para poder guardar.`
+        : `Elige la base destino de ${sinDestino
+            .map((n) => `«${n}»`)
+            .join(", ")} para poder guardar.`,
+    );
+  }
+  if (!avisos.length) {
     guardar.disabled = false;
     aviso.textContent = "";
     aviso.hidden = true;
     return;
   }
   aviso.hidden = false;
-  aviso.textContent =
-    sinDestino.length === 1
-      ? `Elige la base destino de «${sinDestino[0]}» para poder guardar.`
-      : `Elige la base destino de ${sinDestino
-          .map((n) => `«${n}»`)
-          .join(", ")} para poder guardar.`;
+  aviso.textContent = avisos.join(" ");
   guardar.disabled = true;
 }
 
@@ -11098,6 +13912,152 @@ function addPropertyRow(prop = null) {
   optionsInput.className = "prop-options-input";
   optionsInput.hidden = true;
 
+  // Orden de los valores de una selección: `auto` (alfabético natural) o
+  // `manual` (la lista de abajo, que se arrastra). Es la misma decisión que se
+  // guarda en el `schema` (`sort_mode`/`sort_order`) y la que usa el tablero
+  // para poner sus columnas, así que no hay dos verdades sobre el orden.
+  const sortWrap = document.createElement("div");
+  sortWrap.className = "prop-sort";
+  sortWrap.hidden = true;
+
+  const sortModeLabel = document.createElement("label");
+  sortModeLabel.className = "prop-sort-mode";
+  const sortModeText = document.createElement("span");
+  sortModeText.textContent = "Orden de los valores";
+  const sortModeSelect = document.createElement("select");
+  sortModeSelect.className = "prop-sort-mode-select";
+  sortModeSelect.setAttribute("aria-label", "Modo de orden de los valores");
+  [
+    ["auto", "Automático (alfabético)"],
+    ["manual", "Manual (arrastra los valores)"],
+  ].forEach(([valor, texto]) => {
+    const opcion = document.createElement("option");
+    opcion.value = valor;
+    opcion.textContent = texto;
+    sortModeSelect.appendChild(opcion);
+  });
+  sortModeLabel.append(sortModeText, sortModeSelect);
+
+  const sortHint = document.createElement("p");
+  sortHint.className = "prop-sort-hint";
+  const sortList = document.createElement("ul");
+  sortList.className = "prop-sort-list";
+  sortList.setAttribute("aria-label", "Orden manual de los valores");
+  sortWrap.append(sortModeLabel, sortHint, sortList);
+
+  // El orden manual que se está editando y lo que ya venía declarado en el
+  // `.md` (puede nombrar valores que ya no están en `options`: no se pierden).
+  // Se arranca con el orden declarado (no con el de `options`): abrir el
+  // diálogo y guardar sin tocar nada no puede cambiar el orden que ya había.
+  wrap.__orden = [...(prop?.sort_order || [])];
+  let arrastrandoValor = null;
+
+  /** Los valores de `options` como están ahora en el campo de texto, sin
+   * repetir y con la grafía del primero. */
+  const valoresDeOpciones = () => {
+    const vistos = new Set();
+    const valores = [];
+    optionsInput.value
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((valor) => {
+        const clave = valor.toLowerCase();
+        if (vistos.has(clave)) return;
+        vistos.add(clave);
+        valores.push(valor);
+      });
+    return valores;
+  };
+
+  /** El orden vigente de los valores de `options`: primero los que ya estaban
+   * ordenados y luego los nuevos, al final. */
+  const ordenVigente = () => {
+    const valores = valoresDeOpciones();
+    const claves = new Set(valores.map((v) => v.toLowerCase()));
+    const previos = (wrap.__orden || []).filter((v) => claves.has(String(v).toLowerCase()));
+    const ya = new Set(previos.map((v) => String(v).toLowerCase()));
+    return [...previos, ...valores.filter((v) => !ya.has(v.toLowerCase()))];
+  };
+
+  const pintarOrden = () => {
+    const manual = sortModeSelect.value === "manual";
+    sortList.hidden = !manual;
+    sortHint.hidden = !manual;
+    sortHint.textContent = manual
+      ? "Arrastra una fila (o usa ↑ / ↓) para cambiar el orden en que se leen y se agrupan los valores."
+      : "Se ordenan alfabéticamente, sin distinguir mayúsculas ni tildes.";
+    sortList.textContent = "";
+    if (!manual) return;
+    wrap.__orden = ordenVigente();
+    wrap.__orden.forEach((valor, indice) => {
+      const item = document.createElement("li");
+      item.className = "prop-sort-item";
+      item.draggable = true;
+      const asa = document.createElement("span");
+      asa.className = "prop-sort-grip";
+      asa.textContent = "⠿";
+      asa.setAttribute("aria-hidden", "true");
+      const etiqueta = document.createElement("span");
+      etiqueta.className = "prop-sort-value";
+      etiqueta.textContent = valor;
+      item.append(asa, etiqueta);
+      const mover = (direccion, texto) => {
+        const boton = document.createElement("button");
+        boton.type = "button";
+        boton.className = "prop-sort-move";
+        boton.textContent = direccion < 0 ? "↑" : "↓";
+        boton.title = texto;
+        boton.setAttribute("aria-label", texto);
+        boton.disabled = direccion < 0 ? indice === 0 : indice === wrap.__orden.length - 1;
+        boton.addEventListener("click", () => {
+          const destino = wrap.__orden[indice + direccion];
+          if (destino === undefined) return;
+          wrap.__orden = moverEnLista(wrap.__orden, valor, destino);
+          pintarOrden();
+          actualizarGuardadoDelDialogo();
+        });
+        return boton;
+      };
+      item.append(mover(-1, `Subir «${valor}»`), mover(1, `Bajar «${valor}»`));
+      item.addEventListener("dragstart", (e) => {
+        arrastrandoValor = valor;
+        item.classList.add("is-dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          try {
+            e.dataTransfer.setData("text/plain", valor);
+          } catch {
+            // hay navegadores que no dejan tocar dataTransfer en dragstart
+          }
+        }
+      });
+      item.addEventListener("dragend", () => {
+        arrastrandoValor = null;
+        sortList.querySelectorAll(".is-dragging, .is-dragover").forEach((n) => {
+          n.classList.remove("is-dragging", "is-dragover");
+        });
+      });
+      item.addEventListener("dragover", (e) => {
+        if (arrastrandoValor === null) return;
+        e.preventDefault();
+        item.classList.add("is-dragover");
+      });
+      item.addEventListener("dragleave", () => item.classList.remove("is-dragover"));
+      item.addEventListener("drop", (e) => {
+        if (arrastrandoValor === null) return;
+        e.preventDefault();
+        const movido = arrastrandoValor;
+        arrastrandoValor = null;
+        if (mismoValorDeColumna(movido, valor)) return;
+        wrap.__orden = moverEnLista(wrap.__orden, movido, valor);
+        pintarOrden();
+        actualizarGuardadoDelDialogo();
+      });
+      sortList.appendChild(item);
+    });
+  };
+
   // Relación: a qué base apunta (`target_database`) y si enlaza una fila o
   // varias (`multiple`). Solo se enseña con el tipo Relación.
   const relWrap = document.createElement("div");
@@ -11123,6 +14083,10 @@ function addPropertyRow(prop = null) {
 
   relWrap.append(targetLabel, multipleLabel);
 
+  // El cierre NO se configura aquí: qué cuenta como fila cerrada es una regla
+  // de la BASE (`closed: {property, values}`) y se marca en el menú de la
+  // columna («Esta columna dice si está hecha»). Tenerlo en los dos sitios
+  // serían dos verdades sobre la misma pregunta.
   let destinoPedido = false;
   /** Rellena el `<select>` la primera vez que hace falta: una base sin
    * relaciones no pide la lista de bases. */
@@ -11157,10 +14121,14 @@ function addPropertyRow(prop = null) {
   };
 
   const aplicarVisibilidad = () => {
-    const esRelacion = typeSelect.value === "relation";
+    const tipo = typeSelect.value;
+    const esRelacion = tipo === "relation";
+    const esSeleccion = ["select", "multiselect"].includes(tipo);
     relWrap.hidden = !esRelacion;
-    optionsInput.hidden = !["select", "multiselect"].includes(typeSelect.value);
+    optionsInput.hidden = !esSeleccion;
+    sortWrap.hidden = !esSeleccion;
     if (esRelacion) llenarDestino();
+    if (esSeleccion) pintarOrden();
   };
 
   if (prop) {
@@ -11168,6 +14136,7 @@ function addPropertyRow(prop = null) {
     typeSelect.value = prop.type;
     optionsInput.value = (prop.options || []).join(", ");
     optionsInput.hidden = !["select", "multiselect"].includes(prop.type);
+    sortModeSelect.value = modoDeOrden(prop);
   }
 
   typeSelect.addEventListener("change", () => {
@@ -11183,10 +14152,445 @@ function addPropertyRow(prop = null) {
     actualizarGuardadoDelDialogo();
   });
 
-  wrap.append(row, optionsInput, relWrap);
+  optionsInput.addEventListener("input", () => {
+    wrap.__orden = ordenVigente();
+    pintarOrden();
+  });
+  sortModeSelect.addEventListener("change", () => {
+    pintarOrden();
+    actualizarGuardadoDelDialogo();
+  });
+  wrap.append(row, optionsInput, sortWrap, relWrap);
   propRowsContainer.appendChild(wrap);
   aplicarVisibilidad();
 }
+
+
+// --------------------------------------------------- plantillas (función 29)
+// Una plantilla es parte de la base: el catálogo de serie vive en el servidor
+// (`GET /databases/templates`) y las plantillas de fila en el `.md` de cada
+// base (`row_templates:`). Aquí solo se eligen, se aplican y se editan.
+
+let plantillasDeSerie = null;
+
+async function cargarPlantillasDeSerie() {
+  if (!plantillasDeSerie) plantillasDeSerie = await api("/databases/templates");
+  return plantillasDeSerie;
+}
+
+/** Las notas donde puede nacer una base (la carpeta destino es una nota).
+ * En la raíz la base vive en `Bases/`; colgando de una nota, en su carpeta. */
+function notasParaCarpetaDePlantilla() {
+  return [...state.pagesById.values()]
+    .filter((n) => n && n.type === "note")
+    .sort((a, b) =>
+      String(a.title || "").localeCompare(String(b.title || ""), "es", {
+        sensitivity: "base",
+      }),
+    );
+}
+
+/** «Crear desde plantilla»: nombre, carpeta destino y una plantilla de serie.
+ *
+ * El servidor valida la plantilla entera antes de escribir nada y contesta un
+ * 400 con el motivo si algo no encaja; el diálogo se queda abierto con esa
+ * frase a la vista y no se crea nada a medias.
+ */
+async function openTemplateDialog() {
+  const dialog = document.getElementById("dialog-template");
+  const lista = document.getElementById("template-list");
+  const nombre = document.getElementById("template-name");
+  const carpeta = document.getElementById("template-folder");
+  const crear = document.getElementById("btn-create-template");
+  const cancelar = document.getElementById("btn-cancel-template");
+  const hint = document.getElementById("template-hint");
+  hint.hidden = true;
+  hint.textContent = "";
+
+  let catalogo;
+  try {
+    catalogo = await cargarPlantillasDeSerie();
+  } catch (e) {
+    reportError("No se pudieron cargar las plantillas", e);
+    return;
+  }
+
+  let elegida = catalogo[0]?.key || null;
+  const pintarSeleccion = () => {
+    lista.querySelectorAll(".template-option").forEach((opcion) => {
+      opcion.setAttribute(
+        "aria-checked",
+        opcion.dataset.key === elegida ? "true" : "false",
+      );
+    });
+    crear.disabled = !nombre.value.trim() || !elegida;
+  };
+
+  lista.innerHTML = "";
+  catalogo.forEach((plantilla) => {
+    const opcion = document.createElement("button");
+    opcion.type = "button";
+    opcion.className = "template-option";
+    opcion.dataset.key = plantilla.key;
+    opcion.setAttribute("role", "radio");
+    const titulo = document.createElement("span");
+    titulo.className = "template-option-name";
+    titulo.textContent = plantilla.title;
+    const descripcion = document.createElement("span");
+    descripcion.className = "template-option-desc";
+    descripcion.textContent = plantilla.description || "";
+    const meta = document.createElement("span");
+    meta.className = "template-option-meta";
+    meta.textContent = `${plantilla.properties.length} propiedades · ${(
+      plantilla.views || []
+    ).join(", ")}`;
+    opcion.append(titulo, descripcion, meta);
+    opcion.addEventListener("click", () => {
+      elegida = plantilla.key;
+      pintarSeleccion();
+      if (!nombre.dataset.tocado) {
+        nombre.placeholder = `Mi ${plantilla.title.toLowerCase()}`;
+      }
+    });
+    lista.appendChild(opcion);
+  });
+
+  carpeta.innerHTML = "";
+  const raiz = document.createElement("option");
+  raiz.value = "";
+  raiz.textContent = "Bases (raíz)";
+  carpeta.appendChild(raiz);
+  notasParaCarpetaDePlantilla().forEach((nota) => {
+    const opcion = document.createElement("option");
+    opcion.value = nota.id;
+    opcion.textContent = nota.title || "Sin título";
+    carpeta.appendChild(opcion);
+  });
+
+  nombre.value = "";
+  delete nombre.dataset.tocado;
+  nombre.placeholder = catalogo[0]
+    ? `Mi ${catalogo[0].title.toLowerCase()}`
+    : "Mi proyecto";
+  pintarSeleccion();
+
+  nombre.oninput = () => {
+    nombre.dataset.tocado = "1";
+    pintarSeleccion();
+  };
+  cancelar.onclick = () => dialog.close();
+  crear.onclick = async () => {
+    const titulo = nombre.value.trim();
+    if (!titulo) {
+      nombre.focus();
+      return;
+    }
+    crear.disabled = true;
+    hint.hidden = true;
+    try {
+      const base = await api("/databases/from-template", {
+        method: "POST",
+        body: JSON.stringify({
+          template: elegida,
+          title: titulo,
+          ...(carpeta.value ? { parent_id: carpeta.value } : {}),
+        }),
+      });
+      dialog.close();
+      await loadTree();
+      await goTo("database", base.id);
+    } catch (e) {
+      hint.textContent = describeError(e);
+      hint.hidden = false;
+      crear.disabled = false;
+    }
+  };
+  dialog.showModal();
+  nombre.focus();
+}
+
+/** Un campo de valor por defecto de una plantilla de fila.
+ *
+ * Reusa `buildPropertyInput`, que es el único sitio que decide qué control usa
+ * cada tipo y cómo se lee, para que lo que se guarda aquí sea exactamente lo
+ * que se escribiría en una fila. */
+function campoDeValorPorDefecto(prop, valor, indice) {
+  const campo = document.createElement("div");
+  campo.className = "field";
+  const label = document.createElement("label");
+  label.textContent = prop.name;
+  const { input, read } = buildPropertyInput(prop, valor);
+  const id = idDeCampo("plantilla-fila", indice, prop.key);
+  input.id = id;
+  label.htmlFor = id;
+  campo.append(label, input);
+  return { campo, prop, read };
+}
+
+/** Lo que una tarjeta del editor de plantillas de fila manda al guardar: su
+ * nombre, su cuerpo y los valores por defecto que sus controles pueden
+ * representar. Es el único sitio que decide qué viaja —el guardado y la lista
+ * de lo que se descarta usan esto mismo—, para que el aviso y lo que se escribe
+ * no puedan decir cosas distintas. */
+function leerPlantillaDeTarjeta(card) {
+  const properties = {};
+  for (const { prop, read } of card.__lectores) {
+    const valor = read();
+    if (valor === null || valor === undefined || valor === "") continue;
+    if (Array.isArray(valor) && valor.length === 0) continue;
+    // Un checkbox sin marcar que nadie ha tocado no se guarda como `false`:
+    // sería inventarle un valor por defecto a una propiedad que la plantilla
+    // no mencionaba. Si estaba declarado, el `false` es del usuario.
+    if (prop.type === "checkbox" && valor === false && !card.__previos.has(prop.key)) {
+      continue;
+    }
+    properties[prop.key] = valor;
+  }
+  return { name: card.__nombre.value.trim(), properties, body: card.__cuerpo.value };
+}
+
+/** Los valores que el `.md` de la base declara y el editor no puede pintar: una
+ * opción que ya no existe en la columna, una columna que se borró. Al guardar
+ * no se reenvían —el servidor los rechazaría, y son del fichero del usuario, no
+ * de este diálogo—, así que se pierden: se nombran aquí, antes de Guardar, en
+ * vez de desaparecer porque alguien estaba renombrando otra tarjeta. */
+function valoresQueSeDescartan(card, schema) {
+  const { properties } = leerPlantillaDeTarjeta(card);
+  return Object.entries(card.__declarados)
+    .filter(([key]) => !(key in properties))
+    .map(([key, valor]) => {
+      const nombre = schema.find((p) => p.key === key)?.name || key;
+      return `${nombre} = «${valor}»`;
+    });
+}
+
+/** Una tarjeta del editor de plantillas de fila: nombre, valores por defecto
+ * de las propiedades que admiten literal y cuerpo inicial. */
+function plantillaDeFilaEditable(template, indice, schema, alQuitar) {
+  const card = document.createElement("div");
+  card.className = "row-template-card";
+
+  const head = document.createElement("div");
+  head.className = "row-template-head";
+  const campoNombre = document.createElement("div");
+  campoNombre.className = "field";
+  const labelNombre = document.createElement("label");
+  labelNombre.textContent = "Nombre";
+  const nombre = document.createElement("input");
+  nombre.type = "text";
+  nombre.className = "row-template-name";
+  nombre.value = template?.name || "";
+  const idNombre = idDeCampo("plantilla-fila-nombre", indice, "nombre");
+  nombre.id = idNombre;
+  labelNombre.htmlFor = idNombre;
+  campoNombre.append(labelNombre, nombre);
+
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "icon-btn row-template-remove";
+  quitar.title = "Quitar plantilla";
+  quitar.setAttribute("aria-label", "Quitar plantilla");
+  quitar.textContent = "×";
+  quitar.addEventListener("click", () => alQuitar(card));
+  head.append(campoNombre, quitar);
+  card.appendChild(head);
+
+  // Lo que la plantilla declara ya coaccionado por el servidor: pintar
+  // `properties` (el texto del `.md`) marcaba la casilla de un `false`.
+  const declarados =
+    template && template.values ? template.values : (template?.properties || {});
+
+  // Una relación, una subtarea o una persona no pueden traer un valor por
+  // defecto: se guardan por ids que no existen hasta que hay filas o usuarios.
+  const editables = schema.filter(
+    (prop) => !["relation", "parent_row", "person"].includes(prop.type),
+  );
+  const lectores = [];
+  if (editables.length) {
+    const defaults = document.createElement("div");
+    defaults.className = "row-template-defaults";
+    editables.forEach((prop) => {
+      const { campo, read } = campoDeValorPorDefecto(
+        prop,
+        declarados[prop.key],
+        indice,
+      );
+      defaults.appendChild(campo);
+      lectores.push({ prop, read });
+    });
+    card.appendChild(defaults);
+  }
+
+  const labelCuerpo = document.createElement("label");
+  labelCuerpo.className = "row-template-body-label";
+  labelCuerpo.textContent = "Cuerpo inicial";
+  const cuerpo = document.createElement("textarea");
+  cuerpo.className = "row-template-body";
+  cuerpo.rows = 3;
+  cuerpo.value = template?.body || "";
+  labelCuerpo.appendChild(cuerpo);
+  card.appendChild(labelCuerpo);
+
+  card.__nombre = nombre;
+  card.__cuerpo = cuerpo;
+  card.__lectores = lectores;
+  // Lo que la plantilla YA declaraba: un checkbox sin marcar que nadie ha
+  // tocado no se guarda como `false` (sería inventarle un valor por defecto a
+  // una propiedad que la plantilla no mencionaba). Si estaba declarado, el
+  // `false` es lo que el usuario acaba de elegir y sí se guarda.
+  card.__previos = new Set([
+    ...Object.keys(template?.values || {}),
+    ...Object.keys(template?.properties || {}),
+  ]);
+  // Lo que el `.md` declara tal cual, que es lo que se compara con lo que los
+  // controles pueden devolver para saber qué se queda fuera al guardar.
+  card.__declarados = template?.properties || {};
+
+  // Un valor que la plantilla declara y ningún control de aquí puede pintar se
+  // pierde al guardar (el `.md` se reescribe con lo que el diálogo enseña). Se
+  // dice en la tarjeta, con su propiedad y su valor, y se recalcula mientras se
+  // edita: si el usuario lo arregla —o vacía el control— la línea se va.
+  const descartes = document.createElement("p");
+  descartes.className = "db-save-hint row-template-warning row-template-dropped";
+  descartes.setAttribute("role", "status");
+  descartes.hidden = true;
+  // El motivo que da el servidor habla de lo que el `.md` tiene ahora: en cuanto
+  // el valor se arregla en su control deja de ser verdad, así que se apaga con
+  // la línea de descarte (las dos describen lo mismo: qué pasa al guardar).
+  let avisoMotivo = null;
+  card.__pintarDescartes = () => {
+    // Sin nombre la tarjeta no se guarda: no hay nada que perder que decir.
+    const perdidos = card.__nombre.value.trim()
+      ? valoresQueSeDescartan(card, schema)
+      : [];
+    descartes.textContent = perdidos.length
+      ? `Guardar quitará de «${card.__nombre.value.trim()}»: ${perdidos.join(", ")}.`
+      : "";
+    descartes.hidden = !perdidos.length;
+    if (avisoMotivo) avisoMotivo.hidden = !perdidos.length;
+  };
+  card.addEventListener("input", card.__pintarDescartes);
+  card.addEventListener("change", card.__pintarDescartes);
+  card.insertBefore(descartes, head.nextSibling);
+
+  // Una plantilla que ya no encaja con la base se edita igual, pero con el
+  // motivo a la vista: lo que el formulario no puede pintar no se arregla desde
+  // aquí, y lo que se queda fuera al guardar lo dice la línea de arriba.
+  if (template?.error) {
+    avisoMotivo = document.createElement("p");
+    avisoMotivo.className = "db-save-hint row-template-warning";
+    avisoMotivo.setAttribute("role", "status");
+    avisoMotivo.textContent =
+      "Esta plantilla ya no encaja con la base: " + template.error;
+    card.insertBefore(avisoMotivo, descartes);
+  }
+  card.__pintarDescartes();
+  return card;
+}
+
+/** «Plantillas de fila» (menú de la base): lo que se guarda es parte del `.md`
+ * de la base, no una preferencia de esta pestaña. Al guardar, `refresh` relee
+ * la base para que el «+ Nueva fila» ofrezca las plantillas nuevas. */
+function openRowTemplatesDialog(database, refresh = null) {
+  const dialog = document.getElementById("dialog-row-templates");
+  const lista = document.getElementById("row-templates-list");
+  const hint = document.getElementById("row-templates-hint");
+  const guardar = document.getElementById("btn-save-row-templates");
+  const schema = (database.schema_def || []).filter((p) => p && p.key);
+  hint.hidden = true;
+  hint.textContent = "";
+  lista.innerHTML = "";
+
+  const alQuitar = (card) => card.remove();
+  // Contador propio, no el número de tarjetas: quitar una y añadir otra
+  // reutilizaba el índice y las etiquetas de la nueva apuntaban a los controles
+  // de la primera (`id` repetidos en el documento).
+  let siguiente = 0;
+  // Lo que la última pulsación de Guardar avisó que se perdería: la siguiente
+  // pulsación guarda solo si el descarte es exactamente el mismo (si se toca
+  // algo, cambia la firma y se vuelve a avisar).
+  let descarteAvisado = null;
+  const anadir = (template) => {
+    lista.appendChild(
+      plantillaDeFilaEditable(template, siguiente++, schema, alQuitar),
+    );
+  };
+  (database.row_templates || []).forEach((t) => anadir(t));
+  if (!(database.row_templates || []).length) anadir(null);
+
+  document.getElementById("btn-add-row-template").onclick = () => {
+    const card = plantillaDeFilaEditable(null, siguiente++, schema, alQuitar);
+    lista.appendChild(card);
+    card.querySelector(".row-template-name").focus();
+  };
+  document.getElementById("btn-cancel-row-templates").onclick = () => dialog.close();
+  guardar.onclick = async () => {
+    const row_templates = [];
+    for (const card of [...lista.querySelectorAll(".row-template-card")]) {
+      const { name, properties, body } = leerPlantillaDeTarjeta(card);
+      if (!name) {
+        // Una tarjeta vacía no es una plantilla; una con contenido y sin nombre
+        // no se puede elegir en el alta, así que se dice y no se guarda.
+        if (body.trim() || Object.keys(properties).length) {
+          hint.textContent = "Cada plantilla necesita un nombre.";
+          hint.hidden = false;
+          card.__nombre.focus();
+          return;
+        }
+        continue;
+      }
+      row_templates.push({ name, properties, body });
+    }
+    // Las plantillas que van a perder valores lo avisan en su tarjeta, pero la
+    // tarjeta puede haberse quedado fuera de la vista del scroll: perder un
+    // dato no puede depender de haberlo leído, así que la primera pulsación de
+    // Guardar no escribe nada y lo dice aquí, pegado al botón. La segunda, con
+    // el mismo descarte, guarda.
+    const sePierden = [...lista.querySelectorAll(".row-template-card")]
+      .filter((card) => card.__nombre.value.trim())
+      .map((card) => {
+        const perdidos = valoresQueSeDescartan(card, schema);
+        return perdidos.length
+          ? `«${card.__nombre.value.trim()}»: ${perdidos.join(", ")}`
+          : null;
+      })
+      .filter(Boolean);
+    const descarte = sePierden.join(" · ");
+    if (descarte && descarte !== descarteAvisado) {
+      descarteAvisado = descarte;
+      hint.textContent = `Guardar quitará ${descarte}. Pulsa Guardar otra vez para confirmar.`;
+      hint.hidden = false;
+      return;
+    }
+    descarteAvisado = null;
+    hint.hidden = true;
+    hint.textContent = "";
+    guardar.disabled = true;
+    try {
+      const actualizada = await api(`/databases/${database.id}/row-templates`, {
+        method: "PUT",
+        body: JSON.stringify({ row_templates }),
+      });
+      database.row_templates = actualizada.row_templates;
+      dialog.close();
+      if (refresh) await refresh();
+    } catch (e) {
+      // El servidor dice qué valor o qué clave no existe; el diálogo sigue
+      // abierto y el `.md` no se ha tocado.
+      hint.textContent = describeError(e);
+      hint.hidden = false;
+    } finally {
+      guardar.disabled = false;
+    }
+  };
+  dialog.showModal();
+}
+
+document.getElementById("btn-new-from-template").addEventListener("click", () => {
+  openTemplateDialog().catch((e) =>
+    reportError("No se pudo abrir «Crear desde plantilla»", e),
+  );
+});
 
 /** Abre el diálogo en alta (`database` nulo) o para editar una existente.
  * `refresh` repinta la vista actual cuando el PATCH del schema termina; el
@@ -11220,13 +14624,31 @@ function readSchemaFromDialog() {
     const name = wrap.querySelector(".prop-name").value.trim();
     const type = wrap.querySelector(".prop-type").value;
     const optionsRaw = wrap.querySelector(".prop-options-input").value.trim();
+    const sortMode = wrap.querySelector(".prop-sort-mode-select")?.value || "auto";
     // Una fila sin nombre no es una propiedad: no se inventa una clave con el
     // tipo por nombre (y así el botón «Propiedad» puede quedarse vacío).
     if (!name) return;
     const prop = { name, type };
     if (wrap.__propKey) prop.key = wrap.__propKey;
-    if (["select", "multiselect"].includes(type) && optionsRaw) {
-      prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (["select", "multiselect"].includes(type)) {
+      if (optionsRaw) {
+        prop.options = optionsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+      // El modo SIEMPRE viaja: en `auto` el servidor suelta el `sort_order`
+      // (en automático el orden es el alfabético) y en `manual` guarda la
+      // lista en el orden en que se ha quedado — solo con los valores que
+      // siguen en `options`, que son los que el diálogo enseña. Un valor
+      // retirado sale del orden declarado y cae al final al ordenar (el tramo
+      // «fuera del orden declarado»); así lo que se ve y lo que se escribe en
+      // el `.md` coinciden y no queda un valor escondido que no se puede
+      // mover ni quitar.
+      prop.sort_mode = sortMode === "manual" ? "manual" : "auto";
+      if (sortMode === "manual") {
+        const enOpciones = new Set((prop.options || []).map((v) => v.toLowerCase()));
+        prop.sort_order = (wrap.__orden || []).filter((v) =>
+          enOpciones.has(String(v).toLowerCase()),
+        );
+      }
     }
     if (type === "relation") {
       // Se manda SIEMPRE lo que dice el `<select>`, también vacío: el servidor
@@ -11344,8 +14766,25 @@ function openViewDialog(database) {
       opt.textContent = p.name;
       dateSelect.appendChild(opt);
     });
+  // El fin del rango: «—» (una fila, un día) o una segunda fecha. Se rellena
+  // igual que la primera y se elige cuál es el fin al crear.
+  const endSelect = document.getElementById("view-date-end");
+  endSelect.innerHTML = "";
+  const sinFin = document.createElement("option");
+  sinFin.value = "";
+  sinFin.textContent = "— (un día)";
+  endSelect.appendChild(sinFin);
+  database.schema_def
+    .filter((p) => p.type === "date")
+    .forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.name;
+      endSelect.appendChild(opt);
+    });
   document.getElementById("view-groupby-field").hidden = true;
   document.getElementById("view-date-field").hidden = true;
+  document.getElementById("view-date-end-field").hidden = true;
   viewDialog.showModal();
 }
 
@@ -11353,8 +14792,12 @@ document.getElementById("view-type").addEventListener("change", (e) => {
   document.getElementById("view-groupby-field").hidden = e.target.value !== "board";
   // Sin propiedades de fecha no hay nada que elegir: el calendario se crea
   // igual y dentro dice que a la base le falta una fecha.
-  document.getElementById("view-date-field").hidden =
-    e.target.value !== "calendar" || document.getElementById("view-date").options.length === 0;
+  const hayFechas = document.getElementById("view-date").options.length > 0;
+  document.getElementById("view-date-field").hidden = e.target.value !== "calendar" || !hayFechas;
+  // El fin del rango necesita una SEGUNDA fecha: con una sola no hay nada que
+  // estirar y el campo sobraría.
+  document.getElementById("view-date-end-field").hidden =
+    e.target.value !== "calendar" || document.getElementById("view-date").options.length < 2;
 });
 document.getElementById("btn-cancel-view").addEventListener("click", () => viewDialog.close());
 
@@ -11368,7 +14811,14 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
   }
   if (type === "calendar") {
     const dateKey = document.getElementById("view-date").value;
-    if (dateKey) config.date_property = dateKey;
+    const endKey = document.getElementById("view-date-end").value;
+    if (dateKey && endKey && endKey !== dateKey) {
+      // Con fin: la vista declara un rango y sus filas se pintan como barras.
+      config.start_property = dateKey;
+      config.end_property = endKey;
+    } else if (dateKey) {
+      config.date_property = dateKey;
+    }
   }
   try {
     const created = await api(`/databases/${viewDialogDatabase.id}/views`, {
@@ -11514,14 +14964,51 @@ document.addEventListener("keydown", (e) => {
 const SIDEBAR_COLLAPSED_KEY = "mdm_sidebar_collapsed";
 const layoutEl = document.querySelector(".layout");
 
-function setSidebarCollapsed(collapsed) {
-  layoutEl.classList.toggle("sidebar-collapsed", collapsed);
+// Lo que dura la salida de la barra (`mdm-side-out` en el CSS) más un margen:
+// el hueco se cierra al acabar la animación y, si el evento no llega, a este
+// plazo. Con «reducir movimiento» no hay animación que esperar.
+const SIDEBAR_SALIDA_MS = 180;
+const sinMovimiento = window.matchMedia("(prefers-reduced-motion: reduce)");
+let sidebarSaliendo = null; // el temporizador de una salida en curso
+
+/** `animar` solo lo pide el botón: al cargar la página la barra se pinta en su
+ * estado, sin entrar ni salir. La preferencia se guarda en el acto; lo único
+ * que se retrasa (lo que dura la salida) es quitar la columna. */
+function setSidebarCollapsed(collapsed, { animar = false } = {}) {
   localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  clearTimeout(sidebarSaliendo);
+  sidebarSaliendo = null;
+  layoutEl.classList.remove("sidebar-entering", "sidebar-leaving");
+  if (!animar || sinMovimiento.matches || esMovil()) {
+    layoutEl.classList.toggle("sidebar-collapsed", collapsed);
+    return;
+  }
+  if (!collapsed) {
+    layoutEl.classList.remove("sidebar-collapsed");
+    layoutEl.classList.add("sidebar-entering");
+    sidebarSaliendo = setTimeout(() => layoutEl.classList.remove("sidebar-entering"), SIDEBAR_SALIDA_MS + 40);
+    return;
+  }
+  layoutEl.classList.add("sidebar-leaving");
+  sidebarSaliendo = setTimeout(() => {
+    sidebarSaliendo = null;
+    layoutEl.classList.remove("sidebar-leaving");
+    layoutEl.classList.add("sidebar-collapsed");
+  }, SIDEBAR_SALIDA_MS - 40);
+}
+
+/** ¿La barra está (o va camino de estar) oculta? Durante la salida todavía no
+ * lleva `sidebar-collapsed`, y un segundo clic tiene que volver a mostrarla. */
+function sidebarOculta() {
+  return (
+    layoutEl.classList.contains("sidebar-collapsed") ||
+    layoutEl.classList.contains("sidebar-leaving")
+  );
 }
 
 document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
   if (esMovil()) return setCajonAbierto(!cajonAbierto());
-  setSidebarCollapsed(!layoutEl.classList.contains("sidebar-collapsed"));
+  setSidebarCollapsed(!sidebarOculta(), { animar: true });
 });
 
 setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
@@ -11545,26 +15032,28 @@ function esMovil() {
 function cajonAbierto() {
   return layoutEl.classList.contains("sidebar-drawer-open");
 }
-/** Deja la sección de la bandeja dentro del cajón.
+/** Deja la primera sección de la barra lateral dentro del cajón.
  *
  * La barra lateral es la misma columna con o sin cajón: conserva el
- * `scrollTop` que tuviera, así que con el árbol desplazado la bandeja se
- * abría por encima del borde superior (y no se podía ni tocar). Al abrir se
- * corrige el scroll lo justo para que se vea; si ya se veía, no se mueve
- * (C2). */
-function mostrarBandejaEnElCajon() {
-  const section = document.getElementById("inbox-section");
-  if (!sidebarEl || !section || section.hidden) return;
+ * `scrollTop` que tuviera, así que con el árbol desplazado la bandeja (o «Mis
+ * tareas») se abría por encima del borde superior (y no se podía ni tocar). Al
+ * abrir se corrige el scroll lo justo para que se vea; si ya se veía, no se
+ * mueve (C2). */
+function mostrarSeccionesEnElCajon() {
+  const section = ["mytasks-section", "inbox-section"]
+    .map((id) => document.getElementById(id))
+    .find((el) => el && !el.hidden);
+  if (!sidebarEl || !section) return;
   const caja = sidebarEl.getBoundingClientRect();
-  const bandeja = section.getBoundingClientRect();
-  if (bandeja.top < caja.top) sidebarEl.scrollTop -= caja.top - bandeja.top;
-  else if (bandeja.bottom > caja.bottom) sidebarEl.scrollTop += bandeja.bottom - caja.bottom;
+  const seccion = section.getBoundingClientRect();
+  if (seccion.top < caja.top) sidebarEl.scrollTop -= caja.top - seccion.top;
+  else if (seccion.bottom > caja.bottom) sidebarEl.scrollTop += seccion.bottom - caja.bottom;
 }
 
 function setCajonAbierto(open) {
   const abierto = Boolean(open) && esMovil();
   layoutEl.classList.toggle("sidebar-drawer-open", abierto);
-  if (abierto) mostrarBandejaEnElCajon();
+  if (abierto) mostrarSeccionesEnElCajon();
   if (scrimEl) scrimEl.hidden = !abierto;
   if (!toggleSidebarBtn) return;
   // aria-expanded solo tiene sentido en el cajón: en escritorio el botón no
@@ -11578,7 +15067,7 @@ scrimEl?.addEventListener("click", () => setCajonAbierto(false));
 // Elegir una página (o procesar una captura) cierra el cajón: ya no hace falta.
 sidebarEl?.addEventListener("click", (e) => {
   if (!cajonAbierto()) return;
-  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process")) setCajonAbierto(false);
+  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process, #btn-mytasks")) setCajonAbierto(false);
 });
 
 // Escape cierra el cajón. En captura, porque el editor y los diálogos también
@@ -11629,6 +15118,9 @@ applyTheme(localStorage.getItem(THEME_KEY) || "dark");
 // api() manda al login. Los usuarios que este navegador ya conoce se leen antes
 // para que la autoría de las notas salga con su color desde el primer pintado.
 loadKnownUsers();
+// El directorio de personas (celdas `person`): una vez por sesión, para que el
+// selector y los formularios de alta lo tengan sin esperar.
+cargarPersonas().catch(() => {});
 initUserChip();
 loadCurrentUser();
 

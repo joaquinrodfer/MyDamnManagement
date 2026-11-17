@@ -45,7 +45,10 @@ PROGRESS_EVERY = 200
 # reexporta para que el nombre viva en un solo sitio.
 DATABASES_DIR = "Bases"
 
-TYPES = {"text", "number", "select", "multiselect", "checkbox", "date", "url", "relation"}
+TYPES = {
+    "text", "number", "select", "multiselect", "checkbox", "date", "url",
+    "relation", "parent_row", "person",
+}
 
 
 @dataclass
@@ -174,12 +177,31 @@ def title_key(title: str) -> str:
 # propiedad llamada `id`. Ver HALLAZGOS §9.3.
 RESERVED_ROW_KEYS = frozenset({"title", "id", "icon", "description", "created", "updated", "type"})
 
+# Tipos de propiedad cuyos valores salen de una lista cerrada (`options`) y que
+# por tanto pueden declarar en qué orden se leen (`sort_order`). Ver
+# `sort_order_property`.
+SORTABLE_TYPES = ("select", "multiselect")
+
 # Tipo de propiedad cuyas celdas apuntan a filas de otra base (`target_database`
 # en su `schema`). El valor es el **`id`** de la fila, nunca su título: los
 # títulos cambian y una relación guardada por título se rompe al renombrar.
 #   simple:    contacto: 7f3a91c2-...
 #   múltiple:  contacto: [7f3a91c2-..., 91be02dd-...]
 RELATION = "relation"
+
+# Tipo de propiedad cuyo valor es el **`id`** de la fila madre, de la MISMA base
+# (subtareas). Como en `relation`, una celda guarda un id y nunca un título. Una
+# base tiene como mucho una propiedad de este tipo: la jerarquía es una, no una
+# por columna, y es lo que permite decir «las subtareas de esta fila» sin
+# preguntar por cuál de las dos columnas. Ver `app.hierarchy`.
+#   madre: 7f3a91c2-...
+PARENT_ROW = "parent_row"
+# Tipo de propiedad cuyo valor es el **`id`** de un usuario de la app (la tabla
+# `users` del índice), nunca texto libre. Se guarda el id y no el nombre visible
+# porque la persona puede renombrarse: la celda tiene que seguir apuntando a la
+# misma y enseñar el nombre nuevo. Un id que ya no resuelve (el usuario se
+# borró) se lee tal cual y quien serializa la fila avisa (ver `app.properties`).
+PERSON = "person"
 
 
 def relation_multiple(prop: dict) -> bool:
@@ -249,12 +271,41 @@ def _relation_value(prop: dict, raw):
     return relation_id(raw)
 
 
+def _parent_value(raw):
+    """El id de la fila madre que hay en una celda `parent_row`, o `None`.
+
+    Un id y nada más: una lista o un título donde ahora hay una celda de
+    subtarea se leen como «sin madre», igual que en una relación, y el fichero
+    no se toca. Nunca se lanza: un `.md` con basura no puede tumbar el
+    reindexado (`app.hierarchy.parent_of` hace la misma lectura).
+    """
+    if isinstance(raw, (list, dict)):
+        return None
+    return relation_id(raw)
+def _person_value(raw):
+    """El id de usuario que hay en una celda `person`, o `None` si no hay.
+
+    Una lista o un mapa en una celda de persona no se puede representar (una
+    persona por celda): se leen como «sin valor», igual que una relación simple
+    con dos ids. Nunca se lanza: un `.md` con basura no puede tumbar el
+    reindexado.
+    """
+    if isinstance(raw, (list, dict)):
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
 def _coerce(prop: dict, raw):
     ptype = prop.get("type")
     if raw is None or raw == "":
         return None
     if ptype == RELATION:
         return _relation_value(prop, raw)
+    if ptype == PARENT_ROW:
+        return _parent_value(raw)
+    if ptype == PERSON:
+        return _person_value(raw)
     if ptype == "number":
         try:
             return float(raw)
@@ -379,6 +430,65 @@ def views_from_frontmatter(
     return views
 
 
+def row_templates_from_frontmatter(
+    raw, path: str, warnings: list[str]
+) -> list[dict]:
+    """Las plantillas de fila que declara la base (`row_templates:`).
+
+    Una plantilla es `{name, properties, body}`: el nombre con el que se elige
+    en el alta, los valores por defecto de sus propiedades y el cuerpo inicial
+    de la fila. Se normaliza lo que un `.md` escrito a mano puede tener, sin
+    validar todavía contra el `schema`: eso pasa al usarla (guardarla o crear
+    una fila con ella), que es donde se puede decir por qué no vale y no dejar
+    nada a medias. Lo que no es una plantilla —sin nombre, o `properties` que no
+    es un mapa— se avisa y se queda fuera, como una vista inválida.
+
+    El nombre identifica la plantilla en la interfaz y en
+    `POST /databases/{id}/rows` (el campo `template`): dos con el mismo nombre serían
+    ambiguas, así que la segunda se descarta con aviso.
+    """
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        warnings.append(f"{path}: 'row_templates' no es una lista; se ignora")
+        return []
+
+    templates: list[dict] = []
+    vistos: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            warnings.append(f"{path}: plantilla de fila inválida (no es un mapa): {item!r}")
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            warnings.append(f"{path}: plantilla de fila sin nombre; se ignora")
+            continue
+        if name.casefold() in vistos:
+            warnings.append(f"{path}: plantilla de fila repetida {name!r}; se queda la primera")
+            continue
+        properties = item.get("properties")
+        if properties in (None, ""):
+            properties = {}
+        elif not isinstance(properties, dict):
+            warnings.append(
+                f"{path}: 'properties' de la plantilla {name!r} no es un mapa; se ignora"
+            )
+            properties = {}
+        body = item.get("body")
+        if body is None:
+            body = ""
+        elif not isinstance(body, str):
+            warnings.append(
+                f"{path}: 'body' de la plantilla {name!r} no es texto; se ignora"
+            )
+            body = ""
+        vistos.add(name.casefold())
+        templates.append(
+            {"name": name, "properties": dict(properties), "body": body}
+        )
+    return templates
+
+
 def _columnas_de_vista(config: dict, name: str, path: str, warnings: list[str]) -> dict:
     """`widths` y `order`: el ancho y el orden de las columnas, POR VISTA.
 
@@ -478,12 +588,108 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
             continue
         if isinstance(prop, dict):
             prop = relation_property(prop)
+            prop = sort_mode_property(prop, path, warnings)
+            prop = sort_order_property(prop, path, warnings)
         effective.append(prop)
         if not isinstance(prop, dict) or "key" not in prop:
             warnings.append(f"propiedad de schema inválida en {path}: {prop!r}")
         elif prop.get("type") not in TYPES:
             warnings.append(f"tipo desconocido {prop.get('type')!r} en {path}:{prop.get('key')}")
     return effective
+
+
+def sort_mode_property(prop: dict, path: str, warnings: list[str]) -> dict:
+    """El modo de orden de una selección (`sort_mode`): `manual` o `auto`.
+
+    `manual` dice que el orden de los valores es el declarado en `sort_order` y
+    `auto` que es el alfabético (natural). Una base sin `sort_mode` se lee en
+    `auto`, salvo que declare un `sort_order`, que entonces es manual.
+
+    Se normaliza (sin espacios ni mayúsculas) y lo que no es `manual`/`auto` se
+    suelta con aviso, como una fecha imposible: el `.md` lo escribe una persona
+    y un valor raro no puede tumbar la lectura de la base entera. En un tipo que
+    no es una selección se suelta también: ahí no significa nada.
+    """
+    if "sort_mode" not in prop:
+        return prop
+    out = dict(prop)
+    modo = str(out.get("sort_mode") or "").strip().lower()
+    if out.get("type") not in SORTABLE_TYPES:
+        warnings.append(
+            f"{path}: 'sort_mode' de {out.get('key')!r} se ignora: solo vale en "
+            "una selección o multiselección"
+        )
+        out.pop("sort_mode", None)
+        return out
+    if modo not in ("manual", "auto"):
+        warnings.append(
+            f"{path}: 'sort_mode' de {out.get('key')!r} es {out.get('sort_mode')!r} "
+            "y se ignora: vale 'manual' o 'auto'"
+        )
+        out.pop("sort_mode", None)
+        return out
+    out["sort_mode"] = modo
+    return out
+
+
+def sort_order_property(prop: dict, path: str, warnings: list[str]) -> dict:
+    """El orden declarado de una selección (`sort_order`), tal y como lo lee la app.
+
+    `sort_order` dice en qué orden se leen y se agrupan los valores de un
+    `select`/`multiselect`: `[alta, media, baja]` se ordena por importancia y no
+    por alfabeto. Es **opcional**, y una base que no lo declara se ordena como
+    siempre (alfabético): así esta función no cambia el orden de las bases que
+    ya existían sin que nadie lo haya pedido. Con `sort_mode: auto` el orden
+    guardado no se aplica (manda el alfabético), pero se conserva en el modelo
+    por si el usuario vuelve a manual: no se tira lo que escribió.
+
+    Se limpia al leer (sin vacíos, sin repetir, sin espacios de sobra) para que
+    un `.md` escrito a mano se comporte como uno guardado desde la app; una
+    lista vacía es «no declara nada» y la clave se va del modelo. Una propiedad
+    que no es de selección lo suelta con aviso: en un texto el orden de esa
+    lista no significa nada, y guardarlo haría que el próximo guardado de la
+    base lo reescribiera.
+    """
+    if "sort_order" not in prop:
+        return prop
+    out = dict(prop)
+    valores = sort_values(out.get("sort_order"))
+    if not valores:
+        out.pop("sort_order", None)
+        return out
+    if out.get("type") not in SORTABLE_TYPES:
+        warnings.append(
+            f"{path}: 'sort_order' de {out.get('key')!r} se ignora: solo vale en "
+            "una selección o multiselección (ahí sí dice el orden de sus valores)"
+        )
+        out.pop("sort_order", None)
+        return out
+    out["sort_order"] = valores
+    return out
+
+
+def sort_values(raw) -> list[str]:
+    """Los valores de una lista del `.md`, limpios: sin vacíos y sin repetir.
+
+    El parser no infiere tipos y el `.md` lo escribe el usuario: se acepta una
+    lista (`[alta, media, baja]`) y también un texto con comas
+    (`sort_order: alta, media, baja`), que es como se escribe a mano un orden
+    corto. Se conserva el orden de aparición y la grafía del primero que la
+    declare (quien compara normaliza mayúsculas aparte).
+    """
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, list):
+        return []
+    valores: list[str] = []
+    vistos: set[str] = set()
+    for valor in raw:
+        texto = str(valor).strip()
+        clave = texto.casefold()
+        if texto and clave not in vistos:
+            vistos.add(clave)
+            valores.append(texto)
+    return valores
 
 
 def relation_property(prop: dict) -> dict:

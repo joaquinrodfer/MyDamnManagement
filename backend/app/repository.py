@@ -18,16 +18,18 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
-from app import index as index_mod
+from app import closed, index as index_mod, templates as template_defs
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
 from app.properties import DEFAULT_TITLE_NAME, plan_schema
+from app.vault.reader import PERSON
 from app.vault import suggestions
 from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultError, VaultStore
 from app.vault.suggestions import (
@@ -57,6 +59,11 @@ def _uuid(value: Optional[str]) -> Optional[uuid.UUID]:
 
 def _load(value: Optional[str], default: Any) -> Any:
     return json.loads(value) if value else default
+
+
+def _plegar(value: Any) -> str:
+    """Nombre de usuario comparable: NFC, sin espacios de sobra, casefold."""
+    return unicodedata.normalize("NFC", str(value)).strip().casefold()
 
 
 # Cuántos ids caben en una consulta de resolución de relaciones. SQLite admite
@@ -98,6 +105,17 @@ class Database:
     # sin estas claves en su `.md` sale con «Título» y visible.
     title_name: str = DEFAULT_TITLE_NAME
     title_hidden: bool = False
+    # Plantillas de fila de la base (`row_templates:` del `.md`): nombre,
+    # valores por defecto y cuerpo inicial. Se copian al índice al leer el
+    # fichero, así que una base escrita a mano también las trae.
+    row_templates: list[dict[str, Any]] = field(default_factory=list)
+    # Qué cuenta como «fila cerrada»: `{property, values}`, o `None` si la base
+    # no declara estado. Es la regla EFECTIVA: el bloque `closed:` del `.md` o,
+    # si no lo hay, la que implican los marcadores `done` viejos
+    # (`app.closed.effective`). `closed_from_done` dice que viene de ahí, para
+    # que la interfaz pueda explicar que se está leyendo el formato anterior.
+    closed: Optional[dict[str, Any]] = None
+    closed_from_done: bool = False
 
 
 @dataclass(frozen=True)
@@ -153,16 +171,33 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         "SELECT name, hidden FROM database_titles WHERE database_id = ?",
         (row["id"],),
     ).fetchone()
+    schema_def = _load(row["schema_json"], [])
+    # La regla efectiva se decide aquí y en un solo sitio (`app.closed`): el
+    # bloque `closed:` del `.md` manda; sin él, los `done` viejos del schema.
+    declared = conn.execute(
+        "SELECT rule_json FROM database_closed WHERE database_id = ?", (row["id"],)
+    ).fetchone()
+    rule, source = closed.effective(
+        _load(declared["rule_json"], None) if declared is not None else None,
+        schema_def,
+    )
+    plantillas = conn.execute(
+        "SELECT templates_json FROM database_row_templates WHERE database_id = ?",
+        (row["id"],),
+    ).fetchone()
     return Database(
         id=uuid.UUID(row["id"]),
         page_id=uuid.UUID(row["page_id"]),
         title=page["title"],
         icon=page["icon"],
-        schema_def=_load(row["schema_json"], []),
+        schema_def=schema_def,
         created_at=_dt(page["created_at"]),
         updated_at=_dt(page["updated_at"]),
         title_name=(title["name"] or DEFAULT_TITLE_NAME) if title else DEFAULT_TITLE_NAME,
         title_hidden=bool(title["hidden"]) if title else False,
+        closed=rule,
+        closed_from_done=source == closed.SOURCE_DONE,
+        row_templates=_load(plantillas["templates_json"], []) if plantillas else [],
     )
 
 
@@ -225,6 +260,44 @@ class Repository:
             "SELECT display_name, color FROM users WHERE color IS NOT NULL"
         ).fetchall()
         return {row["display_name"]: row["color"] for row in rows}
+
+    def user_refs(
+        self, ids: Iterable[str]
+    ) -> dict[str, tuple[str, str, Optional[str]]]:
+        """`id -> (display_name, username, color)` de los usuarios que existan.
+
+        **Una consulta por respuesta**, como `row_refs`: una tabla con veinte
+        responsables resuelve sus veinte nombres de una vez. Un id que ya no
+        está en `users` simplemente no aparece en el mapa, y quien serializa la
+        celda lo pinta como «ya no está»: el `.md` conserva el id y no se toca.
+        """
+        wanted = [str(one).strip() for one in ids if str(one).strip()]
+        if not wanted:
+            return {}
+        refs: dict[str, tuple[str, str, Optional[str]]] = {}
+        for start in range(0, len(wanted), _REFS_CHUNK):
+            chunk = wanted[start:start + _REFS_CHUNK]
+            marks = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                "SELECT id, display_name, username, color FROM users"
+                f" WHERE id IN ({marks})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                refs[row["id"]] = (row["display_name"], row["username"], row["color"])
+        return refs
+
+    def all_users(self) -> list[dict[str, Any]]:
+        """Los usuarios de la app por nombre visible: las personas asignables.
+
+        Es la lista del selector de una celda `person` (`GET /people`). No lleva
+        hash ni salt: sale de `users` sin las columnas de credenciales.
+        """
+        rows = self.conn.execute(
+            "SELECT id, username, display_name, color FROM users"
+            " ORDER BY display_name COLLATE NOCASE, username"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def reindex(
         self, force: bool = False, empty_hint: str | None = None, progress=None
@@ -804,8 +877,17 @@ class Repository:
         icon: Optional[str] = None,
         created_by: Optional[str] = None,
         views: Optional[list[dict[str, Any]]] = None,
+        closed_rule: Optional[dict[str, Any]] = None,
+        row_templates: Optional[list[dict[str, Any]]] = None,
     ) -> Database:
-        """Crea `Bases/<slug>.md` (y sus vistas en el frontmatter) y la indexa."""
+        """Crea `Bases/<slug>.md` (y sus vistas en el frontmatter) y la indexa.
+
+        `closed_rule` es la regla de qué cuenta como fila cerrada, ya validada
+        contra el schema (`app.closed.validate`); se escribe como bloque
+        `closed:` y no como marcadores `done`. `row_templates` son las
+        plantillas de fila que trae la base (ya validadas contra el schema), y
+        se escriben en su frontmatter: la plantilla es parte de la base.
+        """
         return self.get_database(uuid.UUID(self.vault.create_database(
             title=title,
             schema=schema_def,
@@ -813,7 +895,50 @@ class Repository:
             parent_id=parent_id,
             icon=icon,
             created_by=created_by,
+            closed=closed_rule,
+            row_templates=row_templates,
         )))
+
+    def set_closed(
+        self, database_id: uuid.UUID, rule: Optional[dict[str, Any]]
+    ) -> Optional[Database]:
+        """Escribe (o retira) la regla de qué cuenta como fila cerrada.
+
+        `rule` llega ya validada (`app.closed.validate`): aquí solo se escribe.
+        La escritura es **una**: el bloque `closed:` nuevo y el `schema` sin los
+        marcadores `done` viejos, para que no queden dos declaraciones. Retirar
+        la regla (`None`) tampoco deja marcadores detrás: quitar el `closed` de
+        una base no puede volver a cerrar filas por un `done` olvidado.
+
+        No toca ninguna fila: la regla se lee del `.md` de la base al contar, así
+        que cambiar los valores recalcula contadores sin reescribir los `.md` de
+        las filas.
+        """
+        current = self.get_database(database_id)
+        if current is None:
+            return None
+        self.vault.save_database(
+            current.page_id,
+            schema=closed.without_legacy(current.schema_def),
+            closed=rule,
+        )
+        return self.get_database(database_id)
+
+    def set_row_templates(
+        self, database_id: uuid.UUID, templates: list[dict[str, Any]]
+    ) -> Optional[Database]:
+        """Reescribe las plantillas de fila de la base en su `.md`.
+
+        `templates` llega ya validado contra el schema (`app.templates`): aquí
+        solo se escribe. Una lista vacía retira la clave del frontmatter. No
+        toca ninguna fila: las plantillas no son datos, son valores por defecto
+        para el alta.
+        """
+        current = self.get_database(database_id)
+        if current is None:
+            return None
+        self.vault.save_database(current.page_id, row_templates=list(templates))
+        return self.get_database(database_id)
 
     def update_database(
         self,
@@ -831,7 +956,8 @@ class Repository:
         (la identidad de la fila); `plan_schema` devuelve el schema final y qué
         claves cambian de nombre. Un renombrado escribe la clave nueva en
         **todas** las filas y en las vistas que la nombran (`group_by`,
-        `date_property`, `filters`, `sort`, `visible_properties`): un rename
+        `date_property`, `start_property`, `end_property`, `filters`, `sort`,
+        `visible_properties`): un rename
         que deja filas con la clave vieja es peor que no poder renombrar.
 
         Borrar una propiedad **no** borra los valores de las filas (el `.md` es
@@ -846,8 +972,20 @@ class Repository:
         renames: dict[str, str] = {}
         deleted: list[str] = []
         final_schema: Optional[list[dict[str, Any]]] = None
+        conversiones: dict[str, tuple[str, str]] = {}
+        sustituciones: dict[str, dict[str, str]] = {}
         if schema_def is not None:
             final_schema, renames, deleted = plan_schema(current.schema_def, schema_def)
+            conversiones = self._person_conversions(
+                current.schema_def, schema_def, final_schema
+            )
+            # Validar **antes de la primera escritura**: la conversión puede
+            # rechazar el guardado entero (un valor que no casa con ningún
+            # usuario), y entonces ni las filas ni el schema se tocan. Si se
+            # comprobara después del renombrado, el `.md` quedaría con las
+            # claves nuevas mientras el schema sigue con las viejas.
+            if conversiones:
+                sustituciones = self._plan_person_conversion(database_id, conversiones)
 
         if renames:
             # Las filas primero: si una no se puede migrar, el `.md` de la base
@@ -880,13 +1018,90 @@ class Repository:
                     {**p, "key": traducir.get(p.get("key"), p.get("key"))}
                     for p in (final_schema or [])
                 ]
+                sustituciones = {
+                    traducir.get(clave, clave): valores
+                    for clave, valores in sustituciones.items()
+                }
             renames = ajustados
+
+        if sustituciones:
+            # El `.md` de cada fila pasa a guardar el id del usuario **antes**
+            # de que el schema diga `person`, y con la clave ya renombrada (la
+            # conversión se validó leyendo el `.md` con la clave vieja).
+            self.vault.rewrite_property_values(database_id, sustituciones)
 
         views: Optional[list[dict[str, Any]]] = None
         if renames or deleted:
             views = self._views_with_keys(
                 database_id, {**renames, **{key: None for key in deleted}}
             )
+
+        # La regla de «cerrada» sigue a su propiedad: si se renombra, el bloque
+        # `closed:` pasa a la clave nueva; si la propiedad desaparece o deja de
+        # ser una selección/casilla, la base deja de declarar estado (una regla
+        # que nombra una columna que ya no cierra nada mentiría en el `.md`), y
+        # si cambian las opciones se quedan solo los valores que siguen
+        # existiendo. Guardar el resto de la base no puede fallar por la regla:
+        # aquí se ajusta en silencio, no se valida con un 400 (nadie la está
+        # editando en esta petición).
+        #
+        # Solo se propaga la regla DECLARADA en el `.md`: un `done` viejo no se
+        # materializa como `closed:` al guardar el schema. Quien quita ese
+        # marcador manda `done: false` y la base tiene que dejar de cerrar
+        # filas, no quedarse con la regla convertida que nadie ha escrito.
+        closed_update: Any = UNSET
+        if current.closed and not current.closed_from_done and schema_def is not None:
+            clave = str(current.closed.get(closed.PROPERTY_KEY) or "")
+            clave = renames.get(clave, clave)
+            if clave in deleted:
+                closed_update = None
+            else:
+                final = {
+                    str(p.get("key")): p
+                    for p in (final_schema or [])
+                    if isinstance(p, dict) and p.get("key")
+                }
+                prop = final.get(clave)
+                tipo = closed.type_of(prop) if prop else ""
+                if prop is None or tipo not in closed.STATUS_TYPES:
+                    closed_update = None
+                elif tipo == "checkbox":
+                    closed_update = {closed.PROPERTY_KEY: clave, closed.VALUES_KEY: []}
+                else:
+                    # La grafía manda la opción, no la regla: si «Hecho» pasa a
+                    # «hecho», el valor que se guarda es el nuevo o el `.md`
+                    # quedaría con un valor que la celda ya no puede tener.
+                    canonica = {
+                        str(o).strip().casefold(): str(o).strip()
+                        for o in (prop.get("options") or [])
+                        if str(o).strip()
+                    }
+                    valores: list[str] = []
+                    for v in current.closed.get(closed.VALUES_KEY) or []:
+                        real = canonica.get(str(v).strip().casefold())
+                        if real and real not in valores:
+                            valores.append(real)
+                    closed_update = (
+                        {closed.PROPERTY_KEY: clave, closed.VALUES_KEY: valores}
+                        if valores
+                        else None
+                    )
+
+        # Las plantillas de fila siguen al schema igual que las vistas: un
+        # rename traduce sus claves, una propiedad borrada deja de aparecer y un
+        # valor que el tipo nuevo ya no admite se retira. En silencio, como la
+        # regla `closed`: nadie está editando la plantilla en esta petición, y
+        # guardar el resto de la base no puede fallar por ella. Sin esto el `.md`
+        # se queda con plantillas que mienten, que en el editor son invisibles
+        # (su clave ya no está en el schema) y que el alta rechazaría sin decir
+        # por qué.
+        row_templates_update: Any = UNSET
+        if schema_def is not None and current.row_templates:
+            ajustadas = template_defs.adapt_row_templates(
+                current.row_templates, final_schema or [], renames
+            )
+            if ajustadas != current.row_templates:
+                row_templates_update = ajustadas
 
         self.vault.save_database(
             current.page_id,
@@ -896,6 +1111,8 @@ class Repository:
             views=UNSET if views is None else views,
             title_name=UNSET if title_name is None else title_name,
             title_hidden=UNSET if title_hidden is None else title_hidden,
+            closed=closed_update,
+            row_templates=row_templates_update,
         )
         if schema_def is not None:
             # El índice de una fila se filtra contra el schema de su base: si
@@ -907,9 +1124,108 @@ class Repository:
             # recupera así los valores que ya estaban en el fichero.
             antes = {p.get("key") for p in current.schema_def if isinstance(p, dict)}
             despues = {p["key"] for p in final_schema or []}
-            if antes != despues:
+            if antes != despues or conversiones:
                 self.vault.reindex_rows(database_id)
         return self.get_database(database_id)
+
+    def _person_conversions(
+        self,
+        current: list[dict[str, Any]],
+        requested: list[dict[str, Any]],
+        final_schema: list[dict[str, Any]],
+    ) -> dict[str, tuple[str, str]]:
+        """Claves que pasan de `text` a `person` en esta petición.
+
+        Devuelve `{clave_final: (clave_actual, nombre visible)}`. La clave final
+        es la que ha decidido `plan_schema` (puede ser un renombrado: el diálogo
+        manda el nombre nuevo y la clave vieja), y la actual es la que hay que
+        leer en los `.md` antes de escribir nada. El nombre va en los mensajes,
+        que el usuario no ve claves.
+
+        Solo se admite desde `text`: convertir una selección, una fecha o una
+        relación a persona no es lo que pide la tarjeta y no hay valores que
+        casar. Los valores se comprueban en `_plan_person_conversion`.
+        """
+        actuales = {
+            str(prop.get("key")): prop
+            for prop in current
+            if isinstance(prop, dict) and prop.get("key")
+        }
+        conversiones: dict[str, tuple[str, str]] = {}
+        for item, final in zip(requested, final_schema):
+            if not isinstance(item, dict) or final.get("type") != PERSON:
+                # `type` llega como `PropertyType` (un `str`-Enum): se compara
+                # con el valor, no con `str(...)`, que daría «PropertyType.person».
+                continue
+            origen = actuales.get(str(item.get("key") or ""))
+            if origen is None or origen.get("type") == PERSON:
+                continue
+            nombre = str(final.get("name") or origen.get("name") or final.get("key"))
+            if origen.get("type") != "text":
+                raise VaultError(
+                    f"«{nombre}»: solo se puede convertir a Persona una propiedad de "
+                    "texto. Cambia antes su tipo a Texto, o créala nueva."
+                )
+            conversiones[str(final["key"])] = (str(origen["key"]), nombre)
+        return conversiones
+
+    def _plan_person_conversion(
+        self, database_id: uuid.UUID, conversiones: dict[str, tuple[str, str]]
+    ) -> dict[str, dict[str, str]]:
+        """Valida la conversión y prepara las sustituciones, **sin escribir**.
+
+        `conversiones` va de clave final a `(clave actual, nombre visible)`.
+        Se leen los `.md` con la clave actual (el renombrado aún no ha
+        ocurrido) y se devuelve, por clave final, `{valor escrito: id de
+        usuario}`.
+
+        Un valor casa con un usuario por su `display_name` o por su `username`,
+        sin mayúsculas (el nombre visible lo escribe una persona; el @usuario,
+        no). Si un texto casara con dos usuarios distintos, gana el **nombre
+        visible** y, entre iguales, el primero por nombre visible y @usuario
+        (el orden de `all_users`): el casado es determinista y no se adivina
+        nada más. Si **algún** valor de **alguna** fila no casa, se lanza
+        `VaultError` con el nombre visible de la propiedad y los valores que
+        sobran: no se convierte nada y el `.md` se queda como estaba.
+
+        La comprobación ocurre antes de la primera escritura de
+        `update_database` (renombrados incluidos), así que un rechazo no deja
+        el vault a medias entre dos esquemas.
+        """
+        usuarios = self.all_users()
+        por_nombre: dict[str, str] = {}
+        # Dos pasadas para que el casado no dependa del orden: primero los
+        # nombres visibles (lo que el dueño escribió a mano) y después los
+        # @usuario de quien no haya casado ya por nombre.
+        for campo in ("display_name", "username"):
+            for usuario in usuarios:
+                if usuario.get(campo):
+                    por_nombre.setdefault(_plegar(usuario[campo]), str(usuario["id"]))
+
+        crudos = self.vault.row_property_values(
+            database_id, {actual: nombre for actual, nombre in conversiones.values()}
+        )
+        sustituciones: dict[str, dict[str, str]] = {}
+        for clave, (actual, nombre) in conversiones.items():
+            mapa: dict[str, str] = {}
+            desconocidos: list[str] = []
+            for valor in crudos.get(actual, []):
+                user_id = por_nombre.get(_plegar(valor))
+                if user_id is None:
+                    desconocidos.append(valor)
+                else:
+                    mapa[_plegar(valor)] = user_id
+            if desconocidos:
+                lista = ", ".join(f"«{valor}»" for valor in desconocidos[:5])
+                if len(desconocidos) > 5:
+                    lista += f" y {len(desconocidos) - 5} más"
+                raise VaultError(
+                    f"«{nombre}»: {lista} no casa con ningún usuario de la app, así "
+                    "que no se convierte en Persona (no se ha tocado ninguna fila). "
+                    "Crea esos usuarios o corrige los valores, y vuelve a intentarlo."
+                )
+            sustituciones[clave] = mapa
+        return sustituciones
 
     def _views_with_keys(
         self, database_id: uuid.UUID, mapping: dict[str, Optional[str]]
@@ -929,7 +1245,7 @@ class Repository:
         views = self._views_with(database_id)
         for view in views:
             config = dict(view.get("config") or {})
-            for field in ("group_by", "date_property"):
+            for field in ("group_by", "date_property", "start_property", "end_property"):
                 if field not in config:
                     continue
                 new = mapped(config[field])
@@ -1078,9 +1394,12 @@ class Repository:
         title: str,
         icon: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
+        body: str = "",
     ) -> Page:
+        """Crea la fila. `body` es su cuerpo markdown inicial (plantilla de fila)."""
         row_id = self.vault.create_row(
-            database_id, title=title, properties=properties or {}, icon=icon
+            database_id, title=title, properties=properties or {}, icon=icon,
+            body=body,
         )
         return self.get_row(database_id, uuid.UUID(row_id))
 

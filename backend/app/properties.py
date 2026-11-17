@@ -11,11 +11,25 @@ destino y el número de ids cuadra con `multiple`). Al leer se sigue siendo
 laxo: un `.md` con texto libre donde ahora hay una relación se lee como «sin
 valor» y no se reescribe (ver `app.vault.reader._relation_value`).
 
+Lo mismo vale para **`parent_row`** (subtareas): la celda es el `id` de una
+fila de la **misma** base. Aquí solo se valida su forma —un id, no una lista ni
+un título—; que la fila exista, que sea de esta base y que el vínculo no cierre
+un ciclo lo comprueba `app.hierarchy`, que es quien tiene las filas.
+
 Aquí vive también el **plan** del schema: la interfaz solo pide el nombre
 visible de una propiedad y la clave se deriva detrás. La clave no se enseña
 nunca, así que el cliente no tiene que saber snake_case; y cuando el nombre de
 una propiedad existente cambia, el plan dice qué claves hay que migrar en las
 filas y en las vistas.
+
+Y vive la **lectura del orden de una selección**: una propiedad
+`select`/`multiselect` elige modo (`sort_mode: manual | auto`) y, en manual, en
+qué orden se leen y se agrupan sus valores (`sort_order`: `alta, media, baja`),
+que no es el alfabético ni el de creación. Lo leen la ordenación de las vistas
+(`app.views`) y el tablero del panel; el valor que no está declarado va al
+final, porque uno que apareció después no es «el más importante». En `auto`
+manda el texto natural, y una base que no declara nada se comporta así. De aquí
+sale también `schema_types`, el mapa de tipos que necesita el orden por tipo.
 """
 
 import re
@@ -25,10 +39,14 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from fastapi import HTTPException
 
 from app.vault.reader import (
+    PARENT_ROW,
+    PERSON,
     RELATION,
     RESERVED_ROW_KEYS,
+    SORTABLE_TYPES,
     relation_id,
     relation_multiple,
+    sort_values,
 )
 
 # `refs(ids)` devuelve `{id: (título, id de su base)}` de las filas que existan.
@@ -36,10 +54,118 @@ from app.vault.reader import (
 # celda ni una por fila (N+1).
 RowRefs = Callable[[Iterable[str]], Mapping[str, tuple[str, str]]]
 
+# `users(ids)` devuelve `{id: (display_name, username, color)}` de los usuarios
+# que existan. Al serializar una respuesta se llama una vez con todos los ids;
+# al validar una fila se llama una vez por celda `person` (las filas se guardan
+# de una en una), que es una consulta por celda y no por respuesta.
+UserRefs = Callable[[Iterable[str]], Mapping[str, tuple[str, Optional[str], Optional[str]]]]
+
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Nombre visible de la columna del título cuando la base no la ha renombrado.
 DEFAULT_TITLE_NAME = "Título"
+
+
+# Tipos de propiedad cuyo valor sale de una lista cerrada (`options`) y que por
+# tanto pueden declarar en qué orden se leen sus valores (`sort_order`). Los
+# mismos que limpia el lector: una sola lista de tipos, o el guardado y la
+# lectura discreparían en qué propiedad puede declarar un orden.
+SELECT_TYPES = SORTABLE_TYPES
+
+# En qué modo ordena una selección: `manual` (el orden declarado en
+# `sort_order`) o `auto` (alfabético, con la regla natural de `app.views`).
+# Una base sin `sort_mode` ordena en `auto`; si declara `sort_order` sin modo se
+# lee en `manual`, que es lo que escribe una persona que pone la lista de
+# valores ordenada a mano (y lo que escribía la primera versión de esto).
+SORT_MODES = ("manual", "auto")
+
+
+def option_key(value: Any) -> str:
+    """La forma en que se compara un valor de selección con su orden declarado.
+
+    Sin distinguir mayúsculas ni espacios de sobra, como el filtro `eq`: `Alta`
+    y `alta` son la misma opción escrita de dos maneras, y una fila escrita a
+    mano en el `.md` tiene que caer en su sitio y no al final por una mayúscula.
+    """
+    if value is None or isinstance(value, (list, dict)):
+        return ""
+    return str(value).strip().casefold()
+
+
+def sort_mode(prop: dict) -> str:
+    """En qué modo ordena una selección: `manual` o `auto`.
+
+    - `manual`: el orden es el declarado en `sort_order` (y, si no lo hay, el de
+      `options`, que es como se crearon las columnas); se puede arrastrar en el
+      editor de la propiedad y en el tablero.
+    - `auto`: alfabético con la regla natural (sin mayúsculas ni tildes y con
+      los números como números), que es lo de siempre.
+
+    Sin `sort_mode` manda `sort_order`: si la propiedad declara un orden se lee
+    en `manual` (es lo que escribía la primera versión de esta función, y tirar
+    ese orden sin avisar sería romper un `.md` que ya lo tenía); si no declara
+    nada, en `auto`, que es el modo de las bases que no han pedido nada.
+    """
+    if not isinstance(prop, dict) or prop.get("type") not in SELECT_TYPES:
+        return "auto"
+    modo = str(prop.get("sort_mode") or "").strip().lower()
+    if modo in SORT_MODES:
+        return modo
+    return "manual" if sort_values(prop.get("sort_order")) else "auto"
+
+
+def declared_order(prop: dict) -> list[str]:
+    """Los valores de una selección en su orden manual, o `[]` si no lo tiene.
+
+    Solo una propiedad en modo `manual` declara orden: en `auto` el orden es el
+    alfabético y una lista de valores no pinta nada. En manual manda
+    `sort_order` y, si la propiedad no lo escribe, el orden de `options` (que es
+    el de las columnas del tablero y el que se ve al pasar a manual).
+
+    Solo vale en `select`/`multiselect`: en un texto el orden de una lista de
+    valores no significa nada. Lo leído se limpia igual que al guardarlo (sin
+    vacíos, sin repetir), así que un `.md` escrito a mano se comporta como uno
+    guardado desde la app.
+    """
+    if not isinstance(prop, dict) or prop.get("type") not in SELECT_TYPES:
+        return []
+    if sort_mode(prop) != "manual":
+        return []
+    return sort_values(prop.get("sort_order")) or sort_values(prop.get("options"))
+
+
+def schema_types(schema_def: list[dict]) -> dict[str, str]:
+    """`{clave: tipo}` de una base: lo que necesita el orden por tipo.
+
+    `app.views.apply_view` no mira el schema (solo filas y la configuración de
+    la vista); quien lo llama le pasa este mapa para que cada clave se ordene
+    por la regla de su tipo y no toda como texto.
+    """
+    return {
+        str(prop["key"]): str(prop.get("type"))
+        for prop in schema_def or []
+        if isinstance(prop, dict) and prop.get("key") and prop.get("type")
+    }
+
+
+def order_ranks(schema_def: list[dict]) -> dict[str, dict[str, int]]:
+    """`{clave: {valor: puesto}}` de las propiedades que ordenan en manual.
+
+    Es lo que consume la ordenación de una vista (`app.views.apply_view`): el
+    puesto de cada valor declarado, ya normalizado. Una propiedad en `auto` (o
+    sin orden declarado) no aparece en el mapa y se ordena por el texto natural,
+    como una base que no ha pedido nada.
+    """
+    ranks: dict[str, dict[str, int]] = {}
+    for prop in schema_def or []:
+        if not isinstance(prop, dict) or not prop.get("key"):
+            continue
+        orden = declared_order(prop)
+        if orden:
+            ranks[str(prop["key"])] = {
+                option_key(valor): puesto for puesto, valor in enumerate(orden)
+            }
+    return ranks
 
 
 def slug_key(name: str, taken: set[str]) -> str:
@@ -91,8 +217,8 @@ def plan_schema(
       «normaliza» sola: las bases con `proximo_contacto` siguen como están
       hasta que alguien renombre esa propiedad de verdad.
     - `borradas`: claves que ya no están en el schema (para limpiar las vistas
-      que las nombran en `group_by`, `date_property`, `filters`, `sort` o
-      `visible_properties`).
+      que las nombran en `group_by`, `date_property`, `start_property`,
+      `end_property`, `filters`, `sort` o `visible_properties`).
 
     Dos propiedades no pueden quedar con la misma clave; si el nombre nuevo
     choca con una existente, se le pone sufijo numérico (la clave es interna,
@@ -158,6 +284,17 @@ def plan_schema(
             prop["options"] = list(item["options"])
         if item.get("type") == RELATION:
             _plan_relation(prop, item, origen)
+        if item.get("type") == PARENT_ROW:
+            if any(otra.get("type") == PARENT_ROW for otra in finales):
+                otra = next(p for p in finales if p.get("type") == PARENT_ROW)
+                raise HTTPException(
+                    400,
+                    f"Una base solo puede tener una propiedad de subtareas: "
+                    f"«{otra.get('name')}» ya lo es. Cambia el tipo de «{name}» "
+                    "o quita una de las dos: la jerarquía de la base es una.",
+                )
+        _plan_done(prop, item, origen, name)
+        _plan_order(prop, item, origen, name)
         finales.append(prop)
 
     claves_finales = {p["key"] for p in finales}
@@ -196,6 +333,201 @@ def _plan_relation(prop: dict, item: dict, origen: Optional[dict]) -> None:
         multiple = (origen or {}).get("multiple")
     if relation_multiple({"multiple": multiple}):
         prop["multiple"] = True
+
+
+def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
+    """El marcador `done` de una propiedad, heredado de cuando lo cerrado lo
+    decía la columna.
+
+    Ya no es la verdad por sí solo: la base declara su regla en `closed:
+    {property, values}`, y mientras no la declare esto es lo que se lee como
+    regla (`app.closed.effective`, con `source: done`). La forma es la de
+    siempre: un `checkbox` con `done: true` (marcado = cerrada) o un
+    `select`/`multiselect` con `done: [valor, ...]` (la celda vale uno de ellos
+    = cerrada).
+
+    Si la petición no lo trae se conserva el que ya tenía la propiedad: el
+    diálogo de propiedades no pregunta por él, y guardar el resto de la base no
+    puede desactivar el contador sin que nadie lo haya pedido. `done: false`
+    (o una lista vacía) lo quita.
+
+    Un marcador que no cabe en el tipo **pedido en esta petición** es un 400
+    (quien llama se ha equivocado). Si venía heredado —la propiedad era una
+    selección con `done: [Hecho]` y ahora pasa a texto— se suelta: el contador
+    deja de contar cerradas, que es la verdad de esa base, y guardar el resto
+    del schema no puede fallar por un marcador que el usuario no ha escrito.
+
+    Lo mismo con las opciones de la propiedad: un `done` que nombre un valor
+    que no está en `options` no puede contar ninguna fila —la celda nunca
+    valdría ese valor—, así que el contador se quedaría en «0 de N» para
+    siempre y sin aviso. Es un 400 si viene pedido; si venía heredado se suelta,
+    como el caso del tipo (renombrar una opción no puede romper el guardado).
+
+    La comparación es la del lector (`app.closed.is_closed`): sin mayúsculas ni
+    espacios de sobra. Un `done: [HECHA]` sobre `options: [hecha]` cuenta, así
+    que no se rechaza; se guarda con la grafía de la opción, que es la que la
+    celda puede tener. Si el marcador viene heredado y la opción solo ha
+    cambiado de grafía, se queda (reescrito) en vez de soltarse: soltarlo dejaba
+    el contador en «0 de N» sin aviso, que es la trampa que esto cierra.
+    """
+    pedido = item.get("done")
+    crudo = pedido if pedido is not None else (origen or {}).get("done")
+    if crudo is None:
+        return
+
+    valores: list[str] = []
+    if isinstance(crudo, list):
+        valores = [str(v).strip() for v in crudo if str(v).strip()]
+        if not valores:
+            return
+    elif str(crudo).strip().lower() in ("false", "0", "no", "off", "") or crudo is False:
+        return
+
+    def rechazar(motivo: str) -> None:
+        if pedido is None:      # heredado: se suelta, no se rompe el guardado
+            return
+        raise HTTPException(400, f"«{name}»: {motivo}")
+
+    tipo = prop.get("type")
+    if tipo not in ("checkbox", "select", "multiselect"):
+        # `type` llega como `PropertyType` (un `str`-enum): su `str()` es
+        # «PropertyType.text», que no es lo que puede leer quien usa la API.
+        etiqueta = getattr(tipo, "value", tipo)
+        rechazar(
+            "`done` solo tiene sentido en una casilla o una selección (es la "
+            f"propiedad que dice si una fila está cerrada), y esta es de tipo «{etiqueta}»"
+        )
+        return
+    if tipo == "checkbox":
+        if valores:
+            rechazar("en una casilla basta `done: true`: se cierra cuando está marcada")
+            return
+        prop["done"] = True
+        return
+    if not valores:
+        rechazar(
+            "en una selección, `done` es la lista de valores que cuentan como "
+            "cerrada (`done: [Hecho]`)"
+        )
+        return
+    # `done` son valores de la celda, así que tienen que ser opciones de la
+    # propiedad: uno que no esté nunca coincidirá con la celda y el contador se
+    # quedaría en «0 de N» sin decir nada. Se compara **sin mayúsculas** —igual
+    # que el lector (`app.closed.is_closed`)— y se guarda la grafía de la
+    # opción: un `done: [HECHA]` sobre `options: [hecha]` sí cuenta, así que
+    # rechazarlo sería un 400 que miente, y dejarlo con la grafía tecleada
+    # escribiría un valor que la celda no tiene.
+    opciones = [
+        str(o).strip()
+        for o in (
+            prop.get("options")
+            if prop.get("options") is not None
+            else (origen or {}).get("options")
+        )
+        or []
+        if str(o).strip()
+    ]
+    if not opciones:
+        # Sin opciones declaradas no hay lista contra la que validar: cualquier
+        # valor de celda es válido (misma tolerancia que la celda de un select).
+        prop["done"] = valores
+        return
+    canonica = {opcion.casefold(): opcion for opcion in opciones}
+    elegidos: list[str] = []
+    fuera: list[str] = []
+    for valor in valores:
+        real = canonica.get(valor.casefold())
+        if real is None:
+            fuera.append(valor)
+        elif real not in elegidos:
+            elegidos.append(real)
+    if fuera:
+        sobran = ", ".join(f"«{v}»" for v in fuera)
+        rechazar(
+            f"{sobran} no {'está' if len(fuera) == 1 else 'están'} entre las "
+            "opciones de la propiedad, así que ninguna fila contaría como "
+            f"cerrada con {'él' if len(fuera) == 1 else 'ellos'}. Opciones: "
+            + ", ".join(opciones)
+        )
+        return
+    prop["done"] = elegidos
+
+
+def _plan_order(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
+    """El modo de orden de una selección y, si es manual, su orden de valores.
+
+    Se guarda en el `schema` de la base (el `.md` es la verdad), no en la vista:
+    el orden de los valores es de la propiedad, igual que sus `options`, así que
+    dos vistas de la misma base no pueden discrepar.
+
+    - `sort_mode: manual` escribe `sort_order` (limpio: sin vacíos, sin repetir,
+      sin espacios de sobra). Un valor declarado que ya no está en `options` se
+      queda: puede seguir en filas escritas a mano y ahí tiene su sitio.
+    - `sort_mode: auto` suelta `sort_order`: en automático el orden es el
+      alfabético y guardar una lista de puestos solo confundiría a quien lea el
+      `.md`. Es lo que hace el arrastre del tablero al pasar una columna de
+      automático a manual: manda el modo nuevo y el orden que el usuario acaba
+      de poner.
+    - Sin `sort_mode` en la petición se conserva el que ya tenía (el diálogo de
+      propiedades no siempre lo manda). Un `sort_order` nuevo sin modo es una
+      petición de orden manual: nadie escribe la lista para que se ignore.
+    - Un modo u orden en una propiedad que no es una selección es un 400 si
+      viene pedido; si venía heredado —la propiedad era una selección y ahora es
+      un texto— se suelta, para que guardar el resto del schema no falle.
+    """
+    tipo = prop.get("type")
+    pedido_modo = item.get("sort_mode")
+    pedido_orden = item.get("sort_order")
+
+    modo: Optional[str] = None
+    if pedido_modo is not None:
+        texto = str(pedido_modo).strip().lower()
+        if texto not in SORT_MODES:
+            raise HTTPException(
+                400, f"«{name}»: `sort_mode` es `manual` o `auto`, no {pedido_modo!r}"
+            )
+        if tipo not in SELECT_TYPES:
+            raise HTTPException(
+                400,
+                f"«{name}»: `sort_mode` solo tiene sentido en una selección "
+                f"(ahí elige entre el orden declarado y el alfabético), y esta "
+                f"es de tipo {tipo!r}",
+            )
+        modo = texto
+    elif origen is not None:
+        heredado = str(origen.get("sort_mode") or "").strip().lower()
+        modo = heredado if heredado in SORT_MODES else None
+
+    if pedido_orden is not None and not isinstance(pedido_orden, (list, str)):
+        raise HTTPException(400, f"«{name}»: `sort_order` es una lista de valores")
+    crudo = pedido_orden if pedido_orden is not None else (origen or {}).get("sort_order")
+    valores = sort_values(crudo) if crudo is not None else []
+
+    if valores and tipo not in SELECT_TYPES:
+        if pedido_orden is None:
+            valores = []          # heredado: se suelta sin romper el guardado
+        else:
+            raise HTTPException(
+                400,
+                f"«{name}»: `sort_order` solo tiene sentido en una selección "
+                f"(el orden de sus valores), y esta es de tipo {tipo!r}",
+            )
+
+    if modo is None:
+        modo = "manual" if valores else None
+
+    if modo == "auto":
+        # El modo manda: un orden guardado en automático no se aplica. Se
+        # escribe `auto` solo si lo pidió alguien (no se ensucia el `.md` de las
+        # bases que nunca han hablado del orden).
+        if pedido_modo is not None:
+            prop["sort_mode"] = "auto"
+        return
+
+    if modo == "manual":
+        prop["sort_mode"] = "manual"
+        if valores:
+            prop["sort_order"] = valores
 
 
 def relation_properties(schema_def: list[dict]) -> list[dict]:
@@ -285,6 +617,7 @@ def validate_properties(
     properties: dict[str, Any],
     *,
     refs: Optional[RowRefs] = None,
+    users: Optional[UserRefs] = None,
 ) -> dict[str, Any]:
     """Coacciona y valida las propiedades que llegan en una fila.
 
@@ -292,16 +625,26 @@ def validate_properties(
     hace falta si la base tiene propiedades `relation`; sin él, una relación no
     se puede validar (el id podría ser de cualquier base) y se rechaza con un
     500 explícito en vez de guardar algo que no apunta a nada.
+
+    `users` resuelve los ids de usuario de una propiedad `person`: el router
+    siempre lo pasa; sin él la celda se rechaza con un 500 explícito en vez de
+    guardar un id que no existe. Se consulta una vez por celda validada (al
+    guardar, las filas van de una en una); al serializar, una por respuesta.
     """
     allowed = {p["key"]: p for p in schema_def}
     unknown = set(properties) - set(allowed)
     if unknown:
         raise HTTPException(400, f"Propiedades no definidas en el schema: {', '.join(sorted(unknown))}")
 
-    return {key: _coerce(allowed[key], value, refs) for key, value in properties.items()}
+    return {key: _coerce(allowed[key], value, refs, users) for key, value in properties.items()}
 
 
-def _coerce(prop: dict, value: Any, refs: Optional[RowRefs] = None) -> Any:
+def _coerce(
+    prop: dict,
+    value: Any,
+    refs: Optional[RowRefs] = None,
+    users: Optional[UserRefs] = None,
+) -> Any:
     if value is None:
         return None
 
@@ -309,6 +652,11 @@ def _coerce(prop: dict, value: Any, refs: Optional[RowRefs] = None) -> Any:
 
     if ptype == RELATION:
         return _coerce_relation(prop, value, refs)
+
+    if ptype == PARENT_ROW:
+        return _coerce_parent(prop, value)
+    if ptype == PERSON:
+        return _coerce_person(prop, value, users)
 
     if ptype == "number":
         try:
@@ -338,6 +686,114 @@ def _coerce(prop: dict, value: Any, refs: Optional[RowRefs] = None) -> Any:
         return value
 
     return value  # text, date, url: sin validar formato en v1
+
+
+def _coerce_parent(prop: dict, value: Any) -> Any:
+    """Valida la FORMA de una celda `parent_row`: el id de una fila, y nada más.
+
+    Que la fila exista, que sea de esta misma base y que el vínculo no cierre un
+    ciclo lo comprueba `app.hierarchy.validate_parent` al guardar, que es quien
+    tiene delante las filas de la base. Aquí se rechaza lo que no puede ser un
+    id: una lista (la jerarquía es una madre, no varias), un mapa o un título.
+    Un valor vacío es «sin madre» (`None`), como en cualquier celda vacía.
+    """
+    nombre = f"«{prop.get('name') or prop.get('key')}»"
+    if isinstance(value, (list, dict)):
+        raise HTTPException(
+            400,
+            f"{nombre} guarda UNA fila madre: manda el id de una fila, no una lista",
+        )
+    pid = relation_id(value)
+    if pid is None:
+        raise HTTPException(
+            400,
+            f"{nombre}: {value!r} no es el id de una fila. Una subtarea guarda el "
+            "id de su fila madre, no su título.",
+        )
+    return pid
+
+
+def _coerce_person(prop: dict, value: Any, users: Optional[UserRefs]) -> Any:
+    """Valida una celda `person`: el id de un usuario que exista.
+
+    El mensaje de error nombra el **nombre visible** de la propiedad
+    (`«Responsable»`), como en `relation`: es lo único que el usuario ve en la
+    tabla. Una celda vacía es «sin asignar» (`None`, la clave se va del `.md`),
+    que es lo que hace que `is_empty` del filtro ya sirva sin un valor especial.
+    """
+    nombre = f"«{prop.get('name') or prop.get('key')}»"
+    if isinstance(value, (list, dict)):
+        raise HTTPException(
+            400, f"{nombre} guarda una persona: manda el id de un usuario, no una lista"
+        )
+    user_id = str(value).strip()
+    if not user_id:
+        return None
+    if users is None:           # pragma: no cover - el router siempre lo pasa
+        raise HTTPException(
+            500, f"{nombre}: no se puede comprobar el usuario sin acceso a la tabla de usuarios"
+        )
+    if user_id not in users([user_id]):
+        raise HTTPException(400, f"{nombre}: el usuario {user_id} no existe")
+    return user_id
+
+
+def person_properties(schema_def: list[dict]) -> list[dict]:
+    """Las propiedades `person` del schema, en su orden."""
+    return [
+        prop
+        for prop in schema_def
+        if isinstance(prop, dict) and prop.get("type") == PERSON and prop.get("key")
+    ]
+
+
+def person_keys(schema_def: list[dict]) -> frozenset[str]:
+    """Las claves de las propiedades `person` (para filtrar y ordenar)."""
+    return frozenset(prop["key"] for prop in person_properties(schema_def))
+
+
+def person_ids(schema_def: list[dict], properties: Iterable[dict]) -> list[str]:
+    """Los ids de usuario que referencian las celdas `person`, sin repetir.
+
+    Misma idea que `relation_ids`: la lista se resuelve de una vez al
+    serializar, no una consulta por celda.
+    """
+    ids: dict[str, None] = {}
+    props = person_properties(schema_def)
+    for row in properties:
+        for prop in props:
+            value = (row or {}).get(prop["key"])
+            if isinstance(value, str) and value.strip():
+                ids.setdefault(value.strip(), None)
+    return list(ids)
+
+
+def people_of(
+    schema_def: list[dict],
+    properties: dict[str, Any],
+    users: Mapping[str, tuple[str, Optional[str], Optional[str]]],
+) -> dict[str, dict[str, Any]]:
+    """`people` de una fila: `{clave: {id, display_name, username, color}}`.
+
+    El id se queda en `properties` aunque el usuario ya no exista, y aquí sale
+    con `display_name: null`: la celda «apunta a alguien que ya no está», que
+    es lo que el interfaz necesita para decirlo en vez de enseñar un hueco que
+    no explica nada.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for prop in person_properties(schema_def):
+        value = (properties or {}).get(prop["key"])
+        user_id = value.strip() if isinstance(value, str) else ""
+        if not user_id:
+            continue
+        usuario = users.get(user_id)
+        out[prop["key"]] = {
+            "id": user_id,
+            "display_name": usuario[0] if usuario else None,
+            "username": usuario[1] if usuario else None,
+            "color": usuario[2] if usuario else None,
+        }
+    return out
 
 
 def _coerce_relation(

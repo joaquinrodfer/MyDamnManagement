@@ -93,9 +93,9 @@ def reindexar_y_comparar_huella(client, index_path: Path) -> None:
 def test_crear_una_base_desde_la_plantilla_escribe_sus_ficheros(client, index_path, vault_path):
     base = client.post("/databases/from-template", json={"template": "crm"}).json()
 
-    fichero = vault_path / "Bases" / "Contactos.md"
+    fichero = vault_path / "Bases" / "CRM.md"
     assert fichero.exists(), "crear una base tiene que crear su .md"
-    assert (vault_path / "Bases" / "Contactos").is_dir(), "falta la carpeta de filas"
+    assert (vault_path / "Bases" / "CRM").is_dir(), "falta la carpeta de filas"
 
     datos = frontmatter(fichero)
     assert datos["type"] == "database"
@@ -109,7 +109,7 @@ def test_crear_una_base_desde_la_plantilla_escribe_sus_ficheros(client, index_pa
     ]
     # Las vistas van en el frontmatter, con su id y su `group_by` al mismo nivel
     # (ROADMAP §2.3).
-    assert [v["name"] for v in datos["views"]] == ["Pipeline", "Tabla"]
+    assert [v["name"] for v in datos["views"]] == ["Pipeline", "Tabla", "Agenda"]
     assert datos["views"][0]["type"] == "board"
     assert datos["views"][0]["group_by"] == "fase"
 
@@ -327,7 +327,7 @@ def test_borrar_el_indice_reconstruye_bases_filas_y_vistas_igual(
     antes_hash, antes_cuentas = huella(index_path)
     assert antes_cuentas["databases"] == 1
     assert antes_cuentas["rows"] == 3
-    assert antes_cuentas["views"] == 3
+    assert antes_cuentas["views"] == 4  # las tres de la plantilla + «Ganadas»
     assert antes_cuentas["pages"] == 4          # la base + tres filas
 
     for suffix in ("", "-wal", "-shm"):
@@ -338,7 +338,7 @@ def test_borrar_el_indice_reconstruye_bases_filas_y_vistas_igual(
         assert otro.get(f"/databases/{base['id']}").status_code == 200
         assert len(otro.get(f"/databases/{base['id']}/rows").json()) == 3
         assert [v["name"] for v in otro.get(f"/databases/{base['id']}/views").json()] == [
-            "Pipeline", "Tabla", "Ganadas",
+            "Pipeline", "Tabla", "Agenda", "Ganadas",
         ]
 
     despues_hash, despues_cuentas = huella(index_path)
@@ -563,7 +563,7 @@ def test_una_base_escrita_a_mano_se_indexa_con_su_schema_y_sus_vistas(client, va
 def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     client, index_path, vault_path, acceso
 ):
-    """`cp Bases/Contactos.md "Bases/Contactos copia.md"` es copiar y ya.
+    """`cp Bases/CRM.md "Bases/CRM copia.md"` es copiar y ya.
 
     Las dos bases traen las `views` con el mismo `id` en el frontmatter: la PK
     de `views` no puede hacerse con eso. El ADR acepta el `id` duplicado como
@@ -574,8 +574,8 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     que haga falta.
     """
     client.post("/databases/from-template", json={"template": "crm"})
-    original = vault_path / "Bases" / "Contactos.md"
-    copia = vault_path / "Bases" / "Contactos copia.md"
+    original = vault_path / "Bases" / "CRM.md"
+    copia = vault_path / "Bases" / "CRM copia.md"
     copia.write_text(texto(original), encoding="utf-8")
 
     respuesta = client.post("/reindex")
@@ -587,18 +587,20 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
 
     # Dos bases de verdad, no una que se come a la otra.
     bases = {b["title"]: b for b in client.get("/databases").json()}
-    assert set(bases) == {"Contactos", "Contactos copia"}
+    assert set(bases) == {"CRM", "CRM copia"}
 
-    # Cada una con sus dos vistas y sin compartir ids (la PK de `views`).
+    # Cada una con sus tres vistas y sin compartir ids (la PK de `views`).
     vistas = {
         titulo: client.get(f"/databases/{b['id']}/views").json()
         for titulo, b in bases.items()
     }
     ids = [v["id"] for lista in vistas.values() for v in lista]
-    assert len(ids) == 4 and len(set(ids)) == 4, ids
-    assert [v["name"] for v in vistas["Contactos copia"]] == ["Pipeline", "Tabla"]
+    assert len(ids) == 6 and len(set(ids)) == 6, ids
+    assert [v["name"] for v in vistas["CRM copia"]] == [
+        "Pipeline", "Tabla", "Agenda",
+    ]
     # La copia conserva el `group_by` de la vista.
-    assert vistas["Contactos copia"][0]["config"] == {"group_by": "fase"}
+    assert vistas["CRM copia"][0]["config"] == {"group_by": "fase"}
 
     # La huella no cambia entre reindexados (los ids derivados son estables) y
     # el arranque siguiente levanta con las dos bases.
@@ -606,11 +608,11 @@ def test_copiar_el_fichero_de_una_base_no_tumba_el_reindexado(
     with arrancar_de_nuevo() as otro:
         acceso(otro)
         despues = otro.get("/databases").json()
-        assert {b["title"] for b in despues} == {"Contactos", "Contactos copia"}
+        assert {b["title"] for b in despues} == {"CRM", "CRM copia"}
         # Las dos siguen sirviendo sus vistas y sus filas desde el índice.
         for base_reconstruida in despues:
             ruta = f"/databases/{base_reconstruida['id']}"
-            assert len(otro.get(f"{ruta}/views").json()) == 2, base_reconstruida["title"]
+            assert len(otro.get(f"{ruta}/views").json()) == 3, base_reconstruida["title"]
             assert otro.get(f"{ruta}/rows").status_code == 200, base_reconstruida["title"]
 
 

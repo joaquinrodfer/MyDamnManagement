@@ -4,23 +4,28 @@ from typing import Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app import schemas
+from app import closed, due, hierarchy, schemas
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
 from app.events import publish_database
 from app.properties import (
+    order_ranks,
+    people_of,
+    person_ids,
+    person_keys,
     plan_schema,
     related_refs,
     relation_ids,
+    schema_types,
     schema_with_relation_warnings,
     validate_properties,
 )
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
-from app.templates import TEMPLATES
+from app import templates as template_defs
 from app.vault.store import UNSET, VaultError
-from app.views import apply_view
+from app.views import apply_view, sort_keys, validar_rango
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
@@ -71,25 +76,64 @@ def _serialize_database(
         schema_def=schema_with_relation_warnings(db_def.schema_def, known_databases),
         title_name=db_def.title_name,
         title_hidden=db_def.title_hidden,
+        # La regla de «cerrada» viaja resuelta y con su origen: la interfaz
+        # enseña la columna marcada y puede decir que viene del `done` viejo.
+        closed=(
+            schemas.ClosedRule(
+                property=str(db_def.closed[closed.PROPERTY_KEY]),
+                values=list(db_def.closed.get(closed.VALUES_KEY) or []),
+                source=closed.SOURCE_DONE if db_def.closed_from_done else closed.SOURCE_BASE,
+            )
+            if db_def.closed
+            else None
+        ),
+        # Las plantillas de fila viajan con la base: el «+ Nueva fila» las
+        # ofrece sin otra consulta y el cliente no tiene que leer el `.md`.
+        # Con `values` coaccionados (el `.md` no infiere tipos y `Boolean("false")`
+        # es `true`) y con `error` cuando ya no encajan con el schema.
+        row_templates=[
+            schemas.RowTemplateRead(**t)
+            for t in template_defs.resolve_row_templates(
+                db_def.row_templates, db_def.schema_def
+            )
+        ],
         created_at=as_utc(db_def.created_at),
         updated_at=as_utc(db_def.updated_at),
     )
 
 
 def _serialize_rows(
-    repo: Repository, db_def: Database, rows: List[Page]
+    repo: Repository,
+    db_def: Database,
+    rows: List[Page],
+    *,
+    parent_key: Optional[str] = None,
+    counts: Optional[dict[str, tuple[int, int]]] = None,
+    users: Optional[dict] = None,
 ) -> List[schemas.RowRead]:
-    """Serializa filas resolviendo sus relaciones **en una sola consulta**.
+    """Serializa filas resolviendo relaciones y personas **en una consulta cada una**.
 
     Los ids de todas las celdas de relación de la respuesta se juntan y se
     resuelven de una vez (`repo.row_refs`): el coste es el de la respuesta, no
     el de cada fila. Lo que no resuelve (fila borrada) sale con `title: null`,
     y el id se queda en `properties`: la celda apunta a algo que ya no está y
     el interfaz tiene que poder decirlo.
+
+    Las celdas `person` hacen lo mismo con los usuarios (`repo.user_refs`): el
+    id se queda en `properties` y `people` lleva el nombre visible y el color.
+    `users` se puede pasar ya resuelto (el router lo necesita antes para
+    filtrar y ordenar por nombre); si no, se resuelve aquí.
     """
     properties = [row.properties or {} for row in rows]
     ids = relation_ids(db_def.schema_def, properties)
     refs = repo.row_refs(ids) if ids else {}
+    cuentas = counts or {}
+    # Un solo «hoy» por respuesta: la fecha de cada fila se compara contra el
+    # día del servidor (app.due), no contra el reloj de quien mira.
+    hoy = due.server_today()
+    if users is None:
+        gente = person_ids(db_def.schema_def, properties)
+        users = repo.user_refs(gente) if gente else {}
     return [
         schemas.RowRead(
             id=row.id,
@@ -98,6 +142,23 @@ def _serialize_rows(
             icon=row.icon,
             properties=props,
             related=related_refs(db_def.schema_def, props, refs),
+            # La jerarquía viaja resuelta: la clave de la celda la sabe el
+            # servidor (una base puede llamarla «Subtarea de» o «Paso de»), y
+            # con `parent_id` el cliente no tiene que preguntarla para saber
+            # qué filas son hijas de cuál.
+            parent_id=hierarchy.parent_of(props, parent_key),
+            children=schemas.RowChildren(
+                total=cuentas.get(str(row.id), (0, 0))[0],
+                closed=cuentas.get(str(row.id), (0, 0))[1],
+            ),
+            closed=closed.is_closed(db_def.closed, props),
+            # Qué fechas ya pasaron en esta fila. La regla de «no marcar lo
+            # cerrado» y la de «solo donde la base declara estado» viven en
+            # `app.due`: el cliente pinta la celda, no decide.
+            overdue_keys=due.overdue_date_keys(
+                db_def.schema_def, props, db_def.closed, hoy
+            ),
+            people=people_of(db_def.schema_def, props, users),
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
         )
@@ -105,10 +166,27 @@ def _serialize_rows(
     ]
 
 
+def _hierarchy_counts(
+    repo: Repository, db_def: Database
+) -> tuple[Optional[str], dict[str, tuple[int, int]]]:
+    """La clave de la jerarquía y el contador de cada madre, sobre toda la base.
+
+    El contador se cuenta sobre TODAS las filas de la base (una consulta), no
+    sobre las que deja pasar la vista: «1 de 3» es la verdad de la fila y no
+    cambia porque la vista filtre por otra cosa.
+    """
+    key = hierarchy.parent_key(db_def.schema_def)
+    if not key:
+        return None, {}
+    return key, hierarchy.child_counts(repo.list_rows(db_def.id), key, db_def.closed)
+
+
 def _serialize_row(
     repo: Repository, db_def: Database, row: Page
 ) -> schemas.RowRead:
-    return _serialize_rows(repo, db_def, [row])[0]
+    """Una fila con su contador de subtareas (contado sobre toda la base)."""
+    key, counts = _hierarchy_counts(repo, db_def)
+    return _serialize_rows(repo, db_def, [row], parent_key=key, counts=counts)[0]
 
 
 def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schemas.RowPageRead:
@@ -119,8 +197,35 @@ def _serialize_row_page(repo: Repository, db_def: Database, row: Page) -> schema
     camino de serialización. `body_markdown` sale del índice, que lo tiene
     porque lo leyó del `.md` al indexar: reindexar el vault devuelve lo mismo.
     """
-    base = _serialize_row(repo, db_def, row)
-    return schemas.RowPageRead(**base.model_dump(), body_markdown=row.body_markdown or "")
+    key = hierarchy.parent_key(db_def.schema_def)
+    # Una sola pasada por la base: de la misma lista salen el contador de la
+    # fila y sus subtareas (ver `_serialize_row`, que hace lo propio cuando la
+    # fila va sola).
+    todas = repo.list_rows(db_def.id)
+    counts = hierarchy.child_counts(todas, key, db_def.closed) if key else {}
+    base = _serialize_rows(repo, db_def, [row], parent_key=key, counts=counts)[0]
+    # Las subtareas van en orden de creación (el de `list_rows`): lo que se
+    # cuelga de una fila es un plan, y un plan se lee en el orden en que se
+    # escribió; el `sort` de una vista de la base no tiene por qué gobernarlo.
+    subtasks = (
+        _serialize_rows(
+            repo,
+            db_def,
+            [r for r in todas if hierarchy.parent_of(r, key) == str(row.id)],
+            parent_key=key,
+            counts=counts,
+        )
+        if key
+        else []
+    )
+    id_madre = hierarchy.parent_of(row.properties or {}, key)
+    madre = repo.row_refs([id_madre]).get(id_madre) if id_madre else None
+    return schemas.RowPageRead(
+        **base.model_dump(),
+        body_markdown=row.body_markdown or "",
+        subtasks=subtasks,
+        parent_title=madre[0] if madre else None,
+    )
 
 
 def _serialize_view(view: View) -> schemas.ViewRead:
@@ -146,6 +251,14 @@ def create_database(
     schema_def, _renames, _borradas = plan_schema(
         [], [p.model_dump() for p in payload.schema_def]
     )
+    # La regla de «cerrada» se valida contra las opciones del schema **antes**
+    # de escribir nada: un valor que no existe es un 400, no un `closed` que
+    # nunca cuenta.
+    closed_rule = None
+    if payload.closed is not None:
+        closed_rule = closed.validate(
+            schema_def, payload.closed.property, payload.closed.values
+        )
     with _vault_errors():
         db_def = repo.create_database(
             title=payload.title,
@@ -153,6 +266,7 @@ def create_database(
             icon=payload.icon or settings.default_icon,
             created_by=user.display_name,
             schema_def=schema_def,
+            closed_rule=closed_rule,
         )
     return _serialize_database(db_def, repo.database_ids())
 
@@ -170,10 +284,13 @@ def list_databases(repo: Repository = Depends(get_repo)):
 
 @router.get("/templates")
 def list_templates():
-    return [
-        {"key": key, "title": t["title"], "properties": [p["name"] for p in t["schema_def"]]}
-        for key, t in TEMPLATES.items()
-    ]
+    """Las plantillas de serie que ofrece «Crear desde plantilla».
+
+    Es un catálogo, no el contenido: nombre, descripción y qué propiedades y
+    vistas trae cada una. El `schema_def` se queda en el servidor y es lo que se
+    copia en el `.md` de la base nueva.
+    """
+    return template_defs.catalog()
 
 
 @router.post("/from-template", response_model=schemas.DatabaseRead)
@@ -182,17 +299,52 @@ def create_from_template(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    template = TEMPLATES.get(payload.template)
+    """Crea una base copiando una plantilla de serie.
+
+    La plantilla es **datos**: su schema, sus vistas, la regla `closed` y sus
+    plantillas de fila se escriben en el `.md` de la base nueva. A partir de ahí
+    son dos cosas independientes: cambiar la plantilla no cambia esta base.
+
+    Antes de escribir nada se valida la plantilla entera —tipos, opciones,
+    `closed`, vistas y plantillas de fila— y la carpeta destino: un tipo o un
+    valor que el código no conoce es un 400 con el motivo y **no se crea a
+    medias**. La base nace sin filas: no hay datos de ejemplo que borrar.
+    """
+    template = template_defs.TEMPLATES.get(payload.template)
     if not template:
         raise HTTPException(404, f"Plantilla '{payload.template}' no existe")
+
+    # Las claves de las propiedades se derivan del nombre visible, igual que en
+    # el alta normal; las plantillas las declaran explícitas y se respetan.
+    schema_def, _renames, _borradas = plan_schema(
+        [], [dict(p) for p in template["schema_def"]]
+    )
+    cuerpo = {
+        **template,
+        "schema_def": schema_def,
+        "views": template.get("views") or [],
+        "row_templates": template.get("row_templates") or [],
+    }
+    template_defs.validate_template(cuerpo)
+
+    closed_rule = None
+    if template.get("closed"):
+        closed_rule = closed.validate(
+            schema_def,
+            template["closed"].get(closed.PROPERTY_KEY),
+            template["closed"].get(closed.VALUES_KEY),
+        )
 
     with _vault_errors():
         db_def = repo.create_database(
             title=payload.title or template["title"],
+            parent_id=payload.parent_id,
             icon=settings.default_icon,
             created_by=user.display_name,
-            schema_def=template["schema_def"],
-            views=template["views"],
+            schema_def=schema_def,
+            views=template.get("views") or [],
+            closed_rule=closed_rule,
+            row_templates=cuerpo["row_templates"],
         )
     return _serialize_database(db_def, repo.database_ids())
 
@@ -204,10 +356,105 @@ def get_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
     )
 
 
-@router.patch("/{database_id}", response_model=schemas.DatabaseRead)
+@router.put("/{database_id}/closed", response_model=schemas.DatabaseRead)
+def set_closed(
+    database_id: uuid.UUID,
+    payload: schemas.ClosedValues,
+    repo: Repository = Depends(get_repo),
+):
+    """La base declara qué cuenta como fila cerrada.
+
+    Se valida contra las opciones reales de la propiedad —un valor que no
+    existe es un 400 que dice cuáles hay— y se escribe el bloque `closed:` en
+    el frontmatter, retirando los marcadores `done` viejos. Una sola propiedad
+    cerrada por base: si se manda otra, se mueve (una base no tiene dos
+    verdades sobre qué es estar cerrada).
+
+    No se toca ninguna fila: los contadores, «Mis tareas» y los filtros leen la
+    regla de la base, así que cambiarla recalcula sin reescribir los `.md`.
+    """
+    db_def = _get_database_or_404(repo, database_id)
+    rule = closed.validate(db_def.schema_def, payload.property, payload.values)
+    with _vault_errors():
+        actualizada = repo.set_closed(database_id, rule)
+    if actualizada is None:
+        raise HTTPException(404, "Base de datos no encontrada")
+    # M2: la tabla incrustada en una nota tiene que repintar sus contadores.
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
+
+
+@router.delete("/{database_id}/closed", response_model=schemas.DatabaseRead)
+def clear_closed(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    """La base deja de declarar estado.
+
+    Quitar la regla no cierra nada: el contador vuelve a «0 de N», «Mis tareas»
+    entra todo y los filtros `is_closed` no dejan pasar ninguna fila. Los `.md`
+    de las filas no se tocan (ni los valores de la columna de estado).
+    """
+    _get_database_or_404(repo, database_id)
+    with _vault_errors():
+        actualizada = repo.set_closed(database_id, None)
+    if actualizada is None:
+        raise HTTPException(404, "Base de datos no encontrada")
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
+
+
+@router.put("/{database_id}/row-templates", response_model=schemas.DatabaseRead)
+def set_row_templates(
+    database_id: uuid.UUID,
+    payload: schemas.RowTemplatesUpdate,
+    repo: Repository = Depends(get_repo),
+):
+    """Configura las plantillas de fila de la base (`row_templates:` en su `.md`).
+
+    Cada plantilla se valida contra el schema antes de escribir nada: una clave
+    que no existe, un valor que no es una opción o un tipo que no admite valor
+    por defecto son un 400 con el motivo, y el fichero se queda como estaba. Los
+    nombres no se repiten (son la forma de elegir la plantilla en el alta).
+    """
+    db_def = _get_database_or_404(repo, database_id)
+    templates = template_defs.validate_row_templates(
+        [t.model_dump() for t in payload.row_templates], db_def.schema_def
+    )
+    with _vault_errors():
+        actualizada = repo.set_row_templates(database_id, templates)
+    if actualizada is None:
+        raise HTTPException(404, "Base de datos no encontrada")
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
+
+
+@router.patch(
+    "/{database_id}",
+    response_model=schemas.DatabaseRead,
+    responses={
+        400: {
+            "description": (
+                "La petición trae `closed`: la regla de fila cerrada no se "
+                "cambia por aquí, sino en `PUT /databases/{id}/closed`."
+            )
+        }
+    },
+)
 def update_database(
     database_id: uuid.UUID, payload: schemas.DatabaseUpdate, repo: Repository = Depends(get_repo)
 ):
+    """Actualiza el título, el icono y el schema de una base.
+
+    La regla de qué cuenta como fila cerrada NO se cambia por aquí: tiene su
+    ruta (`PUT /databases/{id}/closed`) y su validación contra las opciones de
+    la propiedad. Un `closed` en el cuerpo es un 400 que lo dice — antes se
+    descartaba en silencio y la respuesta era un 200 que no había guardado
+    nada, así que un cliente que se equivocaba de ruta creía haber guardado.
+    """
+    if "closed" in payload.model_fields_set:
+        raise HTTPException(
+            400,
+            "la regla de estado cerrado no se cambia con PATCH /databases/{id}: "
+            f"usa PUT /databases/{database_id}/closed (o DELETE para quitarla)",
+        )
     with _vault_errors():
         db_def = repo.update_database(
             database_id,
@@ -242,12 +489,52 @@ def create_row(
     database_id: uuid.UUID, payload: schemas.RowCreate, repo: Repository = Depends(get_repo)
 ):
     db_def = _get_database_or_404(repo, database_id)
+    properties = dict(payload.properties or {})
+    body = payload.body_markdown or ""
+    # Un `template` en blanco es «sin plantilla»: el desplegable del alta manda
+    # el nombre elegido y vaciarlo no es pedir una plantilla llamada «», que es
+    # un 404 hablando de un nombre que nadie escribió.
+    nombre = (payload.template or "").strip()
+    if nombre:
+        # La plantilla se valida aquí también, aunque el alta ya haya pintado
+        # sus valores: es la última puerta antes de escribir, y una plantilla
+        # que miente (una opción que ya no existe, una columna borrada) es un
+        # 400 con el motivo, no una fila a medias. Lo que el usuario cambió en
+        # el formulario manda sobre el valor por defecto.
+        plantilla = next(
+            (
+                t
+                for t in db_def.row_templates
+                if str(t.get("name") or "").strip().casefold() == nombre.casefold()
+            ),
+            None,
+        )
+        if plantilla is None:
+            raise HTTPException(
+                404, f"La plantilla de fila «{nombre}» no existe en esta base"
+            )
+        por_defecto, cuerpo = template_defs.apply_row_template(
+            plantilla, db_def.schema_def
+        )
+        properties = {**por_defecto, **properties}
+        if not body:
+            body = cuerpo
     cleaned = validate_properties(
-        db_def.schema_def, payload.properties, refs=repo.row_refs
+        db_def.schema_def, properties, refs=repo.row_refs, users=repo.user_refs
+    )
+    # La jerarquía no puede colgar de otra base. Una fila nueva todavía no
+    # existe, así que aquí solo se puede comprobar el destino; los ciclos se
+    # comprueban al editar (ahí la fila ya está).
+    hierarchy.validate_parent(
+        db_def.schema_def, cleaned, row_id=None, rows=repo.list_rows(database_id)
     )
     with _vault_errors():
         row = repo.create_row(
-            database_id, title=payload.title, icon=payload.icon, properties=cleaned
+            database_id,
+            title=payload.title,
+            icon=payload.icon,
+            properties=cleaned,
+            body=body,
         )
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
     publish_database(database_id, "rows")
@@ -262,14 +549,64 @@ def list_rows(
 ):
     db_def = _get_database_or_404(repo, database_id)
     rows = repo.list_rows(database_id)
+    # El contador de una madre cuenta TODAS sus hijas, también las que la vista
+    # deja fuera: por eso se calcula antes de filtrar.
+    key, counts = _hierarchy_counts(repo, db_def)
+
+    # Una celda `person` guarda un id, pero el filtro se escribe con el nombre
+    # que se lee y el orden va por nombre: se resuelven los usuarios de TODAS
+    # las filas antes de filtrar, en una consulta (el filtro se lleva unas
+    # cuantas y el nombre del resto sigue haciendo falta para el orden).
+    claves_persona = person_keys(db_def.schema_def)
+    users: Optional[dict] = None
+    if claves_persona:
+        users = repo.user_refs(
+            person_ids(db_def.schema_def, [row.properties or {} for row in rows])
+        )
 
     if view is not None:
         view_def = repo.get_view(database_id, view)
         if view_def is None:
             raise HTTPException(404, "Vista no encontrada")
-        rows = apply_view(rows, view_def.config or {})
+        # El orden por tipo: el mapa de tipos siempre, y los títulos de las
+        # relaciones solo cuando la vista ordena por una (no se paga una
+        # consulta que la vista no va a mirar).
+        tipos = schema_types(db_def.schema_def)
+        refs_de_orden: dict[str, tuple[str, str]] = {}
+        if any(tipos.get(clave) == "relation" for clave in sort_keys(view_def.config or {})):
+            ids_relacion = relation_ids(
+                db_def.schema_def, [row.properties or {} for row in rows]
+            )
+            refs_de_orden = repo.row_refs(ids_relacion) if ids_relacion else {}
+        rows = apply_view(
+            rows,
+            view_def.config or {},
+            parent_key=key,
+            view_type=getattr(view_def.type, "value", view_def.type),
+            people={key: datos[0] for key, datos in (users or {}).items()},
+            person_keys=claves_persona,
+            closed_rule=db_def.closed,
+            # El orden declarado de cada selección en modo `manual`: ordenar
+            # por `prioridad` da alta, media, baja y no el alfabeto. Las bases
+            # que no lo declaran ordenan por el texto natural de su tipo.
+            orders=order_ranks(db_def.schema_def),
+            # El tipo de cada propiedad: cada clave ordena según el suyo
+            # (número, fecha, casilla, persona por nombre, relación por
+            # título...). Sin esto todo se ordenaba como texto.
+            types=tipos,
+            # Los títulos de las filas enlazadas, solo si alguna clave de
+            # orden es una relación (una consulta, no una por fila).
+            refs=refs_de_orden,
+        )
+    elif key:
+        # «Todas» no tiene vista que diga el nivel, así que se ven todas las
+        # filas; pero el orden sí es el de la jerarquía: una hija detrás de su
+        # madre, como en cualquier vista de la base.
+        rows = hierarchy.arrange(rows, key)
 
-    return _serialize_rows(repo, db_def, rows)
+    return _serialize_rows(
+        repo, db_def, rows, parent_key=key, counts=counts, users=users
+    )
 
 
 @router.get("/{database_id}/rows/{row_id}", response_model=schemas.RowPageRead)
@@ -298,7 +635,15 @@ def update_row(
     cleaned = None
     if payload.properties is not None:
         cleaned = validate_properties(
-            db_def.schema_def, payload.properties, refs=repo.row_refs
+            db_def.schema_def, payload.properties, refs=repo.row_refs, users=repo.user_refs
+        )
+        # Con la fila delante, la comprobación completa: ni su propia madre ni
+        # una descendiente suya (ciclo).
+        hierarchy.validate_parent(
+            db_def.schema_def,
+            cleaned,
+            row_id=str(row_id),
+            rows=repo.list_rows(database_id),
         )
 
     # El cuerpo es del `.md` de la fila, como el de una nota: `""` lo vacía,
@@ -340,7 +685,13 @@ def delete_row(
 def create_view(
     database_id: uuid.UUID, payload: schemas.ViewCreate, repo: Repository = Depends(get_repo)
 ):
-    _get_database_or_404(repo, database_id)
+    db_def = _get_database_or_404(repo, database_id)
+    # El rango de un calendario se valida contra el schema de la base, que el
+    # esquema de la petición no tiene: una vista que nombra una fecha que no
+    # existe es un 400 que dice cuál, no un calendario que cae a otra fecha.
+    motivo = validar_rango(payload.config, db_def.schema_def)
+    if motivo:
+        raise HTTPException(400, motivo)
     with _vault_errors():
         view = repo.create_view(database_id, name=payload.name, type=payload.type, config=payload.config)
     publish_database(database_id, "updated")
@@ -360,6 +711,10 @@ def update_view(
     payload: schemas.ViewUpdate,
     repo: Repository = Depends(get_repo),
 ):
+    db_def = _get_database_or_404(repo, database_id)
+    motivo = validar_rango(payload.config, db_def.schema_def)
+    if motivo:
+        raise HTTPException(400, motivo)
     with _vault_errors():
         view = repo.update_view(
             database_id, view_id, name=payload.name, type=payload.type, config=payload.config

@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -157,6 +157,35 @@ MIGRATIONS: dict[int, list[str]] = {
     hidden      INTEGER NOT NULL DEFAULT 0
 )""",
     ],
+    # v7: qué cuenta como «fila cerrada» es una regla de la BASE (`closed:
+    # {property, values}` en el frontmatter de `Bases/<slug>.md`), no un
+    # marcador `done` suelto dentro del `schema`. Aquí se guarda la regla
+    # declarada; la que implicaban los `done` viejos no se copia al índice: se
+    # deriva del schema al leer (`app.closed.effective`), así que no hace falta
+    # migrar ningún fichero.
+    #
+    # Va en su propia tabla y no en una columna nueva de `databases`, igual que
+    # `database_titles`: `CREATE TABLE IF NOT EXISTS` es idempotente y así la
+    # migración es inocua en un fichero creado ya con `SCHEMA_SQL` (donde la
+    # tabla existe y el `user_version` del fichero de pruebas puede ser viejo).
+    7: [
+        """CREATE TABLE IF NOT EXISTS database_closed (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    rule_json   TEXT NOT NULL
+)""",
+    ],
+    # v8: las plantillas de fila son parte de la base (`row_templates:` en el
+    # frontmatter de `Bases/<slug>.md`). Se copian al índice para que la
+    # interfaz las lea con la misma consulta que la base; el `.md` sigue siendo
+    # la verdad y un reindexado las reconstruye. Como `database_titles`, va en
+    # su propia tabla: `CREATE TABLE IF NOT EXISTS` es idempotente y la
+    # migración queda inocua en un fichero creado ya con `SCHEMA_SQL`.
+    8: [
+        """CREATE TABLE IF NOT EXISTS database_row_templates (
+    database_id  TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    templates_json TEXT NOT NULL
+)""",
+    ],
 }
 
 SCHEMA_SQL = """
@@ -199,6 +228,22 @@ CREATE TABLE databases (
     id          TEXT PRIMARY KEY,
     page_id     TEXT NOT NULL UNIQUE REFERENCES pages(id) ON DELETE CASCADE,
     schema_json TEXT NOT NULL
+);
+
+-- Qué cuenta como fila cerrada (v7): la regla que declara el frontmatter de la
+-- base (`closed: {property, values}`), o nada si la base no declara estado. Los
+-- marcadores `done` viejos no se copian: se derivan del `schema` al leer.
+CREATE TABLE database_closed (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    rule_json   TEXT NOT NULL
+);
+
+-- Plantillas de fila de la base (v8): nombre, valores por defecto de sus
+-- propiedades y cuerpo inicial. Viven en el frontmatter (`row_templates:`) y
+-- aquí solo se copian para leerlas con la base; sin fila, la base no tiene.
+CREATE TABLE database_row_templates (
+    database_id  TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    templates_json TEXT NOT NULL
 );
 
 -- Nombre visible y visibilidad de la columna del título (v6). El título no
@@ -304,7 +349,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 8;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -579,9 +624,14 @@ def _inspect(path: str) -> IndexInfo:
             _migrate(conn, version)
             version = SCHEMA_VERSION
 
+        # Toda tabla que una consulta normal necesita va aquí: sin esta
+        # comprobación, un índice al que le falta una (p. ej. `database_closed`,
+        # la regla de estado de cada base) arranca y luego revienta con un 500
+        # en la primera lectura, en vez de decir que el fichero no es el suyo.
         missing = {"pages", "databases", "views", "rows", "links",
                    "workspaces", "meta", "users", "sessions",
-                   "database_titles"} - _table_names(conn)
+                   "database_titles", "database_closed",
+                   "database_row_templates"} - _table_names(conn)
         if missing:
             raise IndexSchemaError(
                 "al índice le faltan tablas: " + ", ".join(sorted(missing))

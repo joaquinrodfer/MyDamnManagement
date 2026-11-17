@@ -12,6 +12,25 @@
 > pierde nada (`POST /reindex`). Bases y filas siguen en el índice (P2). Formato
 > en [`ADR-0001-formato-del-vault.md`](ADR-0001-formato-del-vault.md).
 >
+> **Nota de subtareas (2026-11-16).** Una fila puede colgar de otra fila de su
+> misma base: es una propiedad de tipo `parent_row` (una sola por base) cuyo
+> valor es el `id` de la madre, y la vista elige su nivel con `parent_level`
+> (`roots` en tabla y tablero, `all` en lista y calendario). La fila madre lleva
+> el contador de sus hijas cerradas; qué cuenta como cerrada es una regla de la
+> base (`closed: {property, values}` en su frontmatter), que se marca en el menú
+> de la columna del estado. Decisiones en
+> [`ADR-0006-subtareas.md`](ADR-0006-subtareas.md) y
+> [`ADR-0007-estado-cerrado.md`](ADR-0007-estado-cerrado.md).
+>
+> **Nota de avisos de vencimiento (2026-11-16).** Qué está vencido lo resta el
+> servidor (`backend/app/due.py`) contra su propio día y viaja hecho en la
+> respuesta: `GET /my-tasks` manda `today`, `counts.overdue`/`counts.today` y,
+> por tarea, `due` y `days`; cada fila manda `overdue_keys`, las fechas pasadas
+> de una fila abierta de una base con regla de cierre. La barra lateral, el
+> aviso de al entrar y la marca de la tabla leen esa misma cuenta; el cliente no
+> mira ningún reloj. Decisiones en
+> [`ADR-0008-avisos-de-vencimiento.md`](ADR-0008-avisos-de-vencimiento.md).
+>
 > Lo que sigue describe el diseño funcional (motor, rutas, flujos) y sigue
 > vigente en eso; el diagrama ER de §2 y el detalle de §4 conservan la forma del modelo
 > anterior (`page_content`, `tags`, `attachments`) porque P2 va a cambiar otra
@@ -26,7 +45,7 @@
 graph LR
     ENGINE["Motor genérico<br/>page · database · view<br/>properties: JSON"]
     NOTES["Notas / Wiki<br/>type = note<br/>body_markdown + wikilinks"]
-    CRM["CRM<br/>database 'Contactos' · vista board<br/>schema: Empresa, Fase, Valor"]
+    CRM["CRM<br/>database 'CRM' · vista board<br/>schema: Empresa, Fase, Valor"]
     TASKS["Tareas / Proyectos<br/>database 'Tareas' · vista board+calendar<br/>schema: Estado, Prioridad, Fecha"]
 
     ENGINE --> NOTES
@@ -177,7 +196,7 @@ Esto es lo que hace innecesario tener código de "CRM" o de "Tareas": el mismo e
 ```mermaid
 graph TD
     ENGINE["POST /databases<br/>{title, schema_def}"]
-    CRM_DEF["Contactos<br/>schema_def: empresa(text), fase(select), valor(number)"]
+    CRM_DEF["CRM<br/>schema_def: empresa(text), fase(select), valor(number)"]
     TASK_DEF["Tareas<br/>schema_def: estado(select), prioridad(select), hecha(checkbox)"]
 
     ENGINE --> CRM_DEF
@@ -194,7 +213,7 @@ graph TD
 
 ### Fase 3: las plantillas son datos, no motor nuevo
 
-`POST /databases/from-template` no añade capacidades al motor — llama exactamente a lo mismo que `POST /databases` + `POST /databases/{id}/views`, varias veces, con el `schema_def` y las `views` que trae `backend/app/templates.py` en vez de escritos a mano. Si en algún momento hiciera falta lógica propia para "crear un CRM" que no fuera reducible a datos sobre el motor genérico, sería la señal de que el motor no es tan genérico como parece.
+`POST /databases/from-template` no añade capacidades al motor — llama exactamente a lo mismo que `POST /databases` + `POST /databases/{id}/views`, varias veces, con el `schema_def` y las `views` que trae `backend/app/templates.py` en vez de escritos a mano. Las plantillas de serie son **«Proyecto»**, **«Tareas sueltas»**, **«CRM»** y **«Reuniones»** y nombran la base que crean con su propio `title` (`Bases/CRM.md`): el nombre no está escrito en ningún otro sitio. Si en algún momento hiciera falta lógica propia para "crear un CRM" que no fuera reducible a datos sobre el motor genérico, sería la señal de que el motor no es tan genérico como parece.
 
 ## 8. Panel visual: cliente puro sobre la misma API
 

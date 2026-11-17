@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.enums import PageType, ViewType
 from app.properties import DEFAULT_TITLE_NAME
@@ -106,6 +106,10 @@ class PropertyType(str, Enum):
     checkbox = "checkbox"
     relation = "relation"
     url = "url"
+    # `parent_row`: subtareas. La celda es el id de la fila madre, de la MISMA
+    # base, y una base tiene como mucho una propiedad de este tipo.
+    parent_row = "parent_row"
+    person = "person"
 
 
 class PropertyDef(BaseModel):
@@ -127,10 +131,26 @@ class PropertyDef(BaseModel):
     name: str
     type: PropertyType
     options: Optional[list[str]] = None  # para select / multiselect
+    # Orden semántico de esos valores: `[alta, media, baja]` es como se leen (y
+    # el orden de las columnas del tablero), no el alfabético. Es opt-in: una
+    # base que no lo declara se ordena como siempre. `None` al editar = «no lo
+    # toco» (se conserva el que ya tenía, ver `app.properties.plan_schema`);
+    # `[]` = bórralo.
+    sort_order: Optional[list[str]] = None
+    # Modo de orden de la misma selección: `manual` (manda `sort_order`, y el
+    # tablero agrupa en ese orden) o `auto` (alfabético natural). `None` al
+    # editar = «no lo toco»; sin ninguna de las dos claves la base ordena en
+    # `auto`, salvo que declare `sort_order`, que entonces se lee en manual.
+    sort_mode: Optional[str] = None
     # Solo en `relation`. `None` al editar = «no lo toco» (se conserva el que
     # ya tenía la propiedad, ver `app.properties.plan_schema`); `""` = bórralo.
     target_database: Optional[str] = None
     multiple: Optional[bool] = None
+    # Solo en la propiedad que dice si una fila está cerrada: `true` en un
+    # `checkbox` (marcado), o la lista de valores en un `select`/`multiselect`
+    # (la celda vale uno de ellos). Lo usa el contador de subtareas. `None` al
+    # editar = «no lo toco» (se conserva el que ya tenía).
+    done: Optional[Any] = None
 
     @field_validator("key")
     @classmethod
@@ -139,6 +159,32 @@ class PropertyDef(BaseModel):
         if v and not KEY_RE.match(v):
             raise ValueError("key debe ser snake_case (minúsculas, dígitos, _), empezando por letra")
         return v
+
+    @field_validator("sort_order", mode="before")
+    @classmethod
+    def sort_order_is_a_list(cls, v):
+        """El orden puede llegar escrito a mano como texto (`alta, media`).
+
+        La interfaz manda una lista; aceptar el texto con comas evita un 422
+        por un detalle de forma, igual que hace el lector del `.md`. Lo que no
+        sea texto ni lista lo rechaza la validación normal (`list[str]`).
+        """
+        if v is None or isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            return v.split(",")
+        return v
+
+    @field_validator("sort_mode")
+    @classmethod
+    def sort_mode_is_known(cls, v):
+        """El modo de orden es `manual` o `auto`; se normaliza lo escrito."""
+        if v is None:
+            return v
+        modo = str(v).strip().lower()
+        if modo not in ("manual", "auto"):
+            raise ValueError("sort_mode es `manual` o `auto`")
+        return modo
 
     @field_validator("multiple", mode="before")
     @classmethod
@@ -154,19 +200,100 @@ class PropertyDef(BaseModel):
         return str(v).strip().lower() in ("true", "1", "yes", "on", "si", "sí")
 
 
+class ClosedValues(BaseModel):
+    """Lo que la interfaz manda al declarar qué cuenta como fila cerrada.
+
+    `property` es la clave de la columna de estado y `values` los valores que
+    cierran (vacía en una casilla). El servidor lo valida contra las opciones
+    reales de la propiedad antes de escribir nada (`app.closed.validate`).
+    """
+
+    property: str = ""
+    values: list[str] = []
+
+
+class ClosedRule(BaseModel):
+    """La regla efectiva de una base, tal y como la lee la interfaz.
+
+    `source` dice de dónde sale: `base` (el bloque `closed:` del `.md`) o
+    `done` (el marcador viejo del schema, que se sigue leyendo para no romper
+    ninguna base y se convierte al guardar desde la interfaz).
+    """
+
+    property: str
+    values: list[str] = []
+    source: str = "base"
+
+
 class DatabaseCreate(BaseModel):
     title: str = "Sin título"
     icon: Optional[str] = None
     parent_id: Optional[uuid.UUID] = None
     schema_def: list[PropertyDef] = []
+    # La regla de qué cuenta como fila cerrada, si la plantilla la trae. Se
+    # valida contra las opciones del schema: un valor que no existe es un 400.
+    closed: Optional[ClosedValues] = None
 
 
 class DatabaseFromTemplate(BaseModel):
+    """Crear una base a partir de una plantilla de serie.
+
+    `title` es el nombre de la base nueva (si falta, el de la plantilla) y
+    `parent_id` la carpeta destino: una nota de la que cuelga. Sin él, la base
+    nace en `Bases/`, como cualquier base creada desde el diálogo.
+    """
+
     template: str
     title: Optional[str] = None
+    parent_id: Optional[uuid.UUID] = None
+
+
+class RowTemplate(BaseModel):
+    """Una plantilla de fila: nombre, valores por defecto y cuerpo inicial.
+
+    Vive en el frontmatter de su base (`row_templates:`) y se copia al índice.
+    `properties` está en la forma del `.md` (claves del schema y valores tal y
+    como se escriben); el servidor los valida contra el schema al guardarla y al
+    usarla, porque una plantilla que nombra un valor que no existe no puede
+    crear una fila a medias.
+    """
+
+    name: str
+    properties: dict[str, Any] = {}
+    body: str = ""
+
+
+class RowTemplateRead(RowTemplate):
+    """Una plantilla de fila tal y como la lee la interfaz.
+
+    `properties` es lo que dice el `.md` (texto: el fichero no infiere tipos) y
+    `values` los mismos valores coaccionados al tipo de su propiedad —un
+    `false` de verdad, un número, una fecha—, que es lo que se puede pintar en
+    un control. `error` explica por qué la plantilla ya no encaja con la base
+    (una opción que se quitó, una columna que se borró): el alta avisa con ese
+    motivo y no crea la fila a medias.
+    """
+
+    values: dict[str, Any] = {}
+    error: Optional[str] = None
+
+
+class RowTemplatesUpdate(BaseModel):
+    """El cuerpo de `PUT /databases/{id}/row-templates`."""
+
+    row_templates: list[RowTemplate] = []
 
 
 class DatabaseUpdate(BaseModel):
+    """El cuerpo de `PATCH /databases/{id}`: título, icono y schema.
+
+    La **regla de fila cerrada** no se cambia por esta ruta: tiene la suya
+    (`PUT /databases/{id}/closed`, con la validación contra las opciones reales
+    de la propiedad). El campo `closed` se declara solo para poder rechazarlo
+    con un 400 que diga dónde está: sin declararlo, Pydantic lo descartaba y el
+    cliente recibía un 200 de algo que no se había guardado.
+    """
+
     title: Optional[str] = None
     icon: Optional[str] = None
     schema_def: Optional[list[PropertyDef]] = None
@@ -176,6 +303,17 @@ class DatabaseUpdate(BaseModel):
     # `True` = la tabla deja de enseñar la columna del título. La fila se sigue
     # llamando por su `id` (el fichero), y su `title` sigue en el `.md`.
     title_hidden: Optional[bool] = None
+    # Solo para rechazarlo: `PATCH` no cambia la regla de estado cerrado. El
+    # router contesta 400 si la petición trae la clave (aunque venga a `null`),
+    # porque un 200 que no ha guardado nada es peor que un error que lo dice.
+    closed: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "No se cambia por aquí: la regla de fila cerrada se declara en "
+            "`PUT /databases/{id}/closed` (y se quita con `DELETE`). Un `closed` "
+            "en este cuerpo es un 400 que lo dice."
+        ),
+    )
 
 
 class DatabaseRead(BaseModel):
@@ -195,6 +333,16 @@ class DatabaseRead(BaseModel):
     # valores por defecto («Título», visible).
     title_name: str = DEFAULT_TITLE_NAME
     title_hidden: bool = False
+    # Qué cuenta como fila cerrada en esta base, o `None` si no declara estado
+    # (entonces nada se considera cerrado: ni el contador, ni «Mis tareas», ni
+    # los filtros). Viene resuelta: la interfaz no tiene que mirar los `done`
+    # viejos del schema.
+    closed: Optional[ClosedRule] = None
+    # Plantillas de fila de ESTA base, en el orden del `.md`: el «+ Nueva fila»
+    # las ofrece y el servidor las aplica por nombre. `[]` = la base no tiene.
+    # Viajan con sus valores ya coaccionados (`values`) y, si no encajan, con el
+    # motivo (`error`): el cliente no reinterpreta el texto del `.md`.
+    row_templates: list[RowTemplateRead] = []
     created_at: datetime
     updated_at: datetime
 
@@ -203,6 +351,16 @@ class RowCreate(BaseModel):
     title: str = "Sin título"
     icon: Optional[str] = None
     properties: dict[str, Any] = {}
+    # Nombre de la plantilla de fila con la que nace la fila (opcional). El
+    # servidor la valida contra el schema actual —una plantilla que miente es un
+    # 400 con el motivo, no una fila a medias— y rellena con sus valores las
+    # propiedades que el cuerpo no traiga. `properties` manda sobre la plantilla:
+    # lo que el usuario cambió en el alta se respeta. En blanco (o solo espacios)
+    # es «sin plantilla»: no se busca una plantilla llamada «».
+    template: Optional[str] = None
+    # Cuerpo markdown inicial de la fila (lo usa la plantilla de fila: una fila
+    # nueva puede nacer con su «## Qué revisar»). Ausente = cuerpo vacío.
+    body_markdown: Optional[str] = None
 
 
 class RowUpdate(BaseModel):
@@ -230,16 +388,80 @@ class RelatedRow(BaseModel):
     base_id: Optional[str] = None
 
 
+class RowChildren(BaseModel):
+    """El contador de la tarjeta: subtareas DIRECTAS de una fila.
+
+    `total` son las hijas y `closed` las que están cerradas según la regla de la
+    base (`app.closed.is_closed`: el bloque `closed: {property, values}` de su
+    `.md`). Se cuenta
+    sobre todas las filas de la base, no sobre las que deja pasar la vista: el
+    contador de una fila no puede cambiar porque la vista filtre por otra cosa.
+    """
+
+    total: int = 0
+    closed: int = 0
+class PersonRef(BaseModel):
+    """El usuario al que apunta una celda de tipo `person`, resuelto al leer.
+
+    `display_name: None` = el id guardado ya no está en `users` (se borró la
+    cuenta). El `.md` conserva el id y la celda enseña que ya no está, igual que
+    una relación con la fila borrada: una celda vacía no explicaría nada.
+    """
+
+    id: str
+    display_name: Optional[str] = None
+    username: Optional[str] = None
+    color: Optional[str] = None
+
+
 class RowRead(BaseModel):
     id: uuid.UUID
     database_id: uuid.UUID
     title: str
     icon: Optional[str] = None
     properties: dict[str, Any]
+    # El id de su fila madre si la base tiene jerarquía y esta fila es una
+    # subtarea. Es el mismo id que hay en la celda `parent_row` de
+    # `properties`, resuelto aparte para que el cliente no tenga que saber cuál
+    # es la columna; `null` = no cuelga de nadie (o de una fila que ya no está).
+    parent_id: Optional[str] = None
+    # Cuántas subtareas tiene y cuántas están cerradas: el «1 de 3» de la fila.
+    children: RowChildren = Field(default_factory=RowChildren)
+    # Si ESTA fila está cerrada, con la misma regla que cuenta el contador de su
+    # madre (`app.closed.is_closed`). Lo calcula el servidor para que el cliente
+    # no tenga que repetir la regla y las dos no puedan discrepar. Va como
+    # `description` (y no solo como comentario) porque es de lo que lee quien
+    # consume la API en el OpenAPI.
+    closed: bool = Field(
+        default=False,
+        description=(
+            "La fila está cerrada según la regla de la base "
+            "(`closed: {property, values}` en el `.md`), la misma con la que se "
+            "cuenta el contador de su madre."
+        ),
+    )
+    # Claves de las propiedades de fecha cuyo día ya pasó, para que la tabla
+    # marque esa celda. Vacío cuando la base no declara regla de cierre (sin
+    # estado no hay «sin terminar») o la fila está cerrada (una tarea hecha
+    # tarde no está vencida): la comparación la hace el servidor contra su
+    # propio día, así que dos husos no pueden pintar cosas distintas.
+    overdue_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Claves de las propiedades `date` con una fecha anterior al día del "
+            "servidor, en una fila abierta de una base que declara regla de "
+            "cierre. La tabla marca esas celdas."
+        ),
+    )
     # `{clave_de_la_propiedad: [fila, ...]}` de las propiedades `relation`, con
     # el título ya resuelto por el servidor (una consulta por respuesta). Una
     # fila sin relaciones devuelve `{}`.
     related: dict[str, list[RelatedRow]] = {}
+    # `{clave_de_la_propiedad: persona}` de las propiedades `person`, con el
+    # nombre visible ya resuelto por el servidor: la celda enseña el nombre y
+    # no el id, y el cliente no necesita la tabla de usuarios. Una fila sin
+    # personas devuelve `{}`.
+    people: dict[str, PersonRef] = {}
     created_at: datetime
     updated_at: datetime
 
@@ -254,6 +476,16 @@ class RowPageRead(RowRead):
     """
 
     body_markdown: str = ""
+    # Las subtareas de esta fila, como filas completas (título, estado y fecha
+    # salen de `properties` y de las fechas de la fila). Es la lista que la
+    # página de la fila enseña debajo de sus propiedades. Solo en la lectura de
+    # UNA fila: la tabla no arrastra las hijas de cada fila.
+    subtasks: list[RowRead] = []
+    # El id de su madre, si esta fila es una subtarea (para la miga de pan).
+    parent_id: Optional[str] = None
+    # El título de su madre, ya resuelto: la página de la fila puede decir de
+    # quién es sin pedir otra fila. `null` = no tiene madre (o ya no existe).
+    parent_title: Optional[str] = None
 
 
 class ViewCreate(BaseModel):
@@ -274,6 +506,73 @@ class ViewRead(BaseModel):
     name: str
     type: ViewType
     config: dict[str, Any]
+
+
+# --- Mis tareas (vista que cruza todas las bases) ------------------------
+
+
+class MyTaskCell(BaseModel):
+    """Una celda que la vista enseña: de qué propiedad sale y qué valor tiene.
+
+    `value` es el texto tal como está guardado (para una fecha, `YYYY-MM-DD`):
+    el nombre visible (`name`) va al lado porque la tabla de la base no está
+    abierta y sin él no se sabe qué se está leyendo.
+    """
+
+    key: str
+    name: str
+    value: str
+
+
+class MyTask(BaseModel):
+    """Una fila que es mía: de qué base viene y qué se enseña de ella."""
+
+    row_id: uuid.UUID
+    database_id: uuid.UUID
+    database_title: str
+    title: str
+    icon: Optional[str] = None
+    # `None` cuando la base no tiene una propiedad de selección que haga de
+    # estado (o la fila la tiene vacía): el interfaz no enseña hueco.
+    status: Optional[MyTaskCell] = None
+    # La primera propiedad `date` de la base. `None` = sin fecha o base sin
+    # ninguna propiedad de fecha.
+    date: Optional[MyTaskCell] = None
+    # En qué bloque cae la fecha, contado contra el día del **servidor**
+    # (`app.due`): `overdue` (ya pasó), `today`, `week` (de mañana al domingo de
+    # esta semana) o `later`. `None` = sin fecha legible, que no es un bloque
+    # sino la ausencia de uno.
+    due: Optional[str] = None
+    # Días de calendario que faltan para la fecha (negativo = ya pasó), con la
+    # misma cuenta que `due`. `None` = sin fecha legible.
+    days: Optional[int] = None
+
+
+class MyTasksCounts(BaseModel):
+    """Los dos números de la barra lateral, con el día del servidor."""
+
+    # Ya vencidas: fecha anterior a hoy y fila abierta.
+    overdue: int = 0
+    # Vencen hoy.
+    today: int = 0
+
+
+class MyTasksRead(BaseModel):
+    """`GET /my-tasks`: todas mis filas de todas las bases, de una vez.
+
+    `closed_values` viaja con la respuesta para que la interfaz pueda explicar
+    el criterio con la misma lista que se aplicó, y no con una copia que se
+    quede vieja. `today` y `counts` viajan para que la barra lateral no tenga
+    que mirar el reloj del navegador: el día con el que se ha comparado y el
+    resultado de la comparación los dice el servidor.
+    """
+
+    count: int
+    # El día del servidor con el que se ha comparado (`YYYY-MM-DD`).
+    today: str
+    counts: MyTasksCounts = Field(default_factory=MyTasksCounts)
+    closed_values: list[str]
+    tasks: list[MyTask]
 
 
 # --- Papelera (P1.2b) ---------------------------------------------------

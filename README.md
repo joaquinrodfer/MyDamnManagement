@@ -18,7 +18,7 @@ El detalle completo, con diagramas, está en [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ## Estado actual
 
-Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas (con selección múltiple y borrado en lote), editor de notas con formato en vivo y **edición por bloques** al estilo Notion (párrafo/H1-H5/listas/código/línea horizontal, seleccionables, convertibles entre sí —también con el comando `/`—, borrables en lote), tablas/tableros para las bases de datos, y botones de un clic para crear un **CRM** o un **gestor de tareas** ya configurados (Fase 3).
+Hay un **panel visual real** en [http://localhost:8000/](http://localhost:8000/) — árbol de páginas (con selección múltiple y borrado en lote), editor de notas con formato en vivo y **edición por bloques** al estilo Notion (párrafo/H1-H5/listas/código/línea horizontal, seleccionables, convertibles entre sí —también con el comando `/`—, borrables en lote), tablas/tableros para las bases de datos, y «Crear desde plantilla» con cuatro plantillas de serie —**Proyecto**, **Tareas sueltas**, **CRM** y **Reuniones**— que crean su base ya configurada y con **el nombre de la plantilla** (`Bases/CRM.md`, `Bases/Proyecto.md`…) (Fase 3).
 
 El resto del frontend sigue siendo HTML/CSS/JS plano sin build (`frontend/index.html` + `frontend/app.js`, servidos por la propia API); la única pieza compilada es el editor, vendorizado como un único archivo (`frontend/vendor/editor.bundle.js`, generado una vez con esbuild desde `frontend/editor-src/` — ver más abajo).
 
@@ -187,6 +187,7 @@ Solo hace falta repetirlo si tocas `frontend/editor-src/entry.js` (la lógica de
 | `/auth/tokens/{id}` | DELETE | Revoca un token de captura (404 si no es del usuario) |
 | `/capture`     | POST   | Crea una nota en la bandeja (`Bandeja/`) desde un atajo o un script: `{text, title?, source}` → `{id, title, path}`. Sesión **o** token de captura |
 | `/inbox`       | GET    | La bandeja: `{dir, count, pages}` para la sección «Bandeja (N)». Solo sesión |
+| `/my-tasks`    | GET    | «Mis tareas»: las filas de **todas** las bases cuyo responsable (`person`) eres tú, en una llamada: `{count, today, counts:{overdue, today}, closed_values, tasks:[{row_id, database_id, database_title, title, icon, status, date, due, days}]}`. Solo las abiertas, y lo vencido contado contra el día del servidor (ver abajo) |
 | `/manifest.webmanifest` | GET | Manifiesto de la PWA (`application/manifest+json`) |
 
 Salvo `/health`, `/login`, `/auth/login`, `/auth/setup`, `/auth/status`, `/manifest.webmanifest`, `/icons/*.png` y `/agent/...`, **todo lo de arriba pide sesión** (ver «Usuarios y acceso»): sin ella, `401 {"detail": "no autenticado"}` y, si la petición acepta HTML, un `303` al login.
@@ -205,12 +206,39 @@ Los wikilinks se escriben como `[[Título de la página]]` (o `[[Título\|Alias]
 | `/databases/{id}/rows/{id}` | GET / PATCH / DELETE | Leer, editar (merge parcial de `properties`) o borrar una fila |
 | `/databases/{id}/views` | POST / GET | Crear o listar vistas (`table`\|`board`\|`calendar`\|`list`) |
 | `/databases/{id}/views/{id}` | PATCH / DELETE | Editar o borrar una vista |
-| `/databases/templates` | GET | Lista las plantillas disponibles (`crm`, `tasks`) |
-| `/databases/from-template` | POST | Crea una `database` desde una plantilla: schema + vistas por defecto en una llamada |
+| `/databases/templates` | GET | Lista las plantillas disponibles (`proyecto`, `tasks`, `crm`, `reuniones`) con el `title` que llevará la base |
+| `/databases/from-template` | POST | Crea una `database` desde una plantilla (`template` + `title` opcional): schema + vistas por defecto en una llamada; sin `title`, la base se llama como la plantilla |
 
-Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": [{"key":"valor","dir":"desc"}], "group_by": "fase", "visible_properties": ["fase","valor"]}`. `filters` y `sort` los aplica el backend (`app/views.py`) sobre las filas de la vista, y son **de esa vista**: dos pestañas de la misma base pueden filtrar distinto y la base sin vista no filtra. `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
+Una `view.config` tiene esta forma: `{"filters": [{"key":"fase","op":"eq","value":"ganado"}], "sort": [{"key":"valor","dir":"desc"}], "group_by": "fase", "visible_properties": ["fase","valor"], "parent_level": "roots"}`. `filters` y `sort` los aplica el backend (`app/views.py`) sobre las filas de la vista, y son **de esa vista**: dos pestañas de la misma base pueden filtrar distinto y la base sin vista no filtra. `group_by` y `visible_properties` son metadatos para que el frontend decida cómo dibujar la vista.
 
 `filters` es una lista de condiciones que se cumplen **todas** (Y). `op` es uno de `eq`, `neq`, `contains` (texto), `gt`, `gte`, `lt`, `lte` (número o fecha), `before`, `after` (fecha), `checked`, `unchecked` (casilla), `includes` (relación) e `is_empty`, `is_not_empty`; `value` no se escribe en los operadores que no lo necesitan. `sort` es una lista de claves en orden de prioridad (`dir`: `asc` o `desc`), y las filas sin valor en la clave van al final en las dos direcciones. La forma antigua de una sola clave (`"sort": {"key":"valor","dir":"desc"}`) se sigue leyendo; no se reescribe al editarla.
+
+**Subtareas.** Una fila puede ser hija de otra fila **de su misma base**: se
+declara con una propiedad de tipo `parent_row` (una sola por base) y su celda
+guarda el `id` de la fila madre en el frontmatter de la hija:
+`paso_de: 7a1b4c5d-…` (el id, nunca el título). La madre lleva el contador de sus
+hijas directas —«1 de 3», cerradas— y ese «cerrada» lo define el schema con
+`done` en la propiedad del estado: `done: true` en una casilla o
+`done: [Hecho, Cancelado]` en una selección. Se marca en el diálogo de
+**Propiedades** de la base («esta propiedad dice si la fila está cerrada»), que
+lo guarda en el `.md`; sin ninguna propiedad marcada, ninguna hija cuenta como
+cerrada. La vista elige si enseña solo las madres
+(`parent_level: roots`, el defecto en tabla y tablero: una hija ya se ve bajo su
+madre) o todas (`all`, con las hijas detrás de su madre; el defecto en lista y
+calendario); «Todas (sin vista)» las enseña todas. La fila abierta como página
+trae sus `subtasks` (título, estado y fecha) y crea una nueva ya enlazada. Un
+ciclo —una fila colgando de sí misma o de una descendiente suya— es un **400**
+con la ruta del círculo, y una madre de otra base también. El vínculo no se
+escribe en `links`: el grafo lo pinta como arista `kind: "subtask"`. Decisiones
+en [`docs/ADR-0006-subtareas.md`](docs/ADR-0006-subtareas.md).
+
+### Mis tareas (`GET /my-tasks`)
+
+Una llamada, no cuarenta: el servidor lee los `schema_def` de todas las bases en una consulta, se queda con las que tienen alguna propiedad `person` y pide las filas de esas bases en otra; el filtro por persona se hace en memoria sobre el JSON de la fila. Devuelve, por cada fila cuyo responsable eres tú, **de qué base viene** (`database_title`), el título, el estado y la fecha límite. La propiedad de estado es la de **selección** llamada «Estado» o con la clave `estado` (por clave primero: renombrarla no la pierde); la fecha es la **primera** propiedad `date` de la base. Si la base no tiene una u otra, ese campo viene `null` y la interfaz no enseña hueco. El panel agrupa por fecha (vencidas / hoy / esta semana / resto) y abre cada fila como página.
+
+**Qué está vencido lo decide el servidor, no el reloj del navegador.** `app/due.py` compara la fecha de cada fila contra el día local del servidor (`server_today()`) y manda la resta hecha: `today` (el día con el que comparó), `counts.overdue` / `counts.today` (los dos números de la barra lateral: solo aparecen si hay algo) y, por tarea, `due` (`overdue` / `today` / `week` / `later`, o `null` sin fecha) y `days`. La vista reparte sus bloques con eso, y al entrar con algo vencido sale un aviso descartable que no vuelve en esa sesión si se cierra. Así el contador, el aviso y la lista leen la misma resta y dos portátiles en husos distintos no pueden ver dos «hoy». En la tabla, cada fila manda además `overdue_keys` —las propiedades de fecha que ya pasaron— y la celda se pinta en tono de aviso **solo si la base declara regla de cierre y la fila no está cerrada**: una tarea hecha tarde no está vencida. Una fecha imposible no cuenta como vencida. Nada de esto sale de la app: sin correo, sin push y sin nada en segundo plano. Decisiones en [`docs/ADR-0008-avisos-de-vencimiento.md`](docs/ADR-0008-avisos-de-vencimiento.md).
+
+Solo salen las **abiertas**. Manda la regla de cada base: si el schema marca una propiedad con `done` (lo que ya usa el contador de subtareas — `done: true` en una casilla, `done: [Hecho, Cancelado]` en una selección), una fila cerrada según esa regla no sale, y **no se mezcla con la lista de respaldo** (si la base dice que «Hecho» no cierra, sus filas con «Hecho» salen: la regla es suya y es la misma que cuenta sus subtareas). Si la base no marca nada, se usa la lista de respaldo —`hecho, hecha, hechos, hechas, cerrado, cerrada, cerrados, cerradas, done, ganado, ganada, ganados, ganadas`, comparada sin acentos ni mayúsculas— sobre su propiedad de estado; y una base **sin** propiedad de estado y sin marcador entra entera (no hay nada que diga que sus filas están hechas). La lista de respaldo viaja en la respuesta (`closed_values`) y la vista la escribe en una nota, así que el criterio se lee en pantalla y no se puede quedar viejo.
 
 ### Agentes (`/agent/...`)
 
