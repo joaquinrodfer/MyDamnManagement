@@ -1233,7 +1233,12 @@ function blockHandleEventHandlers(onBlockContextMenu) {
       // El clic derecho actúa sobre lo que ya estuviera marcado (con dos
       // marcados no se reduce a uno); con un solo bloque, sobre ese.
       const indices = selected.has(idx) ? selected : new Set([idx]);
-      if (indices !== selected) selectBlocks(view, indices);
+      // También cuando el bloque YA estaba marcado: si el documento traía una
+      // selección de texto viva, el clic derecho tampoco puede dejarla ahí (es
+      // el mismo defecto que el clic de la banda, por otra puerta).
+      if (indices !== selected || view.state.selection.ranges.some((range) => !range.empty)) {
+        selectBlocks(view, indices);
+      }
       openBlockMenu(view, indices, event.clientX, event.clientY, onBlockContextMenu);
       return true;
     },
@@ -1320,14 +1325,25 @@ function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
   });
 }
 
-function selectBlocks(view, indices) {
+export function selectBlocks(view, indices) {
   // Ni una selección de documento: marcar un bloque NO selecciona su texto. La
   // marca la pinta el editor (`cm-mdm-line-marked` / `cm-mdm-dblock-marked`), y
   // `window.getSelection()` se queda vacío, así que Ctrl+C no se lleva el texto
   // de un bloque que el usuario creía haber cogido entero (t_c2c98f7b).
+  //
+  // Vaciar el DOM no basta si el ESTADO de CodeMirror conserva un rango: el
+  // `view.focus()` que viene después -- y cualquier sincronización de selección
+  // del propio editor -- vuelve a escribir en el DOM el rango que el estado
+  // siga teniendo, y la selección de texto reaparece intacta encima del bloque
+  // marcado. Por eso el rango viejo se colapsa en ESTA misma transacción, en el
+  // arranque del primer bloque marcado.
+  const ordered = [...indices].sort((a, b) => a - b);
+  const block = ordered.length ? view.state.field(blockField).blocks[ordered[0]] : null;
+  const stale = Boolean(block) && view.state.selection.ranges.some((range) => !range.empty);
   clearNativeSelection();
   view.dispatch({
     effects: setSelectedBlocks.of(indices),
+    ...(stale ? { selection: EditorSelection.cursor(block.from) } : null),
     // Marcar un bloque no es escribir: si esto entrara en el historial, cada
     // ⌘⇧Z tendría que gastar una pulsación en la selección de por medio antes
     // de llegar al borrado que de verdad se quiere rehacer.
@@ -1474,7 +1490,11 @@ function startDragGhost(view, block, nodes = null) {
       .querySelectorAll(".cm-mdm-block-handle-wrap, .cm-mdm-block-dot-wrap")
       .forEach((el) => el.remove());
     copy.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
-    copy.classList.remove("cm-mdm-line-marked");
+    // La marca no viaja en la copia: si el bloque ya estaba marcado al
+    // empezar el arrastre, el clon salía con el fondo de «marcado» y parecían
+    // dos bloques seleccionados deslizándose. La base incrustada marca su
+    // propio envoltorio con `cm-mdm-dblock-marked`.
+    copy.classList.remove("cm-mdm-line-marked", "cm-mdm-dblock-marked", "cm-mdm-line-dragging");
     ghost.appendChild(copy);
   }
   document.body.appendChild(ghost);
