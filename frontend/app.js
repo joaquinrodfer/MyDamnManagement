@@ -451,7 +451,10 @@ async function pollStatus() {
 }
 
 function setDot(name, ok) {
+  // Los puntos api/db ya no se enseñan (se quitaron de la cabecera); el sondeo
+  // sigue porque un 401 en él es lo que manda al login con la sesión caducada.
   const el = document.getElementById(`dot-${name}`);
+  if (!el) return;
   el.classList.toggle("ok", ok === true);
   el.classList.toggle("down", ok === false);
 }
@@ -688,13 +691,17 @@ function paintUserChip() {
     return;
   }
   wrap.hidden = false;
-  chip.querySelector(".user-dot").style.background = me.color || "var(--ink-muted)";
+  // La inicial sobre tu color, como el cuadrado del espacio en Notion.
+  const avatar = chip.querySelector(".user-avatar");
+  avatar.style.background = me.color || "var(--ink-muted)";
+  avatar.textContent = (me.display_name || me.username || "?").trim().charAt(0).toUpperCase();
   chip.querySelector(".user-chip-name").textContent = me.display_name;
   chip.title = `${me.display_name} (@${me.username})${me.is_admin ? " · administrador" : ""}`;
   chip.setAttribute("aria-label", `Tu cuenta: ${me.display_name}. Abrir el menú`);
-  // «Usuarios» solo existe para un admin: a los demás no se les enseña un botón
-  // que solo puede dar 403.
-  menu.querySelector('[data-action="users"]').hidden = !me.is_admin;
+  // «Administración» solo existe para un admin: a los demás no se les enseña
+  // un apartado que solo puede dar 403.
+  const pestanaAdmin = document.querySelector('.settings-tab[data-section="admin"]');
+  if (pestanaAdmin) pestanaAdmin.hidden = !me.is_admin;
 }
 
 function initUserChip() {
@@ -729,17 +736,9 @@ function initUserChip() {
     }
   });
 
-  menu.querySelector('[data-action="password"]').addEventListener("click", () => {
+  menu.querySelector('[data-action="settings"]').addEventListener("click", () => {
     closeMenu();
-    openPasswordDialog();
-  });
-  menu.querySelector('[data-action="users"]').addEventListener("click", () => {
-    closeMenu();
-    openUsersDialog();
-  });
-  menu.querySelector('[data-action="tokens"]').addEventListener("click", () => {
-    closeMenu();
-    openTokensDialog();
+    openSettings();
   });
   menu.querySelector('[data-action="logout"]').addEventListener("click", () => {
     closeMenu();
@@ -779,7 +778,6 @@ async function logOut() {
 
 // ------------------------------------------------------- diálogo: contraseña
 
-const passwordDialog = document.getElementById("dialog-password");
 const passwordForm = document.getElementById("form-password");
 const passwordNote = document.getElementById("pw-note");
 const PASSWORD_NOTE = passwordNote?.textContent || "";
@@ -793,13 +791,12 @@ function setFormNote(el, text, kind = "") {
   el.classList.toggle("form-ok", kind === "ok");
 }
 
-function openPasswordDialog() {
-  if (!passwordDialog) return;
+/** Deja el formulario de la contraseña como nuevo (al entrar en «Usuario»). */
+function prepararContrasena() {
+  if (!passwordForm) return;
   passwordForm.reset();
   setFormNote(passwordNote, PASSWORD_NOTE);
   document.getElementById("btn-save-password").disabled = false;
-  passwordDialog.showModal();
-  document.getElementById("pw-current").focus();
 }
 
 passwordForm?.addEventListener("submit", async (event) => {
@@ -846,13 +843,9 @@ passwordForm?.addEventListener("submit", async (event) => {
   }
 });
 
-document.getElementById("btn-cancel-password")?.addEventListener("click", () => {
-  passwordDialog.close();
-});
 
 // --------------------------------------------------------- diálogo: usuarios
 
-const usersDialog = document.getElementById("dialog-users");
 const usersNote = document.getElementById("users-note");
 const usersList = document.getElementById("users-list");
 const newUserForm = document.getElementById("form-new-user");
@@ -913,15 +906,15 @@ function renderKnownUsers() {
   return renderUsers([...knownUsers.values()]);
 }
 
-async function openUsersDialog() {
-  if (!usersDialog) return;
+/** El apartado «Administración»: el formulario limpio y la lista del servidor. */
+async function cargarUsuariosDeAjustes() {
+  if (!usersList || !newUserForm) return;
   newUserForm.reset();
   setFormNote(newUserNote, NEW_USER_NOTE);
   // Se vuelve a preguntar en cada apertura: puede que la API ya lo tenga.
   usersListUnavailable = false;
   renderKnownUsers();
   setFormNote(usersNote, "Cargando usuarios…");
-  usersDialog.showModal();
   try {
     // El listado es del servidor (`GET /auth/users`, solo admin): un segundo
     // admin en un navegador limpio ve a todos, no solo a sí mismo.
@@ -985,9 +978,6 @@ newUserForm?.addEventListener("submit", async (event) => {
   }
 });
 
-document.getElementById("btn-close-users")?.addEventListener("click", () => {
-  usersDialog.close();
-});
 
 // ------------------------------------------------- bandeja de capturas (P13)
 //
@@ -1531,7 +1521,6 @@ async function procesarNota() {
 
 // --------------------------------------------------- diálogo: tokens (P13)
 
-const tokensDialog = document.getElementById("dialog-tokens");
 const tokensNote = document.getElementById("tokens-note");
 const tokensList = document.getElementById("tokens-list");
 const newTokenForm = document.getElementById("form-new-token");
@@ -1593,13 +1582,13 @@ async function loadTokens() {
   }
 }
 
-async function openTokensDialog() {
-  if (!tokensDialog) return;
+/** Los tokens de captura, al entrar en «Usuario»: sin el secreto de antes. */
+async function cargarTokensDeAjustes() {
+  if (!tokensList) return;
   if (tokenReveal) tokenReveal.hidden = true;
   if (newTokenForm) newTokenForm.reset();
   setFormNote(tokensNote, TOKENS_NOTE);
   setFormNote(newTokenNote, NEW_TOKEN_NOTE);
-  tokensDialog.showModal();
   await loadTokens();
 }
 
@@ -1673,8 +1662,113 @@ document.getElementById("btn-copy-token")?.addEventListener("click", async (even
   }, 1500);
 });
 
-document.getElementById("btn-close-tokens")?.addEventListener("click", () => {
-  tokensDialog.close();
+// ------------------------------------------------------------------ ajustes
+// Una ventana con apartados (como en Notion): «Aplicación» (tema), «Usuario»
+// (nombre visible, contraseña y tokens de captura) y, solo para un admin,
+// «Administración» (usuarios). Se abre desde el menú del usuario, abajo en la
+// barra lateral. Cada apartado se prepara al entrar en él: los formularios
+// limpios y las listas pedidas otra vez al servidor.
+
+const settingsDialog = document.getElementById("dialog-settings");
+const profileForm = document.getElementById("form-profile");
+const profileNote = document.getElementById("profile-note");
+const PROFILE_NOTE_HTML = profileNote?.innerHTML || "";
+
+function mostrarApartadoDeAjustes(nombre) {
+  if (!settingsDialog) return;
+  const pestana = settingsDialog.querySelector(`.settings-tab[data-section="${nombre}"]`);
+  // Un apartado que no toca (Administración sin ser admin) no se abre.
+  if (!pestana || pestana.hidden) nombre = "app";
+  settingsDialog.querySelectorAll(".settings-tab").forEach((tab) => {
+    const activa = tab.dataset.section === nombre;
+    tab.classList.toggle("active", activa);
+    tab.setAttribute("aria-current", activa ? "page" : "false");
+  });
+  settingsDialog.querySelectorAll(".settings-section").forEach((sec) => {
+    sec.hidden = sec.dataset.section !== nombre;
+  });
+  settingsDialog.querySelector(".settings-body")?.scrollTo?.(0, 0);
+  if (nombre === "app") sincronizarTemaEnAjustes();
+  if (nombre === "user") {
+    prepararPerfil();
+    prepararContrasena();
+    cargarTokensDeAjustes();
+  }
+  if (nombre === "admin") cargarUsuariosDeAjustes();
+}
+
+function openSettings(apartado = "app") {
+  if (!settingsDialog) return;
+  if (!settingsDialog.open) settingsDialog.showModal();
+  mostrarApartadoDeAjustes(apartado);
+  settingsDialog.querySelector(".settings-tab.active")?.focus();
+}
+
+settingsDialog?.querySelectorAll(".settings-tab").forEach((tab) => {
+  tab.addEventListener("click", () => mostrarApartadoDeAjustes(tab.dataset.section));
+});
+document.getElementById("btn-close-settings")?.addEventListener("click", () => {
+  settingsDialog.close();
+});
+// Clic en el fondo (fuera de la ventana): se cierra, como cualquier panel.
+settingsDialog?.addEventListener("click", (e) => {
+  if (e.target === settingsDialog) settingsDialog.close();
+});
+
+/** Las opciones de tema, marcadas con el que hay puesto. */
+function sincronizarTemaEnAjustes() {
+  const actual = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  document.querySelectorAll('input[name="settings-theme"]').forEach((input) => {
+    input.checked = input.value === actual;
+  });
+}
+document.querySelectorAll('input[name="settings-theme"]').forEach((input) => {
+  input.addEventListener("change", () => {
+    if (input.checked) applyTheme(input.value);
+  });
+});
+
+function prepararPerfil() {
+  if (!profileForm) return;
+  const me = sessionUser.me;
+  document.getElementById("profile-name").value = me?.display_name || "";
+  if (profileNote) {
+    profileNote.innerHTML = PROFILE_NOTE_HTML;
+    profileNote.classList.remove("form-error", "form-ok");
+  }
+  const usuario = document.getElementById("profile-username");
+  if (usuario) usuario.textContent = me ? `@${me.username}` : "tu usuario";
+  document.getElementById("btn-save-profile").disabled = false;
+}
+
+profileForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const nombre = document.getElementById("profile-name").value.trim();
+  if (!nombre) {
+    return setFormNote(profileNote, "El nombre visible no puede estar vacío.", "error");
+  }
+  if (nombre === sessionUser.me?.display_name) {
+    return setFormNote(profileNote, "Ese ya es tu nombre visible.", "ok");
+  }
+  const guardar = document.getElementById("btn-save-profile");
+  guardar.disabled = true;
+  setFormNote(profileNote, "Guardando…");
+  try {
+    const me = await api("/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify({ display_name: nombre }),
+    });
+    sessionUser.me = me;
+    rememberUser(me);
+    paintUserChip();
+    state.repaintAuthor?.();
+    setFormNote(profileNote, `Ahora te llamas «${me.display_name}».`, "ok");
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(profileNote, describeError(e), "error");
+  } finally {
+    guardar.disabled = false;
+  }
 });
 
 document.getElementById("btn-cancel-procesar")?.addEventListener("click", () => {
@@ -4381,6 +4475,10 @@ function updateNavButtons() {
   if (backBtn) backBtn.disabled = state.historyPos <= 0;
   if (fwdBtn) fwdBtn.disabled = state.historyPos >= state.history.length - 1;
   if (upBtn) upBtn.disabled = !getCurrentParentId();
+  // «Inicio» (en «Mis cosas») se marca como «Mis tareas» cuando es donde estás:
+  // el inicio es no tener nada abierto (`showEmpty`).
+  const homeBtn = document.getElementById("btn-nav-home");
+  if (homeBtn) homeBtn.setAttribute("aria-current", !state.current ? "page" : "false");
 }
 
 // -------------------------------------------------- vista previa al pasar el ratón
@@ -15627,7 +15725,7 @@ scrimEl?.addEventListener("click", () => setCajonAbierto(false));
 // Elegir una página (o procesar una captura) cierra el cajón: ya no hace falta.
 sidebarEl?.addEventListener("click", (e) => {
   if (!cajonAbierto()) return;
-  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process, #btn-mytasks")) setCajonAbierto(false);
+  if (e.target.closest(".tree-row, .search-hit, .inbox-open, .inbox-process, #btn-mytasks, #btn-nav-home, #btn-graph")) setCajonAbierto(false);
 });
 
 // Escape cierra el cajón. En captura, porque el editor y los diálogos también
@@ -15648,27 +15746,17 @@ drawerQuery.addEventListener("change", (e) => {
 setCajonAbierto(false);
 
 // ------------------------------------------------------------------- tema
-// Oscuro por defecto; el interruptor de la cabecera conmuta a claro y la
-// elección se recuerda en localStorage (preferencia de pantalla, no dato del
-// workspace) -- SPEC-B §1.1.
+// Oscuro por defecto; se cambia en Ajustes > Aplicación y la elección se
+// recuerda en localStorage (preferencia de pantalla, no dato del workspace) --
+// SPEC-B §1.1.
 const THEME_KEY = "mdm_theme";
-const themeBtn = document.getElementById("btn-toggle-theme");
 
 function applyTheme(theme) {
   const resolved = theme === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = resolved;
   localStorage.setItem(THEME_KEY, resolved);
-  if (themeBtn) {
-    const isLight = resolved === "light";
-    themeBtn.setAttribute("aria-pressed", isLight ? "true" : "false");
-    themeBtn.title = isLight ? "Cambiar a tema oscuro" : "Cambiar a tema claro";
-  }
+  sincronizarTemaEnAjustes();
 }
-
-themeBtn?.addEventListener("click", () => {
-  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
-  applyTheme(next);
-});
 
 applyTheme(localStorage.getItem(THEME_KEY) || "dark");
 
