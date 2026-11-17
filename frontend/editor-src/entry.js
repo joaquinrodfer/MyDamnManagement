@@ -914,12 +914,17 @@ const blockBreakField = StateField.define({
       // Ya se ha escrito (o el documento ha cambiado por otra vía): la marca
       // solo vale para la primera letra del bloque nuevo.
       if (tr.docChanged) return null;
-      pos = value;
+      // Y el cursor PUEDE salir de la línea y volver -- ↓ y ↑, un clic en el
+      // editor --: el bloque vacío sigue siendo el mismo, así que la marca
+      // sigue viva. Soltándola al primer movimiento, al volver la primera letra
+      // ya no materializaba nada: el párrafo se pegaba al bloque de abajo (dos
+      // bloques se fundían en uno) y el encabezado perdía su hueco (18 px → 0).
+      // Quien decide si la marca se usa es el filtro de abajo, que exige que la
+      // inserción caiga justo en `pos`; escribir en cualquier otro sitio no la
+      // toca (y el cambio de documento la suelta).
+      return value;
     }
-    if (pos == null) return null;
-    // Y se suelta en cuanto el cursor sale de esa línea: ya no se escribe ahí.
-    const line = tr.state.doc.lineAt(Math.min(pos, tr.state.doc.length));
-    return tr.state.selection.ranges.some((r) => r.from <= line.to && r.to >= line.from) ? pos : null;
+    return pos == null ? null : pos;
   },
 });
 

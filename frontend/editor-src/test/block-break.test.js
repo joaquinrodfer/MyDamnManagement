@@ -82,3 +82,35 @@ test("un pegado con saltos no se toca: no es la primera letra de un párrafo", (
   state = insert(state, "a\nb", "input.paste");
   assert.equal(state.doc.toString(), "# Titulo\na\nb\nTexto de abajo.");
 });
+
+/** Mueve la selección sin tocar el documento: ↓ y ↑, o un clic. */
+function moveTo(state, pos) {
+  return state.update({ selection: { anchor: pos } }).state;
+}
+
+test("salir de la línea y volver no pierde la línea en blanco de la primera letra", () => {
+  // ⏎, ↓ y ↑ (o un clic) y después la primera letra: el cursor sale de la línea
+  // del bloque nuevo y vuelve al mismo sitio. La marca no puede caerse por un
+  // movimiento de cursor -- si se cae, `W` se pega al párrafo de abajo, los dos
+  // bloques se funden en uno y el encabezado pierde su hueco (18 px → 0).
+  let state = start("# A\n\nTexto");
+  state = enter(state, 0, 3, "h1");
+  assert.equal(state.doc.toString(), "# A\n\nTexto", "⏎ no toca el .md");
+  const gap = state.selection.main.head;
+  state = moveTo(state, state.doc.line(3).from); // ↓
+  state = moveTo(state, gap); //                    ↑
+  state = insert(state, "W", "input.type");
+  assert.equal(state.doc.toString(), "# A\n\nW\n\nTexto");
+  assert.equal(blocks(state.doc.toString()).length, 3, "el texto nuevo y el de abajo son bloques distintos");
+});
+
+test("salir de la línea y volver con un encabezado debajo conserva su hueco", () => {
+  let state = start("# A\n\n# B");
+  state = enter(state, 0, 3, "h1");
+  const gap = state.selection.main.head;
+  state = moveTo(state, state.doc.line(3).from);
+  state = moveTo(state, gap);
+  state = insert(state, "W", "input.type");
+  assert.equal(state.doc.toString(), "# A\n\nW\n# B", "una línea en blanco detrás del H1");
+  assert.equal(blocks(state.doc.toString()).length, 3);
+});
