@@ -225,7 +225,7 @@ lo guarda en el `.md`; sin ninguna propiedad marcada, ninguna hija cuenta como
 cerrada. La vista elige si enseña solo las madres
 (`parent_level: roots`, el defecto en tabla y tablero: una hija ya se ve bajo su
 madre) o todas (`all`, con las hijas detrás de su madre; el defecto en lista y
-calendario); «Todas (sin vista)» las enseña todas. La fila abierta como página
+calendario); «Todas» las enseña todas. La fila abierta como página
 trae sus `subtasks` (título, estado y fecha) y crea una nueva ya enlazada. Un
 ciclo —una fila colgando de sí misma o de una descendiente suya— es un **400**
 con la ruta del círculo, y una madre de otra base también. El vínculo no se
