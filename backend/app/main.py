@@ -123,16 +123,31 @@ ICON_PATH = re.compile(r"/icons/[A-Za-z0-9_-]+\.png")
 # tiene la suya --`/<id>`, el id y no el título, que cambia--, y `/mis-tareas`
 # es la vista de esa sección. La regla es estrecha a propósito: **una sola
 # pieza**, sin punto (los ficheros del panel lo llevan: `app.js`, `logo.png`,
-# `manifest.webmanifest`) y con pinta de id (8–64 caracteres de
-# `[0-9A-Za-z_-]`, que es un UUID de sobra). Así una ruta de API que no existe
-# --`/api/no-existe`, `/databases/loquesea`-- sigue siendo su 404 en JSON y no
-# se lleva el panel, y `/app.js` sigue sirviéndose como fichero.
-PANEL_ROUTE = re.compile(r"/[0-9A-Za-z_-]{8,64}")
+# `manifest.webmanifest`) y con la forma exacta de un id: un UUID en
+# minúsculas, que es lo único que se navega (`pages.id` y
+# `databases.database_id` salen de `uuid4`/`uuid5`). Antes bastaba con «8–64
+# caracteres alfanuméricos», y con eso **cualquier endpoint mal escrito de una
+# pieza se llevaba el panel con un 200** (`/database`, `/settings`,
+# `/workspaces`): un cliente creía haber acertado. Con la forma del id, una
+# ruta que no existe --`/api/no-existe`, `/databases/loquesea`, `/database`--
+# sigue siendo su 404 en JSON y no se lleva el panel, y `/app.js` sigue
+# sirviéndose como fichero.
+UUID_SHAPE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+PANEL_ROUTE = re.compile(rf"/{UUID_SHAPE}")
 PANEL_VIEWS = frozenset({"/mis-tareas"})
 
 
 def _parece_ruta_de_panel(path: str) -> bool:
-    """¿Esta ruta es una dirección del panel (y no un fichero ni una API)?"""
+    """¿Esta ruta es una dirección del panel (y no un fichero ni una API)?
+
+    La barra final se tolera: `/<id>/` y `/mis-tareas/` son la misma dirección
+    (un enlace pegado, un cliente que la añade) y el `StaticFiles` no sabe
+    llegar a ellas --busca `/<id>/index.html`--, así que sin normalizarla aquí
+    el enlace moriría en un 404 en JSON. El panel que se sirve deja la
+    dirección canónica en la barra al arrancar (`history.replaceState`), así
+    que la barra final no se queda pegada.
+    """
+    path = path.rstrip("/") or "/"
     return path in PANEL_VIEWS or bool(PANEL_ROUTE.fullmatch(path))
 
 
