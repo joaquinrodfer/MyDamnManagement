@@ -9,7 +9,7 @@
 
 import { ChangeSet, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, invertedEffects } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, isolateHistory } from "@codemirror/commands";
 import { HighlightStyle, ensureSyntaxTree, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
@@ -27,7 +27,15 @@ import {
   linkMarkup,
   resolveCreatedLinkTitle,
 } from "./link-create.js";
-import { blockBreakInsert, blockKeyEdit } from "./block-keys.js";
+import { blockKeyEdit } from "./block-keys.js";
+import {
+  emptyBlockTail,
+  gapBackspaceEdit,
+  gapDeleteEdit,
+  gapRole,
+  leaveSeparator,
+  nextLineSkippingSeparators,
+} from "./block-gaps.js";
 import { formatEdit, underlineSpans } from "./format.js";
 import { blocksFromTree } from "./block-ranges.js";
 import {
@@ -41,14 +49,7 @@ import {
   renumberOrderedRun,
 } from "./block-delete.js";
 import { insertBlockEdit, moveBlockEdits } from "./block-move.js";
-import {
-  canonicalBody,
-  collapseEmptyGaps,
-  cursorInOuterBlanks,
-  outerBlankRange,
-  shiftEmptyGap,
-  withoutRange,
-} from "./body.js";
+import { canonicalBody, cursorInOuterBlanks, outerBlankRange, withoutRange } from "./body.js";
 import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./database-embed.js";
 import {
   databaseBlockInsert,
@@ -793,229 +794,119 @@ const blockField = StateField.define({
   },
 });
 
-// Huecos vacíos que ha creado el editor en MEDIO del documento: el par de
-// saltos que añaden el «+» del asa y ⏎ (o ⇧⏎) con bloques marcados cuando
-// queda contenido detrás. Mientras el cursor siga dentro son el bloque nuevo
-// que se está creando; en cuanto se sale sin escribir nada se colapsan (D8 a),
-// igual que los de los extremos -- si no, abandonar ese bloque dejaba tres
-// líneas en blanco permanentes en el `.md`, que es justo el aire que (a) dice
-// que no existe.
-//
-// Se marcan SOLO los huecos que crea el editor: un `alfa\n\n\n\nbeta` escrito a
-// mano (o pegado) no lleva marca y se guarda tal cual, que es lo que ya hacía
-// el backend al escribir. La regla de cuándo sigue siendo un hueco vacío está
-// en `emptyGapRange` (body.js).
-const addEmptyGap = StateEffect.define();
-
-const pendingEmptyGaps = StateField.define({
-  create: () => [],
-  update(gaps, tr) {
-    const next = [];
-    // Las marcas viejas se mueven con las ediciones. La regla está en
-    // `shiftEmptyGap` (body.js, con sus pruebas): lo que se inserta justo en
-    // el borde de delante del hueco se queda ANTES del par y la marca se
-    // desplaza con él -- si no, un segundo «+» en el mismo bloque tiraba la
-    // marca y el aire volvía al `.md`. Si una edición se lleva el par, la
-    // marca deja de medir 2 y se descarta.
-    let changes = null;
-    for (const gap of gaps) {
-      if (!tr.docChanged) {
-        next.push(gap);
-        continue;
-      }
-      if (!changes) {
-        changes = [];
-        tr.changes.iterChanges((from, to, fromB, toB, inserted) => {
-          changes.push({ from, to, insert: inserted.toString() });
-        });
-      }
-      const moved = shiftEmptyGap(gap, changes);
-      if (moved) next.push(moved);
-    }
-    for (const effect of tr.effects) {
-      if (!effect.is(addEmptyGap)) continue;
-      const from = Number(effect.value?.from);
-      const to = Number(effect.value?.to);
-      if (!Number.isInteger(from) || !Number.isInteger(to) || to - from < 2) continue;
-      // Al final del documento no hay bloque vacío que quitar: ese hueco es
-      // de los extremos y de esos se encarga `dropOuterBlankLines`.
-      if (to >= tr.newDoc.length) continue;
-      // El hueco es un tramo de saltos: dos cuando la frontera ya tenía su
-      // línea en blanco, más cuando ha habido que crearla (insertar encima o
-      // debajo de un ítem de lista, donde el separador es un solo salto).
-      if (/[^\n]/.test(tr.newDoc.sliceString(from, to))) continue;
-      // Y que sea un bloque vacío de verdad, no el hueco que deja partir un
-      // párrafo: el cursor tiene que haber quedado DENTRO del tramo de saltos.
-      // Con ⏎ al principio de una línea de un párrafo, los dos saltos nuevos
-      // quedan encima del texto y el cursor se va al texto de debajo; ahí no
-      // hay bloque nuevo que quitar.
-      const run = newlineRunInDoc(tr.newDoc, from + 1);
-      if (!run) continue;
-      if (!tr.state.selection.ranges.some((r) => r.from < run.to && r.to > run.from)) continue;
-      next.push({ from, to });
-    }
-    return next;
-  },
-});
-
-/** Efecto que marca el bloque vacío que acaba de insertar un comando, si lo
- * que inserta es un tramo de saltos (el hueco del bloque nuevo). Puede ser
- * más largo que dos saltos cuando la frontera no traía su línea en blanco.
- * Partir un párrafo por la mitad no deja marca: ahí los saltos separan texto
- * que ya existía, y quitarlos al salir pegaría las dos mitades otra vez. */
-function emptyGapEffect(from, insert = "\n\n") {
-  return /^\n{2,}$/.test(insert) ? [addEmptyGap.of({ from, to: from + insert.length })] : [];
-}
+// Los bloques vacíos que crean ⏎ y el «+» (ver block-gaps.js) se quedan en el
+// documento aunque el cursor se vaya, como en Notion: son bloques, y se quitan
+// con ⌫ o Supr. Antes (D8 a) se colapsaban al salir de ellos, y subir de un
+// bloque vacío a otro se llevaba por delante el de abajo.
 
 // El Markdown del editor: el MISMO `LanguageSupport` que monta el `EditorView`
-// (va en `extensions` de `createNoteEditor`, sin su keymap de ⏎). De él sale el
-// parser con el que se decide si el bloque de abajo se come la línea en blanco
-// (`gluesBelow`, block-keys.js): el árbitro tiene que ser el parser que pinta,
-// no uno paralelo que se pueda quedar atrás.
+// (va en `extensions` de `createNoteEditor`, sin su keymap de ⏎).
 const markdownSupport = markdown({ addKeymap: false });
-const markdownParser = markdownSupport.language.parser;
 
-// ------------------------------------------- ⏎ al final de un bloque, sin hueco
+// ------------------------------------------ separadores y bloques vacíos
 //
-// El bloque vacío que abre ⏎ detrás de un bloque (t_c7756962: detrás de un
-// encabezado) NO materializa líneas en blanco mientras está vacío. El cursor
-// se queda en la línea de debajo -- la línea en blanco que YA separaba del
-// bloque siguiente, si la había (ver `splitBlock` en block-keys.js) --, así que
-// el hueco que se ve es el que dicta la regla del bloque de arriba: UNA línea
-// en blanco (18 px detrás de un H1, 12 detrás de un párrafo). Antes se
-// materializaban dos líneas más y se veían tres huecos seguidos (54 px).
-//
-// La línea en blanco que separa ese párrafo de sus vecinos aparece EN CUANTO se
-// escribe la primera letra: SIEMPRE la de arriba (es la que da el hueco de la
-// regla y la que impide que el texto se pegue al bloque de arriba) y, cuando el
-// bloque de debajo se comería el texto -- un párrafo, una numerada que empieza
-// en 2, un `---`, código indentado... (ver `gluesBelow`) --, también la de
-// abajo. Se hace en la MISMA transacción (el filtro cambia el texto que se
-// teclea por "\n" + ese texto), así que un solo ⌘Z deshace las dos cosas y el
-// `.md` sigue con una línea en blanco entre bloques como el que lo escribe a
-// mano.
-//
-// Lo que cuenta es DÓNDE cae el contenido, no cómo llega: una letra, un pegado,
-// las marcas de ⌘B, un emoji o un enlace insertados desde la interfaz... Todo
-// lo que caiga en la línea del bloque nuevo es su primer contenido. Por eso la
-// marca no se suelta al cambiar el documento en otro sitio (se desplaza con él)
-// ni la pierde un ⌘Z: deshacer el primer contenido la devuelve (ver
-// `blockBreakHistory`). Si el texto trae saltos (t_608d3c57) o hay varias
-// selecciones, la marca se suelta y el párrafo se queda pegado a un vecino: una
-// línea en blanco menos, nunca una de más.
-const addBlockBreak = StateEffect.define({ map: (pos, mapping) => mapping.mapPos(pos) });
+// La línea en blanco que separa dos bloques es un SEPARADOR: aire, no un sitio
+// donde escribir. El cursor no se para ahí (ni con las flechas, ni con un clic,
+// ni después de borrar): sale al bloque de al lado. Donde sí se escribe es en
+// un BLOQUE VACÍO -- la línea en blanco con un separador a cada lado que abre
+// ⏎ o el «+» --, que mide una línea entera como un párrafo. Qué papel tiene
+// cada línea lo decide block-gaps.js (con sus pruebas).
 
-/** ¿`pos` sigue siendo el principio de una línea vacía? Es lo único que la
- * marca necesita para seguir valiendo: si la línea ya tiene texto, el bloque
- * nuevo dejó de estar vacío. */
-function isEmptyLineStart(doc, pos) {
-  if (pos < 0 || pos > doc.length) return false;
-  const line = doc.lineAt(pos);
-  return line.from === pos && line.length === 0;
-}
+// ⇧⏎ al final de un párrafo deja una línea vacía que es DEL PÁRRAFO (un salto
+// suave: lo que se escriba ahí sigue en el mismo bloque), aunque por su
+// posición sería el separador de debajo. Mientras el cursor siga en ella se
+// marca y cuenta como parte de un bloque; en cuanto tiene texto ya lo es por sí
+// misma, y si se abandona vacía vuelve a ser aire.
+const setSoftLine = StateEffect.define();
 
-const blockBreakField = StateField.define({
+const softLineField = StateField.define({
   create: () => null,
   update(value, tr) {
-    let pos = null;
-    let justSet = false;
-    for (const effect of tr.effects) {
-      if (!effect.is(addBlockBreak)) continue;
-      pos = effect.value;
-      justSet = true;
-    }
-    if (justSet) return pos;
+    for (const effect of tr.effects) if (effect.is(setSoftLine)) return effect.value;
     if (value == null) return null;
-    // El cursor PUEDE salir de la línea y volver -- ↓ y ↑, un clic --: la
-    // marca no depende de la selección. Soltándola al primer movimiento, la
-    // primera letra al volver no materializaba nada: el párrafo se pegaba al
-    // bloque de abajo y el encabezado perdía su hueco (18 px → 0).
-    if (!tr.docChanged) return value;
-    // Lo que toca la línea del bloque nuevo la consume: el primer contenido
-    // (que el filtro de abajo ya ha materializado), un pegado con saltos, un
-    // borrado que se la lleva... Deshacerlo la devuelve (`blockBreakHistory`).
-    if (tr.changes.touchesRange(value, value)) return null;
-    // Un cambio en otro sitio -- escribir en el encabezado, deshacer algo de
-    // más abajo -- solo la desplaza.
-    const mapped = tr.changes.mapPos(value);
-    return isEmptyLineStart(tr.state.doc, mapped) ? mapped : null;
+    const pos = tr.docChanged ? tr.changes.mapPos(value, -1) : value;
+    const doc = tr.newDoc;
+    if (pos > doc.length) return null;
+    const line = doc.lineAt(pos);
+    if (line.from !== pos || line.length) return null;
+    if (doc.lineAt(tr.newSelection.main.head).number !== line.number) return null;
+    return pos;
   },
 });
 
-/** ⌘Z del primer contenido devuelve la marca: el historial guarda, con cada
- * transacción que la consume, el efecto que la vuelve a poner. Sin esto,
- * ⏎ → letra → ⌘Z → otra letra (o un pegado) ya no materializaba nada y el
- * párrafo nuevo se fundía con el de abajo. */
-const blockBreakHistory = invertedEffects.of((tr) => {
-  const pos = tr.startState.field(blockBreakField, false);
-  if (pos == null || !tr.docChanged) return [];
-  return tr.changes.touchesRange(pos, pos) ? [addBlockBreak.of(pos)] : [];
-});
-
-/** El bloque que empieza en el hueco (o justo debajo de él): el de ABAJO del
- * bloque nuevo (`null` si el bloque nuevo es el último de la nota). Qué se
- * hace con él -- si su línea en blanco hace falta -- lo decide `gluesBelow`,
- * en block-keys.js, porque la decisión no sale del tipo del bloque. */
-function blockBelow(blocks, pos) {
-  return blocks.find((b) => b.from >= pos) || null;
+/** Los bloques con los que se decide qué línea en blanco es aire: los de
+ * `computeBlocks` más la línea del salto suave, si la hay (ver
+ * `softLineField`). */
+function gapBlocks(state) {
+  const blocks = state.field(blockField).blocks;
+  const soft = state.field(softLineField, false);
+  if (soft == null) return blocks;
+  const out = blocks.filter((b) => b.from <= soft);
+  out.push({ from: soft, to: soft, type: "soft" });
+  for (const b of blocks) if (b.from > soft) out.push(b);
+  return out;
 }
 
-/** Mete la línea en blanco del bloque nuevo en la transacción de su primer
- * contenido (ver `blockBreakField`). Decide el SITIO, no el origen: vale
- * cualquier transacción cuyos cambios sean todos inserciones en la línea vacía
- * del bloque nuevo (`pos`) y sin saltos de línea -- una letra, un pegado, las
- * `****` de ⌘B, un emoji... --. Deshacer y rehacer quedan fuera: devuelven el
- * documento a un estado que ya tuvo, con o sin sus líneas en blanco. */
-const blockBreakMaterialization = EditorState.transactionFilter.of((tr) => {
-  if (!tr.docChanged) return tr;
-  if (tr.isUserEvent("undo") || tr.isUserEvent("redo")) return tr;
-  const pos = tr.startState.field(blockBreakField);
-  if (pos == null) return tr;
-  let text = "";
-  let onlyInsertsAtPos = true;
-  tr.changes.iterChanges((from, to, fromB, toB, inserted) => {
-    if (from !== pos || to !== pos) onlyInsertsAtPos = false;
-    text += inserted.toString();
+/** Papel de la línea `n` de `state`: "sep", "empty" o null. */
+function lineGapRole(state, n) {
+  return gapRole(state.doc, gapBlocks(state), n);
+}
+
+/** Saca del separador cualquier punta de selección que haya caído en uno. La
+ * dirección sale de hacia dónde se movía el cursor: hacia delante sigue al
+ * bloque de abajo y hacia atrás al de arriba. Un clic en el aire entre dos
+ * bloques deja el cursor al final del de arriba. */
+const separatorCursorFilter = EditorState.transactionFilter.of((tr) => {
+  if (!tr.selection && !tr.docChanged) return tr;
+  const doc = tr.newDoc;
+  const sel = tr.newSelection;
+  // Barato primero: solo una línea VACÍA puede ser un separador.
+  if (!sel.ranges.some((r) => doc.lineAt(r.head).length === 0 || doc.lineAt(r.anchor).length === 0)) return tr;
+  const blocks = gapBlocks(tr.state);
+  const before = tr.changes.mapPos(tr.startState.selection.main.head);
+  const pointer = tr.isUserEvent("select.pointer");
+  let changed = false;
+  const ranges = sel.ranges.map((r) => {
+    const forward = !pointer && r.head > before;
+    const head = leaveSeparator(doc, blocks, r.head, forward);
+    const anchor = r.empty ? head : leaveSeparator(doc, blocks, r.anchor, r.anchor < r.head);
+    if (head === r.head && anchor === r.anchor) return r;
+    changed = true;
+    return EditorSelection.range(anchor, head);
   });
-  if (!onlyInsertsAtPos || !text || text.includes("\n")) return tr;
-  // La línea de arriba va SIEMPRE: es la que dicta el hueco de la regla (18 px
-  // detrás de un H1, 14 detrás de un H2–H4) y la que impide que el texto se
-  // pegue al bloque de arriba. La de abajo solo cuando el bloque de debajo se
-  // comería el texto; si no, el bloque nuevo se queda con la que ya había
-  // entre los dos y el `.md` no gana nada.
-  const doc = tr.startState.doc;
-  const below = blockBelow(tr.startState.field(blockField).blocks, pos);
-  const insert = blockBreakInsert(markdownParser, text, below && doc.sliceString(below.from, below.to));
-  // La selección de la transacción original (el cursor dentro de las `****`
-  // de ⌘B, o detrás de lo tecleado) se traslada al texto nuevo: lo que caía
-  // en lo insertado se corre la línea en blanco de arriba; lo de detrás, todo
-  // lo añadido.
-  const shift = (p) => (p < pos ? p : p <= pos + text.length ? p + 1 : p + insert.length - text.length);
-  const selection = EditorSelection.create(
-    tr.newSelection.ranges.map((r) => EditorSelection.range(shift(r.anchor), shift(r.head))),
-    tr.newSelection.mainIndex,
-  );
-  return {
-    changes: { from: pos, to: pos, insert },
-    selection,
-    effects: tr.effects,
-    userEvent: tr.annotation(Transaction.userEvent),
-    scrollIntoView: tr.scrollIntoView,
-  };
+  if (!changed) return tr;
+  return [tr, { selection: EditorSelection.create(ranges, sel.mainIndex), sequential: true }];
 });
 
-/** Las piezas de ⏎ al final de un bloque -- el campo de bloques, la marca del
- * bloque nuevo, su materialización y el efecto con el que ⏎ lo marca --, para
- * probarlas sobre un `EditorState` de verdad sin navegador
- * (ver test/block-break.test.js). */
-export const blockBreakTestExtensions = [
-  markdownSupport,
-  blockField,
-  blockBreakField,
-  blockBreakHistory,
-  blockBreakMaterialization,
-];
-export { addBlockBreak, blockBreakField };
+/** Lo que se escribe (o se pega, o mete ⌘B) en un bloque vacío cae en su
+ * línea y ya está: los separadores de alrededor ya existen. Solo hace falta
+ * algo más cuando la línea de debajo tiene texto pegado (una nota escrita a
+ * mano con dos líneas en blanco, el principio de la nota): entonces el texto
+ * nuevo se llevaría ese bloque, y se le pone su separador en la MISMA
+ * transacción -- un solo ⌘Z lo deshace todo. */
+const emptyBlockTyping = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged || !tr.isUserEvent("input")) return tr;
+  let pos = null;
+  let text = "";
+  let single = true;
+  tr.changes.iterChanges((from, to, fromB, toB, inserted) => {
+    if (from !== to || (pos !== null && from !== pos)) single = false;
+    pos = from;
+    text += inserted.toString();
+  });
+  if (!single || pos == null || !/[^\n]/.test(text)) return tr;
+  const tail = emptyBlockTail(tr.startState.doc, gapBlocks(tr.startState), pos);
+  if (!tail) return tr;
+  const at = pos + text.length;
+  return [tr, { changes: { from: at, to: at, insert: tail }, selection: tr.newSelection, sequential: true }];
+});
+
+/** Las piezas de los bloques vacíos y los separadores que no necesitan vista
+ * -- el campo de bloques, el cursor fuera del separador y lo que se escribe en
+ * un bloque vacío --, para probarlas sobre un `EditorState` de verdad (ver
+ * test/block-break.test.js). */
+export const blockGapTestExtensions = [markdownSupport, blockField, softLineField, separatorCursorFilter, emptyBlockTyping];
+export { setSoftLine };
 
 /**
  * El DOM del asa de un bloque: SOLO el «+», con el índice del bloque en
@@ -1305,10 +1196,15 @@ function blockHandleEventHandlers(onBlockContextMenu) {
 
       const doc = view.state.doc;
       const lastLine = doc.lineAt(pos);
-      if (lastLine.length === 0) {
+      const role = lineGapRole(view.state, lastLine.number);
+      if (role === "empty") {
+        // La última línea ya es un bloque vacío: se escribe ahí.
         view.dispatch({ selection: { anchor: pos } });
       } else {
-        view.dispatch({ changes: { from: pos, to: pos, insert: "\n\n" }, selection: { anchor: pos + 2 } });
+        // Detrás de un bloque, su separador y el bloque vacío; detrás de un
+        // separador suelto, solo el bloque vacío.
+        const insert = role === "sep" ? "\n" : "\n\n";
+        view.dispatch({ changes: { from: pos, to: pos, insert }, selection: { anchor: pos + insert.length } });
       }
       view.focus();
       return true;
@@ -1523,7 +1419,7 @@ function insertBlockBeside(view, index, where) {
   view.dispatch({
     changes: edit.changes,
     selection: { anchor: edit.cursor },
-    effects: [setSelectedBlocks.of(new Set()), ...emptyGapEffect(edit.gapFrom, edit.changes[0].insert)],
+    effects: setSelectedBlocks.of(new Set()),
   });
   view.focus();
   return true;
@@ -2339,12 +2235,25 @@ function blockAbove(blocks, pos) {
   return found;
 }
 
+/** Tipo que dicta el alto de la línea en blanco `line`: el del bloque de
+ * encima, salvo que encima haya un bloque VACÍO (block-gaps.js) -- entonces el
+ * separador mide lo que mediría detrás de un párrafo, que es lo que será ese
+ * bloque en cuanto tenga texto: escribir en él no mueve nada de debajo. */
+function blankUnitType(doc, blocks, line) {
+  if (line.number > 1 && gapRole(doc, blocks, line.number - 1) === "empty") return "paragraph";
+  return blockAbove(blocks, line.from)?.type;
+}
+
 /** Clases de una línea en blanco. Puro (sin `view`): los tests de `node --test`
  * fijan con esto el alto relativo a cada bloque y que toda una tirada de líneas
- * en blanco comparte familia -- de ahí sale el «N veces» del CSS. */
+ * en blanco comparte familia -- de ahí sale el «N veces» del CSS.
+ *
+ * Un BLOQUE VACÍO (block-gaps.js) no es aire: lleva `cm-mdm-gap-empty` y mide
+ * una línea entera, como el párrafo que va a ser. */
 export function blankLineClasses(doc, blocks, line) {
-  const prev = blockAbove(blocks, line.from);
-  const classes = ["cm-mdm-blank", `cm-mdm-blank-after-${BLANK_UNIT_FAMILY[prev?.type] ?? "p"}`];
+  const classes = [];
+  if (gapRole(doc, blocks, line.number) === "empty") classes.push("cm-mdm-gap-empty");
+  else classes.push("cm-mdm-blank", `cm-mdm-blank-after-${BLANK_UNIT_FAMILY[blankUnitType(doc, blocks, line)] ?? "p"}`);
   if (line.number === doc.lines) classes.push("cm-mdm-last-line");
   if (doc.length === 0) classes.push("cm-mdm-empty-line");
   return classes;
@@ -2354,7 +2263,7 @@ function blankLineDecorations(view) {
   const ranges = [];
   const { state } = view;
   const doc = state.doc;
-  const { blocks } = state.field(blockField);
+  const blocks = gapBlocks(state);
   // Al crear la vista (nota recién abierta) los rangos visibles todavía están
   // vacíos: sin este respaldo, la única línea de una nota nueva se quedaba sin
   // `cm-mdm-last-line` y el hueco del final (el `::after` de .cm-content) se
@@ -2362,6 +2271,9 @@ function blankLineDecorations(view) {
   // entero solo en ese caso.
   const visible = view.visibleRanges.length ? view.visibleRanges : [{ from: 0, to: doc.length }];
   const code = codeRangesOf(state, visible[visible.length - 1].to);
+  const soft = state.field(softLineField, false);
+  const sel = state.selection.main;
+  const cursorLine = sel.empty ? doc.lineAt(sel.head).number : -1;
   for (const { from, to } of visible) {
     const firstLine = doc.lineAt(from).number;
     const lastLine = doc.lineAt(to).number;
@@ -2369,11 +2281,14 @@ function blankLineDecorations(view) {
       const line = doc.line(n);
       if (line.length !== 0) continue;
       if (isInsideCode(code, line.from)) continue;
-      const prev = blockAbove(blocks, line.from);
+      // La línea del salto suave es una fila del párrafo: mide una línea.
+      const classes = line.from === soft ? ["cm-mdm-gap-empty"] : blankLineClasses(doc, blocks, line);
+      // El bloque vacío del cursor enseña el texto de ayuda, como en Notion.
+      if (classes.includes("cm-mdm-gap-empty") && line.number === cursorLine) classes.push("cm-mdm-gap-current");
       ranges.push(
         Decoration.line({
-          class: blankLineClasses(doc, blocks, line).join(" "),
-          attributes: { style: `--mdm-blank-unit: ${blankUnitPx(prev?.type)}px` },
+          class: classes.join(" "),
+          attributes: { style: `--mdm-blank-unit: ${blankUnitPx(blankUnitType(doc, blocks, line))}px` },
         }).range(line.from)
       );
     }
@@ -3493,6 +3408,29 @@ const blockDeleteKeymap = keymap.of([
 // es el que pegaba las dos frases («- uno- dos», D9).
 const backspaceJoinKeymap = keymap.of([{ key: "Backspace", run: (view) => runBackspaceJoin(view) }]);
 
+/** ⌫ / Supr en la frontera entre bloques, con los separadores en medio: borrar
+ * un bloque vacío, fusionar dos bloques de texto, quitar el `#` de un
+ * encabezado... (ver `gapBackspaceEdit` y `gapDeleteEdit` en block-gaps.js).
+ * Lo que no es frontera sigue a las teclas de siempre. */
+function runGapKey(view, backward) {
+  const { state } = view;
+  if (state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
+  const edit = (backward ? gapBackspaceEdit : gapDeleteEdit)(state.doc, gapBlocks(state), state.selection.main.head);
+  if (!edit) return false;
+  view.dispatch({
+    changes: edit.changes,
+    selection: { anchor: edit.cursor },
+    scrollIntoView: true,
+    userEvent: backward ? "delete.backward" : "delete.forward",
+  });
+  return true;
+}
+
+const gapDeleteKeymap = keymap.of([
+  { key: "Backspace", run: (view) => runGapKey(view, true) },
+  { key: "Delete", run: (view) => runGapKey(view, false) },
+]);
+
 // Alt+↑ / Alt+↓: mover el bloque del cursor un puesto. Va con el resto de
 // nuestros keymaps (antes del general) para que la flecha no se lleve el caret
 // a la línea de al lado en vez de reordenar.
@@ -3632,12 +3570,7 @@ function runBlockKey(view, kind) {
       view.dispatch({
         changes: set,
         selection: { anchor: set.mapPos(edit.cursor, 1) },
-        // El bloque vacío es el hueco que queda entre los dos separadores (ver
-        // `newBlockEdit`): el primer cambio es el par de saltos que lo forma.
-        effects: [
-          setSelectedBlocks.of(new Set()),
-          ...emptyGapEffect(edit.changes[0].from, edit.changes[0].insert),
-        ],
+        effects: setSelectedBlocks.of(new Set()),
         userEvent: "input",
         scrollIntoView: true,
       });
@@ -3661,27 +3594,54 @@ function runBlockKey(view, kind) {
     return true;
   }
 
+  // En un bloque vacío (block-gaps.js), ⏎ abre otro debajo: su separador y
+  // la línea nueva, con el cursor en ella. Sin esto, el salto de CodeMirror
+  // dejaba el cursor en una línea que por su posición es un separador.
+  const line = state.doc.lineAt(range.head);
+  // En la línea vacía de un ⇧⏎ (ver `softLineField`), ⏎ la convierte en un
+  // bloque vacío: su salto pasa a ser el separador y se abre la línea de debajo.
+  if (state.field(softLineField) === line.from && line.length === 0) {
+    view.dispatch({
+      changes: { from: line.from, to: line.from, insert: "\n" },
+      selection: { anchor: line.from + 1 },
+      scrollIntoView: true,
+      userEvent: "input",
+      annotations: isolateHistory.of("full"),
+    });
+    return true;
+  }
+  if (lineGapRole(state, line.number) === "empty") {
+    view.dispatch({
+      changes: { from: line.from, to: line.from, insert: "\n\n" },
+      selection: { anchor: line.from + 2 },
+      scrollIntoView: true,
+      userEvent: "input",
+      annotations: isolateHistory.of("full"),
+    });
+    return true;
+  }
+
   const edit = blockKeyEdit({
     text: state.doc.toString(),
     pos: range.head,
     block: blockAt(state, range.head),
     kind,
   });
-  if (!edit) return false; // nota vacía, "---", fila en blanco...: decide CodeMirror
+  if (!edit) return false; // nota vacía, "---"...: decide CodeMirror
 
-  const effects = emptyGapEffect(edit.from, edit.insert);
-  // El bloque vacío de detrás no materializa su línea en blanco: la mete el
-  // primer carácter que se escriba (ver `blockBreakField`).
-  if (edit.blockBreak) effects.push(addBlockBreak.of(edit.cursor));
-
+  // ⇧⏎ al final del bloque: la línea nueva es suya aunque esté vacía.
+  const text = state.doc.toString();
+  const softLine =
+    kind === "soft" && edit.insert === "\n" && (edit.to === text.length || text[edit.to] === "\n");
   view.dispatch({
-    // Sin texto que cambiar (el bloque nuevo ocupa la línea en blanco que ya
-    // había) solo se mueve el cursor.
-    changes: edit.from === edit.to && !edit.insert ? [] : { from: edit.from, to: edit.to, insert: edit.insert },
+    changes: { from: edit.from, to: edit.to, insert: edit.insert },
     selection: { anchor: edit.cursor },
     scrollIntoView: true,
     userEvent: "input",
-    effects,
+    effects: softLine ? setSoftLine.of(edit.cursor) : [],
+    // ⏎ es un paso propio del historial: ⌘Z después de escribir quita lo
+    // escrito y deja el bloque, no se lleva las dos cosas de golpe.
+    annotations: isolateHistory.of("full"),
   });
   return true;
 }
@@ -3732,8 +3692,11 @@ function verticalMoveExtension() {
         // lo que rompía la versión anterior de este método, que calculaba
         // siempre por línea LÓGICA sin distinguir un envoltorio visual de
         // un cambio real de línea (issue #3 en GitHub).
+        // Si no se ha movido (le pasa justo encima de un separador: el
+        // cálculo por píxeles cae en el aire y vuelve al punto de partida),
+        // se pasa a la línea lógica de al lado como en cualquier otro salto.
         const native = view.moveVertically(range, forward);
-        if (state.doc.lineAt(native.head).number === curLine.number) {
+        if (native.head !== range.head && state.doc.lineAt(native.head).number === curLine.number) {
           this.goalColumn = null; // recalcular en la próxima línea lógica de verdad
           this.ownMove = true;
           view.dispatch({
@@ -3751,12 +3714,28 @@ function verticalMoveExtension() {
         // mano y saltarse varias líneas lógicas de golpe. Se ignora a
         // dónde había decidido saltar y se avanza exactamente UNA línea
         // lógica del documento.
-        const targetLineNo = curLine.number + (forward ? 1 : -1);
-        if (targetLineNo < 1 || targetLineNo > state.doc.lines) return false; // primera/última línea: que decida el keymap por defecto
+        // Los separadores entre bloques no son una parada: se salta al bloque
+        // (o al bloque vacío) de al lado, como en Notion.
+        const targetLineNo = nextLineSkippingSeparators(state.doc, gapBlocks(state), curLine.number, forward ? 1 : -1);
+        if (targetLineNo == null) return false; // primera/última línea: que decida el keymap por defecto
 
         const targetLine = state.doc.line(targetLineNo);
-        if (this.goalColumn === null) this.goalColumn = range.head - curLine.from;
-        const newPos = Math.min(targetLine.from + this.goalColumn, targetLine.to);
+        // La columna se recuerda en PÍXELES (la letra no es monoespaciada): se
+        // cae en la fila visual de la línea de destino que toca -- la última si
+        // se sube a un párrafo de varias filas, la primera si se baja -- y en
+        // el carácter que queda debajo de donde estaba el cursor. Sin
+        // coordenadas (fuera de la vista), por columna de caracteres.
+        if (this.goalColumn === null) {
+          const here = view.coordsAtPos(range.head);
+          this.goalColumn = { x: here ? here.left : null, col: range.head - curLine.from };
+        }
+        let newPos = null;
+        const row = view.coordsAtPos(forward ? targetLine.from : targetLine.to, forward ? 1 : -1);
+        if (row && this.goalColumn.x != null) {
+          const hit = view.posAtCoords({ x: this.goalColumn.x, y: (row.top + row.bottom) / 2 }, false);
+          if (hit != null && hit >= targetLine.from && hit <= targetLine.to) newPos = hit;
+        }
+        if (newPos == null) newPos = Math.min(targetLine.from + this.goalColumn.col, targetLine.to);
 
         this.ownMove = true;
         view.dispatch({
@@ -4300,68 +4279,6 @@ function dropOuterBlankLines(update) {
   });
 }
 
-// El otro extremo de D8 (a): el bloque vacío que se crea EN MEDIO (el «+» del
-// asa, ⏎ al final de un bloque con contenido detrás) tampoco existe. Se
-// colapsa en cuanto el cursor sale de él sin que se haya escrito nada, con la
-// misma mecánica que `dropOuterBlankLines`: microtask (despachar una
-// transacción desde un `updateListener` no está permitido) y fuera del
-// historial, porque deshacer un cambio del usuario no tiene que resucitar un
-// hueco que nunca fue un bloque.
-//
-// No pasa por `onChange`: el aire no llega al fichero porque `getValue()` lo
-// quita igual (ver `collapseEmptyGaps`), así que no hay nada que guardar. Y
-// solo se tocan los huecos marcados por el propio editor: una nota que no se
-// edita no tiene marcas y no se reescribe nunca.
-const trimmingInner = new WeakSet();
-
-/** Tramo de saltos de línea del documento que contiene `pos`. */
-function newlineRunInDoc(doc, pos) {
-  let from = pos;
-  while (from > 0 && doc.sliceString(from - 1, from) === "\n") from--;
-  let to = pos;
-  while (to < doc.length && doc.sliceString(to, to + 1) === "\n") to++;
-  return from === to ? null : { from, to };
-}
-
-/** ¿Hay alguna selección dentro del bloque vacío? Mientras la haya, el hueco
- * es el bloque que se está creando: quitarlo bajo los dedos sería peor que
- * dejarlo colapsado. */
-function selectionInEmptyGap(state, gaps) {
-  const doc = state.doc;
-  for (const gap of gaps) {
-    const run = newlineRunInDoc(doc, gap.from + 1);
-    if (!run) continue;
-    if (state.selection.ranges.some((r) => r.from < run.to && r.to > run.from)) return true;
-  }
-  return false;
-}
-
-function dropInnerEmptyGap(update) {
-  if (!update.docChanged && !update.selectionSet) return;
-  const view = update.view;
-  const gaps = view.state.field(pendingEmptyGaps);
-  if (!gaps.length) return;
-  if (trimmingInner.has(view)) return;
-  if (selectionInEmptyGap(view.state, gaps)) return; // se está escribiendo ahí
-  trimmingInner.add(view);
-  queueMicrotask(() => {
-    trimmingInner.delete(view);
-    if (!view.dom.isConnected) return; // el editor ya se destruyó (navegación)
-    const state = view.state;
-    const gaps = state.field(pendingEmptyGaps);
-    if (!gaps.length) return;
-    if (selectionInEmptyGap(state, gaps)) return; // ha vuelto al hueco
-    const text = state.doc.toString();
-    const { text: target, ranges } = collapseEmptyGaps(text, gaps);
-    if (!ranges.length || target === text) return;
-    view.dispatch({
-      changes: ranges,
-      annotations: Transaction.addToHistory.of(false),
-      userEvent: "trim.inner",
-    });
-  });
-}
-
 export function createNoteEditor({
   parent,
   doc,
@@ -4421,6 +4338,7 @@ export function createNoteEditor({
         blockKeymap,
         blockDeleteKeymap,
         backspaceJoinKeymap,
+        gapDeleteKeymap,
         moveBlockKeymap,
         formatKeymap,
         // El Backspace «que borra el marcador» de Markdown (deleteMarkupBackward)
@@ -4438,10 +4356,9 @@ export function createNoteEditor({
         markdownSupport,
         syntaxHighlighting(highlightStyle),
         blockField,
-        pendingEmptyGaps,
-        blockBreakField,
-        blockBreakHistory,
-        blockBreakMaterialization,
+        softLineField,
+        separatorCursorFilter,
+        emptyBlockTyping,
         // Marcar varios bloques es un estado NUESTRO (blockField), no una
         // selección de documento: desde t_c2c98f7b `selectBlocks` no toca la
         // selección, así que este facet ya no hace falta para eso. Se queda
@@ -4477,11 +4394,10 @@ export function createNoteEditor({
             update.docChanged &&
             update.transactions.length > 0 &&
             update.transactions.every(
-              (tr) => tr.isUserEvent("trim.outer") || tr.isUserEvent("trim.inner"),
+              (tr) => tr.isUserEvent("trim.outer"),
             );
           if (update.docChanged && !onlyTrim) onChange(update.state.doc.toString());
           dropOuterBlankLines(update);
-          dropInnerEmptyGap(update);
         }),
       ],
     }),
@@ -4502,9 +4418,8 @@ export function createNoteEditor({
    * selector con su filtro -- no puede cambiar bajo los dedos. */
   function durableDoc() {
     const text = view.state.doc.toString();
-    const gaps = view.state.field(pendingEmptyGaps);
     const filtro = slashMenu.transientRange();
-    return filtro ? withoutRange(text, gaps, filtro) : { text, gaps };
+    return filtro ? withoutRange(text, filtro) : text;
   }
 
   return {
@@ -4514,12 +4429,7 @@ export function createNoteEditor({
     // escribir (`canonical_body` en backend/app/vault/store.py), así que el
     // editor no los manda siquiera.
     getValue: () => {
-      const { text, gaps } = durableDoc();
-      // Los huecos vacíos que creó el editor y el usuario ha abandonado no
-      // llegan al fichero: lo que se guarda coincide con lo que se ve (el
-      // aire de en medio, igual que el de los extremos). Las líneas en blanco
-      // escritas a mano no llevan marca y se guardan tal cual.
-      return canonicalBody(gaps.length ? collapseEmptyGaps(text, gaps).text : text);
+      return canonicalBody(durableDoc());
     },
     /** Destinos posibles de un wikilink -- `[{id, title, type}]` con todas
      * las notas y bases de datos del vault. La app la llama al cargar el

@@ -131,13 +131,24 @@ test("la familia de la línea en blanco sale del bloque de ENCIMA", () => {
   assert.ok(classesAt("- uno\n\n- dos", 2).includes("cm-mdm-blank-after-li"));
 });
 
-test("dos líneas en blanco seguidas comparten familia: el doble exacto de alto", () => {
+test("la segunda línea en blanco seguida es un bloque vacío: mide una línea entera", () => {
+  // `alfa`, separador, bloque vacío, `beta` (ver block-gaps.js): el vacío no es
+  // aire sino el párrafo que va a ser, y escribir en él no mueve nada.
   const text = "alfa\n\n\nbeta";
-  const first = classesAt(text, 2);
-  const second = classesAt(text, 3);
-  assert.ok(first.includes("cm-mdm-blank"));
-  assert.ok(second.includes("cm-mdm-blank"));
-  assert.equal(first.filter((c) => c.startsWith("cm-mdm-blank-after-")).join(), second.filter((c) => c.startsWith("cm-mdm-blank-after-")).join());
+  assert.ok(classesAt(text, 2).includes("cm-mdm-blank"));
+  assert.ok(!classesAt(text, 2).includes("cm-mdm-gap-empty"));
+  assert.ok(classesAt(text, 3).includes("cm-mdm-gap-empty"));
+  assert.ok(!classesAt(text, 3).includes("cm-mdm-blank"));
+});
+
+test("el separador de debajo de un bloque vacío mide lo de detrás de un párrafo", () => {
+  // `# A`, separador (18 px, el del H1), vacío, separador: este último mide lo
+  // que medirá cuando el vacío tenga texto (12 px), así que escribir en él no
+  // empuja el bloque de abajo.
+  const text = "# A\n\n\n\nTexto";
+  assert.ok(classesAt(text, 2).includes("cm-mdm-blank-after-h1"));
+  assert.ok(classesAt(text, 3).includes("cm-mdm-gap-empty"));
+  assert.ok(classesAt(text, 4).includes("cm-mdm-blank-after-p"));
 });
 
 test("la última línea en blanco del documento sigue marcada", () => {

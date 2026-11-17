@@ -15,7 +15,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { insertBlockEdit, moveBlockEdits } from "../block-move.js";
-import { collapseEmptyGaps } from "../body.js";
 
 /** Aplica los cambios de un resultado (como haría ChangeSet). */
 function apply(text, changes) {
@@ -65,8 +64,6 @@ test("insertar arriba pone el bloque nuevo ANTES del actual y el de abajo no se 
   const withGap = apply(text, edit.changes);
   const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
   assert.equal(typed, "alfa\n\nnuevo\n\nbeta");
-  assert.equal(edit.gapFrom, 6);
-  assert.equal(edit.gapTo, 8);
 });
 
 test("insertar debajo sigue siendo lo de siempre (el par va detrás del bloque)", () => {
@@ -101,10 +98,6 @@ test("insertar arriba sobre un ítem de lista deja lo tecleado como bloque suelt
   const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
   assert.equal(typed, "- alfa\n\nnuevo\n\n- beta\n- gamma");
 
-  // Y si se abandona sin escribir, el tramo entero se colapsa: el `.md` no
-  // gana ni una línea.
-  const back = collapseEmptyGaps(withGap, [{ from: edit.gapFrom, to: edit.gapTo }]);
-  assert.equal(back.text, text);
 });
 
 test("insertar arriba sobre un ítem de lista NUMERADA tampoco lo pega al de arriba", () => {
@@ -119,7 +112,6 @@ test("insertar arriba sobre un ítem de lista NUMERADA tampoco lo pega al de arr
   const withGap = apply(text, edit.changes);
   const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
   assert.equal(typed, "1. uno\n\nnuevo\n\n2. dos\n3. tres");
-  assert.equal(collapseEmptyGaps(withGap, [{ from: edit.gapFrom, to: edit.gapTo }]).text, text);
 });
 
 test("insertar ABAJO sobre un ítem de lista deja igual de suelto lo tecleado", () => {
@@ -137,7 +129,6 @@ test("insertar ABAJO sobre un ítem de lista deja igual de suelto lo tecleado", 
   const withGap = apply(text, edit.changes);
   const typed = withGap.slice(0, edit.cursor) + "nuevo" + withGap.slice(edit.cursor);
   assert.equal(typed, "- alfa\n\nnuevo\n\n- beta");
-  assert.equal(collapseEmptyGaps(withGap, [{ from: edit.gapFrom, to: edit.gapTo }]).text, text);
 });
 
 test("insertar arriba en el primer bloque no necesita hueco de arriba", () => {

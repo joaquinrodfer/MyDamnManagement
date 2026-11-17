@@ -448,12 +448,11 @@ export function moveBlockEdits({ text, blocks, index, slot, cursor = null }) {
  * - debajo: siempre dos delante y los que falten detrás (`- alfa|\n- beta`
  *   -> `\n\n\n`, con el cursor tras los dos primeros).
  *
- * El tramo entero es el hueco del bloque nuevo: el editor lo colapsa si se
- * abandona sin escribir (`emptyGapRange`, body.js, admite tramos de más de
- * dos saltos), así que no quedan líneas en blanco de más en el `.md`.
+ * El resultado es un BLOQUE VACÍO con un separador a cada lado (ver
+ * block-gaps.js): la línea del cursor mide una línea entera y lo que se teclea
+ * cae en ella sin mover nada.
  *
- * Devuelve `{changes, cursor, gapFrom, gapTo}`: `[gapFrom, gapTo)` es el tramo
- * insertado en el documento nuevo, que es la marca que espera `addEmptyGap`.
+ * Devuelve `{changes, cursor}`.
  */
 export function insertBlockEdit({ text, blocks, index, where = "below" }) {
   if (!Array.isArray(blocks)) return null;
@@ -469,8 +468,6 @@ export function insertBlockEdit({ text, blocks, index, where = "below" }) {
     return {
       changes: [{ from: block.from, to: block.from, insert }],
       cursor: block.from + lead,
-      gapFrom: block.from,
-      gapTo: block.from + insert.length,
     };
   }
   const next = k + 1 < blocks.length ? blocks[k + 1] : null;
@@ -481,7 +478,5 @@ export function insertBlockEdit({ text, blocks, index, where = "below" }) {
   return {
     changes: [{ from: at, to: at, insert }],
     cursor: at + 2,
-    gapFrom: at,
-    gapTo: at + insert.length,
   };
 }

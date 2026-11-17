@@ -14,15 +14,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { commonmarkLanguage, markdown, markdownLanguage } from "@codemirror/lang-markdown";
-
-import { blockBreakInsert, blockKeyEdit, gluesBelow } from "../block-keys.js";
-
-// El MISMO parser que monta la vista (`markdown({ addKeymap: false })` en
-// entry.js, cuyo `base` por defecto es `commonmarkLanguage`): las decisiones de
-// qué bloques se comen una línea en blanco se toman con él, no con un criterio
-// paralelo ni con `markdownLanguage` (CommonMark + GFM, que sí tiene tablas).
-const editorParser = markdown({ addKeymap: false }).language.parser;
+import { blockKeyEdit } from "../block-keys.js";
 
 /** Aplica la tecla al documento y devuelve el documento y el cursor nuevos. */
 function apply(text, pos, block, kind = "enter") {
@@ -31,7 +23,6 @@ function apply(text, pos, block, kind = "enter") {
   return {
     text: text.slice(0, edit.from) + edit.insert + text.slice(edit.to),
     cursor: edit.cursor,
-    blockBreak: edit.blockBreak === true,
   };
 }
 
@@ -39,23 +30,22 @@ const para = (from, to) => ({ from, to, type: "paragraph" });
 
 // --------------------------------------------------------------- ⏎ = bloque
 
-test("⏎ al final de un párrafo deja el cursor en la línea de debajo, sin línea de más", () => {
-  // El bloque nuevo no materializa líneas en blanco (t_c7756962): la que lo
-  // separa del párrafo de arriba la mete la primera letra que se escribe.
+test("⏎ al final de un párrafo abre un bloque vacío debajo", () => {
+  // `uno`, su separador y la línea vacía del bloque nuevo, con el cursor en
+  // ella (ver block-gaps.js): lo que se escriba cae ahí sin mover nada.
   const r = apply("uno", 3, para(0, 3));
-  assert.equal(r.text, "uno\n");
-  assert.equal(r.cursor, 4);
-  assert.equal(r.blockBreak, true);
+  assert.equal(r.text, "uno\n\n");
+  assert.equal(r.cursor, 5);
 });
 
-test("⏎ al final de un bloque NO añade líneas en blanco a la que ya separa", () => {
-  // El caso del dueño: con un bloque detrás, el hueco ya está ahí y el cursor
-  // lo ocupa. Antes se metían dos saltos más y se veían tres huecos (54 px).
+test("⏎ al final de un bloque con otro detrás: vacío entre dos separadores", () => {
+  // El caso del dueño (t_c7756962): el cursor NO se queda en el separador de
+  // debajo del encabezado -- ese aire no es un sitio donde escribir --, sino
+  // en un bloque vacío con su separador a cada lado.
   const text = "# THALIA\n\n# STRATERIA\n\n# SAIFFE";
   const r = apply(text, 8, { from: 0, to: 8, type: "h1" });
-  assert.equal(r.text, text, "el .md no cambia: una línea en blanco, no tres");
-  assert.equal(r.cursor, 9, "el cursor queda en la línea en blanco de debajo");
-  assert.equal(r.blockBreak, true);
+  assert.equal(r.text, "# THALIA\n\n\n\n# STRATERIA\n\n# SAIFFE");
+  assert.equal(r.cursor, 10, "el cursor queda en la línea vacía de en medio");
 });
 
 test("⏎ al final de un encabezado vale para h1, h2, h3 y h4", () => {
@@ -67,24 +57,21 @@ test("⏎ al final de un encabezado vale para h1, h2, h3 y h4", () => {
   ]) {
     const text = line + "\n\n" + line.replace("UNO", "DOS");
     const r = apply(text, line.length, { from: 0, to: line.length, type });
-    assert.equal(r.text, text, `${type}: el .md no gana líneas en blanco`);
-    assert.equal(r.cursor, line.length + 1, `${type}: el cursor queda debajo`);
-    assert.equal(r.blockBreak, true, `${type}: el bloque nuevo se marca`);
+    assert.equal(r.text, line + "\n\n\n\n" + line.replace("UNO", "DOS"), type);
+    assert.equal(r.cursor, line.length + 2, `${type}: el cursor en el bloque vacío`);
   }
 });
 
-test("⏎ al final de un encabezado pegado al de abajo crea UNA línea en blanco", () => {
+test("⏎ al final de un encabezado pegado al de abajo le pone también su separador", () => {
   const r = apply("# A\n# B", 3, { from: 0, to: 3, type: "h1" });
-  assert.equal(r.text, "# A\n\n# B");
-  assert.equal(r.cursor, 4);
-  assert.equal(r.blockBreak, true);
+  assert.equal(r.text, "# A\n\n\n\n# B");
+  assert.equal(r.cursor, 5);
 });
 
-test("⏎ al final del último bloque de la nota deja una línea, no dos", () => {
+test("⏎ al final del último bloque de la nota: separador y bloque vacío", () => {
   const r = apply("# SOLO", 6, { from: 0, to: 6, type: "h1" });
-  assert.equal(r.text, "# SOLO\n");
-  assert.equal(r.cursor, 7);
-  assert.equal(r.blockBreak, true);
+  assert.equal(r.text, "# SOLO\n\n");
+  assert.equal(r.cursor, 8);
 });
 
 test("⏎ a mitad de palabra parte el bloque en dos", () => {
@@ -103,99 +90,6 @@ test("⏎ al final de una fila de dentro del bloque no añade una línea de más
 
 test("⏎ en una nota vacía no crea nada (que decida CodeMirror)", () => {
   assert.equal(blockKeyEdit({ text: "", pos: 0, block: null, kind: "enter" }), null);
-});
-
-// -------------------------------- la primera letra del bloque abierto con ⏎
-
-test("la primera letra: línea en blanco arriba siempre, abajo solo si se lo comen", () => {
-  // Con un bloque debajo que no se come la línea, la que ya había hace de
-  // arriba: el `.md` no crece y el hueco es el de la regla (18 px tras un H1).
-  assert.equal(blockBreakInsert(editorParser, "Z", "# STRATERIA"), "\nZ");
-  assert.equal(blockBreakInsert(editorParser, "Z", "# STRATERIA\n\n# SAIFFE"), "\nZ");
-  // Último bloque de la nota: la de arriba es la única que hay.
-  assert.equal(blockBreakInsert(editorParser, "Z", null), "\nZ");
-  // Un párrafo debajo se come la línea: sin la de abajo, los dos son uno. Y
-  // entonces la de arriba hay que materializarla, o el encabezado pierde su
-  // hueco (requisito 2: 18 px tras un H1 aunque el bloque de abajo sea texto).
-  assert.equal(blockBreakInsert(editorParser, "W", "Texto de abajo."), "\nW\n");
-  // Numerada que empieza en 2: tampoco interrumpe un párrafo, así que se come
-  // el texto y la lista dejaría de ser lista (regresión de la revisión).
-  assert.equal(blockBreakInsert(editorParser, "W", "2. dos\n3. tres"), "\nW\n");
-  // La que empieza en 1 sí interrumpe: basta la línea de arriba.
-  assert.equal(blockBreakInsert(editorParser, "W", "1. uno\n2. dos"), "\nW");
-});
-
-test("gluesBelow: qué bloques se comen la línea de encima", () => {
-  // Quien contesta es el parser del editor (ver `gluesBelow` en block-keys.js);
-  // los nombres dicen qué hace el árbol con `"x\n" + bloque`.
-  const casos = [
-    ["hola\ny más", true, "párrafo"],
-    ["[id]: /url", true, "definición de enlace"],
-    ["    codigo", true, "código indentado"],
-    ["\tcodigo", true, "código con tabulador"],
-    ["---", true, "solo guiones: subrayado setext"],
-    ["- ", true, "viñeta vacía: subrayado setext"],
-    ["1.", true, "numerada vacía"],
-    ["2. dos\n3. tres", true, "numerada que empieza en 2"],
-    ["001. uno", true, "numerada con ceros delante"],
-    ["<span>x</span>", true, "HTML tipo 7 (etiqueta suelta)"],
-    ["| a | b |\n|---|---|", true, "tabla: el editor no tiene tablas, es párrafo"],
-    ["# B", false, "encabezado"],
-    ["##### B", false, "encabezado de cinco"],
-    ["```\ncodigo\n```", false, "valla"],
-    ["> cita", false, "cita"],
-    ["- uno\n- dos", false, "viñeta con contenido"],
-    ["* ", true, "viñeta `*` vacía (un punto vacío no interrumpe)"],
-    ["1. uno\n2. dos", false, "numerada que empieza en 1"],
-    ["***", false, "regla de asteriscos"],
-    ["- - -", false, "regla de guiones separados"],
-    ["<div>x</div>", false, "HTML de bloque"],
-  ];
-  for (const [text, glue, nombre] of casos) {
-    assert.equal(gluesBelow(editorParser, text), glue, `${nombre}: ${JSON.stringify(text)}`);
-  }
-});
-
-test("gluesBelow coincide con el parser que monta la vista", () => {
-  // Si al parsear `"x" + el bloque de abajo` el primer nodo no acaba justo en
-  // la `x`, es que el de abajo se ha comido la línea. Las dos respuestas -- la
-  // función y el árbol -- tienen que dar lo mismo, y el parser que se usa aquí
-  // es el MISMO que el de la vista: un test que parsee con otro (GFM, con
-  // tablas) avala una regla que la app no sigue.
-  const bloques = [
-    "hola", "[id]: /url", "    codigo", "---", "- ", "1.", "2. dos", "001. uno",
-    // (Una viñeta vacía con `*` no entra: este parser deja el `*` dentro del
-    // párrafo en vez de pegarlo al ítem, y ahí no hay nada que comparar.)
-    "<span>x</span>", "# B", "##### B", "```\nx\n```", "> cita", "- uno",
-    "1. uno", "***", "- - -", "<div>x</div>", "| a | b |\n|---|---|",
-    "| a | b |\n|---|---|\n| 1 | 2 |", "a | b\n--- | ---", "a|b\n-| -",
-  ];
-  const seLoCome = (parser, text) => {
-    const primero = parser.parse("x\n" + text).topNode.firstChild;
-    return !(primero && primero.from === 0 && primero.to === 1);
-  };
-  for (const text of bloques) {
-    assert.equal(
-      gluesBelow(editorParser, text),
-      seLoCome(editorParser, text),
-      `la función y el parser del editor discrepan con ${JSON.stringify(text)}`,
-    );
-    assert.equal(
-      seLoCome(editorParser, text),
-      seLoCome(commonmarkLanguage.parser, text),
-      `el parser de la vista no es el de commonmark con ${JSON.stringify(text)}`,
-    );
-  }
-});
-
-test("la tabla solo se funde con un parser que tenga tablas (no es el del editor)", () => {
-  // La trampa de la ronda anterior: el test de árbitro parseaba con
-  // `markdownLanguage` (GFM) y la app pinta con CommonMark. Con el de la app la
-  // tabla es un párrafo más y sí se come la línea.
-  const tabla = "| a | b |\n|---|---|";
-  assert.equal(gluesBelow(editorParser, tabla), true, "sin tablas, la cabecera sigue siendo párrafo");
-  assert.equal(gluesBelow(markdownLanguage.parser, tabla), false, "con GFM sí es una tabla");
-  assert.equal(gluesBelow(editorParser, "# B"), false);
 });
 
 // ------------------------------------------------- ⇧⏎ / ⌘⏎ = salto de línea
@@ -338,19 +232,35 @@ test("⇧⏎ dentro de una cita salta línea dentro de la misma cita", () => {
 
 test("⏎ en un título termina el bloque y abre un párrafo normal", () => {
   const r = apply("# Titulo", 8, { from: 0, to: 8, type: "h1" });
-  assert.equal(r.text, "# Titulo\n");
-  assert.equal(r.cursor, 9);
-  assert.equal(r.blockBreak, true);
+  assert.equal(r.text, "# Titulo\n\n");
+  assert.equal(r.cursor, 10);
 });
 
 test("⏎ a mitad de un título deja el resto como párrafo", () => {
   const r = apply("# Titulo largo", 8, { from: 0, to: 14, type: "h1" });
   assert.equal(r.text, "# Titulo\n\nlargo");
-  // Ahí los saltos separan texto que ya existía: no hay bloque vacío que valga.
-  assert.equal(r.blockBreak, false);
 });
 
 // ---------------------------------------------------------------- código
+
+test("⏎ detrás de la valla de cierre abre un bloque vacío debajo", () => {
+  const text = "```\nx\n```\n\nfin";
+  const r = apply(text, 9, { from: 0, to: 9, type: "code" });
+  assert.equal(r.text, "```\nx\n```\n\n\n\nfin");
+  assert.equal(r.cursor, 11);
+});
+
+test("⏎ al final de una valla SIN cerrar sigue dentro del código", () => {
+  const text = "```\nx";
+  const r = apply(text, 5, { from: 0, to: 5, type: "code" });
+  assert.equal(r.text, "```\nx\n");
+});
+
+test("⏎ en una línea horizontal abre un bloque vacío debajo", () => {
+  const r = apply("---\n\nfin", 3, { from: 0, to: 3, type: "hr" });
+  assert.equal(r.text, "---\n\n\n\nfin");
+  assert.equal(r.cursor, 5);
+});
 
 test("⏎ dentro de código mete un salto y no parte la valla", () => {
   const text = "```\nlinea1\nlinea2\n```";

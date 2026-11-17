@@ -1490,6 +1490,28 @@
     height: var(--mdm-blank-unit, 12px);
     line-height: var(--mdm-blank-unit, 12px);
   }
+  /* Un bloque VACÍO (la línea que abre ⏎ o el «+», con un separador a cada
+     lado; ver block-gaps.js) no es aire: es un párrafo sin texto todavía y
+     mide una línea entera. Así, escribir en él no mueve nada: la letra cae en
+     esa misma línea. El del cursor enseña el texto de ayuda, como en Notion. */
+  #note-body .cm-line.cm-mdm-gap-empty,
+  #row-page-body .cm-line.cm-mdm-gap-empty {
+    height: var(--mdm-line, 24px);
+    line-height: inherit;
+  }
+  #note-body .cm-line.cm-mdm-gap-current:not(.cm-mdm-empty-line)::before,
+  #row-page-body .cm-line.cm-mdm-gap-current:not(.cm-mdm-empty-line)::before {
+    content: "Escribe, o «/» para comandos…";
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--ink-muted);
+    opacity: 0.55;
+    pointer-events: none;
+    user-select: none;
+    white-space: nowrap;
+  }
   /* La única línea de una nota vacía no es un hueco entre bloques: es el
      bloque que se está escribiendo (lleva el «Escribe algo…»), así que mide una
      línea entera -- con el alto de una línea en blanco el texto de ayuda

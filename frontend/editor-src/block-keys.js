@@ -57,67 +57,22 @@ function insertAt(pos, insert) {
   return { from: pos, to: pos, insert, cursor: pos + insert.length };
 }
 
-// ------------------------------------------------- ¿el de abajo se lo come?
-
-/**
- * ¿El texto que se escribe encima de este bloque acabaría DENTRO de él?
- *
- * La pregunta la contesta el PARSER, no una lista de casos. Se compone el texto
- * tal como quedaría sin la línea en blanco -- el párrafo nuevo (`x`) y, pegado
- * debajo, el bloque de abajo ENTERO tal y como lo da `computeBlocks` (algunas
- * construcciones necesitan su segunda línea para saberse: una tabla es la
- * cabecera más la fila de guiones) -- y se mira el primer nodo de primer nivel:
- * si acaba justo en la `x`, el de abajo empieza bloque propio y su línea en
- * blanco se puede quitar; si se alarga, se ha comido la línea.
- *
- * `parser` es el `Parser` de Lezer del propio editor -- ver `markdownParser` en
- * entry.js, el mismo `LanguageSupport` que monta el `EditorView` --, así que la
- * regla no puede separarse de lo que se pinta: una tabla (CommonMark no las
- * tiene: es un párrafo más), una numerada que empieza en 2, un `[id]: /url` o
- * lo que venga mañana salen solos, sin mantener dos criterios. El test de
- * árbitro de test/block-keys.test.js parsea con ESE parser y compara.
- */
-export function gluesBelow(parser, text) {
-  if (!text) return false;
-  const first = parser.parse("x\n" + text).topNode.firstChild;
-  return !(first && first.from === 0 && first.to === 1);
-}
-
-/**
- * Lo que se teclea (o se pega) en el hueco de un bloque nuevo abierto con ⏎ al
- * final de otro, con las líneas en blanco que necesita alrededor (ver
- * `blockBreak`):
- *
- * - la de ARRIBA va siempre: es la que da el hueco de la regla (18 px detrás de
- *   un H1, 14 detrás de un H2–H4) y la que impide que el texto se pegue al
- *   bloque de arriba. Con un bloque debajo que no se lo come, la que ya había
- *   entre los dos hace ese papel y el `.md` no gana nada;
- * - la de ABAJO solo cuando el bloque de abajo se comería el texto
- *   (`gluesBelow`): sin ella, el párrafo nuevo y el de abajo serían uno.
- */
-export function blockBreakInsert(parser, typed, below) {
-  return "\n" + typed + (below != null && gluesBelow(parser, below) ? "\n" : "");
-}
-
 // ---------------------------------------------------------------- ⏎ en seco
 
 /**
  * Parte un bloque que no tiene continuación propia (párrafo, título, otros):
  * lo que queda detrás del cursor pasa a ser un bloque NUEVO.
  *
- * Al final del bloque (el caso de ⏎ detrás de un encabezado, t_c7756962) el
- * bloque nuevo NO materializa líneas en blanco: el cursor se queda en la línea
- * de debajo, que es la línea en blanco que YA separa del bloque siguiente -- o,
- * si no había ninguna, una sola que se crea ahora --, y al final de la nota la
- * línea de debajo a secas. Así el hueco que se ve en pantalla es el que dicta
- * la regla de huecos del bloque de arriba (el de UNA línea en blanco), no la
- * suma de líneas materializadas más el hueco del bloque vacío: pulsar ⏎ detrás
- * de un H1 dejaba tres líneas en blanco (18 + 18 + 18 px) para un párrafo
- * nuevo vacío.
+ * Al final del bloque se abre un BLOQUE VACÍO debajo (ver block-gaps.js): una
+ * línea en blanco con su separador a cada lado, `X\n\n|\n\nY`, y el cursor
+ * en ella. Es la forma canónica del `.md` con un párrafo vacío en medio, así
+ * que escribir ahí no mueve nada -- la letra cae en esa línea y el `.md` queda
+ * `X\n\nletra\n\nY` -- y el separador de arriba no se pisa nunca: el cursor
+ * no aterriza en el aire de debajo del encabezado (t_c7756962).
  *
- * `blockBreak` dice que esa línea es el bloque nuevo: la línea en blanco que lo
- * separa del bloque de arriba se materializa en cuanto se escribe la primera
- * letra (ver `blockBreakField` en entry.js).
+ * - Con el bloque de abajo pegado (un `\n` solo: un título seguido de un
+ *   párrafo), se le pone también su separador.
+ * - Al final de la nota basta con el de arriba: `X\n\n|`.
  *
  * Detrás de una fila del MEDIO del bloque, el salto que ya había cuenta como
  * uno de los dos separadores y solo hace falta uno más -- si no, saldría un
@@ -126,14 +81,15 @@ export function blockBreakInsert(parser, typed, below) {
 function splitBlock(text, pos, block) {
   const { from, to } = cutAround(text, block.from, block.to, pos);
   if (to === block.to) {
-    // El cursor va al principio de la línea de debajo: la línea en blanco que
-    // ya había no se toca (el `.md` no cambia); si no la había, se crea.
-    if (text.startsWith("\n\n", block.to)) return { from, to, insert: "", cursor: block.to + 1, blockBreak: true };
-    return { from, to, insert: "\n", cursor: from + 1, blockBreak: true };
+    let after = 0;
+    while (text[block.to + after] === "\n") after++;
+    const atEnd = block.to + after === text.length;
+    const insert = !atEnd && after === 1 ? "\n\n\n" : "\n\n";
+    return { from, to, insert, cursor: from + 2 };
   }
   const tail = text.slice(to, block.to);
   const gap = tail.startsWith("\n") ? "\n" : "\n\n";
-  return { from, to, insert: gap, cursor: from + gap.length + leadingNewlines(tail), blockBreak: false };
+  return { from, to, insert: gap, cursor: from + gap.length + leadingNewlines(tail) };
 }
 
 /**
@@ -220,6 +176,21 @@ function quoteSoftBreak(text, pos, block) {
   return { from, to, insert: "\n" + prefix, cursor: from + 1 + prefix.length };
 }
 
+const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
+
+/** ¿El bloque de código está cerrado? Una valla con su cierre, o código
+ * indentado (que no tiene valla). Una valla sin cerrar se come todo lo de
+ * detrás: ahí ⏎ sigue siendo un salto dentro del código. */
+function codeIsClosed(text, block) {
+  const body = text.slice(block.from, block.to);
+  const lines = body.split("\n");
+  const open = FENCE_RE.exec(lines[0]);
+  if (!open) return true;
+  if (lines.length < 2) return false;
+  const close = FENCE_RE.exec(lines[lines.length - 1]);
+  return !!close && close[1][0] === open[1][0] && close[1].length >= open[1].length && lines[lines.length - 1].trim() === close[1];
+}
+
 function splitSoft(text, pos, block) {
   const { from, to } = cutAround(text, block.from, block.to, pos);
   return { from, to, insert: "\n", cursor: from + 1 };
@@ -235,11 +206,8 @@ function splitSoft(text, pos, block) {
  *        bloque que contiene el cursor, tal y como lo da `computeBlocks`
  *        (null: no hay bloque ahí -- nota vacía, fila en blanco entre bloques)
  * @param {"enter"|"soft"} [opts.kind] `enter` = ⏎; `soft` = ⇧⏎, ⌘⏎ o ⌃⏎
- * @returns {{from: number, to: number, insert: string, cursor: number,
- *            blockBreak?: boolean}|null}
+ * @returns {{from: number, to: number, insert: string, cursor: number}|null}
  *        null cuando la tecla no es de este módulo (que decida CodeMirror).
- *        `blockBreak` marca el bloque vacío que se abre al final de otro:
- *        mientras esté vacío no lleva líneas en blanco materializadas.
  */
 export function blockKeyEdit({ text, pos, block, kind = "enter" }) {
   if (!block || pos < block.from || pos > block.to) return null;
@@ -247,23 +215,24 @@ export function blockKeyEdit({ text, pos, block, kind = "enter" }) {
 
   if (type === "code") {
     // Una valla no se parte nunca: ni ⏎ ni ⇧⏎ crean bloque, y la línea en
-    // blanco con significado dentro del código no aparece (D7).
+    // blanco con significado dentro del código no aparece (D7). Detrás de la
+    // valla de CIERRE (o al final de un bloque indentado) ya no se está en el
+    // código: ⏎ abre un bloque vacío debajo, como al final de cualquier otro.
+    if (kind === "enter" && pos === block.to && codeIsClosed(text, block)) return splitBlock(text, pos, block);
     return insertAt(pos, "\n");
   }
 
   if (kind === "soft") {
     if (type === "bullet_list_item" || type === "ordered_list_item") return listSoftBreak(text, pos, block);
     if (type === "quote") return quoteSoftBreak(text, pos, block);
-    if (type === "hr") return null;
-    // Un título ATX es UNA línea: no hay salto dentro de él. Se trata como ⏎
+    // Un título ATX (o una línea horizontal) es UNA línea: no hay salto dentro de él. Se trata como ⏎
     // (bloque nuevo) para que el `.md` siga separando bloques con una línea
     // en blanco en vez de dejar un título y un párrafo pegados.
-    if (HEADING_RE.test(type)) return splitBlock(text, pos, block);
+    if (HEADING_RE.test(type) || type === "hr") return splitBlock(text, pos, block);
     return splitSoft(text, pos, block);
   }
 
   if (type === "bullet_list_item" || type === "ordered_list_item") return listEnter(text, pos, block);
   if (type === "quote") return quoteEnter(text, pos, block);
-  if (type === "hr") return null;
   return splitBlock(text, pos, block);
 }
