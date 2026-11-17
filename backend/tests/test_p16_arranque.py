@@ -245,13 +245,13 @@ def test_un_starting_nunca_trae_percent_100(abrir_app, vault_path, monkeypatch):
     original = store_mod.sync_wikilinks
     primera = True
 
-    def sync_frenado(conn, page_id, workspace_id, body):
+    def sync_frenado(conn, page_id, workspace_id, body, **kwargs):
         nonlocal primera
         if primera:
             primera = False
             enlazando.set()
             assert suelto.wait(60), "el test no soltó el enlazado"
-        return original(conn, page_id, workspace_id, body)
+        return original(conn, page_id, workspace_id, body, **kwargs)
 
     monkeypatch.setattr(store_mod, "sync_wikilinks", sync_frenado)
 
