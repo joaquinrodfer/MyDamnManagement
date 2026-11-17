@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import agent_auth, auth, capture_tokens, login_page
 from app.config import settings
@@ -117,6 +118,22 @@ PUBLIC_PATHS = frozenset(
 # **sin sesión** (comprobado: devolvía el `app.js` con un 200). Validando el
 # nombre, solo se abren los ficheros de esa carpeta.
 ICON_PATH = re.compile(r"/icons/[A-Za-z0-9_-]+\.png")
+
+# Direcciones del panel que NO son un fichero (P18). Cada nota y cada base
+# tiene la suya --`/<id>`, el id y no el título, que cambia--, y `/mis-tareas`
+# es la vista de esa sección. La regla es estrecha a propósito: **una sola
+# pieza**, sin punto (los ficheros del panel lo llevan: `app.js`, `logo.png`,
+# `manifest.webmanifest`) y con pinta de id (8–64 caracteres de
+# `[0-9A-Za-z_-]`, que es un UUID de sobra). Así una ruta de API que no existe
+# --`/api/no-existe`, `/databases/loquesea`-- sigue siendo su 404 en JSON y no
+# se lleva el panel, y `/app.js` sigue sirviéndose como fichero.
+PANEL_ROUTE = re.compile(r"/[0-9A-Za-z_-]{8,64}")
+PANEL_VIEWS = frozenset({"/mis-tareas"})
+
+
+def _parece_ruta_de_panel(path: str) -> bool:
+    """¿Esta ruta es una dirección del panel (y no un fichero ni una API)?"""
+    return path in PANEL_VIEWS or bool(PANEL_ROUTE.fullmatch(path))
 
 
 def _accepts_html(request: Request) -> bool:
@@ -291,7 +308,9 @@ def _es_puerta_o_estatico(path: str) -> bool:
 
     Solo lo que no lee ni escribe el índice: `/health` (que es el que dice
     cómo va), `/login` (la pantalla de entrada, que se pide justo cuando no
-    hay nada que enseñar) y los ficheros del panel --sus `.js`, `.css`,
+    hay nada que enseñar), las direcciones del panel (`/`, `/<id>`,
+    `/mis-tareas`: son el propio panel, que ya contará por sus llamadas que la
+    API todavía no está) y los ficheros del panel --sus `.js`, `.css`,
     iconos y el `index.html` de `/`--, que son estáticos puros. El resto de
     rutas de la API tocan el índice y esperan.
 
@@ -301,6 +320,12 @@ def _es_puerta_o_estatico(path: str) -> bool:
     hasta que el índice esté listo--.
     """
     if path in ("/", "/health", "/login"):
+        return True
+    # Las direcciones de una nota o de una base (P18) son el panel igual que
+    # `/`: quien las pide quiere ver la app, y la app ya enseña el progreso con
+    # sus propias llamadas. Si no se eximen, recargar en `/<id>` durante un
+    # reindexado devolvería el JSON del 503 en vez del panel.
+    if _parece_ruta_de_panel(path):
         return True
     # `/auth/*` también: la tabla de usuarios y sesiones se crea en la fase
     # rápida del arranque, así que estas rutas no necesitan el índice. Si no
@@ -314,6 +339,7 @@ def _es_puerta_o_estatico(path: str) -> bool:
     if not rel or ".." in partes:
         return False
     return (Path(settings.frontend_dir) / rel).is_file()
+
 
 
 def _no_listo(foto: dict) -> JSONResponse:
@@ -708,12 +734,29 @@ class NoCacheStaticFiles(StaticFiles):
     """StaticFiles normal, pero fuerza al navegador a revalidar (If-None-Match)
     en vez de servir de caché sin preguntar. Sin esto, un cambio en app.js o
     index.html puede quedarse "pegado" en el navegador de forma invisible —
-    el ETag sigue haciendo baratas las recargas que no cambiaron nada."""
+    el ETag sigue haciendo baratas las recargas que no cambiaron nada.
+
+    Y las direcciones del panel que no son un fichero (P18) se sirven con el
+    `index.html`: recargar en `/<id>` es pedir una nota, no un archivo, y el
+    navegador no sabe que ahí hay una SPA. El fallback es el mismo para todas
+    --`/`, `/<id>`, `/mis-tareas`-- y solo se aplica a lo que reconoce
+    `_parece_ruta_de_panel`: un fichero que no existe o una ruta de la API
+    siguen dando su 404 (el de la API, en JSON)."""
 
     def file_response(self, *args, **kwargs):
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "no-cache"
         return response
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or not _parece_ruta_de_panel(scope["path"]):
+                raise
+            # El `index.html` de siempre, con su `no-cache`: la app decide qué
+            # nota toca leyendo la dirección.
+            return await super().get_response("index.html", scope)
 
 
 # Montado al final a propósito: así no tapa /health, /status, /pages, /trash,
