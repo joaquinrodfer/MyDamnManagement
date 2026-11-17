@@ -1279,11 +1279,12 @@
      el scroll y el aspecto de la tabla ya son los de `.table-wrap`; aquí solo
      el hueco, el esqueleto de carga y las tarjetas benignas (bloque roto o
      base que ya no está), que nunca borran el texto del documento. */
-  /* `position: relative` para que el asa, que vive DENTRO del widget (ver
-     blockHandleDom en entry.js), se coloque respecto a la tabla y no respecto
-     al scroller del editor (a -60 px de ahí se salía de la pantalla). Y se
-     enseña al pasar el ratón por el bloque, como el asa de cualquier línea:
-     sin el hover no había ni asa ni arrastre ni «+» en una base incrustada. */
+  /* `position: relative` para que la banda del margen -- el «+», que vive
+     DENTRO del widget (ver blockHandleDom en entry.js) -- se coloque respecto a
+     la tabla y no respecto al scroller del editor (a -60 px de ahí se salía de
+     la pantalla). Y se enseña al pasar el ratón por el bloque, como la banda de
+     cualquier línea: sin el hover no había ni banda ni arrastre ni «+» en una
+     base incrustada. */
   .cm-mdm-dblock { position: relative; margin: 8px 0; }
   .cm-mdm-dblock:hover > .cm-mdm-block-handle-wrap,
   .cm-mdm-dblock:focus-within > .cm-mdm-block-handle-wrap { opacity: 1; }
@@ -1554,28 +1555,47 @@
   #note-body .cm-mdm-space-h5 { --mdm-space: 12px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
   #row-page-body .cm-mdm-space-h5 { --mdm-space: 12px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
 
-  /* ---------- handle de bloque (seleccionar/convertir/borrar) + botón "+" ----------
+  /* ---------- la banda del bloque (marcar/arrastrar) + botón "+" ----------
      Widget dentro de la línea (no gutter), posicionado en el hueco que deja
      el padding-left de .cm-content. top:0 + la propia línea como referencia
      (position:relative arriba) es lo que garantiza que quede a la altura
      exacta de la línea que le corresponde, sea un párrafo o un H1 más alto
      -- el selector combinado con cada cm-mdm-space-* reajusta ese "top"
      cuando la línea además tiene padding-top propio (ver más arriba), para
-     que el asa siga a la altura del texto y no del borde superior de la
-     línea. El "+" y el "⋮⋮" comparten el mismo wrapper para no necesitar
-     dos widgets (y por tanto dos cálculos de posición) por bloque.
-     Invisible por defecto -- solo aparece al pasar el ratón por ESA línea
-     (o por el propio asa, que sigue contando como parte de ella). */
+     que la banda siga a la altura del texto y no del borde superior de la
+     línea.
+
+     Ya no hay «⋮⋮» (t_c2c98f7b): a la izquierda de un bloque queda SOLO el
+     «+». El bloque se coge desde esta banda -- el envoltorio del «+», estirado
+     a la izquierda con `::before` hasta donde llegaba el asa -- y se arrastra
+     entero (ver la sección de arrastre en entry.js). Invisible por defecto:
+     aparece al pasar el ratón por ESA línea (o por la propia banda) y se queda
+     a la vista mientras el bloque está marcado. */
   .cm-mdm-block-handle-wrap {
     position: absolute;
-    left: -62px; /* 58 de las dos asas + 4 de aire hasta el texto; --mdm-gutter deja sitio al punto a su izquierda */
+    left: -34px; /* el «+» pegado al texto: 28 del botón + 4 de aire */
     top: calc(var(--mdm-space, 0px) * (1 - var(--mdm-flush, 0))); /* el padding-top de la línea, heredado de su cm-mdm-space-* */
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
-    gap: 2px;
+    justify-content: center;
     line-height: 1.6;
     opacity: 0;
+    cursor: grab; /* de aquí se coge el bloque entero */
     transition: opacity var(--dur-fast) var(--ease-std);
+  }
+  /* La zona de agarrar: 28 px más a la izquierda, donde estaba el asa. Es un
+     pseudo-elemento (los eventos llegan al envoltorio, así que `event.target`
+     sigue siendo la banda) y no pinta nada. */
+  .cm-mdm-block-handle-wrap::before {
+    content: "";
+    position: absolute;
+    left: -28px;
+    top: -6px;
+    bottom: -6px;
+    width: 56px;
+    cursor: grab;
   }
   /* Al recibir foco por teclado (:focus-within) el contenedor entero pasa a
      opacity: 1, para que el anillo :focus-visible de 2px se pinte al 100 %. */
@@ -1584,11 +1604,11 @@
   #note-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
   #row-page-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
   .cm-mdm-block-handle-wrap:focus-within,
-  .cm-mdm-block-handle-wrap:has(.cm-mdm-block-handle-selected) {
+  .cm-line.cm-mdm-line-marked .cm-mdm-block-handle-wrap,
+  .cm-mdm-dblock-marked > .cm-mdm-block-handle-wrap {
     opacity: 1;
   }
-  .cm-mdm-block-add,
-  .cm-mdm-block-handle {
+  .cm-mdm-block-add {
     width: 28px;
     height: 28px;
     min-width: 28px;
@@ -1612,8 +1632,7 @@
     touch-action: manipulation;
     -webkit-touch-callout: none;
   }
-  .cm-mdm-block-add:hover,
-  .cm-mdm-block-handle:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
+  .cm-mdm-block-add:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
 
   /* ---------- el punto del bloque (escribir un bloque debajo) ----------
      Widget EN LÍNEA con ancho 0 (ver blockDotPlugin en entry.js): se saca al
@@ -1690,10 +1709,42 @@
     user-select: none;
     white-space: nowrap;
   }
-  .cm-mdm-block-handle-selected { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent); opacity: 1; }
+  /* ---------- el bloque marcado ----------
+     La marca es del BLOQUE, no del texto: fondo suave + barra en el margen
+     izquierdo. Antes esto era una selección de CodeMirror sobre el rango del
+     bloque -- texto pintado de azul, como si se hubieran seleccionado letras, y
+     Ctrl+C se llevaba su contenido cuando el usuario creía haber cogido el
+     bloque entero (t_c2c98f7b). */
+  #note-body .cm-line.cm-mdm-line-marked,
+  #row-page-body .cm-line.cm-mdm-line-marked {
+    background: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+    border-radius: 4px;
+  }
+  .cm-mdm-dblock-marked {
+    background: var(--accent-soft);
+    border-radius: 6px;
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  /* El bloque que se está arrastrando: se queda en su sitio, atenuado, mientras
+     la copia sigue al cursor. */
+  .cm-mdm-line-dragging { opacity: 0.35; }
+  /* La copia translúcida que sigue al cursor (startDragGhost en entry.js): el
+     DOM del bloque clonado, en position:fixed y movido con transform. */
+  .cm-mdm-drag-ghost {
+    position: fixed;
+    z-index: 940;
+    pointer-events: none;
+    overflow: hidden;
+    background: var(--panel);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    opacity: 0.85;
+    will-change: transform;
+  }
   /* Línea de inserción del arrastre de bloques: marca, entre dos bloques, el
-     hueco donde va a caer el que se arrastra desde el asa (⋮⋮). La posición la
-     calcula el editor (entry.js, placeDropLine); aquí solo el aspecto. */
+     hueco donde va a caer el que se arrastra (ya no hay asa: se coge por la
+     banda del margen o con Alt).
   .cm-mdm-drop-line {
     position: fixed;
     z-index: 950;
@@ -4420,13 +4471,13 @@
       line-height: 1.65;
       --mdm-line: calc(16px * 1.65); /* la misma cuenta que font-size x line-height */
     }
-    /* Asas de bloque en el móvil: «+» y «⋮⋮» seguidos, 44×44 cada uno, y el
-       hueco de la izquierda crece a 92 px (44 + 44 + 4 de aire) para que los
-       dos quepan sin tapar el texto. Antes el «+» se ocultaba y el asa no se
-       veía hasta tocarla: desde el pulgar no había forma de añadir un bloque
-       ni de abrir el menú (convertir/duplicar/eliminar), porque el teclado en
-       pantalla no tiene Mayús+Intro ni Supr. */
-    .cm-mdm-block-handle-wrap { left: -92px; gap: 0; }
+    /* Banda del bloque en el móvil: el «+» de 44×44 pegado al texto y, a su
+       izquierda, otros 44 de zona para agarrar y para la pulsación larga --
+       los 92 px del hueco de la izquierda. Sin «⋮⋮» (t_c2c98f7b): el menú de
+       bloque se abre con la pulsación larga sobre la banda, que es la vía que
+       queda cuando el teclado en pantalla no tiene Mayús+Intro ni Supr. */
+    .cm-mdm-block-handle-wrap { left: -48px; width: 44px; height: 44px; }
+    .cm-mdm-block-handle-wrap::before { left: -44px; width: 88px; top: -8px; bottom: -8px; }
     .cm-mdm-block-add {
       display: inline-flex;
       width: 44px;
@@ -4434,13 +4485,6 @@
       min-width: 44px;
       min-height: 44px;
       font-size: 20px;
-    }
-    .cm-mdm-block-handle {
-      width: 44px;
-      height: 44px;
-      min-width: 44px;
-      min-height: 44px;
-      font-size: 16px;
     }
     /* ✓/✗ de las sugerencias dentro del texto: en el móvil se tocan con el
        dedo, así que el widget crece (la línea que lo lleva, también). */
