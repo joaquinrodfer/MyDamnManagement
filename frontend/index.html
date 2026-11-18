@@ -371,6 +371,29 @@
   .estado-grupo-cierra { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
   .estado-opcion-nombre { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
   .estado-opcion select { font: inherit; font-size: 12.5px; padding: 3px 4px; max-width: 45%; }
+  /* ---------- carga del equipo (plan H5) ---------- */
+  #workload-nav[hidden] { display: none; }
+  .carga { padding: 4px 4px 40px; }
+  .carga-tools { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 4px 0 14px; font-size: 13px; color: var(--ink-muted); }
+  .carga-wrap { overflow-x: auto; }
+  .carga-table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .carga-table th, .carga-table td { padding: 6px 10px; border-bottom: 1px solid var(--panel-border); text-align: right; white-space: nowrap; }
+  .carga-table th:first-child, .carga-table td:first-child { text-align: left; }
+  .carga-table th { color: var(--ink-muted); font-weight: 500; font-size: 12px; }
+  .carga-persona { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; color: var(--ink); font: inherit; cursor: pointer; padding: 0; }
+  .carga-persona .svg-icon { width: 14px; height: 14px; transition: transform .12s; }
+  .carga-persona[aria-expanded="true"] .svg-icon { transform: rotate(90deg); }
+  .carga-persona .user-avatar { width: 22px; height: 22px; }
+  .carga-celda--ok { background: color-mix(in srgb, var(--ok) 20%, transparent); }
+  .carga-celda--warn { background: color-mix(in srgb, var(--warn) 24%, transparent); }
+  .carga-celda--over { background: color-mix(in srgb, var(--down) 28%, transparent); font-weight: 600; }
+  .carga-cap { width: 56px; font: inherit; font-size: 12px; padding: 2px 4px; text-align: right; }
+  .carga-detalle td { background: var(--code-bg); font-size: 12.5px; text-align: left; white-space: normal; }
+  .carga-detalle table { width: 100%; border-collapse: collapse; }
+  .carga-detalle td, .carga-detalle th { padding: 3px 8px; border: 0; text-align: left; }
+  .carga-detalle td:last-child, .carga-detalle th:last-child { text-align: right; }
+  .carga-leyenda { display: inline-flex; gap: 10px; align-items: center; }
+  .carga-leyenda i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; }
   .tree-guest-ws { margin-left: auto; padding-left: 6px; font-size: 11px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
   .tree-empty-section { padding: 2px 16px 6px; font-size: 12px; color: var(--ink-muted); }
   .workspace-switcher { padding: 2px 8px 6px; }
@@ -5333,6 +5356,13 @@
             <button type="button" class="sidebar-section-toggle" id="btn-graph" title="Grafo de la página abierta (G)">
               <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-graph"/></svg>
               <span>Grafo</span>
+            </button>
+          </div>
+          <!-- Carga del equipo (plan H5): solo para quien tiene el permiso. -->
+          <div class="sidebar-section-head" id="workload-nav" hidden>
+            <button type="button" class="sidebar-section-toggle" id="btn-workload" aria-current="false">
+              <svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-users"/></svg>
+              <span>Carga del equipo</span>
             </button>
           </div>
         </div>
