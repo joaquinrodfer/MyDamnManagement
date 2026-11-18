@@ -53,6 +53,9 @@ def _le_toca(user, event: dict) -> bool:
     contaría títulos, rutas e ids de lo que no puede abrir. Un aviso de algo
     que ya no existe (borrado) solo le llega a quien lo ve todo.
     """
+    # Un aviso personal (plan H6) solo le llega a su destinatario, también al admin.
+    if event.get("type") == "notification":
+        return user is not None and str(getattr(user, "id", "")) == str(event.get("user_id"))
     if user is None or getattr(user, "is_admin", False):
         return True
     resource = event.get("page_id") or event.get("database_id")

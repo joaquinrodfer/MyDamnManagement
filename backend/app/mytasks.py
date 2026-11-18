@@ -135,6 +135,17 @@ def date_property(schema_def: list[dict]) -> Optional[dict]:
     return None
 
 
+def _fecha_limite(schema_def: list[dict], kind_json: Optional[str]) -> Optional[dict]:
+    """La fecha límite de la fila: en una base tipada (plan H4) la columna del
+    rol «Fin»; en una normal, la primera `date` (ver `date_property`)."""
+    if kind_json:
+        end_key = ((json.loads(kind_json) or {}).get("roles") or {}).get("end")
+        for prop in schema_def or []:
+            if isinstance(prop, dict) and prop.get("key") == end_key and prop.get("type") == DATE:
+                return prop
+    return date_property(schema_def)
+
+
 def _cell(prop: Optional[dict], props: dict, *, parse_date: bool = False) -> Optional[dict]:
     """`{key, name, value}` de una celda, o `None` si la fila no la tiene."""
     if prop is None:
@@ -169,9 +180,10 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
     """
     rows = conn.execute(
         "SELECT d.id AS id, d.schema_json AS schema_json, c.rule_json AS rule_json,"
-        " p.title AS title"
+        " p.title AS title, k.kind_json AS kind_json"
         " FROM databases d JOIN pages p ON p.id = d.page_id"
         " LEFT JOIN database_closed c ON c.database_id = d.id"
+        " LEFT JOIN database_kinds k ON k.database_id = d.id"
         " ORDER BY p.title COLLATE NOCASE, d.id"
     ).fetchall()
     bases: dict[str, dict] = {}
@@ -188,7 +200,7 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
             "schema_def": schema_def,
             "person_keys": keys,
             "status": status_property(schema_def),
-            "date": date_property(schema_def),
+            "date": _fecha_limite(schema_def, row["kind_json"]),
             "closed": rule,
         }
     return bases

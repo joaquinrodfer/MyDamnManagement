@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app import closed, due, hierarchy, schemas
 from app import kinds as kind_rules
+from app import notifications
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -664,6 +665,9 @@ def create_row(
             # Una fila es una página: dice quién la creó, como una nota.
             created_by=user.display_name,
         )
+        notifications.after_row_change(
+            repo.conn, db_def.schema_def, row.id, None, cleaned, str(user.id)
+        )
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
@@ -760,11 +764,12 @@ def update_row(
     row_id: uuid.UUID,
     payload: schemas.RowUpdate,
     repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
     if_match: str | None = Header(default=None),
 ):
     expected = parse_if_match(if_match)
     db_def = _get_database_or_404(repo, database_id)
-    _get_row_or_404(repo, database_id, row_id)
+    antes_fila = _get_row_or_404(repo, database_id, row_id)
 
     cleaned = None
     if payload.properties is not None:
@@ -803,6 +808,10 @@ def update_row(
         return conflict(_serialize_row_page(repo, db_def, actual), exc.current, exc.expected)
     if row is None:
         raise HTTPException(404, "Fila no encontrada")
+    if cleaned is not None:
+        notifications.after_row_change(
+            repo.conn, db_def.schema_def, row_id, antes_fila.properties, cleaned, str(user.id)
+        )
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
 

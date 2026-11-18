@@ -46,7 +46,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app import acl, auth
+from app import acl, auth, notifications
 from app.collab import ExternalChange, Peer, Rooms, user_info
 from app.config import settings
 from app.index import open_index
@@ -89,6 +89,8 @@ def _store(page_id: str, body: str, expected: str) -> str:
             if (actual.body_markdown or "") != (expected or ""):
                 raise ExternalChange(actual.body_markdown or "")
             repo.update_page(uuid.UUID(page_id), body_markdown=body)
+            # Plan H6: menciones nuevas (la sala no sabe quién escribió: sin autor).
+            notifications.after_body_change(repo.conn, page_id, actual.body_markdown, body, None)
         guardada = repo.get_page(uuid.UUID(page_id))
         return guardada.body_markdown if guardada else body
     finally:

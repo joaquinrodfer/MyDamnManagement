@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import agent_auth, auth, capture_tokens, login_page
 from app import backup as backup_mod
+from app import notifications as notifications_mod
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
@@ -34,6 +35,7 @@ from app.routers import (
 )
 from app.routers import auth as auth_routes
 from app.routers import backups as backups_routes
+from app.routers import notifications as notifications_routes
 from app.routers import workload as workload_routes
 from app.routers import workspaces as workspaces_routes
 from app.routers import export as export_routes
@@ -86,6 +88,7 @@ app.include_router(export_routes.router, dependencies=GUARDED)
 app.include_router(backups_routes.router, dependencies=GUARDED)
 app.include_router(workspaces_routes.router, dependencies=GUARDED)
 app.include_router(workload_routes.router, dependencies=GUARDED)
+app.include_router(notifications_routes.router, dependencies=GUARDED)
 app.include_router(trash.router, dependencies=GUARDED)
 app.include_router(search.router, dependencies=GUARDED)
 app.include_router(dashboard.router, dependencies=GUARDED)
@@ -460,6 +463,8 @@ async def index_is_ready(request: Request, call_next):
 watcher: Optional[VaultWatcher] = None
 # Copias programadas (plan H0): un hilo que mira cada 10 minutos si toca.
 backup_scheduler: Optional[backup_mod.BackupScheduler] = None
+# Avisos de plazo (plan H6): un hilo que mira cada hora las tareas de cada persona.
+deadline_worker: Optional[notifications_mod.DeadlineWorker] = None
 
 # El reindexado de arranque va en un hilo (P16): si el proceso se apaga antes
 # de que termine, el hilo puede terminar después y llamar a `_start_watcher`.
@@ -508,10 +513,13 @@ def on_startup() -> None:
     if info.recreated:
         log.warning("índice creado de cero en %s (%s)", info.path, info.reason)
 
-    global backup_scheduler
+    global backup_scheduler, deadline_worker
     if backup_scheduler is None:
         backup_scheduler = backup_mod.BackupScheduler()
         backup_scheduler.start()
+    if deadline_worker is None:
+        deadline_worker = notifications_mod.DeadlineWorker()
+        deadline_worker.start()
 
     conn = open_index(settings.index_path)
     try:
@@ -741,8 +749,11 @@ async def guardar_salas() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     """Para el vigilante. Sin esto, el hilo seguiría sondeando tras cerrar."""
-    global watcher, _shutting_down, backup_scheduler
+    global watcher, _shutting_down, backup_scheduler, deadline_worker
     _shutting_down = True
+    if deadline_worker is not None:
+        deadline_worker.stop()
+        deadline_worker = None
     if backup_scheduler is not None:
         backup_scheduler.stop()
         backup_scheduler = None
