@@ -427,6 +427,12 @@ class DocsFS:
             raise exc
 
         found: list[str] = []
+        if not os.path.isdir(self.root):
+            # Raíz inexistente = vault vacío (como `reader.walk_markdown`). Que
+            # eso no vacíe un índice con páginas lo decide antes
+            # `_refuse_suspicious_vault`, con su mensaje.
+            self.conn.execute("DELETE FROM documents")
+            return 0
         for dirpath, dirnames, filenames in os.walk(self.root, onerror=no_se_puede_leer):
             dirnames[:] = sorted(
                 d for d in dirnames

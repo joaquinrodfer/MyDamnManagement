@@ -36,6 +36,10 @@ INDEX_COPIA = WORK / "index-copia.sqlite"
 
 os.environ["FRONTEND_DIR"] = str(REPO_DIR / "frontend")
 os.environ["VAULT_PATH"] = str(VAULT)
+# 3.0 (hito 2): las notas viven en la base y el `.md` es una proyección. Este
+# guion comprueba el contrato del fichero, así que corre con ella encendida
+# (como la suite, ver tests/conftest.py).
+os.environ["VAULT_PROJECTION"] = "1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
