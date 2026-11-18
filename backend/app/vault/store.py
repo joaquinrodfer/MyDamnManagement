@@ -390,23 +390,26 @@ class _PageRecord:
     content_hash: str
     created_at: str
     updated_at: str
+    # El frontmatter tal cual (o None): con `body`, el documento entero. Ver la
+    # migración 9 de `app.index`.
+    frontmatter: Optional[str] = None
 
     def values(self) -> tuple:
         return (
             self.id, self.workspace_id, self.parent_id, self.type, self.title,
             self.icon, self.description, self.created_by, self.header_image,
             self.body, self.path, self.mtime, self.size, self.content_hash,
-            self.created_at, self.updated_at,
+            self.created_at, self.updated_at, self.frontmatter,
         )
 
 
 PAGE_COLUMNS = (
     "id, workspace_id, parent_id, type, title, icon, description, created_by,"
     " header_image_path, body, path, mtime, size, content_hash, created_at,"
-    " updated_at"
+    " updated_at, frontmatter"
 )
 
-INSERT_PAGE = f"INSERT INTO pages ({PAGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+INSERT_PAGE = f"INSERT INTO pages ({PAGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 UPSERT_PAGE = INSERT_PAGE + """
 ON CONFLICT(id) DO UPDATE SET
@@ -424,7 +427,8 @@ ON CONFLICT(id) DO UPDATE SET
     size = excluded.size,
     content_hash = excluded.content_hash,
     created_at = excluded.created_at,
-    updated_at = excluded.updated_at
+    updated_at = excluded.updated_at,
+    frontmatter = excluded.frontmatter
 """
 
 
@@ -617,6 +621,7 @@ class VaultStore:
             content_hash=page.content_hash,
             created_at=_iso(created),
             updated_at=_iso(updated),
+            frontmatter=page.frontmatter_raw,
         )
 
     def _upsert(self, record: _PageRecord) -> None:

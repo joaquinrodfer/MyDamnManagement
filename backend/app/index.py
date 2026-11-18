@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -186,7 +186,25 @@ MIGRATIONS: dict[int, list[str]] = {
     templates_json TEXT NOT NULL
 )""",
     ],
+    # v9 (3.0, hito 1): el frontmatter de cada página, TAL CUAL (el texto entre
+    # los dos `---`, sin ellos), o NULL si el fichero no tiene. Con él y `body`,
+    # el índice guarda el documento entero: claves que la app no gestiona,
+    # comentarios, orden y estilo del YAML. Es lo que permite que `POST /export`
+    # reconstruya el vault desde el índice sin perder nada (ADR-0005, etapa 1),
+    # y lo que en el hito 2 pasa a ser la verdad.
+    #
+    # SQLite no tiene `ADD COLUMN IF NOT EXISTS`: la migración es una función
+    # que mira antes si la columna ya está, para que siga siendo inocua en un
+    # fichero creado ya con `SCHEMA_SQL` (como las de arriba).
+    9: [lambda conn: _add_column(conn, "pages", "frontmatter", "TEXT")],
 }
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """`ALTER TABLE ... ADD COLUMN` que no falla si la columna ya existe."""
+    cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    if column not in cols:
+        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {decl}')
 
 SCHEMA_SQL = """
 CREATE TABLE workspaces (
@@ -211,7 +229,11 @@ CREATE TABLE pages (
     size              INTEGER,
     content_hash      TEXT,
     created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL
+    updated_at        TEXT NOT NULL,
+    -- El frontmatter tal cual (v9): ver la migración 9. Al final, para que un
+    -- índice migrado (ALTER TABLE añade al final) y uno nuevo tengan las
+    -- columnas en el mismo orden.
+    frontmatter       TEXT
 );
 CREATE INDEX pages_parent ON pages(parent_id);
 CREATE INDEX pages_title ON pages(title COLLATE NOCASE);
@@ -349,7 +371,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -659,7 +681,10 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
     applied = {current}
     for version in pending:
         for stmt in MIGRATIONS[version]:
-            conn.execute(stmt)
+            if callable(stmt):
+                stmt(conn)
+            else:
+                conn.execute(stmt)
         conn.execute(f"PRAGMA user_version = {version}")
         applied.add(version)
     if SCHEMA_VERSION not in applied:
