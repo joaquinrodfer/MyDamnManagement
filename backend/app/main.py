@@ -138,6 +138,9 @@ PUBLIC_PATHS = frozenset(
 # **sin sesión** (comprobado: devolvía el `app.js` con un 200). Validando el
 # nombre, solo se abren los ficheros de esa carpeta.
 ICON_PATH = re.compile(r"/icons/[A-Za-z0-9_-]+\.png")
+# Los avatares de usuario (bloque B), con la misma cautela: se eligen en el
+# alta del primer usuario, que todavía no tiene sesión. Solo el nombre de uno.
+AVATAR_PATH = re.compile(r"/avatars/[a-z0-9]+\.svg")
 
 # Direcciones del panel que NO son un fichero (P18). Cada nota y cada base
 # tiene la suya --`/<id>`, el id y no el título, que cambia--, y `/mis-tareas`
@@ -218,6 +221,7 @@ async def session_is_required(request: Request, call_next):
     if (
         path in PUBLIC_PATHS
         or ICON_PATH.fullmatch(path)
+        or AVATAR_PATH.fullmatch(path)
         or path == "/agent"
         or path.startswith("/agent/")
     ):

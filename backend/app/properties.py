@@ -798,6 +798,7 @@ def people_of(
             "display_name": usuario[0] if usuario else None,
             "username": usuario[1] if usuario else None,
             "color": usuario[2] if usuario else None,
+            "avatar": usuario[3] if usuario and len(usuario) > 3 else None,
         }
     return out
 

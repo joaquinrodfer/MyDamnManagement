@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -264,6 +264,10 @@ MIGRATIONS: dict[int, list[str]] = {
         lambda conn: _fill_title_keys(conn),
         "CREATE INDEX IF NOT EXISTS pages_title_key ON pages(workspace_id, title_key)",
     ],
+    # v13 (bloque B): `users.avatar`, la imagen que cada uno elige de entre las
+    # de la app (`auth.AVATARS`). `NULL` = no ha elegido: se le da una estable
+    # por su username (`auth.default_avatar`), como el color.
+    13: [lambda conn: _add_column(conn, "users", "avatar", "TEXT")],
 }
 
 
@@ -464,7 +468,8 @@ CREATE TABLE users (
     salt          TEXT NOT NULL,
     color         TEXT,
     created_at    TEXT NOT NULL,
-    is_admin      INTEGER NOT NULL DEFAULT 0
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    avatar        TEXT
 );
 
 CREATE TABLE sessions (
@@ -490,7 +495,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 12;
+PRAGMA user_version = 13;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")

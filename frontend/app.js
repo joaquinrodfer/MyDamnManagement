@@ -639,6 +639,89 @@ document.addEventListener(
 const KNOWN_USERS_KEY = "mdm_known_users";
 
 const sessionUser = { me: null }; // el de /auth/me
+
+// ---------------------------------------------------------------- avatares
+// Las imágenes de usuario de la app (bloque B): las mismas que `auth.AVATARS`
+// en el servidor, en `/avatars/<id>.svg`. Van donde antes iba el punto de
+// color de cada persona. El color sigue para el cursor (y ahí lo reparte la
+// sala, uno distinto por persona en cada nota).
+const AVATARES = Array.from({ length: 16 }, (_, i) => `persona${String(i + 1).padStart(2, "0")}`);
+function nombreDeAvatar(id) {
+  return `Imagen ${Number(String(id).replace(/\D/g, "")) || ""}`.trim();
+}
+
+/** La imagen de un avatar (o `null` si no es uno de la app). Decorativa: el
+ * nombre de la persona va siempre al lado. */
+function avatarImg(avatar, clase = "avatar-img") {
+  if (!AVATARES.includes(avatar)) return null;
+  const img = document.createElement("img");
+  img.className = clase;
+  img.src = `/avatars/${avatar}.svg`;
+  img.alt = "";
+  img.setAttribute("aria-hidden", "true");
+  img.decoding = "async";
+  img.draggable = false;
+  return img;
+}
+
+function avatarHtml(avatar, clase = "avatar-img") {
+  return AVATARES.includes(avatar)
+    ? `<img class="${clase}" src="/avatars/${avatar}.svg" alt="" aria-hidden="true" draggable="false">`
+    : "";
+}
+
+/** El selector de imagen: una rejilla de 16, como un grupo de radios (flechas
+ * para moverse, Espacio/Intro o clic para elegir). `alElegir(id)` se llama
+ * con la elegida; devuelve `{valor, fijar(id)}`. */
+function montarSelectorDeAvatar(caja, actual, alElegir) {
+  let valor = AVATARES.includes(actual) ? actual : null;
+  caja.textContent = "";
+  const botones = AVATARES.map((id) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "avatar-option";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-label", nombreDeAvatar(id));
+    b.title = nombreDeAvatar(id);
+    b.dataset.avatar = id;
+    b.appendChild(avatarImg(id, ""));
+    b.addEventListener("click", () => elegir(id, true));
+    caja.appendChild(b);
+    return b;
+  });
+  function pintar() {
+    botones.forEach((b, i) => {
+      const marcado = b.dataset.avatar === valor;
+      b.setAttribute("aria-checked", marcado ? "true" : "false");
+      // Un solo botón en el orden del Tab: el elegido (o el primero).
+      b.tabIndex = marcado || (!valor && i === 0) ? 0 : -1;
+    });
+  }
+  function elegir(id, avisar) {
+    valor = id;
+    pintar();
+    if (avisar) alElegir?.(id);
+  }
+  caja.addEventListener("keydown", (e) => {
+    const i = botones.indexOf(document.activeElement);
+    if (i < 0) return;
+    const paso = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!paso) return;
+    e.preventDefault();
+    const j = (i + paso + botones.length) % botones.length;
+    botones[j].focus();
+    elegir(botones[j].dataset.avatar, true);
+  });
+  pintar();
+  return {
+    get valor() {
+      return valor;
+    },
+    fijar(id) {
+      elegir(AVATARES.includes(id) ? id : null, false);
+    },
+  };
+}
 const knownUsers = new Map(); // display_name -> {username, display_name, color, is_admin}
 
 function loadKnownUsers() {
@@ -656,6 +739,7 @@ function rememberUser(user, { persist = true } = {}) {
     username: user.username || "",
     display_name: user.display_name,
     color: user.color || null,
+    avatar: user.avatar || null,
     is_admin: Boolean(user.is_admin),
   });
   if (!persist) return;
@@ -664,6 +748,12 @@ function rememberUser(user, { persist = true } = {}) {
   } catch {
     // sin sitio en localStorage: el color se pierde al recargar, nada más
   }
+}
+
+/** Avatar del usuario que firma `displayName`, o null si no se conoce. */
+function avatarForAuthor(displayName) {
+  const name = (displayName || "").trim();
+  return name ? knownUsers.get(name)?.avatar || null : null;
 }
 
 /** Color del usuario que firma `displayName`, o null si no se conoce. */
@@ -683,15 +773,19 @@ function colorForAuthor(displayName) {
  * hay punto y el texto se queda en el gris de .note-meta: inventar un color
  * para un nombre que no es de nadie sería mentir con una bonita paleta.
  */
-function paintCreatedBy(el, createdBy, createdByColor) {
+function paintCreatedBy(el, createdBy, createdByColor, createdByAvatar = null) {
   el.textContent = "";
   const name = (createdBy || "").trim();
   if (!name) {
     el.textContent = "Creado por —";
     return;
   }
+  // Su imagen (bloque B); sin imagen conocida, el punto de color de antes.
+  const img = avatarImg(createdByAvatar || avatarForAuthor(name));
   const color = createdByColor || colorForAuthor(name);
-  if (color) {
+  if (img) {
+    el.appendChild(img);
+  } else if (color) {
     const dot = document.createElement("span");
     dot.className = "user-dot";
     dot.style.background = color;
@@ -716,8 +810,16 @@ function paintUserChip() {
   wrap.hidden = false;
   // La inicial sobre tu color, como el cuadrado del espacio en Notion.
   const avatar = chip.querySelector(".user-avatar");
-  avatar.style.background = me.color || "var(--ink-muted)";
-  avatar.textContent = (me.display_name || me.username || "?").trim().charAt(0).toUpperCase();
+  const img = avatarImg(me.avatar, "");
+  avatar.textContent = "";
+  avatar.classList.toggle("has-img", Boolean(img));
+  if (img) {
+    avatar.style.background = "";
+    avatar.appendChild(img);
+  } else {
+    avatar.style.background = me.color || "var(--ink-muted)";
+    avatar.textContent = (me.display_name || me.username || "?").trim().charAt(0).toUpperCase();
+  }
   chip.querySelector(".user-chip-name").textContent = me.display_name;
   chip.title = `${me.display_name} (@${me.username})${me.is_admin ? " · administrador" : ""}`;
   chip.setAttribute("aria-label", `Tu cuenta: ${me.display_name}. Abrir el menú`);
@@ -901,10 +1003,13 @@ function renderUsers(users) {
   sorted.forEach((u) => {
     const row = document.createElement("div");
     row.className = "user-row";
-    const dot = document.createElement("span");
-    dot.className = "user-dot";
-    dot.style.background = u.color || "var(--ink-muted)";
-    dot.setAttribute("aria-hidden", "true");
+    let dot = avatarImg(u.avatar);
+    if (!dot) {
+      dot = document.createElement("span");
+      dot.className = "user-dot";
+      dot.style.background = u.color || "var(--ink-muted)";
+      dot.setAttribute("aria-hidden", "true");
+    }
     const name = document.createElement("span");
     name.className = "user-name";
     name.textContent = u.display_name;
@@ -933,6 +1038,7 @@ function renderKnownUsers() {
 async function cargarUsuariosDeAjustes() {
   if (!usersList || !newUserForm) return;
   newUserForm.reset();
+  selectorDeAlta.fijar(null);
   setFormNote(newUserNote, NEW_USER_NOTE);
   // Se vuelve a preguntar en cada apertura: puede que la API ya lo tenga.
   usersListUnavailable = false;
@@ -954,6 +1060,13 @@ async function cargarUsuariosDeAjustes() {
     renderKnownUsers(); // pinta la lista conocida y el aviso con su cuenta
   }
 }
+
+// La imagen del usuario nuevo: se elige aquí y viaja con el alta.
+const selectorDeAlta = montarSelectorDeAvatar(
+  document.getElementById("nu-avatar") || document.createElement("div"),
+  null,
+  null,
+);
 
 newUserForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -987,10 +1100,12 @@ newUserForm?.addEventListener("submit", async (event) => {
         display_name: displayName,
         password,
         is_admin: isAdmin,
+        ...(selectorDeAlta.valor ? { avatar: selectorDeAlta.valor } : {}),
       }),
     });
     rememberUser(created);
     newUserForm.reset();
+    selectorDeAlta.fijar(null);
     renderKnownUsers();
     setFormNote(newUserNote, `Usuario «${created.display_name}» creado.`, "ok");
   } catch (e) {
@@ -2007,7 +2122,32 @@ function prepararPerfil() {
   const usuario = document.getElementById("profile-username");
   if (usuario) usuario.textContent = me ? `@${me.username}` : "tu usuario";
   document.getElementById("btn-save-profile").disabled = false;
+  selectorDePerfil.fijar(me?.avatar);
+  setFormNote(profileAvatarNote, PROFILE_AVATAR_NOTE);
 }
+
+// Tu imagen: se guarda al elegirla.
+const profileAvatarNote = document.getElementById("profile-avatar-note");
+const PROFILE_AVATAR_NOTE = profileAvatarNote?.textContent || "";
+const selectorDePerfil = montarSelectorDeAvatar(
+  document.getElementById("profile-avatar") || document.createElement("div"),
+  null,
+  async (avatar) => {
+    if (avatar === sessionUser.me?.avatar) return;
+    setFormNote(profileAvatarNote, "Guardando…");
+    try {
+      const me = await api("/auth/me", { method: "PATCH", body: JSON.stringify({ avatar }) });
+      sessionUser.me = me;
+      rememberUser(me);
+      paintUserChip();
+      setFormNote(profileAvatarNote, "Imagen guardada.", "ok");
+    } catch (e) {
+      if (e?.status === 401) return;
+      selectorDePerfil.fijar(sessionUser.me?.avatar);
+      setFormNote(profileAvatarNote, describeError(e), "error");
+    }
+  },
+);
 
 profileForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -3300,11 +3440,11 @@ function renderNote(page, backlinks) {
   // paintCreatedBy).
   const meta = document.createElement("div");
   meta.className = "note-meta";
-  paintCreatedBy(meta, page.created_by, page.created_by_color);
+  paintCreatedBy(meta, page.created_by, page.created_by_color, page.created_by_avatar);
   // /auth/me puede llegar después que la nota: entonces se repinta solo esto
   // (el color del servidor no cambia; el respaldo local sí puede).
   state.repaintAuthor = () =>
-    paintCreatedBy(meta, page.created_by, page.created_by_color);
+    paintCreatedBy(meta, page.created_by, page.created_by_color, page.created_by_avatar);
 
   // ---- descripción (opcional) ----
   const descInput = document.createElement("textarea");
@@ -4316,7 +4456,11 @@ function renderNote(page, backlinks) {
         // haya respondido) lleva su punto de color; si no —el agente—, su
         // nombre tal cual, que es lo que ya venía.
         const authorColor = colorForAuthor(r.author);
-        if (authorColor) {
+        const authorImg = avatarImg(avatarForAuthor(r.author));
+        if (authorImg) {
+          who.classList.add("is-owner");
+          who.appendChild(authorImg);
+        } else if (authorColor) {
           who.classList.add("is-owner");
           const dot = document.createElement("span");
           dot.className = "user-dot";
@@ -8987,7 +9131,8 @@ function htmlDePersona(value, prop, row) {
     return `<span class="rel-cell"><span class="rel-chip rel-borrada person-gone" title="${escapeHtml(id)}">(ya no está)</span></span>`;
   }
   const color = ref.color ? ` style="background:${escapeHtml(ref.color)}"` : "";
-  return `<span class="person-cell"><span class="person-dot"${color} aria-hidden="true"></span><span class="person-name">${escapeHtml(ref.display_name)}</span></span>`;
+  const marca = avatarHtml(ref.avatar) || `<span class="person-dot"${color} aria-hidden="true"></span>`;
+  return `<span class="person-cell">${marca}<span class="person-name">${escapeHtml(ref.display_name)}</span></span>`;
 }
 
 /** Pinta la celda de una persona (tabla y tabla incrustada). El clic abre el
@@ -9010,10 +9155,13 @@ function pintarPersonaEnCelda(td, database, row, prop, hooks = null) {
     roto.setAttribute("aria-label", `El usuario ${id} ya no existe`);
     caja.appendChild(roto);
   } else {
-    const punto = document.createElement("span");
-    punto.className = "person-dot";
-    if (ref.color) punto.style.background = ref.color;
-    punto.setAttribute("aria-hidden", "true");
+    let punto = avatarImg(ref.avatar);
+    if (!punto) {
+      punto = document.createElement("span");
+      punto.className = "person-dot";
+      if (ref.color) punto.style.background = ref.color;
+      punto.setAttribute("aria-hidden", "true");
+    }
     const nombre = document.createElement("span");
     nombre.className = "person-name";
     nombre.textContent = ref.display_name;
@@ -9171,10 +9319,13 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
       const titulo = document.createElement("span");
       titulo.className = "rel-picker-option-title";
       if (!esVacio) {
-        const punto = document.createElement("span");
-        punto.className = "person-dot";
-        if (persona.color) punto.style.background = persona.color;
-        punto.setAttribute("aria-hidden", "true");
+        let punto = avatarImg(persona.avatar);
+        if (!punto) {
+          punto = document.createElement("span");
+          punto.className = "person-dot";
+          if (persona.color) punto.style.background = persona.color;
+          punto.setAttribute("aria-hidden", "true");
+        }
         titulo.appendChild(punto);
       }
       const texto = document.createElement("span");
@@ -10872,6 +11023,9 @@ function pintarCompartir(panel, { titulo, datos, gente, yo, guardar }) {
     dot.className = "share-dot";
     if (e.subject_type === "workspace") {
       dot.innerHTML = svgIcon("i-users");
+    } else if (avatarImg(e.avatar)) {
+      dot.classList.add("has-img");
+      dot.appendChild(avatarImg(e.avatar, ""));
     } else {
       dot.textContent = (e.name || "?").slice(0, 1).toUpperCase();
       if (e.color) dot.style.background = e.color;

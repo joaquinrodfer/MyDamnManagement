@@ -51,6 +51,7 @@ class SetupRequest(BaseModel):
     display_name: str
     password: str
     color: Optional[str] = None
+    avatar: Optional[str] = None
 
 
 class PasswordRequest(BaseModel):
@@ -69,17 +70,21 @@ class UserCreateRequest(BaseModel):
     password: str
     color: Optional[str] = None
     is_admin: bool = False
+    avatar: Optional[str] = None
 
 
 class UserUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     color: Optional[str] = None
+    avatar: Optional[str] = None
 
 
 class MeUpdateRequest(BaseModel):
-    """Lo que cualquiera puede cambiar de sí mismo: su nombre visible."""
+    """Lo que cualquiera puede cambiar de sí mismo: su nombre visible y su
+    avatar (cualquiera de los dos puede faltar)."""
 
-    display_name: str
+    display_name: Optional[str] = None
+    avatar: Optional[str] = None
 
 
 # ------------------------------------------------------------------ conexión
@@ -199,6 +204,7 @@ def setup(
             password=payload.password,
             color=payload.color,
             is_admin=True,
+            avatar=payload.avatar,
         )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -255,7 +261,9 @@ def update_me(
     persona y enseñan el nombre nuevo.
     """
     try:
-        actualizado = auth.update_user(conn, user.id, display_name=payload.display_name)
+        actualizado = auth.update_user(
+            conn, user.id, display_name=payload.display_name, avatar=payload.avatar
+        )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc
     if actualizado is None:
@@ -377,7 +385,8 @@ def update_user(
         raise HTTPException(403, "solo un administrador puede editar usuarios")
     try:
         actualizado = auth.update_user(
-            conn, user_id, display_name=payload.display_name, color=payload.color
+            conn, user_id, display_name=payload.display_name, color=payload.color,
+            avatar=payload.avatar,
         )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -403,6 +412,7 @@ def create_user(
             password=payload.password,
             color=payload.color,
             is_admin=payload.is_admin,
+            avatar=payload.avatar,
         )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc

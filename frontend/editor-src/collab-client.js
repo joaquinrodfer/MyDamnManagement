@@ -53,14 +53,19 @@ const setPeer = StateEffect.define();
 const dropPeer = StateEffect.define();
 const dropAllPeers = StateEffect.define();
 
+// Los avatares de la app (bloque B): solo estos nombres se convierten en una
+// ruta de imagen (nada que venga del servidor se pega tal cual en un `src`).
+const AVATAR_RE = /^[a-z0-9]{2,20}$/;
+
 class CaretWidget extends WidgetType {
-  constructor(name, color) {
+  constructor(name, color, avatar = null) {
     super();
     this.name = name;
     this.color = color;
+    this.avatar = AVATAR_RE.test(avatar || "") ? avatar : null;
   }
   eq(other) {
-    return other.name === this.name && other.color === this.color;
+    return other.name === this.name && other.color === this.color && other.avatar === this.avatar;
   }
   toDOM() {
     const caret = document.createElement("span");
@@ -68,7 +73,15 @@ class CaretWidget extends WidgetType {
     caret.style.setProperty("--peer", this.color);
     const label = document.createElement("span");
     label.className = "cm-mdm-peer-label";
-    label.textContent = this.name;
+    if (this.avatar) {
+      const img = document.createElement("img");
+      img.className = "cm-mdm-peer-avatar";
+      img.src = `/avatars/${this.avatar}.svg`;
+      img.alt = "";
+      img.setAttribute("aria-hidden", "true");
+      label.append(img);
+    }
+    label.append(document.createTextNode(this.name));
     caret.append(label);
     // El nombre sale al pasar el ratón (CSS); para un lector de pantalla, aquí.
     caret.setAttribute("aria-label", `Cursor de ${this.name}`);
@@ -127,7 +140,7 @@ const peersField = StateField.define({
             }).range(from, to),
           );
         }
-        ranges.push(Decoration.widget({ widget: new CaretWidget(name, color), side: 1 }).range(p.head));
+        ranges.push(Decoration.widget({ widget: new CaretWidget(name, color, p.user?.avatar), side: 1 }).range(p.head));
       }
       return Decoration.set(ranges, true);
     }),

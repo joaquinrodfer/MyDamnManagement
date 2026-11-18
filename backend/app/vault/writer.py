@@ -358,7 +358,7 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
 
 def row_markdown(*, id_: str, title: str | None = None, properties: dict,
                  created: str | None = None, updated: str | None = None,
-                 icon: str | None = None) -> str:
+                 icon: str | None = None, created_by: str | None = None) -> str:
     """Frontmatter de una fila: `id`, título, fechas y propiedades.
 
     El título va en el frontmatter (`title`), no en el nombre del fichero: la
@@ -377,6 +377,9 @@ def row_markdown(*, id_: str, title: str | None = None, properties: dict,
         updates["title"] = names.nfc(str(title)).strip()
     updates["created"] = now
     updates["updated"] = updated or now
+    if created_by:
+        # Quién la creó, como en una nota (lo lee el índice: `pages.created_by`).
+        updates["created_by"] = created_by
     updates.update(property_entries(properties))
     raw, _ = fm.update("", updates)
     return fm.compose(raw, "\n")
@@ -384,7 +387,8 @@ def row_markdown(*, id_: str, title: str | None = None, properties: dict,
 
 def create_row(vault_root: str, folder: str, title: str,
                properties: dict, *, body: str = "", row_id: str | None = None,
-               created: str | None = None, icon: str | None = None, fs=None
+               created: str | None = None, icon: str | None = None, fs=None,
+               created_by: str | None = None,
                ) -> tuple[reader.Page, list[str]]:
     """Escribe una fila en `folder`: `<id8>.md` con su `title` en el frontmatter.
 
@@ -407,7 +411,7 @@ def create_row(vault_root: str, folder: str, title: str,
     rel = f"{rel_dir}/{stem}.md"
     props = sin_reservadas(properties, notes, "al crear la fila")
     text = row_markdown(id_=row_id, title=title, properties=props, created=created,
-                        icon=icon)
+                        icon=icon, created_by=created_by)
     if body:
         text = text.rstrip("\n") + ("\n" if not body.startswith("\n") else "") + body
         if not text.endswith("\n"):

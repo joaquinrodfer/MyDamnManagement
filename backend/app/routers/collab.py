@@ -47,7 +47,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app import acl, auth
-from app.collab import ExternalChange, Peer, Rooms
+from app.collab import ExternalChange, Peer, Rooms, user_info
 from app.config import settings
 from app.index import open_index
 from app.repository import Repository
@@ -179,7 +179,8 @@ async def page_room(websocket: WebSocket, page_id: uuid.UUID):
         send=send,
         user_id=str(user.id),
         name=user.display_name,
-        color=getattr(user, "color", None),
+        color=getattr(user, "color", None),  # la sala le da su color de cursor al entrar
+        avatar=getattr(user, "avatar", None),
         readonly=level == "view",
     )
     try:
@@ -237,7 +238,7 @@ async def _joined(room, peer: Peer, join: dict) -> None:
             "readonly": peer.readonly,
             "peer": peer.peer_id,
             "peers": [
-                {"peer": p.peer_id, "user": {"id": p.user_id, "name": p.name, "color": p.color},
+                {"peer": p.peer_id, "user": user_info(p),
                  **(p.presence or {})}
                 for p in room.peers.values() if p is not peer
             ],
