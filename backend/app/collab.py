@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 import uuid
 from collections import deque
@@ -54,6 +55,16 @@ LOG_LIMIT = 500           # cambios que se recuerdan para rebasar a un cliente a
 PERSIST_DELAY = 0.5       # segundos entre guardados de una sala con cambios
 MAX_DOC_UNITS = 2_000_000  # tope del documento (unidades UTF-16): ~4 MB
 MAX_UPDATES_PER_MESSAGE = 200
+# Colores de cursor (bloque B). No son el color del usuario: cada persona que
+# entra en una nota recibe uno que no tenga nadie más DENTRO de esa nota, al
+# azar entre los libres. Así dos personas en la misma nota nunca se confunden,
+# aunque su color de usuario fuera el mismo. Doce tonos que se distinguen bien
+# entre sí y sobre fondo claro y oscuro.
+CURSOR_COLORS = (
+    "#e5484d", "#3e63dd", "#30a46c", "#f76b15", "#8e4ec6", "#12a594",
+    "#d6409f", "#ffb224", "#0090ff", "#a18072", "#5bb98b", "#e93d82",
+)
+
 # Lo que viaja por `meta` (título, descripción, icono): campos sueltos, no
 # texto colaborativo. Gana el último que escribe, como en cualquier campo de
 # una línea; el cuerpo sigue siendo el único documento con rebase.
@@ -133,6 +144,7 @@ class Peer:
     readonly: bool
     peer_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     presence: Optional[dict] = None
+    avatar: Optional[str] = None
 
 
 @dataclass
@@ -218,6 +230,7 @@ class Rooms:
                     raise LookupError(page_id)
                 room = Room(page_id=page_id, doc=body, persisted_body=body)
                 self._rooms[page_id] = room
+            peer.color = _cursor_color(room, peer)
             room.peers[peer.peer_id] = peer
             return room
 
@@ -417,8 +430,23 @@ class ExternalChange(Exception):
         self.body = body
 
 
+def _cursor_color(room: Room, peer: Peer) -> str:
+    """El color del cursor de `peer` en esta sala: el mismo que ya tenga su
+    usuario en otra pestaña dentro de la nota, o uno libre al azar."""
+    for otro in room.peers.values():
+        if otro.user_id == peer.user_id and otro.color:
+            return otro.color
+    usados = {p.color for p in room.peers.values()}
+    libres = [c for c in CURSOR_COLORS if c not in usados]
+    return random.choice(libres or list(CURSOR_COLORS))
+
+
 def _peer_info(peer: Peer) -> dict:
-    return {"peer": peer.peer_id, "user": {"id": peer.user_id, "name": peer.name, "color": peer.color}}
+    return {"peer": peer.peer_id, "user": user_info(peer)}
+
+
+def user_info(peer: Peer) -> dict:
+    return {"id": peer.user_id, "name": peer.name, "color": peer.color, "avatar": peer.avatar}
 
 
 async def _safe_send(peer: Peer, message: dict) -> None:

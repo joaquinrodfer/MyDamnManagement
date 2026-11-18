@@ -80,6 +80,15 @@ PALETTE = (
     "#9ba4ff", "#2ec4b6", "#c77dff", "#ff9f1c",
 )
 
+# Las imágenes de usuario que trae la app (`frontend/avatars/<id>.svg`). Cada
+# uno elige la suya al crearse y la cambia en su cuenta; es lo que se ve junto
+# a su nombre (autoría, celdas de persona, la barra lateral). No se suben
+# imágenes: son estas, y van en la app (sin red de terceros).
+AVATARS = (
+    "gato", "perro", "zorro", "oso", "panda", "conejo", "buho", "pinguino",
+    "rana", "koala", "leon", "mono", "cerdo", "pollito", "ballena", "raton",
+)
+
 MIN_PASSWORD = 8
 MAX_PASSWORD = 200
 MAX_DISPLAY_NAME = 80
@@ -107,6 +116,7 @@ class User:
     display_name: str
     color: Optional[str]
     is_admin: bool
+    avatar: Optional[str] = None
 
     def as_dict(self) -> dict:
         return {
@@ -114,6 +124,7 @@ class User:
             "username": self.username,
             "display_name": self.display_name,
             "color": self.color,
+            "avatar": self.avatar,
             "is_admin": self.is_admin,
         }
 
@@ -186,7 +197,14 @@ def _user(row: sqlite3.Row) -> User:
         display_name=row["display_name"],
         color=row["color"],
         is_admin=bool(row["is_admin"]),
+        avatar=avatar_of(row),
     )
+
+
+def avatar_of(row: sqlite3.Row) -> str:
+    """El avatar de una fila de `users`: el elegido, o el de por defecto."""
+    elegido = row["avatar"] if "avatar" in row.keys() else None
+    return elegido if elegido in AVATARS else default_avatar(row["username"])
 
 
 def validate_username(username: str) -> str:
@@ -224,6 +242,21 @@ def validate_color(color: Optional[str]) -> Optional[str]:
     if not COLOR_RE.match(value):
         raise AuthError("color no válido: se espera un #rrggbb")
     return value.lower()
+
+
+def validate_avatar(avatar: Optional[str]) -> Optional[str]:
+    value = (avatar or "").strip()
+    if not value:
+        return None
+    if value not in AVATARS:
+        raise AuthError("avatar no válido: elige una de las imágenes de la app")
+    return value
+
+
+def default_avatar(username: str) -> str:
+    """Avatar estable para quien no ha elegido: el mismo usuario, el mismo."""
+    digest = int(hashlib.sha256(("avatar:" + username).encode("utf-8")).hexdigest(), 16)
+    return AVATARS[digest % len(AVATARS)]
 
 
 def default_color(username: str) -> str:
@@ -267,19 +300,21 @@ def create_user(
     password: str,
     color: Optional[str] = None,
     is_admin: bool = False,
+    avatar: Optional[str] = None,
 ) -> User:
     """Crea un usuario. `AuthError` si el username ya existe o algo no vale."""
     username = validate_username(username)
     display_name = validate_display_name(display_name)
     validate_password(password)
     color = validate_color(color) or default_color(username)
+    avatar = validate_avatar(avatar) or default_avatar(username)
 
     password_hash, salt = hash_password(password)
     user_id = secrets.token_hex(16)
     try:
         conn.execute(
             "INSERT INTO users (id, username, display_name, password_hash, salt,"
-            " color, created_at, is_admin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " color, created_at, is_admin, avatar) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 user_id,
                 username,
@@ -289,6 +324,7 @@ def create_user(
                 color,
                 _iso(_now()),
                 1 if is_admin else 0,
+                avatar,
             ),
         )
     except sqlite3.IntegrityError as exc:
@@ -313,8 +349,9 @@ def update_user(
     *,
     display_name: Optional[str] = None,
     color: Optional[str] = None,
+    avatar: Optional[str] = None,
 ) -> Optional[User]:
-    """Cambia el nombre visible y/o el color de un usuario. `None` si no está.
+    """Cambia el nombre visible, el color y/o el avatar. `None` si no está.
 
     Ni el `username` ni el `id` se tocan: el `username` es la llave con la que
     se entra y el `id` es a lo que apuntan las celdas `person` de las bases.
@@ -329,6 +366,8 @@ def update_user(
         changes["display_name"] = validate_display_name(display_name)
     if color is not None:
         changes["color"] = validate_color(color) or default_color(current.username)
+    if avatar is not None:
+        changes["avatar"] = validate_avatar(avatar) or default_avatar(current.username)
     if not changes:
         return current
     assignments = ", ".join(f"{column} = ?" for column in changes)

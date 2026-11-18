@@ -122,6 +122,7 @@ def test_una_propiedad_persona_guarda_el_id_del_usuario(client, personas, vault_
         "display_name": "Ana",
         "username": "ana",
         "color": ana["color"],
+        "avatar": ana["avatar"],
     }
 
     # El `.md` de la fila guarda el id, no el nombre: renombrar a la persona no

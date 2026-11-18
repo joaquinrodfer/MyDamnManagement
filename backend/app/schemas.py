@@ -45,6 +45,9 @@ class PageRead(PageBase):
     # de usuarios para pintar el punto de un autor. `null` = nombre sin usuario
     # (notas viejas con «Tú»), y la interfaz pinta el gris neutro de siempre.
     created_by_color: Optional[str] = None
+    # Bloque B: el avatar de quien la creó (`auth.AVATARS`), resuelto igual que
+    # el color. `null` = el nombre no es de ningún usuario.
+    created_by_avatar: Optional[str] = None
     header_image_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -434,6 +437,7 @@ class PersonRef(BaseModel):
     display_name: Optional[str] = None
     username: Optional[str] = None
     color: Optional[str] = None
+    avatar: Optional[str] = None
 
 
 class RowRead(BaseModel):

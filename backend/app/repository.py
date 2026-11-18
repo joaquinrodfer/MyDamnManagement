@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
-from app import acl, closed, index as index_mod, templates as template_defs
+from app import acl, auth, closed, index as index_mod, templates as template_defs
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
@@ -148,6 +148,13 @@ SELECT_PAGE = (
     " r.properties_json AS properties_json"
     " FROM pages p LEFT JOIN rows r ON r.id = p.id"
 )
+
+
+class AuthorColors(dict):
+    """`display_name -> color` (lo de siempre) con `avatars`: `display_name ->
+    avatar`. Es un `dict` para que quien solo quiere el color no cambie."""
+
+    avatars: dict[str, str]
 
 
 def _page(row: sqlite3.Row) -> Page:
@@ -288,10 +295,13 @@ class Repository:
         usuarios con el mismo nombre comparten color aquí; es la misma
         ambigüedad que ya arrastra `created_by`, que guarda el nombre.
         """
-        rows = self.conn.execute(
-            "SELECT display_name, color FROM users WHERE color IS NOT NULL"
-        ).fetchall()
-        return {row["display_name"]: row["color"] for row in rows}
+        rows = self.conn.execute("SELECT display_name, username, color, avatar FROM users").fetchall()
+        mapa = AuthorColors(
+            {row["display_name"]: row["color"] for row in rows if row["color"]}
+        )
+        # Y el avatar (bloque B): lo que se pinta junto al nombre del autor.
+        mapa.avatars = {row["display_name"]: auth.avatar_of(row) for row in rows}
+        return mapa
 
     def user_refs(
         self, ids: Iterable[str]
@@ -311,12 +321,14 @@ class Repository:
             chunk = wanted[start:start + _REFS_CHUNK]
             marks = ",".join("?" * len(chunk))
             rows = self.conn.execute(
-                "SELECT id, display_name, username, color FROM users"
+                "SELECT id, display_name, username, color, avatar FROM users"
                 f" WHERE id IN ({marks})",
                 chunk,
             ).fetchall()
             for row in rows:
-                refs[row["id"]] = (row["display_name"], row["username"], row["color"])
+                refs[row["id"]] = (
+                    row["display_name"], row["username"], row["color"], auth.avatar_of(row)
+                )
         return refs
 
     def all_users(self) -> list[dict[str, Any]]:
@@ -326,10 +338,10 @@ class Repository:
         hash ni salt: sale de `users` sin las columnas de credenciales.
         """
         rows = self.conn.execute(
-            "SELECT id, username, display_name, color FROM users"
+            "SELECT id, username, display_name, color, avatar FROM users"
             " ORDER BY display_name COLLATE NOCASE, username"
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**dict(row), "avatar": auth.avatar_of(row)} for row in rows]
 
     def reindex(
         self, force: bool = False, empty_hint: str | None = None, progress=None,
@@ -1465,11 +1477,12 @@ class Repository:
         icon: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
         body: str = "",
+        created_by: Optional[str] = None,
     ) -> Page:
         """Crea la fila. `body` es su cuerpo markdown inicial (plantilla de fila)."""
         row_id = self.vault.create_row(
             database_id, title=title, properties=properties or {}, icon=icon,
-            body=body,
+            body=body, created_by=created_by,
         )
         return self.get_row(database_id, uuid.UUID(row_id))
 

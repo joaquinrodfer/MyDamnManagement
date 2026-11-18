@@ -1761,6 +1761,7 @@ class VaultStore:
         properties: Optional[dict] = None,
         icon: Optional[str] = None,
         body: str = "",
+        created_by: Optional[str] = None,
     ) -> str:
         """Escribe `Bases/<slug>/<id8>.md` (título en el frontmatter) e indexa.
 
@@ -1775,7 +1776,7 @@ class VaultStore:
         row_id = str(uuid.uuid4())
         page, notes = writer.create_row(
             self.root, db["path"][:-3], title, properties or {}, fs=self.fs,
-            body=body, row_id=row_id, icon=icon,
+            body=body, row_id=row_id, icon=icon, created_by=created_by,
         )
         with self._tx():
             self._index_file(page.path, None, database_id=str(db["id"]))

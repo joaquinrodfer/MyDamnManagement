@@ -488,7 +488,10 @@ def delete_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)
 
 @router.post("/{database_id}/rows", response_model=schemas.RowRead)
 def create_row(
-    database_id: uuid.UUID, payload: schemas.RowCreate, repo: Repository = Depends(get_repo)
+    database_id: uuid.UUID,
+    payload: schemas.RowCreate,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
 ):
     db_def = _get_database_or_404(repo, database_id)
     properties = dict(payload.properties or {})
@@ -537,6 +540,8 @@ def create_row(
             icon=payload.icon,
             properties=cleaned,
             body=body,
+            # Una fila es una página: dice quién la creó, como una nota.
+            created_by=user.display_name,
         )
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
     publish_database(database_id, "rows")
