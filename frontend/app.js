@@ -3435,18 +3435,17 @@ function renderNote(page, backlinks) {
   }
   setSaveState("saved");
 
-  const backDetails = document.createElement("details");
-  backDetails.className = "note-backlinks-dropdown";
-  const backSummary = document.createElement("summary");
+  // Los backlinks viven ahora dentro del menú «⋯» de la cabecera (junto a
+  // Descargar): un título con su recuento y la lista, que se cuelgan del menú
+  // al abrirlo. Se repintan aunque el menú esté cerrado.
+  const backTitle = document.createElement("div");
+  backTitle.className = "db-col-menu-label";
   const backList = document.createElement("div");
   backList.className = "backlinks-list";
   // P8: aparte, porque un cambio en OTRA nota puede cambiar los enlaces
   // entrantes de esta y entonces solo se repinta esto, sin tocar el editor.
   function paintBacklinks(fresh) {
-    backSummary.innerHTML = `${svgIcon("i-chevron-right", "back-chevron-closed")}${svgIcon(
-      "i-chevron-down",
-      "back-chevron-open",
-    )}Backlinks (${fresh.length})`;
+    backTitle.textContent = `Backlinks (${fresh.length})`;
     backList.innerHTML = "";
     if (fresh.length === 0) {
       // Una lista vacía no explica nada: el dueño no entendía los backlinks
@@ -3482,18 +3481,39 @@ function renderNote(page, backlinks) {
     });
   }
   paintBacklinks(backlinks);
-  backDetails.append(backSummary, backList);
 
-  const exportBtn = document.createElement("button");
-  exportBtn.className = "icon-btn";
-  exportBtn.innerHTML = svgIcon("i-download");
-  exportBtn.title = "Exportar como Markdown (.md)";
-  exportBtn.setAttribute("aria-label", "Exportar como Markdown (.md)");
-  exportBtn.addEventListener("click", () => exportPageAsMarkdown(page, state.editor.getValue()));
+  // «⋯»: las opciones de la página (y, más adelante, las de la interfaz).
+  const menuBtn = document.createElement("button");
+  menuBtn.type = "button";
+  menuBtn.className = "icon-btn note-more-btn";
+  menuBtn.innerHTML = svgIcon("i-more");
+  menuBtn.title = "Más opciones";
+  menuBtn.setAttribute("aria-label", "Más opciones de la página");
+  menuBtn.setAttribute("aria-haspopup", "menu");
+  menuBtn.setAttribute("aria-expanded", "false");
+  menuBtn.addEventListener("click", () => {
+    if (menuBtn.getAttribute("aria-expanded") === "true") {
+      cerrarPanelDeColumna({ foco: true });
+      return;
+    }
+    const panel = document.createElement("div");
+    panel.append(
+      itemDeColumna("Descargar como Markdown (.md)", {
+        icono: svgIcon("i-download"),
+        alElegir: () => {
+          cerrarPanelDeColumna();
+          exportPageAsMarkdown(page, state.editor.getValue());
+        },
+      }),
+      backTitle,
+      backList,
+    );
+    abrirPanelFlotante(menuBtn, panel, { etiqueta: "Opciones de la página" });
+  });
 
   const topbarRight = document.createElement("div");
   topbarRight.className = "note-topbar-right";
-  topbarRight.append(botonCompartir("page", page.id, () => page.title), exportBtn, backDetails);
+  topbarRight.append(botonCompartir("page", page.id, () => page.title), menuBtn);
 
   topbar.append(saveStatus, topbarRight);
 
