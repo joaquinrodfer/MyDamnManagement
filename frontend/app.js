@@ -1483,6 +1483,25 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
   anadir.hidden = !esAdminDelEspacio;
   cuerpo.append(anadir);
 
+  // ¿Sus proyectos aceptan tareas de otros espacios? (plan H4)
+  if (esAdminDelEspacio) {
+    const etiqueta = crearEl("label", "ws-row");
+    const chk = crearEl("input");
+    chk.type = "checkbox";
+    chk.checked = Boolean(w.settings?.accept_foreign_tasks);
+    chk.addEventListener("change", async () => {
+      try {
+        await api(`/workspaces/${w.id}`, { method: "PATCH", body: JSON.stringify({ settings: { accept_foreign_tasks: chk.checked } }) });
+        setFormNote(wsNota, chk.checked ? "Los proyectos de este espacio aceptan tareas de otros espacios." : "Los proyectos solo aceptan tareas de este espacio.", "ok");
+      } catch (e) {
+        chk.checked = !chk.checked;
+        setFormNote(wsNota, e?.message || "No se pudo guardar.", "error");
+      }
+    });
+    etiqueta.append(chk, " Sus proyectos aceptan tareas de otros espacios");
+    cuerpo.append(etiqueta);
+  }
+
   // webhook saliente (plan H9): solo el administrador del espacio
   if (esAdminDelEspacio) cuerpo.append(seccionDeWebhook(w));
 
@@ -17053,7 +17072,59 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
   const subtareasEl = document.createElement("section");
   subtareasEl.className = "row-page-subtasks";
   subtareasEl.setAttribute("aria-label", "Subtareas de la fila");
-  caja.append(propsEl, subtareasEl);
+  // Plan H4: si la fila es un proyecto, sus tareas y sus horas.
+  const tareasEl = document.createElement("section");
+  tareasEl.className = "row-page-subtasks project-tasks";
+  tareasEl.setAttribute("aria-label", "Tareas del proyecto");
+  tareasEl.hidden = true;
+  caja.append(propsEl, subtareasEl, tareasEl);
+
+  async function cargarTareasDelProyecto(database) {
+    if (database?.kind?.type !== "projects") {
+      tareasEl.hidden = true;
+      return;
+    }
+    try {
+      const r = await api(`/databases/${page.database_id}/rows/${page.id}/tasks`);
+      if (!estado.vivo || !caja.isConnected) return;
+      const tot = r.totals;
+      const fmt = (h) => `${Math.round(h * 10) / 10} h`;
+      tareasEl.hidden = false;
+      tareasEl.replaceChildren(crearEl("h3", "", "Tareas del proyecto"));
+      if (!tot.count) {
+        tareasEl.append(crearEl("p", "row-page-prop-empty", "Ninguna tarea cuelga de este proyecto todavía. Enlázalas desde la columna «Proyecto» de una base de Tareas."));
+        if (tot.estimate) tareasEl.append(crearEl("p", "form-note", `Estimado: ${fmt(tot.estimate)}.`));
+        return;
+      }
+      const resumen = crearEl("p", "form-note",
+        `${tot.closed} de ${tot.count} hechas · ${fmt(tot.hours)} en tareas (${fmt(tot.hours_open)} pendientes)` +
+        (tot.estimate ? ` · estimado ${fmt(tot.estimate)}` : ""));
+      const barra = crearEl("progress", "project-progress");
+      barra.max = tot.count;
+      barra.value = tot.closed;
+      barra.setAttribute("aria-label", `${tot.closed} de ${tot.count} tareas hechas`);
+      tareasEl.append(resumen, barra);
+      const lista = crearEl("ul", "backup-files");
+      for (const t2 of r.tasks) {
+        const li = crearEl("li");
+        const nombre = t2.id && !t2.masked ? crearEl("a", "", t2.title) : crearEl("span", "", t2.title);
+        if (t2.id) {
+          nombre.href = `/${t2.id}`;
+          nombre.addEventListener("click", (e) => {
+            e.preventDefault();
+            navigateToPage(t2.id);
+          });
+        }
+        if (t2.closed) nombre.style.textDecoration = "line-through";
+        li.append(nombre, crearEl("span", "", [t2.status, t2.assignees.join(", "), t2.hours ? fmt(t2.hours) : ""].filter(Boolean).join(" · ")));
+        lista.append(li);
+      }
+      tareasEl.append(lista);
+    } catch (e) {
+      if (e?.status === 401 || !estado.vivo) return;
+      tareasEl.hidden = true;
+    }
+  }
 
   /** ¿Se está editando algo del panel? Entonces un aviso de otra pestaña no
    * repinta: se llevaría lo que el usuario está escribiendo. */
@@ -17074,6 +17145,7 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
       estado.detalle = detalle;
       alCargarBase?.(database);
       pintar();
+      cargarTareasDelProyecto(database);
     } catch (e) {
       if (!estado.vivo || !caja.isConnected || e?.status === 401) return;
       propsEl.textContent = "";
