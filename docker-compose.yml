@@ -28,7 +28,7 @@ services:
     # configura solo los suyos y todo el INFO de la app (el resumen del
     # reindexado, los cambios del vault, una línea por sugerencia de agente)
     # se queda por debajo del único handler que había (`lastResort`, WARNING+).
-    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-config logging.json"
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 5 --log-config logging.json"
 
 volumes:
   mdm_data:

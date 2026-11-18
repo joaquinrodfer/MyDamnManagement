@@ -3183,6 +3183,164 @@ async function showMisTareas() {
   renderMisTareas(main);
 }
 
+// ------------------------------------------------------- avisos (plan H6)
+
+const avisos = { unread: 0, items: [] };
+
+/** Pone el contador del badge y enciende (o apaga) el sonar del logo. */
+function pintarAvisos() {
+  const badge = document.getElementById("avisos-badge");
+  if (badge) {
+    badge.hidden = avisos.unread === 0;
+    badge.textContent = avisos.unread > 99 ? "99+" : String(avisos.unread);
+  }
+  const boton = document.getElementById("btn-avisos");
+  if (boton) boton.setAttribute("aria-label", avisos.unread ? `Avisos: ${avisos.unread} sin leer` : "Avisos");
+  fijarMarcaSinLeer(avisos.unread);
+}
+
+async function cargarAvisos() {
+  try {
+    const datos = await api("/notifications?limit=30");
+    avisos.unread = datos.unread;
+    avisos.items = datos.items;
+    pintarAvisos();
+    if (document.getElementById("avisos-panel")) pintarPanelDeAvisos();
+  } catch (e) {
+    if (e?.status === 401) return;
+    // sin avisos no pasa nada: la app sigue funcionando
+  }
+}
+
+function haceCuanto(iso) {
+  const seg = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seg < 60) return "ahora";
+  if (seg < 3600) return `hace ${Math.floor(seg / 60)} min`;
+  if (seg < 86400) return `hace ${Math.floor(seg / 3600)} h`;
+  return `hace ${Math.floor(seg / 86400)} d`;
+}
+
+const ICONOS_DE_AVISO = {
+  mention: "@",
+  task_assigned: "✔",
+  deadline_soon: "⏰",
+  deadline_overdue: "⚠",
+  page_update: "✎",
+};
+
+function pintarPanelDeAvisos() {
+  const panel = document.getElementById("avisos-panel");
+  if (!panel) return;
+  panel.replaceChildren();
+  const cabecera = crearEl("div", "avisos-head");
+  cabecera.append(crearEl("span", "", "Avisos"));
+  const todo = crearEl("button", "btn", "Marcar todo como leído");
+  todo.type = "button";
+  todo.disabled = avisos.unread === 0;
+  todo.addEventListener("click", async () => {
+    try {
+      await api("/notifications/read", { method: "POST", body: JSON.stringify({ all: true }) });
+      await cargarAvisos();
+    } catch (e) {
+      reportError("No se pudieron marcar los avisos", e);
+    }
+  });
+  cabecera.append(todo);
+  panel.append(cabecera);
+  if (!avisos.items.length) {
+    panel.append(crearEl("div", "avisos-empty", "No tienes avisos. Aquí saldrán las menciones, las tareas que te asignen y los plazos."));
+    return;
+  }
+  for (const a of avisos.items) {
+    const item = crearEl("button", "avisos-item" + (a.is_read ? "" : " avisos-item--unread"));
+    item.type = "button";
+    item.append(
+      crearEl("span", "", `${ICONOS_DE_AVISO[a.type] || "•"}  ${a.message}`),
+      crearEl("small", "", `${haceCuanto(a.created_at)}${a.workspace_name ? ` · ${a.workspace_name}` : ""}`),
+    );
+    item.addEventListener("click", async () => {
+      cerrarPanelDeColumna();
+      if (!a.is_read) {
+        api("/notifications/read", { method: "POST", body: JSON.stringify({ ids: [a.id] }) }).then(cargarAvisos).catch(() => {});
+      }
+      if (a.page_id) navigateToPage(a.page_id);
+    });
+    panel.append(item);
+  }
+}
+
+function initAvisos() {
+  const boton = document.getElementById("btn-avisos");
+  if (!boton) return;
+  boton.addEventListener("click", async () => {
+    if (boton.getAttribute("aria-expanded") === "true") {
+      cerrarPanelDeColumna({ foco: true });
+      return;
+    }
+    const panel = crearEl("div", "avisos-panel");
+    panel.id = "avisos-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Avisos");
+    abrirPanelFlotante(boton, panel, { etiqueta: "Avisos", alCerrar: () => panel.remove() });
+    pintarPanelDeAvisos();
+    await cargarAvisos();
+  });
+  cargarAvisos();
+  // Respaldo del canal de eventos: por si la conexión se cae sin que nadie se entere.
+  setInterval(cargarAvisos, 60000);
+}
+
+/** La campana de una página: cuánto ruido quiere de ella (plan H6). */
+function botonDeCampana(pageId) {
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "icon-btn note-bell";
+  boton.setAttribute("aria-haspopup", "menu");
+  boton.setAttribute("aria-expanded", "false");
+  let modo = "mentions_only";
+  const pintar = () => {
+    boton.innerHTML = svgIcon(modo === "muted" ? "i-bell-off" : "i-bell");
+    const texto = { all: "todo lo que cambie", mentions_only: "solo menciones y asignaciones", muted: "silenciada" }[modo];
+    boton.title = `Avisos de esta página: ${texto}`;
+    boton.setAttribute("aria-label", `Avisos de esta página: ${texto}`);
+    boton.classList.toggle("is-on", modo === "all");
+  };
+  pintar();
+  api(`/notifications/subscriptions/${pageId}`).then((r) => { modo = r.mode; pintar(); }).catch(() => {});
+  boton.addEventListener("click", () => {
+    if (boton.getAttribute("aria-expanded") === "true") {
+      cerrarPanelDeColumna({ foco: true });
+      return;
+    }
+    const menu = document.createElement("div");
+    menu.append(crearEl("div", "db-col-menu-label", "Avisos de esta página"));
+    for (const [valor, texto] of [
+      ["all", "Todo: cualquier cambio"],
+      ["mentions_only", "Solo menciones y tareas mías"],
+      ["muted", "Silenciada"],
+    ]) {
+      menu.append(
+        itemDeColumna(texto, {
+          radio: true,
+          marca: modo === valor ? "✓" : "",
+          alElegir: async () => {
+            try {
+              await api(`/notifications/subscriptions/${pageId}`, { method: "PUT", body: JSON.stringify({ mode: valor }) });
+              modo = valor;
+              pintar();
+              cerrarPanelDeColumna();
+            } catch (e) {
+              reportError("No se pudo cambiar el aviso de la página", e);
+            }
+          },
+        }),
+      );
+    }
+    abrirPanelFlotante(boton, menu, { etiqueta: "Avisos de la página" });
+  });
+  return boton;
+}
+
 // ----------------------------------------------- carga del equipo (plan H5)
 
 function pintarBotonDeCarga() {
@@ -3334,6 +3492,7 @@ function initCarga() {
 }
 
 initCarga();
+initAvisos();
 
 function initMyTasks() {
   const boton = document.getElementById("btn-mytasks");
@@ -4212,7 +4371,7 @@ function renderNote(page, backlinks) {
 
   const topbarRight = document.createElement("div");
   topbarRight.className = "note-topbar-right";
-  topbarRight.append(botonCompartir("page", page.id, () => page.title), menuBtn);
+  topbarRight.append(botonDeCampana(page.id), botonCompartir("page", page.id, () => page.title), menuBtn);
 
   topbar.append(saveStatus, topbarRight);
 
@@ -5902,6 +6061,8 @@ function connectVaultEvents() {
   // `event: tree` (bloque C): una página nueva, borrada o renombrada. Sin el
   // vigilante del disco (producción) nadie más avisaba al árbol.
   vaultEvents.addEventListener("tree", () => scheduleTreeRefresh());
+  // `event: notification` (plan H6): un aviso nuevo (o leído en otra pestaña).
+  vaultEvents.addEventListener("notification", () => cargarAvisos());
   // `event: database` (M2): una base incrustada ha cambiado en otra ventana.
   vaultEvents.addEventListener("database", (ev) => {
     let data;
@@ -7153,7 +7314,12 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     }
   };
 
-  header.append(title, botonDeTipo(database), botonCompartir("database", database.id, () => database.title));
+  header.append(
+    title,
+    botonDeTipo(database),
+    botonDeCampana(database.page_id || database.id),
+    botonCompartir("database", database.id, () => database.title),
+  );
 
   // Debajo del título ya no va la lista «Propiedad (Tipo) · …»: no decía nada
   // que la cabecera de la tabla no diga (cada columna lleva el icono de su tipo).
