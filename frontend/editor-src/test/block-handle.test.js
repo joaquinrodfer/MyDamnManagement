@@ -1,12 +1,10 @@
-// La banda del margen de un bloque: SOLO el «+» (t_c2c98f7b).
+// El asa de un bloque, como en Notion: el «+» y los seis puntos de agarrar.
 //
-// El dueño pidió quitar «la bolita esa que sale a la derecha del símbolo del +»
-// -- el `<span class="cm-mdm-block-handle">⋮⋮</span>`. Lo que hacía el asa se
-// reparte ahora entre la propia banda (marcar y arrastrar) y el clic derecho
-// sobre el bloque, así que este test sujeta las dos cosas que no pueden volver:
-// la banda lleva UN control (el «+») y lleva el índice del bloque, que es de
-// donde lo leen el marcar, el arrastrar y el menú (ya no hay asa con
-// `data-block-index` a la que agarrarse).
+// Los seis puntos se quitaron un tiempo (t_c2c98f7b) por un malentendido: la
+// «bolita» que el dueño no quería era el punto suelto del margen. Este test
+// sujeta el orden (primero el «+», pegados al texto los puntos) y que todos
+// lleven el índice del bloque, que es de donde lo leen el marcar, el arrastrar
+// y el menú.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -49,20 +47,15 @@ function withDocument(fn) {
   }
 }
 
-test("la banda del bloque lleva un solo control: el «+»", () => {
+test("el asa lleva el «+» y, detrás, los seis puntos", () => {
   const wrap = withDocument(() => blockHandleDom(3));
   assert.equal(wrap.className, "cm-mdm-block-handle-wrap");
-  assert.equal(wrap.children.length, 1);
-  const add = wrap.children[0];
+  assert.equal(wrap.children.length, 2);
+  const [add, grip] = wrap.children;
   assert.equal(add.className, "cm-mdm-block-add");
   assert.equal(add.textContent, "+");
-});
-
-test("no queda ni rastro del asa de puntos", () => {
-  const wrap = withDocument(() => blockHandleDom(0));
-  assert.equal(wrap.querySelector(".cm-mdm-block-handle"), null);
-  const textos = wrap.children.map((kid) => kid.textContent).join("");
-  assert.doesNotMatch(textos, /⋮/);
+  assert.equal(grip.className, "cm-mdm-block-grip");
+  assert.equal(grip.dataset.blockIndex, "3");
 });
 
 test("la banda lleva el índice del bloque (de ahí lo leen marcar y arrastrar)", () => {

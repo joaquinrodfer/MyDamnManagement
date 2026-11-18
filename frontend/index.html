@@ -1206,7 +1206,7 @@
   #row-page-body .cm-editor { outline: none; background: transparent; }
   #note-body .cm-content,
   #row-page-body .cm-content {
-    --mdm-gutter: 78px; /* margen izquierdo del cuerpo: el punto del bloque (12), 4 de aire y las dos asas de 28 (28+2+28 = 58) + 4 de aire al texto. El punto lo usa para colocarse (ver .cm-mdm-block-dot) */
+    --mdm-gutter: 78px; /* margen izquierdo del cuerpo: el «+» y los seis puntos del asa (28+2+28 = 58), 4 de aire al texto y el resto de margen */
     padding: 4px 4px 220px var(--mdm-gutter); /* el hueco de abajo es a propósito -- clicar ahí (como en Notion) coloca el cursor al final del documento */
     font-family: var(--font-body); /* prosa con pinta de Notion; el código se fuerza aparte a --font-mono */
     font-size: 15px;
@@ -1483,8 +1483,7 @@
      12 px y no los 24 de la línea entera (que se leían como un bloque vacío de
      más), detrás de un H1 son 18 y dentro de una lista 8; el hueco sigue
      delatando cuántas hay visto que dos líneas seguidas dejan el doble. El
-     punto de «aquí se escribe» NO es de esta línea: es del bloque que tiene el
-     ratón encima (ver .cm-mdm-block-dot y blockDotPlugin en entry.js). */
+     */
   #note-body .cm-mdm-blank,
   #row-page-body .cm-mdm-blank {
     height: var(--mdm-blank-unit, 12px);
@@ -1538,10 +1537,6 @@
   }
   #note-body .cm-content:has(.cm-mdm-last-line)::after,
   #row-page-body .cm-content:has(.cm-mdm-last-line)::after { display: none; }
-  /* La banda NO pinta ningún punto: el único punto de la nota es el del bloque
-     con el ratón encima (.cm-mdm-block-dot). Antes esta banda enseñaba uno al
-     pasar el ratón -- y era el «punto debajo sin bloque» de una nota nueva --;
-     sigue siendo la zona clicable que crea el bloque del final. */
 
   /* ---------- separación entre bloques (al estilo Notion) ----------
      Padding-top en la PRIMERA línea de cada bloque, según su tipo -- ver
@@ -1587,37 +1582,22 @@
      que la banda siga a la altura del texto y no del borde superior de la
      línea.
 
-     Ya no hay «⋮⋮» (t_c2c98f7b): a la izquierda de un bloque queda SOLO el
-     «+». El bloque se coge desde esta banda -- el envoltorio del «+», estirado
-     a la izquierda con `::before` hasta donde llegaba el asa -- y se arrastra
-     entero (ver la sección de arrastre en entry.js). Invisible por defecto:
-     aparece al pasar el ratón por ESA línea (o por la propia banda) y se queda
-     a la vista mientras el bloque está marcado. */
+     Como en Notion: el «+» y, pegado al texto, los seis puntos de los que se
+     coge el bloque para arrastrarlo (ver la sección de arrastre en entry.js).
+     Invisible por defecto: aparece al pasar el ratón por ESA línea (o por la
+     propia asa) y se queda a la vista mientras el bloque está marcado. */
   .cm-mdm-block-handle-wrap {
     position: absolute;
-    left: -34px; /* el «+» pegado al texto: 28 del botón + 4 de aire */
+    left: -62px; /* «+» (28) + 2 + seis puntos (28) + 4 de aire al texto */
     top: calc(var(--mdm-space, 0px) * (1 - var(--mdm-flush, 0))); /* el padding-top de la línea, heredado de su cm-mdm-space-* */
-    width: 28px;
+    width: 58px;
     height: 28px;
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 2px;
     line-height: 1.6;
     opacity: 0;
-    cursor: grab; /* de aquí se coge el bloque entero */
     transition: opacity var(--dur-fast) var(--ease-std);
-  }
-  /* La zona de agarrar: 28 px más a la izquierda, donde estaba el asa. Es un
-     pseudo-elemento (los eventos llegan al envoltorio, así que `event.target`
-     sigue siendo la banda) y no pinta nada. */
-  .cm-mdm-block-handle-wrap::before {
-    content: "";
-    position: absolute;
-    left: -28px;
-    top: -6px;
-    bottom: -6px;
-    width: 56px;
-    cursor: grab;
   }
   /* Al recibir foco por teclado (:focus-within) el contenedor entero pasa a
      opacity: 1, para que el anillo :focus-visible de 2px se pinte al 100 %. */
@@ -1660,64 +1640,32 @@
     -webkit-touch-callout: none;
   }
   .cm-mdm-block-add:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
-
-  /* ---------- el punto del bloque (escribir un bloque debajo) ----------
-     Widget EN LÍNEA con ancho 0 (ver blockDotPlugin en entry.js): se saca al
-     margen con `left` negativo -- el mismo margen que alojan el «+» y el asa --
-     y se coloca a la altura del TEXTO de su primera línea, no a la del cuerpo
-     de la línea. Existe SOLO mientras hay un bloque con el ratón encima (o, en
-     táctil, el del cursor): no hay puntos en las líneas en blanco ni sueltos
-     debajo del último bloque de una nota vacía.
-
-     Cómo se centra: `vertical-align: baseline` con caja de alto 0 deja el
-     borde inferior del envoltorio en la LÍNEA BASE del texto, y el punto se
-     sube 1/3 del cuerpo de letra, que es donde cae el centro de la caja del
-     texto (medido en la app: H1 de 24 px, 8 px sobre la línea base; H2 de 20,
-     6,5; cuerpo de 15, 5). El cuerpo del texto lo pone `--mdm-dot-text`, que
-     las clases cm-mdm-dot-h1..h5 enlazan con el MISMO token de la escala
-     (--text-hN) que usa el encabezado, y las pone el TEXTO de la primera
-     línea del bloque (ver dotTextFamily en entry.js), no su tipo: un `#` dentro
-     de una cita o de un ítem, y un encabezado setext, también se pintan con el
-     cuerpo del encabezado. Lo que no empieza por encabezado (párrafo, lista,
-     código, cita) se queda con el `1em` del respaldo, que es el cuerpo de la
-     línea. Antes el envoltorio iba con `vertical-align: middle`, que se
-     calcula con la x-height de la LÍNEA (15 px, el cuerpo) y no con la del
-     texto del encabezado: el punto salía 3,5 px por debajo del centro de un H1
-     y 2,5 de un H2 (0,5 en párrafo y lista). */
-  .cm-mdm-block-dot-wrap {
-    display: inline-block;
-    width: 0;
-    height: 0;
+  /* Los seis puntos del asa (dos columnas de tres), dibujados con un degradado
+     radial que se repite: no dependen de la fuente. De aquí se coge el bloque. */
+  .cm-mdm-block-grip {
     position: relative;
-    vertical-align: baseline;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--ink-muted);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    -webkit-touch-callout: none;
   }
-  .cm-mdm-block-dot-wrap.cm-mdm-dot-h1 { --mdm-dot-text: var(--text-h1); }
-  .cm-mdm-block-dot-wrap.cm-mdm-dot-h2 { --mdm-dot-text: var(--text-h2); }
-  .cm-mdm-block-dot-wrap.cm-mdm-dot-h3 { --mdm-dot-text: var(--text-h3); }
-  .cm-mdm-block-dot-wrap.cm-mdm-dot-h4 { --mdm-dot-text: var(--text-h4); }
-  .cm-mdm-block-dot-wrap.cm-mdm-dot-h5 { --mdm-dot-text: var(--text-h5); }
-  .cm-mdm-block-dot {
-    position: absolute;
-    left: calc(-1 * (var(--mdm-gutter, 78px) + 6px)); /* 6 = el padding-left de la .cm-line */
-    top: calc(-12px - var(--mdm-dot-text, 1em) / 3); /* 12 = medio punto; 1/3 = centro del texto sobre la línea base */
-    width: 12px;
-    height: 24px;
-    cursor: pointer;
-    border-radius: 50%;
-    touch-action: manipulation;
-  }
-  .cm-mdm-block-dot::after {
+  .cm-mdm-block-grip::before {
     content: "";
     position: absolute;
-    left: 3px;
-    top: 9px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--ink-muted);
-    opacity: 0.45;
+    left: 50%;
+    top: 50%;
+    width: 10px;
+    height: 15px;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(circle, currentColor 1.3px, transparent 1.6px) 0 0 / 5px 5px;
   }
-  .cm-mdm-block-dot:hover::after { opacity: 0.85; }
+  .cm-mdm-block-grip:hover { background: var(--code-bg); color: var(--ink); border-color: var(--panel-border); }
 
   /* Nota vacía: una sola línea con el cursor dentro y este texto de ayuda. Es
      ::before de CSS sobre la única línea del documento vacío (la marca
@@ -1763,15 +1711,24 @@
     z-index: 940;
     pointer-events: none;
     overflow: hidden;
-    background: var(--panel);
-    border-radius: 6px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-    opacity: 0.85;
+    /* Translúcida y sin fondo, como en Notion: se ve lo que hay debajo, y la
+       línea de inserción, que es lo que dice dónde va a caer. */
+    background: none;
+    opacity: 0.45;
     will-change: transform;
   }
+  /* Mientras se arrastra no aparecen las asas de los bloques por los que pasa
+     el puntero: solo la copia y la línea. */
+  body.cm-mdm-dragging .cm-mdm-block-handle-wrap { opacity: 0 !important; }
+  /* El `.cm-content` de la copia solo está para heredar los estilos del
+     original: sin el hueco de abajo ni la línea clicable del final. */
+  #note-body .cm-mdm-drag-ghost .cm-content,
+  #row-page-body .cm-mdm-drag-ghost .cm-content { padding-top: 0; padding-bottom: 0; }
+  #note-body .cm-mdm-drag-ghost .cm-content::after,
+  #row-page-body .cm-mdm-drag-ghost .cm-content::after { display: none; }
   /* Línea de inserción del arrastre de bloques: marca, entre dos bloques, el
-     hueco donde va a caer el que se arrastra (ya no hay asa: se coge por la
-     banda del margen o con Alt). */
+     hueco donde va a caer el que se arrastra (desde los seis puntos o con
+     Alt). Va centrada en el aire que separa los dos bloques. */
   .cm-mdm-drop-line {
     position: fixed;
     z-index: 950;
@@ -4492,19 +4449,17 @@
     #row-page-body .cm-editor { min-height: 55dvh; }
     #note-body .cm-content,
     #row-page-body .cm-content {
-      --mdm-gutter: 108px; /* punto (12) + 4 de aire + las dos asas de 44 (44+44) + 4 al texto */
+      --mdm-gutter: 108px; /* las dos asas de 44 (44+44) + 4 al texto y el resto de margen */
       padding: 4px 2px 40vh var(--mdm-gutter);
       font-size: 16px;
       line-height: 1.65;
       --mdm-line: calc(16px * 1.65); /* la misma cuenta que font-size x line-height */
     }
-    /* Banda del bloque en el móvil: el «+» de 44×44 pegado al texto y, a su
-       izquierda, otros 44 de zona para agarrar y para la pulsación larga --
-       los 92 px del hueco de la izquierda. Sin «⋮⋮» (t_c2c98f7b): el menú de
-       bloque se abre con la pulsación larga sobre la banda, que es la vía que
+    /* El asa en el móvil: el «+» y los seis puntos de 44×44. El menú de
+       bloque se abre con la pulsación larga sobre los puntos, que es la vía que
        queda cuando el teclado en pantalla no tiene Mayús+Intro ni Supr. */
-    .cm-mdm-block-handle-wrap { left: -48px; width: 44px; height: 44px; }
-    .cm-mdm-block-handle-wrap::before { left: -44px; width: 88px; top: -8px; bottom: -8px; }
+    .cm-mdm-block-handle-wrap { left: -92px; width: 88px; height: 44px; gap: 0; }
+    .cm-mdm-block-grip { width: 44px; height: 44px; min-width: 44px; }
     .cm-mdm-block-add {
       display: inline-flex;
       width: 44px;

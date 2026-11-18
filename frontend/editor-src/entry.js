@@ -910,28 +910,25 @@ export const blockGapTestExtensions = [markdownSupport, blockField, softLineFiel
 export { setSoftLine };
 
 /**
- * El DOM del asa de un bloque: SOLO el «+», con el índice del bloque en
- * `data-block-index` (de ahí lo leen los handlers de `blockHandleEventHandlers`).
+ * El DOM del asa de un bloque, como en Notion: el «+» y, pegado al texto, los
+ * seis puntos para agarrarlo. El índice del bloque va en `data-block-index` del
+ * envoltorio (de ahí lo leen los handlers de `blockHandleEventHandlers`).
  *
- * El «⋮⋮» ya no está: el dueño pidió quitar «la bolita esa que sale a la
- * derecha del símbolo del +». Lo que hacía se ha repartido (t_c2c98f7b): el
- * bloque se marca y se arrastra desde la banda del margen -- este mismo
- * envoltorio, estirado a la izquierda con su `::before`, ver index.html -- y
- * las acciones están en el clic derecho sobre el bloque.
+ * Los seis puntos volvieron: se habían quitado (t_c2c98f7b) por un malentendido
+ * -- la «bolita» que el dueño no quería era el punto suelto del margen, no el
+ * asa. Desde los puntos se marca el bloque (Mayús/Ctrl para varios) y se
+ * arrastra; el clic derecho sigue abriendo sus acciones.
  *
  * Lo comparten la decoración de línea (`BlockHandleWidget`) y el widget de una
  * base incrustada. La base se pinta sustituyendo la valla ENTERA -- primera
  * línea incluida --, y una decoración que cae DENTRO de un reemplazo no se
  * pinta nunca (CodeMirror: «Create a replace decoration which replaces the
- * given range with a widget, or simply hides it»). Por eso el asa de una base
- * no existía -- ni asa, ni arrastre, ni «+», ni Alt+↑/↓ con un punto de entrada
- * claro -- y el widget tiene que llevar el asa dentro. Tarjeta t_45697398.
+ * given range with a widget, or simply hides it»). Por eso el widget de la
+ * base lleva el asa dentro. Tarjeta t_45697398.
  */
 export function blockHandleDom(index) {
   const wrap = document.createElement("span");
   wrap.className = "cm-mdm-block-handle-wrap";
-  // El índice va en la BANDA: de aquí lo leen el marcar y el arrastrar, que ya
-  // no tienen un asa a la que agarrarse.
   wrap.dataset.blockIndex = String(index);
 
   const addBtn = document.createElement("span");
@@ -940,7 +937,14 @@ export function blockHandleDom(index) {
   addBtn.dataset.blockIndex = String(index);
   addBtn.title = "Añadir un bloque después de este · Alt+clic: antes";
 
-  wrap.append(addBtn);
+  // Los puntos se dibujan en CSS (un degradado radial): no dependen de la
+  // fuente, que pintaba «⋮⋮» de un ancho distinto en cada sistema.
+  const grip = document.createElement("span");
+  grip.className = "cm-mdm-block-grip";
+  grip.dataset.blockIndex = String(index);
+  grip.title = "Arrastrar: mover · Clic: seleccionar · Mayús/Ctrl+clic: varios · Clic derecho: acciones";
+
+  wrap.append(addBtn, grip);
   return wrap;
 }
 
@@ -1091,18 +1095,6 @@ function blockHandleEventHandlers(onBlockContextMenu) {
     mousedown(event, view) {
       const target = event.target;
       if (target instanceof HTMLElement) {
-        const dotIndex = pressBlockDot(target, (index) => {
-          // Sin esto el punto seguiría puesto en el bloque de antes y el
-          // usuario acabaría con dos bloques nuevos si vuelve a pulsar.
-          view.dispatch({ effects: setDotBlock.of(-1) });
-          insertBlockAfter(view, index);
-        });
-        if (dotIndex >= 0) {
-          event.preventDefault();
-          event.stopPropagation();
-          return true;
-        }
-
         const addBtn = target.closest(".cm-mdm-block-add");
         if (addBtn) {
           event.preventDefault();
@@ -1115,11 +1107,9 @@ function blockHandleEventHandlers(onBlockContextMenu) {
           return true;
         }
 
-        // ---- la banda del margen: marcar el bloque y arrastrarlo ----
-        // Aquí vivía el «⋮⋮», que ya no está (t_c2c98f7b). Lo que hacía se hace
-        // desde esta banda, que es el envoltorio del «+» estirado a la izquierda
-        // con su `::before`: el bloque se marca (Mayús/Ctrl para varios) y se
-        // arrastra de una vez.
+        // ---- el asa: marcar el bloque y arrastrarlo ----
+        // Desde los seis puntos (o el hueco entre ellos y el «+»): el bloque se
+        // marca (Mayús/Ctrl para varios) y se arrastra de una vez.
         const band = target.closest(".cm-mdm-block-handle-wrap");
         if (band) {
           event.preventDefault();
@@ -1528,28 +1518,35 @@ function startDragGhost(view, block, nodes = null) {
   ghost.style.left = `${Math.round(content.left)}px`;
   ghost.style.top = `${Math.round(nodes[0].getBoundingClientRect().top)}px`;
   ghost.style.width = `${Math.round(content.width)}px`;
+  // La copia va dentro de un `.cm-content` colgado del propio editor: así le
+  // llegan los mismos estilos que al original (el margen de la izquierda, el
+  // cuerpo de los encabezados) y el texto sale donde estaba, no desplazado al
+  // borde y con otra letra. El editor solo vigila su `contentDOM`, no esto.
+  const inner = document.createElement("div");
+  inner.className = "cm-content";
+  ghost.appendChild(inner);
   for (const node of nodes) {
     const copy = node.cloneNode(true);
     // El asa y el punto son del editor, no del bloque: en la copia sobran. Y
     // nada de `id` duplicados: la copia cuelga del documento.
     copy
-      .querySelectorAll(".cm-mdm-block-handle-wrap, .cm-mdm-block-dot-wrap")
+      .querySelectorAll(".cm-mdm-block-handle-wrap")
       .forEach((el) => el.remove());
     copy.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
     // La marca no viaja en la copia: si el bloque ya estaba marcado al
     // empezar el arrastre, el clon salía con el fondo de «marcado» y parecían
     // dos bloques seleccionados deslizándose. La base incrustada marca su
     // propio envoltorio con `cm-mdm-dblock-marked`.
-    copy.classList.remove("cm-mdm-line-marked", "cm-mdm-dblock-marked", "cm-mdm-line-dragging");
-    ghost.appendChild(copy);
+    copy.classList.remove("cm-mdm-line-marked", "cm-mdm-dblock-marked", "cm-mdm-line-dragging", "cm-mdm-last-line", "cm-activeLine");
+    inner.appendChild(copy);
   }
-  document.body.appendChild(ghost);
+  view.dom.appendChild(ghost);
   return ghost;
 }
 
 /** Atenúa el bloque que se está arrastrando. Se vuelve a poner en cada
- * movimiento: el punto del bloque despacha un efecto en cada `mousemove`, y un
- * repintado de esa línea se lleva por delante la clase puesta a mano. */
+ * movimiento: un repintado de esa línea se lleva por delante la clase puesta
+ * a mano. */
 function markDragSource(view, index) {
   for (const node of view.contentDOM.querySelectorAll(".cm-mdm-line-dragging")) {
     node.classList.remove("cm-mdm-line-dragging");
@@ -1583,6 +1580,30 @@ function dropSlotAt(view, y) {
   return blocks.length;
 }
 
+/** Altura (en la ventana) de la línea de inserción del hueco `slot`: en medio
+ * del aire que separa el bloque de arriba del de abajo, no pegada al texto de
+ * ninguno de los dos. Arriba del primero y debajo del último, a medio
+ * separador de su texto. */
+function dropLineY(view, slot) {
+  const { blocks } = view.state.field(blockField);
+  if (!blocks.length) return null;
+  const topOf = (i) => view.coordsAtPos(blocks[i].from, 1)?.top ?? null;
+  const bottomOf = (i) => (view.coordsAtPos(blocks[i].to, -1) || view.coordsAtPos(blocks[i].from, 1))?.bottom ?? null;
+  const AIR = 6;
+  if (slot <= 0) {
+    const t = topOf(0);
+    return t == null ? null : t - AIR;
+  }
+  if (slot >= blocks.length) {
+    const b = bottomOf(blocks.length - 1);
+    return b == null ? null : b + AIR;
+  }
+  const above = bottomOf(slot - 1);
+  const below = topOf(slot);
+  if (above == null || below == null) return above ?? below;
+  return (above + below) / 2;
+}
+
 function placeDropLine(view, slot) {
   if (!blockDrag) return;
   if (!blockDrag.line) {
@@ -1590,24 +1611,20 @@ function placeDropLine(view, slot) {
     blockDrag.line.className = "cm-mdm-drop-line";
     document.body.appendChild(blockDrag.line);
   }
-  const { blocks } = view.state.field(blockField);
-  const content = view.contentDOM.getBoundingClientRect();
-  let top = content.top;
-  if (slot <= 0 && blocks.length) {
-    const c = view.coordsAtPos(blocks[0].from, -1);
-    if (c) top = c.top;
-  } else if (slot >= blocks.length && blocks.length) {
-    const last = blocks[blocks.length - 1];
-    const c = view.coordsAtPos(last.to, 1) || view.coordsAtPos(last.from, -1);
-    if (c) top = c.bottom;
-  } else if (blocks.length) {
-    const c = view.coordsAtPos(blocks[slot].from, -1);
-    if (c) top = c.top;
-  }
   const line = blockDrag.line;
-  line.style.top = `${Math.round(top) - 1}px`;
-  line.style.left = `${Math.round(content.left)}px`;
-  line.style.width = `${Math.round(content.width)}px`;
+  // Soltarlo donde ya está no lo mueve: ahí no se promete nada.
+  const y = slot === blockDrag.index || slot === blockDrag.index + 1 ? null : dropLineY(view, slot);
+  if (y == null) {
+    line.style.display = "none";
+    return;
+  }
+  line.style.display = "";
+  // De donde empieza el texto (pasado el margen del asa) al borde derecho.
+  const content = view.contentDOM.getBoundingClientRect();
+  const pad = parseFloat(getComputedStyle(view.contentDOM).paddingLeft) || 0;
+  line.style.top = `${Math.round(y) - 1}px`;
+  line.style.left = `${Math.round(content.left + pad)}px`;
+  line.style.width = `${Math.round(content.width - pad)}px`;
 }
 
 /** El documento se desplaza solo cuando el puntero se acerca al borde de la
@@ -2196,9 +2213,6 @@ function underlinePlugin() {
 //   clicable del final (el `::after` de .cm-content) no pinte una de más
 //   cuando la del final ya es una línea vacía de verdad.
 //
-// El punto que dice «aquí se escribe» NO vive aquí: es del bloque que tiene el
-// ratón encima (ver blockDotPlugin), para que no haya puntos sueltos en los
-// huecos ni en una nota vacía.
 const BLANK_UNIT_PX = { h1: 18, md: 14, p: 12, li: 8 };
 
 /** Familia de alto del bloque de encima: el H1 tiene la suya; H2-H5, código,
@@ -2310,263 +2324,6 @@ function blankLinePlugin() {
     },
     { decorations: (v) => v.decorations }
   );
-}
-
-// ------------------------------------------------- el punto del bloque
-//
-// El indicador de «aquí se escribe» es UN punto, y es del bloque que tiene el
-// ratón encima: se pinta en su PRIMERA línea, en el margen izquierdo, y no hay
-// ninguno más (ni en las líneas en blanco de en medio, ni suelto debajo del
-// último bloque de una nota vacía -- eran los puntos permanentes que veía el
-// dueño, porque antes el criterio era «la línea donde está el cursor»).
-// Clicarlo deja el cursor en una línea nueva justo debajo del bloque, lista
-// para escribir: al final de la nota, es la forma de seguir escribiendo sin
-// buscar el hueco.
-//
-// Va como widget EN LÍNEA con ancho 0, no como decoración de línea con
-// `::after`: apoyado en la LÍNEA BASE de su primera línea (vertical-align:
-// baseline + caja de alto 0) y subido 1/3 del cuerpo de letra del texto, que es
-// donde está el centro de su caja. El cuerpo lo pone una clase por familia de
-// encabezado (ver DOT_TEXT_SIZE_CLASS y --mdm-dot-text en index.html): con
-// `vertical-align: middle` -- lo que había antes -- el desplazamiento se
-// calculaba con la x-height de la LÍNEA (15 px de cuerpo), no con la del texto,
-// y el punto salía 3,5 px por debajo del centro de un H1 y 2,5 de un H2. El
-// desplazamiento al margen lo hace `left` negativo en CSS (index.html).
-const setDotBlock = StateEffect.define();
-
-const dotField = StateField.define({
-  create: () => -1,
-  update(value, tr) {
-    for (const e of tr.effects) if (e.is(setDotBlock)) value = e.value;
-    if (value < 0) return -1;
-    // El índice tiene que seguir existiendo: borrar bloques con el punto puesto
-    // dejaría un widget colgando del bloque equivocado.
-    return value < tr.state.field(blockField).blocks.length ? value : -1;
-  },
-});
-
-/** Cuerpo de letra del texto del bloque, para poner el punto a SU altura: solo
- * los encabezados se separan del cuerpo de la línea. La clase lleva en CSS a
- * `--text-hN`, el mismo token que usa el encabezado, así que si cambia la
- * escala tipográfica el punto la sigue sin tocar píxeles a mano. */
-const DOT_TEXT_SIZE_CLASS = {
-  h1: "cm-mdm-dot-h1",
-  h2: "cm-mdm-dot-h2",
-  h3: "cm-mdm-dot-h3",
-  h4: "cm-mdm-dot-h4",
-  h5: "cm-mdm-dot-h5",
-};
-
-/** Nivel del encabezado según el nombre que le da el parser (ATX y setext). */
-const HEADING_NODE_LEVEL = {
-  ATXHeading1: 1,
-  ATXHeading2: 2,
-  ATXHeading3: 3,
-  ATXHeading4: 4,
-  ATXHeading5: 5,
-  ATXHeading6: 6,
-  SetextHeading1: 1,
-  SetextHeading2: 2,
-};
-
-/**
- * Nivel (1-6) del encabezado que EMPIEZA en la primera línea del bloque, o 0 si
- * esa línea no es un encabezado.
- *
- * Mira el TEXTO de la primera línea en el árbol de sintaxis, no el `type` del
- * bloque: `> # Titulo` (quote), `- # Titulo` (bullet_list_item) y un encabezado
- * setext (`Titulo` + `====`, tipo `other`) se pintan con el cuerpo de un H1, y
- * el punto tiene que subir con el texto. Decidirlo por el `type` los dejaba 3 px
- * por debajo (el 1em de la línea, 15 px, en vez de los 24 del encabezado). Un
- * encabezado en una línea de MÁS ABAJO no cuenta: el punto va en la primera.
- *
- * `tree` es un árbol de @lezer (el de `syntaxTree(state)`, o el del parser en
- * los tests) y `firstLineEnd` la posición del salto que cierra esa primera
- * línea (se usa como cota del recorrido; da igual que un setext acabe más
- * abajo, porque lo que se mira es dónde EMPIEZA).
- */
-export function headingLevelAtLineStart(tree, from, firstLineEnd) {
-  let level = 0;
-  tree.iterate({
-    from,
-    to: Math.max(from, firstLineEnd),
-    enter(node) {
-      if (level) return false; // ya hay uno: no hace falta seguir
-      const found = HEADING_NODE_LEVEL[node.name];
-      if (found && node.from >= from && node.from <= firstLineEnd) {
-        level = found;
-        return false;
-      }
-      return undefined;
-    },
-  });
-  return level;
-}
-
-/**
- * Familia del cuerpo de letra con el que se centra el punto: "h1".."h5" si la
- * primera línea del bloque es un encabezado (el 6 usa la escala del 5, igual
- * que `blocksFromTree`), y "" si es texto normal -- y entonces manda el `1em`
- * de la línea. Es una función pura sobre el árbol para poder probarla con el
- * parser de verdad y sin una EditorView (ver test/block-dot.test.js).
- */
-export function dotTextFamily(tree, block, firstLineEnd) {
-  const level = headingLevelAtLineStart(tree, block.from, firstLineEnd);
-  return level ? `h${Math.min(level, 5)}` : "";
-}
-
-/** El widget del punto de un bloque, con el cuerpo de letra de SU primera
- * línea. Se separa de `dotDecorations` para que el test compruebe el cableado
- * (bloque de verdad -> índice + clase) sin una EditorView. */
-export function blockDotWidget(tree, blocks, index, firstLineEnd) {
-  const block = blocks[index];
-  if (!block) return null;
-  return new BlockDotWidget(index, dotTextFamily(tree, block, firstLineEnd));
-}
-
-export class BlockDotWidget extends WidgetType {
-  constructor(index, textFamily = "") {
-    super();
-    this.index = index;
-    this.textFamily = textFamily;
-  }
-  eq(other) {
-    return other.index === this.index && other.textFamily === this.textFamily;
-  }
-  toDOM() {
-    const wrap = document.createElement("span");
-    const size = DOT_TEXT_SIZE_CLASS[this.textFamily];
-    wrap.className = size ? `cm-mdm-block-dot-wrap ${size}` : "cm-mdm-block-dot-wrap";
-    const dot = document.createElement("span");
-    dot.className = "cm-mdm-block-dot";
-    dot.dataset.blockIndex = String(this.index);
-    dot.title = "Escribir un bloque debajo";
-    wrap.append(dot);
-    return wrap;
-  }
-  ignoreEvent() {
-    return false; // el clic lo maneja blockHandleEventHandlers
-  }
-}
-
-/** ¿Manda el foco y no el ratón? En táctil no hay `:hover`: allí el punto va en
- * el bloque donde está el cursor (el del final, al abrir la nota). */
-function coarsePointer() {
-  return typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches;
-}
-
-/**
- * Índice del bloque al que pertenece `pos`, o -1 si cae en un hueco (una línea
- * en blanco entre dos bloques no es de nadie: ahí no hay punto).
- *
- * Pregunta por BLOQUES y no por el `state` para poder probarlo sin una vista
- * (ver test/block-dot.test.js). El rango es cerrado por los dos lados a
- * propósito: el `to` que da el parser es la posición del salto de línea que
- * cierra el bloque (en un encabezado, en un párrafo y en un ítem de lista), así
- * que la ÚLTIMA posición del bloque es esa y no la de la línea en blanco que
- * pueda venir detrás -- ese es el primer hueco de verdad. En el borde de
- * arriba, `from` es la primera posición del bloque.
- */
-export function blockIndexAtPos(blocks, pos) {
-  if (pos == null) return -1;
-  return blocks.findIndex((b) => pos >= b.from && pos <= b.to);
-}
-
-/**
- * ¿El puntero está DENTRO del bloque (4 px de gracia arriba y abajo)? Hace
- * falta porque `posAtCoords` pega el hueco de debajo del último bloque al final
- * del texto: sin esto, el punto aparecía también con el ratón en la banda
- * vacía del final, que es justo el «punto suelto donde no hay bloque».
- *
- * `coordsAt` es `view.coordsAtPos` (se pasa como función, con la misma firma,
- * para poder probar la cuenta sin una vista: ver test/block-dot.test.js).
- */
-export function pointerInsideBlock(block, y, coordsAt) {
-  if (!block) return false;
-  const top = coordsAt(block.from, -1);
-  const bottom = coordsAt(block.to, 1) || top;
-  if (!top || !bottom) return false;
-  return y >= top.top - 4 && y <= bottom.bottom + 4;
-}
-
-function dotDecorations(state) {
-  const { blocks } = state.field(blockField);
-  const index = coarsePointer() ? blockIndexAtPos(blocks, state.selection.main.head) : state.field(dotField);
-  const b = blocks[index];
-  if (index < 0 || !b) return Decoration.none;
-  // El cuerpo del punto sale del TEXTO de la primera línea del bloque, no de su
-  // `type`: un encabezado dentro de una cita o de un ítem de lista (y un setext)
-  // se pinta como encabezado y el punto tiene que centrarse con él.
-  const widget = blockDotWidget(syntaxTree(state), blocks, index, state.doc.lineAt(b.from).to);
-  return Decoration.set([Decoration.widget({ widget, side: -1 }).range(b.from)], true);
-}
-
-function blockDotPlugin() {
-  return ViewPlugin.fromClass(
-    class {
-      constructor(view) {
-        this.decorations = dotDecorations(view.state);
-      }
-      update(update) {
-        if (
-          update.docChanged ||
-          update.selectionSet ||
-          update.state.field(dotField) !== update.startState.field(dotField) ||
-          update.state.field(blockField) !== update.startState.field(blockField)
-        ) {
-          this.decorations = dotDecorations(update.state);
-        }
-      }
-    },
-    { decorations: (v) => v.decorations }
-  );
-}
-
-/**
- * Índice del bloque del punto que se ha pulsado -- el `data-block-index` que
- * pinta BlockDotWidget --, o -1 si el clic no es en un punto. Se lee del DOM y
- * no de la posición del cursor: el widget puede ser de un bloque distinto al
- * que tiene el caret (el punto sigue al ratón, no a la selección).
- */
-export function dotBlockIndex(target) {
-  const dot = target?.closest?.(".cm-mdm-block-dot");
-  if (!dot) return -1;
-  const index = Number(dot.dataset?.blockIndex);
-  return Number.isInteger(index) && index >= 0 ? index : -1;
-}
-
-/**
- * El clic en el punto: saca el índice del widget pulsado y se lo pasa a
- * `insertAfter`. Devuelve ese mismo índice, o -1 si el clic no era en un punto
- * (y entonces no se inserta nada). Se separa del manejador para que el test
- * pueda comprobar SIN una vista que el `data-block-index` que se pulsa es
- * exactamente el que llega a insertBlockAfter.
- */
-export function pressBlockDot(target, insertAfter) {
-  const index = dotBlockIndex(target);
-  if (index >= 0) insertAfter(index);
-  return index;
-}
-
-function blockDotEventHandlers() {
-  return EditorView.domEventHandlers({
-    mousemove(event, view) {
-      let index = -1;
-      if (!coarsePointer()) {
-        const blocks = view.state.field(blockField).blocks;
-        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-        index = blockIndexAtPos(blocks, pos);
-        if (index >= 0 && !pointerInsideBlock(blocks[index], event.clientY, (p, side) => view.coordsAtPos(p, side))) index = -1;
-      }
-      if (index !== view.state.field(dotField)) view.dispatch({ effects: setDotBlock.of(index) });
-      return false;
-    },
-    // El puntero se va del cuerpo: sin ratón encima, ningún punto.
-    mouseleave(event, view) {
-      if (view.state.field(dotField) !== -1) view.dispatch({ effects: setDotBlock.of(-1) });
-      return false;
-    },
-  });
 }
 
 // Nota vacía: una sola línea con un texto de ayuda. El placeholder es SOLO
@@ -4394,9 +4151,6 @@ export function createNoteEditor({
         typingOverBlocks(),
         blockHandlesPlugin(),
         blockMarkPlugin(),
-        dotField,
-        blockDotPlugin(),
-        blockDotEventHandlers(),
         blockHandleEventHandlers(onBlockContextMenu),
         blockLinesPlugin(),
         blockSpacingPlugin(),
