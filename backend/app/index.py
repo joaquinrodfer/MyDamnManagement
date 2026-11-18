@@ -801,6 +801,10 @@ def _inspect(path: str) -> IndexInfo:
                 f"usa otro INDEX_PATH"
             )
         if version < SCHEMA_VERSION:
+            # Antes de tocar el esquema, el fichero tal como está (plan H0).
+            from app.backup import copy_before_migration
+
+            copy_before_migration(path, version, SCHEMA_VERSION)
             _migrate(conn, version)
             version = SCHEMA_VERSION
 

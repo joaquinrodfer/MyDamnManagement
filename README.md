@@ -673,7 +673,30 @@ Además del log de uvicorn está el de la app, con sus propios loggers `mdm.*` (
 
 ### Backup
 
-Lo que hay que respaldar es **el vault**: `mdm-prod_mdm_vault` tiene las notas (`Notas/`), las bases y sus filas (`Bases/`), los adjuntos (`_attachments/`) y la papelera (`.trash/`). El índice (`mdm-prod_mdm_data`, un `index.sqlite`) es **derivado**: se reconstruye desde el vault en cada arranque, así que no se respalda.
+> **Desde la 3.0 (ADR-0005) la verdad está en el índice** (`index.sqlite`: notas, bases, filas, usuarios, permisos) y el vault solo guarda los adjuntos. **Copiar solo el vault ya no es una copia completa.** Lo que sigue en este apartado, escrito antes, describe el modo antiguo; usa la copia de la app.
+
+**La copia de la app** (Ajustes › Administración › Copias de seguridad, solo administradores) es un `.tar.gz` con `manifest.json`, una foto consistente de `index.sqlite` (se puede hacer con la app en marcha) y `vault/`. Lleva usuarios y contraseñas cifradas: guárdala como un secreto.
+
+- **Descargarla** cuando quieras, desde ese apartado (o `POST /backups/download`).
+- **Programarla:** con `BACKUP_DIR` apuntando a una carpeta (en producción, `/data/backups`, dentro del volumen `mdm_data`), el apartado deja elegir «cada día» o «cada semana» y cuántas conservar (las N últimas). Las copias se listan y se descargan desde ahí. Un volumen o un disco distinto del de la app es mejor: una copia en el mismo disco no protege del disco.
+- **Antes de cada migración del esquema**, la app guarda el índice tal como estaba (`index.sqlite.antes-de-vN-desde-vM`, en `BACKUP_DIR` o junto al índice). Volver atrás un despliegue **no** deshace una migración: hay que volver a la versión anterior del código **y** devolver esa copia a `INDEX_PATH`.
+
+**Restaurar una copia de la app:**
+
+```bash
+docker compose -f docker-compose.prod.yml down            # sin -v
+mkdir restaurar && tar xzf noteping-copia-AAAA-MM-DDThh-mm-ssZ.tar.gz -C restaurar
+cat restaurar/manifest.json                                # versión de esquema y recuentos
+# volcar restaurar/index.sqlite en el volumen mdm_data (como /data/index.sqlite, sin -wal ni -shm)
+# y restaurar/vault/ en el volumen mdm_vault (/data/vault)
+docker compose -f docker-compose.prod.yml up -d
+```
+
+La app que arranque tiene que ser de la misma versión de esquema que la copia o de una más nueva (si es más nueva, migra el índice sola y guarda antes la copia de seguridad de la migración).
+
+---
+
+**Modo antiguo (solo vault).** Lo que hay que respaldar era **el vault**: `mdm-prod_mdm_vault` tiene las notas (`Notas/`), las bases y sus filas (`Bases/`), los adjuntos (`_attachments/`) y la papelera (`.trash/`). El índice (`mdm-prod_mdm_data`, un `index.sqlite`) es **derivado**: se reconstruye desde el vault en cada arranque, así que no se respalda.
 
 Copia con `tar` dentro del propio contenedor (misma imagen, sin instalar nada en el servidor):
 

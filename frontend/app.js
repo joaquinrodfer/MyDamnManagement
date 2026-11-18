@@ -1119,6 +1119,109 @@ async function cargarUsuariosDeAjustes() {
   }
 }
 
+// ----------------------------------------------- copias de seguridad (plan H0)
+
+const copiasNota = document.getElementById("backup-note");
+
+function fmtTamano(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function pintarCopias(estado) {
+  const programacion = document.getElementById("backup-schedule");
+  if (programacion) programacion.hidden = !estado.configured;
+  if (!estado.configured) {
+    setFormNote(
+      copiasNota,
+      "Las copias automáticas están desactivadas: el servidor no tiene BACKUP_DIR (una carpeta donde guardarlas).",
+    );
+    return;
+  }
+  document.getElementById("backup-frequency").value = estado.frequency;
+  document.getElementById("backup-keep").value = estado.keep;
+  const lista = document.getElementById("backup-files");
+  lista.replaceChildren(
+    ...estado.files.map((f) => {
+      const li = document.createElement("li");
+      const a = document.createElement("a");
+      a.href = `/backups/files/${encodeURIComponent(f.name)}`;
+      a.textContent = f.name;
+      const extra = document.createElement("span");
+      extra.textContent = `${fmtFecha(f.created_at)} · ${fmtTamano(f.size)}`;
+      li.append(a, extra);
+      return li;
+    }),
+  );
+  setFormNote(
+    copiasNota,
+    estado.last ? `Última copia automática: ${fmtFecha(estado.last)}.` : "Todavía no se ha hecho ninguna copia automática.",
+  );
+}
+
+async function cargarCopias() {
+  setFormNote(copiasNota, "");
+  try {
+    pintarCopias(await api("/backups"));
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(copiasNota, e?.message || "No se pudo leer el estado de las copias.", "error");
+  }
+}
+
+document.getElementById("btn-backup-download")?.addEventListener("click", async (ev) => {
+  const boton = ev.currentTarget;
+  boton.disabled = true;
+  setFormNote(copiasNota, "Preparando la copia…");
+  try {
+    const res = await fetch("/backups/download", { method: "POST" });
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || `HTTP ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = /filename="?([^";]+)/.exec(res.headers.get("content-disposition") || "")?.[1] || "noteping-copia.tar.gz";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setFormNote(copiasNota, `Copia descargada (${fmtTamano(blob.size)}).`, "ok");
+  } catch (e) {
+    setFormNote(copiasNota, e?.message || "No se pudo hacer la copia.", "error");
+  } finally {
+    boton.disabled = false;
+  }
+});
+
+document.getElementById("btn-backup-save")?.addEventListener("click", async () => {
+  try {
+    const keep = Math.min(90, Math.max(1, parseInt(document.getElementById("backup-keep").value, 10) || 7));
+    const estado = await api("/backups/settings", {
+      method: "PUT",
+      body: JSON.stringify({ frequency: document.getElementById("backup-frequency").value, keep }),
+    });
+    pintarCopias(estado);
+    setFormNote(copiasNota, "Guardado.", "ok");
+  } catch (e) {
+    setFormNote(copiasNota, e?.message || "No se pudo guardar.", "error");
+  }
+});
+
+document.getElementById("btn-backup-run")?.addEventListener("click", async (ev) => {
+  const boton = ev.currentTarget;
+  boton.disabled = true;
+  setFormNote(copiasNota, "Haciendo la copia…");
+  try {
+    const hecho = await api("/backups/run", { method: "POST" });
+    pintarCopias(hecho);
+    setFormNote(copiasNota, `Copia hecha: ${hecho.made.name}.`, "ok");
+  } catch (e) {
+    setFormNote(copiasNota, e?.message || "No se pudo hacer la copia.", "error");
+  } finally {
+    boton.disabled = false;
+  }
+});
+
 // La imagen del usuario nuevo: se elige aquí y viaja con el alta.
 const selectorDeAlta = montarSelectorDeAvatar(
   document.getElementById("nu-avatar") || document.createElement("div"),
@@ -2135,7 +2238,10 @@ function mostrarApartadoDeAjustes(nombre) {
     prepararContrasena();
     cargarTokensDeAjustes();
   }
-  if (nombre === "admin") cargarUsuariosDeAjustes();
+  if (nombre === "admin") {
+    cargarUsuariosDeAjustes();
+    cargarCopias();
+  }
 }
 
 function openSettings(apartado = "info") {
