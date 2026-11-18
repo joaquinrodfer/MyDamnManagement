@@ -4,7 +4,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, UploadFile
 
-from app import acl, auth, export, schemas
+from app import acl, auth, export, notifications, schemas
 from app import workspaces as ws_mod
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
@@ -151,6 +151,11 @@ def update_page(
     if page is None:
         raise HTTPException(404, "Página no encontrada")
     avisar_de_cambio(antes, page)
+    if payload.body_markdown is not None:
+        # Plan H6: menciones nuevas y cambios para quien se suscribió a todo.
+        notifications.after_body_change(
+            repo.conn, page_id, antes.body_markdown if antes else None, page.body_markdown, str(user.id)
+        )
     response.headers["ETag"] = etag(page.version)
     return serialize_page(page, repo.author_colors())
 

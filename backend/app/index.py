@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -316,6 +316,30 @@ MIGRATIONS: dict[int, list[str]] = {
     database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
     kind_json   TEXT NOT NULL
 )""",
+    ],
+    # v16 (plan H6): avisos y suscripciones por página. Sin claves foráneas a
+    # `pages` a propósito (como `acl`): un reindexado vacía `pages` y una
+    # cascada se llevaría los avisos. `dedupe_key` evita el mismo aviso dos veces.
+    16: [
+        """CREATE TABLE IF NOT EXISTS notifications (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    workspace_id TEXT,
+    page_id      TEXT,
+    type         TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update')),
+    message      TEXT NOT NULL,
+    is_read      INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    dedupe_key   TEXT
+)""",
+        """CREATE TABLE IF NOT EXISTS page_subscriptions (
+    user_id TEXT NOT NULL,
+    page_id TEXT NOT NULL,
+    mode    TEXT NOT NULL CHECK (mode IN ('all', 'mentions_only', 'muted')),
+    PRIMARY KEY (user_id, page_id)
+)""",
+        "CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, is_read, created_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
     ],
 }
 
@@ -619,7 +643,28 @@ CREATE TABLE database_kinds (
     kind_json   TEXT NOT NULL
 );
 
-PRAGMA user_version = 15;
+-- Avisos y suscripciones por página (v16, plan H6). Ver la migración 16.
+CREATE TABLE notifications (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    workspace_id TEXT,
+    page_id      TEXT,
+    type         TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update')),
+    message      TEXT NOT NULL,
+    is_read      INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    dedupe_key   TEXT
+);
+CREATE TABLE page_subscriptions (
+    user_id TEXT NOT NULL,
+    page_id TEXT NOT NULL,
+    mode    TEXT NOT NULL CHECK (mode IN ('all', 'mentions_only', 'muted')),
+    PRIMARY KEY (user_id, page_id)
+);
+CREATE INDEX notifications_user ON notifications(user_id, is_read, created_at);
+CREATE UNIQUE INDEX notifications_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
+
+PRAGMA user_version = 16;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
