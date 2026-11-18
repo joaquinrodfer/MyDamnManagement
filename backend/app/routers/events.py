@@ -31,10 +31,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from app import acl
+from app.config import settings
 from app.events import bus
+from app.index import open_index
 
 router = APIRouter(tags=["events"])
 
@@ -43,9 +46,31 @@ router = APIRouter(tags=["events"])
 PING_INTERVAL = 15.0
 
 
+def _le_toca(user, event: dict) -> bool:
+    """¿Puede `user` saber de este aviso? (3.0, hito 3)
+
+    Un aviso de una página o base que no ve no le llega: si no, el canal
+    contaría títulos, rutas e ids de lo que no puede abrir. Un aviso de algo
+    que ya no existe (borrado) solo le llega a quien lo ve todo.
+    """
+    if user is None or getattr(user, "is_admin", False):
+        return True
+    resource = event.get("page_id") or event.get("database_id")
+    if not resource:
+        return True
+    conn = open_index(settings.index_path)
+    try:
+        return acl.level_for(conn, user, resource) is not None
+    finally:
+        conn.close()
+
+
 @router.get("/events")
-async def stream_events() -> StreamingResponse:
+async def stream_events(request: Request = None) -> StreamingResponse:
     """Flujo de cambios del vault. Un evento `page` por fichero reindexado."""
+
+    # Sin petición (los tests llaman al endpoint a pelo) no hay a quién filtrar.
+    user = getattr(request.state, "user", None) if request is not None else None
 
     async def generate():
         queue = bus.subscribe()
@@ -67,6 +92,8 @@ async def stream_events() -> StreamingResponse:
                 # El nombre del evento es su `type`: la app escucha `page`
                 # (el `.md` cambió) y `suggestion` (nace o se decide una
                 # sugerencia) por separado, con el mismo formato de `data`.
+                if not _le_toca(user, event):
+                    continue
                 name = str(event.get("type") or "page")
                 yield f"event: {name}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:

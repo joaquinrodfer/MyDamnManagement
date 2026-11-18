@@ -8,7 +8,7 @@ solo se le pasa el usuario de la sesión, que es lo único que decide qué es
 
 from fastapi import APIRouter, Depends
 
-from app import auth, mytasks, schemas
+from app import acl, auth, mytasks, schemas
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
 
@@ -25,4 +25,6 @@ def get_my_tasks(
     Sin sesión, el middleware contesta 401 como en el resto de la API: esto es
     «mis» tareas, y sin saber quién eres no hay nada que devolver.
     """
-    return schemas.MyTasksRead(**mytasks.my_tasks(repo.conn, user.id))
+    return schemas.MyTasksRead(
+        **mytasks.my_tasks(repo.conn, user.id, acl.visible_ids(repo.conn, user))
+    )

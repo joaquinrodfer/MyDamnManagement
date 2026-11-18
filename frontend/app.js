@@ -2284,6 +2284,15 @@ function renderTreeNode(node, depth = 1) {
   label.textContent = node.title || "Sin título";
 
   row.append(icon, label);
+  // 3.0, hito 3: candado en las páginas que nadie más ve (privadas).
+  if (node.shared === false && node.type !== "database_row") {
+    const lock = document.createElement("span");
+    lock.className = "tree-lock";
+    lock.title = "Privada: solo la ven sus propietarios";
+    lock.setAttribute("aria-label", "Privada");
+    lock.innerHTML = svgIcon("i-lock");
+    row.append(lock);
+  }
 
   row.addEventListener("click", (e) => {
     if (e.shiftKey) {
@@ -2942,7 +2951,7 @@ function renderNote(page, backlinks) {
 
   const topbarRight = document.createElement("div");
   topbarRight.className = "note-topbar-right";
-  topbarRight.append(exportBtn, backDetails);
+  topbarRight.append(botonCompartir("page", page.id, () => page.title), exportBtn, backDetails);
 
   topbar.append(saveStatus, topbarRight);
 
@@ -5660,7 +5669,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     }
   };
 
-  header.append(title);
+  header.append(title, botonCompartir("database", database.id, () => database.title));
 
   // Debajo del título ya no va la lista «Propiedad (Tipo) · …»: no decía nada
   // que la cabecera de la tabla no diga (cada columna lleva el icono de su tipo).
@@ -10319,6 +10328,192 @@ function cerrarPanelDeColumna({ foco = false } = {}) {
 /** Coloca un panel `position: fixed` pegado a su ancla, sin salirse del
  * viewport. A 375 px el menú mide como mucho `100vw - 16px` y se pega al
  * borde; si abajo no cabe, se abre hacia arriba. */
+// ------------------------------------------------ compartir (3.0, hito 3)
+// Quién puede qué sobre una página o una base: `GET/PUT /acl/{tipo}/{id}`.
+// Como en Notion, cada cambio se guarda en el acto (no hay botón «Guardar»).
+// Si la página hereda, se enseña de quién y con qué entradas; dejar de heredar
+// copia esas entradas como punto de partida (y te deja a ti de propietario).
+
+const NIVELES_ACL = [
+  ["view", "Puede ver"],
+  ["edit", "Puede editar"],
+  ["owner", "Propietario"],
+];
+
+function botonCompartir(tipo, id, titulo) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn share-btn";
+  btn.innerHTML = `${svgIcon("i-users")}<span>Compartir</span>`;
+  btn.title = "Quién puede ver o editar esto";
+  btn.setAttribute("aria-haspopup", "dialog");
+  btn.addEventListener("click", () => abrirCompartir(btn, tipo, id, titulo()));
+  return btn;
+}
+
+async function abrirCompartir(anchor, tipo, id, titulo) {
+  let datos;
+  let gente;
+  try {
+    [datos, gente] = await Promise.all([api(`/acl/${tipo}/${id}`), cargarPersonas()]);
+  } catch (e) {
+    reportError("No se pudieron leer los permisos", e);
+    return;
+  }
+  const panel = document.createElement("div");
+  panel.className = "db-col-menu share-panel";
+  panel.setAttribute("role", "dialog");
+  const yo = String(sessionUser.me?.id ?? "");
+  const pintar = () => pintarCompartir(panel, { tipo, id, titulo, datos, gente, yo, guardar });
+  async function guardar(cuerpo) {
+    try {
+      datos = await api(`/acl/${tipo}/${id}`, { method: "PUT", body: JSON.stringify(cuerpo) });
+      pintar();
+      scheduleTreeRefresh(); // el candado de la barra lateral
+    } catch (e) {
+      reportError("No se pudieron guardar los permisos", e);
+    }
+  }
+  pintar();
+  abrirPanelFlotante(anchor, panel, { etiqueta: `Compartir «${titulo}»`, foco: "select, input" });
+}
+
+function pintarCompartir(panel, { titulo, datos, gente, yo, guardar }) {
+  panel.textContent = "";
+  const h = document.createElement("h3");
+  h.textContent = `Compartir «${titulo}»`;
+  panel.append(h);
+  const esPropietario = datos.your_level === "owner";
+  const entradas = datos.entries.map((e) => ({ ...e }));
+  const declarar = (lista) =>
+    guardar({
+      inherit: false,
+      entries: lista.map(({ subject_type, subject_id, level }) => ({ subject_type, subject_id, level })),
+    });
+
+  if (!datos.is_root) {
+    const fila = document.createElement("label");
+    fila.className = "db-switch-row";
+    const textos = document.createElement("span");
+    textos.className = "db-switch-text";
+    const t1 = document.createElement("span");
+    t1.className = "db-switch-title";
+    t1.textContent = datos.source_title ? `Heredar de «${datos.source_title}»` : "Heredar de la página superior";
+    const t2 = document.createElement("span");
+    t2.className = "db-switch-note";
+    t2.textContent = datos.inherit
+      ? "Quien ve la página de arriba ve esta."
+      : "Esta página decide sus propios permisos.";
+    textos.append(t1, t2);
+    const sw = document.createElement("input");
+    sw.type = "checkbox";
+    sw.className = "db-switch";
+    sw.setAttribute("role", "switch");
+    sw.checked = datos.inherit;
+    sw.disabled = !esPropietario;
+    sw.addEventListener("change", () => {
+      if (sw.checked) {
+        guardar({ inherit: true });
+        return;
+      }
+      // Dejar de heredar: lo heredado es el punto de partida, y tú propietario.
+      const lista = entradas.filter((e) => !(e.subject_type === "user" && e.subject_id === yo));
+      lista.unshift({ subject_type: "user", subject_id: yo, level: "owner" });
+      declarar(lista);
+    });
+    fila.append(textos, sw);
+    panel.append(fila);
+  }
+
+  const lista = document.createElement("div");
+  lista.className = "share-list";
+  const editable = esPropietario && !datos.inherit;
+  if (!entradas.length) {
+    const nadie = document.createElement("div");
+    nadie.className = "share-note";
+    nadie.textContent = "Solo la ven los administradores.";
+    lista.append(nadie);
+  }
+  entradas.forEach((e, i) => {
+    const fila = document.createElement("div");
+    fila.className = "share-row";
+    const dot = document.createElement("span");
+    dot.className = "share-dot";
+    if (e.subject_type === "workspace") {
+      dot.innerHTML = svgIcon("i-users");
+    } else {
+      dot.textContent = (e.name || "?").slice(0, 1).toUpperCase();
+      if (e.color) dot.style.background = e.color;
+    }
+    const nombre = document.createElement("span");
+    nombre.className = "share-name";
+    nombre.textContent =
+      (e.name || "Usuario borrado") + (e.subject_type === "user" && e.subject_id === yo ? " (tú)" : "");
+    fila.append(dot, nombre);
+    if (editable) {
+      const nivel = document.createElement("select");
+      nivel.className = "share-level";
+      nivel.setAttribute("aria-label", `Nivel de ${e.name || "esta entrada"}`);
+      NIVELES_ACL.forEach(([valor, texto]) => nivel.add(new Option(texto, valor, false, valor === e.level)));
+      nivel.addEventListener("change", () => {
+        entradas[i].level = nivel.value;
+        declarar(entradas);
+      });
+      const quitar = document.createElement("button");
+      quitar.type = "button";
+      quitar.className = "icon-btn share-remove";
+      quitar.innerHTML = svgIcon("i-x");
+      quitar.title = "Quitar el acceso";
+      quitar.setAttribute("aria-label", `Quitar a ${e.name || "esta entrada"}`);
+      quitar.addEventListener("click", () => declarar(entradas.filter((_, j) => j !== i)));
+      fila.append(nivel, quitar);
+    } else {
+      const nivel = document.createElement("span");
+      nivel.className = "share-note";
+      nivel.textContent = (NIVELES_ACL.find(([v]) => v === e.level) || [, e.level])[1];
+      fila.append(nivel);
+    }
+    lista.append(fila);
+  });
+  panel.append(lista);
+
+  if (editable) {
+    const add = document.createElement("div");
+    add.className = "share-add";
+    const quien = document.createElement("select");
+    quien.setAttribute("aria-label", "Añadir a alguien");
+    quien.add(new Option("Añadir a alguien…", ""));
+    const ya = new Set(entradas.map((e) => `${e.subject_type}:${e.subject_id}`));
+    if (!ya.has(`workspace:${datos.workspace_id}`)) {
+      quien.add(new Option("Todo el espacio", `workspace:${datos.workspace_id}`));
+    }
+    gente
+      .filter((p) => !ya.has(`user:${p.id}`))
+      .forEach((p) => quien.add(new Option(p.display_name || p.username, `user:${p.id}`)));
+    const nivel = document.createElement("select");
+    nivel.setAttribute("aria-label", "Con qué permiso");
+    NIVELES_ACL.forEach(([valor, texto]) => nivel.add(new Option(texto, valor, false, valor === "view")));
+    const invitar = document.createElement("button");
+    invitar.type = "button";
+    invitar.className = "btn";
+    invitar.textContent = "Añadir";
+    invitar.addEventListener("click", () => {
+      if (!quien.value) return;
+      const [subject_type, subject_id] = quien.value.split(":");
+      declarar([...entradas, { subject_type, subject_id, level: nivel.value }]);
+    });
+    add.append(quien, nivel, invitar);
+    panel.append(add);
+  } else {
+    const nota = document.createElement("div");
+    nota.className = "share-note";
+    nota.textContent = !esPropietario
+      ? "Solo quien es propietario cambia quién entra."
+      : "Para cambiarlos aquí, deja de heredar.";
+    panel.append(nota);
+  }
+}
+
 function colocarPanelFlotante(el, anchor) {
   const r = anchor.getBoundingClientRect();
   const caja = el.getBoundingClientRect();

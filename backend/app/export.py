@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
+from app import acl
 from app.config import settings
 from app.properties import order_ranks, person_ids, person_keys, relation_ids, schema_types
 from app.repository import Database, Page, Repository, View
@@ -252,6 +253,10 @@ def _get_database(repo: Repository, raw_id: str) -> Optional[Database]:
     try:
         database_id = uuid.UUID(raw_id)
     except (ValueError, AttributeError, TypeError):
+        return None
+    # 3.0, hito 3: una base que quien exporta no ve sale como «no encontrada»
+    # (lo mismo que ve en la nota), no materializada con sus filas.
+    if acl.level_for(repo.conn, getattr(repo, "user", None), database_id) is None:
         return None
     return repo.get_database(database_id)
 

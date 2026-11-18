@@ -194,7 +194,9 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
     return bases
 
 
-def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+def my_tasks(
+    conn: sqlite3.Connection, user_id: str, visible: Optional[set[str]] = None
+) -> dict[str, Any]:
     """Las filas de todas las bases cuyo responsable es `user_id`.
 
     Devuelve `{"count", "today", "counts", "closed_values", "tasks"}`. Cada
@@ -222,6 +224,10 @@ def my_tasks(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
         return salida
 
     bases = _bases(conn)
+    if visible is not None:
+        # 3.0, hito 3: solo las bases que ve quien pregunta (una fila respeta
+        # el permiso de su base). `visible` sale de `acl.visible_ids`.
+        bases = {k: v for k, v in bases.items() if k in visible}
     if not bases:
         return salida
     # Lo que el usuario tiene que saber: los valores que las bases declaran
