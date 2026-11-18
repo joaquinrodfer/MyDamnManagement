@@ -540,6 +540,15 @@ class TrashEntry:
 # comprueba `scripts/verify_p2.py`). `app.acl` explica el modelo y las llama.
 
 
+def fill_title_keys(conn: sqlite3.Connection) -> None:
+    """`title_key` de las páginas que no lo tienen (migración 12, una pasada)."""
+    filas = conn.execute("SELECT id, title FROM pages WHERE title_key IS NULL").fetchall()
+    conn.executemany(
+        "UPDATE pages SET title_key = ? WHERE id = ?",
+        [(fold_title(r[1] or ""), r[0]) for r in filas],
+    )
+
+
 def inherit_acl_source(conn: sqlite3.Connection, page_id: Any) -> None:
     """`acl_source` de UNA página: ella si declara, su base si es fila, si no su madre."""
     conn.execute(

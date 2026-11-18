@@ -268,14 +268,11 @@ MIGRATIONS: dict[int, list[str]] = {
 
 
 def _fill_title_keys(conn: sqlite3.Connection) -> None:
-    """Migración 12: rellena `title_key` de lo que ya había (una pasada)."""
-    from app.links import fold_title  # import tardío: links no depende del índice
+    """Migración 12: rellena `title_key` de lo que ya había (en el almacén:
+    solo él escribe en `pages`, lo comprueba `scripts/verify_p2.py`)."""
+    from app.vault import store  # import tardío: el almacén importa este módulo
 
-    filas = conn.execute("SELECT id, title FROM pages WHERE title_key IS NULL").fetchall()
-    conn.executemany(
-        "UPDATE pages SET title_key = ? WHERE id = ?",
-        [(fold_title(r[1] or ""), r[0]) for r in filas],
-    )
+    store.fill_title_keys(conn)
 
 
 def _share_existing_roots(conn: sqlite3.Connection) -> None:
