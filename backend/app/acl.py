@@ -2,10 +2,9 @@
 
 Modelo mínimo y ampliable:
 
-- **Quién**: un usuario (`subject_type='user'`, su id) o el espacio entero
-  (`'workspace'`, el id del workspace). Hoy hay un único espacio y todos los
-  usuarios están en él; el día que haya más, basta con saber a qué espacios
-  pertenece cada usuario (`_workspaces_of`).
+- **Quién**: un usuario (`subject_type='user'`, su id), un grupo (`'group'`) o
+  el espacio entero (`'workspace'`, el id del workspace: lo ven y editan sus
+  miembros, con el tope de su rol; ver `app.workspaces`).
 - **Qué**: una página (`'page'`) o una base (`'database'`; su id es el de su
   página). Las filas no tienen permiso propio: respetan el de su base.
 - **Cuánto**: `view` < `edit` < `owner`. `owner` además decide quién entra.
@@ -49,9 +48,10 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
 from app import index as index_mod
+from app import workspaces as ws_mod
 
 LEVELS = {"view": 1, "edit": 2, "owner": 3}
-SUBJECT_TYPES = ("user", "workspace")
+SUBJECT_TYPES = ("user", "workspace", "group")
 RESOURCE_TYPES = ("page", "database")
 
 
@@ -72,20 +72,18 @@ def _is_system(user: Any) -> bool:
     return user is None or bool(getattr(user, "is_admin", False))
 
 
-def _workspaces_of(user: Any) -> list[str]:
-    # Hoy hay un solo espacio y todo usuario está en él. Es el sitio donde
-    # entrará la pertenencia el día que haya varios.
-    return [index_mod.DEFAULT_WORKSPACE_ID]
-
-
 def _subjects(user: Any) -> tuple[str, list[Any]]:
-    """Condición SQL «la entrada `a` es de este usuario o de su espacio»."""
-    workspaces = _workspaces_of(user)
-    marks = ",".join("?" * len(workspaces))
+    """Condición SQL «la entrada `a` es de este usuario, de un grupo suyo o de
+    un espacio en el que está» (plan H1: la pertenencia a espacios es
+    `workspace_members`, directa o por grupo)."""
+    uid = str(user.id)
+    member_sql, member_args = ws_mod.member_workspaces_sql(uid)
     return (
-        f"((a.subject_type = 'user' AND a.subject_id = ?)"
-        f" OR (a.subject_type = 'workspace' AND a.subject_id IN ({marks})))",
-        [str(user.id), *workspaces],
+        "((a.subject_type = 'user' AND a.subject_id = ?)"
+        " OR (a.subject_type = 'group' AND a.subject_id IN"
+        " (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = ?))"
+        f" OR (a.subject_type = 'workspace' AND a.subject_id IN ({member_sql})))",
+        [uid, uid, *member_args],
     )
 
 
@@ -95,16 +93,25 @@ def _subjects(user: Any) -> tuple[str, list[Any]]:
 
 
 def level_for(conn: sqlite3.Connection, user: Any, resource_id: Any) -> Optional[str]:
-    """El nivel efectivo de `user` sobre la página (o None si no la ve)."""
+    """El nivel efectivo de `user` sobre la página (o None si no la ve).
+
+    Lo que llega **por el espacio** lo recorta el rol: un `viewer` del espacio
+    no pasa de `view` aunque la página esté compartida con el espacio en `edit`.
+    """
     if _is_system(user):
         return "owner"
     cond, args = _subjects(user)
     rows = conn.execute(
-        "SELECT a.level FROM pages p JOIN acl a ON a.resource_id = p.acl_source"
-        f" WHERE p.id = ? AND {cond}",
+        "SELECT a.level, a.subject_type, a.subject_id FROM pages p"
+        f" JOIN acl a ON a.resource_id = p.acl_source WHERE p.id = ? AND {cond}",
         (str(resource_id), *args),
     ).fetchall()
-    best = max((r[0] for r in rows), key=_rank, default=None)
+    best: Optional[str] = None
+    for level, subject_type, subject_id in rows:
+        if subject_type == "workspace" and ws_mod.member_role(conn, user.id, subject_id) == "viewer":
+            level = "view"
+        if _rank(level) > _rank(best):
+            best = level
     return best
 
 
@@ -125,26 +132,35 @@ def authorize(conn: sqlite3.Connection, user: Any, resource_id: Any, level: str)
     return actual
 
 
-def visible_clause(user: Any, alias: str = "p") -> tuple[str, list[Any]]:
-    """Condición SQL para filtrar un listado a lo que `user` ve (o «todo»)."""
+def visible_clause(
+    user: Any, alias: str = "p", workspace_id: Optional[str] = None
+) -> tuple[str, list[Any]]:
+    """Condición SQL para filtrar un listado a lo que `user` ve (o «todo»).
+
+    Con `workspace_id` (el espacio activo de la petición) el listado se limita
+    además a las páginas de ese espacio, también para el superadministrador.
+    """
+    only = ("", []) if not workspace_id else (f" AND {alias}.workspace_id = ?", [str(workspace_id)])
     if _is_system(user):
-        return "1", []
+        return ("1" + only[0], only[1])
     cond, args = _subjects(user)
     return (
-        f"{alias}.acl_source IN (SELECT a.resource_id FROM acl a WHERE {cond})",
-        args,
+        f"{alias}.acl_source IN (SELECT a.resource_id FROM acl a WHERE {cond}){only[0]}",
+        [*args, *only[1]],
     )
 
 
-def visible_ids(conn: sqlite3.Connection, user: Any) -> Optional[set[str]]:
+def visible_ids(
+    conn: sqlite3.Connection, user: Any, workspace_id: Optional[str] = None
+) -> Optional[set[str]]:
     """Los ids de página que ve `user`, o None si lo ve todo.
 
     Para los listados que se arman con varias consultas (grafo, panel, «Mis
     tareas»): una consulta y un filtro en memoria, sin una por página.
     """
-    if _is_system(user):
+    if _is_system(user) and not workspace_id:
         return None
-    cond, args = visible_clause(user)
+    cond, args = visible_clause(user, "p", workspace_id)
     return {r[0] for r in conn.execute(f"SELECT p.id FROM pages p WHERE {cond}", args)}
 
 

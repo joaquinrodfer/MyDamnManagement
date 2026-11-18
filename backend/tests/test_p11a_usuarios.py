@@ -402,7 +402,7 @@ def test_el_limite_de_intentos_por_usuario_e_ip(client):
 
 def test_me_devuelve_el_usuario_de_la_sesion(client):
     datos = client.get("/auth/me").json()
-    assert set(datos) == {"id", "username", "display_name", "color", "avatar", "is_admin"}
+    assert set(datos) == {"id", "username", "display_name", "color", "avatar", "is_admin", "can_view_global_workload"}
     assert datos["username"] == USUARIO_PRUEBA
     assert datos["display_name"] == NOMBRE_PRUEBA
     assert datos["color"].startswith("#")
@@ -689,7 +689,7 @@ def test_el_listado_de_usuarios_es_solo_para_admin(client):
     filas = listado.json()
     assert [u["username"] for u in filas] == [USUARIO_PRUEBA]
     # Solo lo que ya devolvía `/auth/me`: ni hash ni salt.
-    assert set(filas[0]) == {"id", "username", "display_name", "color", "avatar", "is_admin"}
+    assert set(filas[0]) == {"id", "username", "display_name", "color", "avatar", "is_admin", "can_view_global_workload"}
 
     assert (
         client.post(
@@ -798,11 +798,11 @@ def test_una_base_v3_migra_a_la_actual_y_conserva_sus_notas(client, index_path):
     # `acl_roots`, `pages.acl_source`; 3.0 hito 3) y `pages.title_key` a la 12
     # (3.0 hito 5): la migración encadena 4 a 12 sobre el mismo fichero, que es
     # lo que se comprueba.
-    assert info.version == SCHEMA_VERSION == 13
+    assert info.version == SCHEMA_VERSION == 14
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 14
         tablas = {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }

@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -268,7 +268,90 @@ MIGRATIONS: dict[int, list[str]] = {
     # de la app (`auth.AVATARS`). `NULL` = no ha elegido: se le da una estable
     # por su username (`auth.default_avatar`), como el color.
     13: [lambda conn: _add_column(conn, "users", "avatar", "TEXT")],
+    # v14 (plan H1): espacios de trabajo con miembros, grupos y roles.
+    # - `workspaces` gana `slug`, `icon` y `settings` (JSON de los ajustes del
+    #   espacio); el único que había (`default`) pasa a llamarse **General**.
+    # - `groups` y `group_members`; `workspace_members` da acceso a un espacio a
+    #   una persona o a un grupo con un rol (`admin`, `editor`, `viewer`).
+    # - `acl.subject_type` admite `group` (hay que rehacer la tabla: SQLite no
+    #   cambia un CHECK).
+    # - `users.can_view_global_workload`: ver la carga del equipo de todos los
+    #   espacios sin ser administrador.
+    # - Todos los usuarios existentes entran en General (los administradores
+    #   como `admin`, el resto como `editor`): nadie pierde lo que veía.
+    14: [
+        lambda conn: _add_column(conn, "workspaces", "slug", "TEXT"),
+        lambda conn: _add_column(conn, "workspaces", "icon", "TEXT"),
+        lambda conn: _add_column(conn, "workspaces", "settings", "TEXT NOT NULL DEFAULT '{}'"),
+        lambda conn: _add_column(
+            conn, "users", "can_view_global_workload", "INTEGER NOT NULL DEFAULT 0"
+        ),
+        """CREATE TABLE IF NOT EXISTS groups (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    created_at TEXT NOT NULL
+)""",
+        """CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id)
+)""",
+        "CREATE INDEX IF NOT EXISTS group_members_user ON group_members(user_id)",
+        """CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'group')),
+    subject_id   TEXT NOT NULL,
+    role         TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
+    PRIMARY KEY (workspace_id, subject_type, subject_id)
+)""",
+        "CREATE INDEX IF NOT EXISTS workspace_members_subject ON workspace_members(subject_type, subject_id)",
+        lambda conn: _rebuild_acl_with_groups(conn),
+        lambda conn: _name_general_and_enroll(conn),
+    ],
 }
+
+
+def _rebuild_acl_with_groups(conn: sqlite3.Connection) -> None:
+    """Migración 14: `acl.subject_type` admite `group`."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'acl'").fetchone()
+    if sql is None or "'group'" in sql[0]:
+        return
+    conn.execute("ALTER TABLE acl RENAME TO acl_old")
+    conn.execute("DROP INDEX IF EXISTS acl_subject")
+    conn.execute(
+        """CREATE TABLE acl (
+    id            TEXT PRIMARY KEY,
+    subject_type  TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace', 'group')),
+    subject_id    TEXT NOT NULL,
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('page', 'database')),
+    resource_id   TEXT NOT NULL,
+    level         TEXT NOT NULL CHECK (level IN ('view', 'edit', 'owner')),
+    UNIQUE (resource_id, subject_type, subject_id)
+)"""
+    )
+    conn.execute(
+        "INSERT INTO acl (id, subject_type, subject_id, resource_type, resource_id, level)"
+        " SELECT id, subject_type, subject_id, resource_type, resource_id, level FROM acl_old"
+    )
+    conn.execute("DROP TABLE acl_old")
+    conn.execute("CREATE INDEX acl_subject ON acl(subject_type, subject_id)")
+
+
+def _name_general_and_enroll(conn: sqlite3.Connection) -> None:
+    """Migración 14: el espacio único se llama General y todos están en él."""
+    conn.execute("UPDATE workspaces SET name = 'General' WHERE name = 'default'")
+    conn.execute(
+        "UPDATE workspaces SET slug = 'general' WHERE slug IS NULL AND id = ?",
+        (DEFAULT_WORKSPACE_ID,),
+    )
+    row = conn.execute("SELECT id FROM workspaces ORDER BY created_at LIMIT 1").fetchone()
+    if row is None:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO workspace_members (workspace_id, subject_type, subject_id, role)"
+        " SELECT ?, 'user', id, CASE WHEN is_admin = 1 THEN 'admin' ELSE 'editor' END FROM users",
+        (row[0],),
+    )
 
 
 def _fill_title_keys(conn: sqlite3.Connection) -> None:
@@ -296,10 +379,14 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) ->
         conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {decl}')
 
 SCHEMA_SQL = """
+-- `slug`, `icon` y `settings` son de la v14 (plan H1): ver la migración 14.
 CREATE TABLE workspaces (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    slug       TEXT,
+    icon       TEXT,
+    settings   TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE pages (
@@ -337,7 +424,7 @@ CREATE INDEX pages_title_key ON pages(workspace_id, title_key);
 -- Permisos por nota (v11, 3.0 hito 3). Ver la migración 11.
 CREATE TABLE acl (
     id            TEXT PRIMARY KEY,
-    subject_type  TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace')),
+    subject_type  TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace', 'group')),
     subject_id    TEXT NOT NULL,
     resource_type TEXT NOT NULL CHECK (resource_type IN ('page', 'database')),
     resource_id   TEXT NOT NULL,
@@ -469,7 +556,8 @@ CREATE TABLE users (
     color         TEXT,
     created_at    TEXT NOT NULL,
     is_admin      INTEGER NOT NULL DEFAULT 0,
-    avatar        TEXT
+    avatar        TEXT,
+    can_view_global_workload INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE sessions (
@@ -495,7 +583,28 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 13;
+-- Grupos y pertenencia a espacios (v14, plan H1). Ver la migración 14.
+CREATE TABLE groups (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE group_members (
+    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX group_members_user ON group_members(user_id);
+CREATE TABLE workspace_members (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'group')),
+    subject_id   TEXT NOT NULL,
+    role         TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
+    PRIMARY KEY (workspace_id, subject_type, subject_id)
+);
+CREATE INDEX workspace_members_subject ON workspace_members(subject_type, subject_id);
+
+PRAGMA user_version = 14;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -979,6 +1088,11 @@ DUMP_EXCLUDED = {
     # la misma huella aunque los permisos no viajen en él.
     "acl",
     "acl_roots",
+    # Grupos y miembros de los espacios (v14): como los usuarios, no son
+    # contenido del vault y no viajan en el export.
+    "groups",
+    "group_members",
+    "workspace_members",
 }
 
 

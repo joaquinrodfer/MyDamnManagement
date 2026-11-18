@@ -651,7 +651,30 @@ class VaultStore:
         for rel in (NOTES_DIR, DATABASES_DIR, "_attachments", ".trash"):
             self.fs.makedirs(os.path.join(self.root, rel))
 
+    # El espacio donde caen las páginas nuevas sin padre (plan H1): lo fija el
+    # repositorio con el espacio activo de la petición. Sin él, el primero.
+    active_workspace: Optional[str] = None
+
+    def _workspace_for(self, rel: str, parent_id: Any, database_id: Any) -> str:
+        """El espacio de una página que se (re)indexa: el de su madre o su base,
+        o el que ya tenía en esa ruta; solo una página nueva va al activo."""
+        for ref in (parent_id, database_id):
+            if ref:
+                row = self.conn.execute(
+                    "SELECT workspace_id FROM pages WHERE id = ?", (str(ref),)
+                ).fetchone()
+                if row is not None:
+                    return row[0]
+        row = self.conn.execute(
+            "SELECT workspace_id FROM pages WHERE path = ?", (rel,)
+        ).fetchone()
+        if row is not None:
+            return row[0]
+        return self._workspace()
+
     def _workspace(self) -> str:
+        if self.active_workspace:
+            return self.active_workspace
         row = self.conn.execute(
             "SELECT id FROM workspaces ORDER BY created_at LIMIT 1"
         ).fetchone()
@@ -660,8 +683,8 @@ class VaultStore:
         # Id fijo: un índice reconstruido tiene que dar las mismas filas.
         workspace_id = index_mod.DEFAULT_WORKSPACE_ID
         self.conn.execute(
-            "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)",
-            (workspace_id, "default", now_iso()),
+            "INSERT INTO workspaces (id, name, created_at, slug) VALUES (?, ?, ?, ?)",
+            (workspace_id, "General", now_iso(), "general"),
         )
         return workspace_id
 
@@ -957,7 +980,7 @@ class VaultStore:
             # nombre del fichero (que es su id). `reader.load` hace lo mismo al
             # reindexar; los dos caminos tienen que decir lo mismo.
             reader.apply_row_title(page)
-        workspace_id = self._workspace()
+        workspace_id = self._workspace_for(rel, parent_id, database_id)
         record = self._record_from_page(
             page, workspace_id, parent_id,
             page_id=self._page_id_for(page) if dedupe else None,
@@ -2523,13 +2546,18 @@ class VaultStore:
                     "(se indexa igual: el fichero manda)"
                 )
         workspace_id = self._workspace()
+        # El espacio de cada página no está en el `.md`: un reindexado lo
+        # conserva por id (plan H1); lo que no estaba va al espacio por defecto.
+        ws_by_id = {
+            r[0]: r[1] for r in self.conn.execute("SELECT id, workspace_id FROM pages")
+        }
         total = len(pages)
         avance("preparando páginas", 0, total, 1)
         records = []
         for hechas, page in enumerate(pages, 1):
             records.append(
                 self._record_from_page(
-                    page, workspace_id,
+                    page, ws_by_id.get(ids_by_path[page.path], workspace_id),
                     None if page.type == "database_row" else parent_of(page),
                     ids_by_path[page.path],
                 )

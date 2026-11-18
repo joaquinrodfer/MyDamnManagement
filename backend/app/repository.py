@@ -237,10 +237,18 @@ class Repository:
     """
 
     def __init__(
-        self, conn: sqlite3.Connection, vault: VaultStore | None = None, user: Any = None
+        self,
+        conn: sqlite3.Connection,
+        vault: VaultStore | None = None,
+        user: Any = None,
+        workspace_id: str | None = None,
     ):
         self.conn = conn
         self.vault = vault or VaultStore(settings.vault_path, conn)
+        # El espacio activo de la petición (plan H1): los listados se limitan a
+        # él y lo que se crea sin padre va a él. `None`: todo lo que ve `user`.
+        self.workspace_id = workspace_id
+        self.vault.active_workspace = workspace_id
         # Quién pregunta (3.0, hito 3). `None` = el sistema (arranque, scripts):
         # lo ve todo. Los listados se filtran con `acl.visible_clause`.
         self.user = user
@@ -271,7 +279,7 @@ class Repository:
 
     def _visible(self, alias: str = "p") -> tuple[str, list[Any]]:
         """Condición SQL «lo ve quien pregunta» (3.0, hito 3)."""
-        return acl.visible_clause(self.user, alias)
+        return acl.visible_clause(self.user, alias, self.workspace_id)
 
     def _own_if_root(self, resource_type: str, page_id: Any, parent_id: Any) -> None:
         """Una página nueva en la raíz es de quien la crea (y solo suya)."""
@@ -382,7 +390,7 @@ class Repository:
 
     # ----------------------------------------------------------- workspace
 
-    def ensure_workspace(self, name: str = "default") -> uuid.UUID:
+    def ensure_workspace(self, name: str = "General") -> uuid.UUID:
         row = self.conn.execute(
             "SELECT id FROM workspaces ORDER BY created_at LIMIT 1"
         ).fetchone()
@@ -393,8 +401,8 @@ class Repository:
         workspace_id = index_mod.DEFAULT_WORKSPACE_ID
         with self._tx():
             self.conn.execute(
-                "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)",
-                (workspace_id, name, _iso(_now())),
+                "INSERT INTO workspaces (id, name, created_at, slug) VALUES (?, ?, ?, ?)",
+                (workspace_id, name, _iso(_now()), "general"),
             )
         return uuid.UUID(workspace_id)
 

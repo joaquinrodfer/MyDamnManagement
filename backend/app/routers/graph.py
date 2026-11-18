@@ -487,7 +487,7 @@ def get_graph(
     conn = repo.conn
     conn.execute(f"PRAGMA mmap_size = {_MMAP_BYTES}")
     # 3.0, hito 3: el grafo enseña solo lo que ve quien pregunta (None = todo).
-    visible = acl.visible_ids(conn, repo.user)
+    visible = acl.visible_ids(conn, repo.user, repo.workspace_id)
 
     def solo_visibles(ids: list[str]) -> list[str]:
         return ids if visible is None else [i for i in ids if i in visible]
