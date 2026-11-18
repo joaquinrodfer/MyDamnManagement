@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
 from app import acl, auth, closed, index as index_mod, templates as template_defs
+from app import kinds as kind_rules
 from app import workspaces as ws_mod
 from app.vault import store as store_mod
 from app.config import settings
@@ -126,6 +127,8 @@ class Database:
     # que la interfaz pueda explicar que se está leyendo el formato anterior.
     closed: Optional[dict[str, Any]] = None
     closed_from_done: bool = False
+    # El tipo de la base (plan H4): `{type, roles, options}` o `None` si es normal.
+    kind: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +206,9 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         "SELECT templates_json FROM database_row_templates WHERE database_id = ?",
         (row["id"],),
     ).fetchone()
+    tipo = conn.execute(
+        "SELECT kind_json FROM database_kinds WHERE database_id = ?", (row["id"],)
+    ).fetchone()
     return Database(
         id=uuid.UUID(row["id"]),
         page_id=uuid.UUID(row["page_id"]),
@@ -216,6 +222,7 @@ def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
         closed=rule,
         closed_from_done=source == closed.SOURCE_DONE,
         row_templates=_load(plantillas["templates_json"], []) if plantillas else [],
+        kind=_load(tipo["kind_json"], None) if tipo is not None else None,
     )
 
 
@@ -1080,6 +1087,7 @@ class Repository:
         views: Optional[list[dict[str, Any]]] = None,
         closed_rule: Optional[dict[str, Any]] = None,
         row_templates: Optional[list[dict[str, Any]]] = None,
+        kind: Optional[dict[str, Any]] = None,
     ) -> Database:
         """Crea `Bases/<slug>.md` (y sus vistas en el frontmatter) y la indexa.
 
@@ -1099,9 +1107,31 @@ class Repository:
                 created_by=created_by,
                 closed=closed_rule,
                 row_templates=row_templates,
+                kind=kind,
             )
             self._own_if_root("database", database_id, parent_id)
         return self.get_database(uuid.UUID(database_id))
+
+    def set_kind(
+        self,
+        database_id: uuid.UUID,
+        kind: Optional[dict[str, Any]],
+        *,
+        schema: Optional[list[dict[str, Any]]] = None,
+        closed_rule: Any = UNSET,
+    ) -> Optional[Database]:
+        """Escribe (o retira) el tipo de la base, en una sola escritura con el
+        schema (si hacen falta columnas nuevas) y la regla de «cerrado»."""
+        current = self.get_database(database_id)
+        if current is None:
+            return None
+        extra: dict[str, Any] = {}
+        if schema is not None:
+            extra["schema"] = closed.without_legacy(schema)
+        if closed_rule is not UNSET:
+            extra["closed"] = closed_rule
+        self.vault.save_database(current.page_id, kind=kind, **extra)
+        return self.get_database(database_id)
 
     def set_closed(
         self, database_id: uuid.UUID, rule: Optional[dict[str, Any]]
@@ -1281,15 +1311,46 @@ class Repository:
                         if str(o).strip()
                     }
                     valores: list[str] = []
-                    for v in current.closed.get(closed.VALUES_KEY) or []:
-                        real = canonica.get(str(v).strip().casefold())
-                        if real and real not in valores:
-                            valores.append(real)
+                    grupos: list[dict[str, Any]] = []
+                    vistas: set[str] = set()
+                    # Plan H3: los grupos de estado siguen a sus opciones; los
+                    # valores cerrados salen de los grupos cerrados.
+                    for g in current.closed.get(closed.GROUPS_KEY) or []:
+                        opciones_g = []
+                        for o in g.get("options") or []:
+                            real = canonica.get(str(o).strip().casefold())
+                            if real and real not in vistas:
+                                vistas.add(real)
+                                opciones_g.append(real)
+                        grupos.append({"name": g["name"], "closed": bool(g.get("closed")), "options": opciones_g})
+                    if grupos:
+                        valores = [o for g in grupos if g["closed"] for o in g["options"]]
+                    else:
+                        for v in current.closed.get(closed.VALUES_KEY) or []:
+                            real = canonica.get(str(v).strip().casefold())
+                            if real and real not in valores:
+                                valores.append(real)
                     closed_update = (
-                        {closed.PROPERTY_KEY: clave, closed.VALUES_KEY: valores}
+                        {
+                            closed.PROPERTY_KEY: clave,
+                            closed.VALUES_KEY: valores,
+                            **({closed.GROUPS_KEY: grupos} if grupos else {}),
+                        }
                         if valores
                         else None
                     )
+
+        # El tipo de la base (plan H4) sigue a sus columnas: si una columna de un
+        # rol se renombra (cambia su clave), el rol pasa a la clave nueva.
+        kind_update: Any = UNSET
+        if current.kind and schema_def is not None:
+            roles = {
+                r: renames.get(k, k)
+                for r, k in (current.kind.get("roles") or {}).items()
+                if k not in deleted
+            }
+            if roles != (current.kind.get("roles") or {}):
+                kind_update = {**current.kind, "roles": roles}
 
         # Las plantillas de fila siguen al schema igual que las vistas: un
         # rename traduce sus claves, una propiedad borrada deja de aparecer y un
@@ -1317,6 +1378,7 @@ class Repository:
             title_hidden=UNSET if title_hidden is None else title_hidden,
             closed=closed_update,
             row_templates=row_templates_update,
+            kind=kind_update,
         )
         if schema_def is not None:
             # El índice de una fila se filtra contra el schema de su base: si

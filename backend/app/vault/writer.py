@@ -280,7 +280,8 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
                       title_name: str | None = None,
                       title_hidden: bool = False,
                       closed: dict | None = None,
-                      row_templates: list[dict] | None = None) -> str:
+                      row_templates: list[dict] | None = None,
+                      kind: dict | None = None) -> str:
     """`Bases/<slug>.md`: `type: database`, `schema` y `views` en el frontmatter.
 
     Cada vista se escribe con `id`, `name`, `type` y su `config` **al mismo
@@ -318,6 +319,8 @@ def database_markdown(*, id_: str, icon: str | None, schema: list[dict],
         updates["title_hidden"] = True
     if closed:
         updates["closed"] = closed
+    if kind:
+        updates["kind"] = kind  # tipo de la base (plan H4): ver `app.kinds`
     # Las plantillas de fila son parte de la base: se copian aquí al crear y se
     # reescriben al configurarlas. Sin plantillas no se escribe la clave (un
     # `row_templates: []` no dice nada).
@@ -334,6 +337,7 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
                     title_name: str | None = None, title_hidden: bool = False,
                     closed: dict | None = None,
                     row_templates: list[dict] | None = None,
+                    kind: dict | None = None,
                     fs=None,
                     ) -> tuple[reader.Page, list[str]]:
     """Crea `folder/title.md` y su carpeta de filas (mismo nombre sin .md)."""
@@ -350,7 +354,7 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
                              views=views or [], description=description,
                              created_by=created_by, title_name=title_name,
                              title_hidden=title_hidden, closed=closed,
-                             row_templates=row_templates)
+                             row_templates=row_templates, kind=kind)
     fs.write(os.path.join(vault_root, rel), text)
     fs.makedirs(os.path.join(vault_root, rel[:-3]))
     return fs.read_page(os.path.join(vault_root, rel), rel), notes

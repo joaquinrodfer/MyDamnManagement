@@ -5,6 +5,7 @@ from typing import Iterator, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app import closed, due, hierarchy, schemas
+from app import kinds as kind_rules
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -79,6 +80,7 @@ def _serialize_database(
         title_hidden=db_def.title_hidden,
         # La regla de «cerrada» viaja resuelta y con su origen: la interfaz
         # enseña la columna marcada y puede decir que viene del `done` viejo.
+        kind=schemas.KindRead(**db_def.kind) if db_def.kind else None,
         closed=(
             schemas.ClosedRule(
                 property=str(db_def.closed[closed.PROPERTY_KEY]),
@@ -343,6 +345,26 @@ def create_from_template(
             template["closed"].get(closed.VALUES_KEY),
             template["closed"].get(closed.GROUPS_KEY),
         )
+    kind_record = None
+    if template.get("kind"):
+        # Plan H4: las bases de Proyectos y de Tareas nacen tipadas.
+        roles = dict(template["kind"]["roles"])
+        if template["kind"]["type"] == "tasks" and payload.project_database:
+            destino = _get_database_or_404(repo, payload.project_database)
+            if (destino.kind or {}).get("type") != "projects":
+                raise HTTPException(400, "esa base no es de tipo Proyectos")
+            col = kind_rules.new_column(
+                "project", {str(p.get("name") or "").casefold() for p in schema_def},
+                target_database=str(destino.id), multiple=False,
+            )
+            schema_def, _r, _b = plan_schema(schema_def, [*schema_def, col])
+            roles["project"] = schema_def[-1]["key"]
+        kind_record = {
+            "type": template["kind"]["type"],
+            "roles": roles,
+            "options": kind_rules.validate_options(template["kind"]["type"], template["kind"].get("options")),
+        }
+        kind_rules.check_roles(kind_record["type"], roles, schema_def)
 
     with _vault_errors():
         db_def = repo.create_database(
@@ -354,8 +376,91 @@ def create_from_template(
             views=template.get("views") or [],
             closed_rule=closed_rule,
             row_templates=cuerpo["row_templates"],
+            kind=kind_record,
         )
+        if payload.section == "shared" and not payload.parent_id:
+            repo.set_section(db_def.page_id, "shared")  # plan H2
     return _serialize_database(db_def, repo.database_ids())
+
+
+@router.put("/{database_id}/kind", response_model=schemas.DatabaseRead)
+def set_kind(
+    database_id: uuid.UUID,
+    payload: schemas.KindSet,
+    repo: Repository = Depends(get_repo),
+):
+    """Convierte una base en Proyectos o en Tareas, o cambia sus opciones.
+
+    Reutiliza las columnas que ya encajan (un `person` para el responsable, el
+    estado, las fechas…) y crea las que falten; `roles` permite elegir cuál
+    hace de qué. Si el estado no declara qué cuenta como hecho, se le dan
+    grupos de partida. No se toca ninguna fila.
+    """
+    db_def = _get_database_or_404(repo, database_id)
+    kind_type = payload.type
+    s = kind_rules.spec(kind_type)
+    options = kind_rules.validate_options(
+        kind_type, payload.options if payload.options is not None else (db_def.kind or {}).get("options")
+    )
+    schema = [dict(p) for p in db_def.schema_def]
+    roles = dict(kind_rules.auto_map(kind_type, schema))
+    if db_def.kind and db_def.kind.get("type") == kind_type:
+        roles.update(db_def.kind.get("roles") or {})
+    roles.update(payload.roles or {})
+    names = {str(p.get("name") or "").casefold() for p in schema}
+
+    nuevas: list[dict] = []
+    for role in s["required"]:
+        if role not in roles:
+            col = kind_rules.new_column(role, names)
+            nuevas.append((role, col))
+    if "estimate" in s["optional"] and payload.estimate and "estimate" not in roles:
+        nuevas.append(("estimate", kind_rules.new_column("estimate", names)))
+    if "project" in s["optional"] and payload.project_database and "project" not in roles:
+        destino = _get_database_or_404(repo, payload.project_database)
+        if (destino.kind or {}).get("type") != "projects":
+            raise HTTPException(400, "esa base no es de tipo Proyectos")
+        nuevas.append(("project", kind_rules.new_column(
+            "project", names, target_database=str(destino.id), multiple=False
+        )))
+    nuevo_schema = schema + [c for _, c in nuevas]
+    if nuevas:
+        nuevo_schema, _renames, _borradas = plan_schema(schema, nuevo_schema)
+        # El rol de cada columna nueva es la última de ese tipo recién añadida.
+        for (role, _col), prop in zip(nuevas, nuevo_schema[len(schema):]):
+            roles[role] = prop["key"]
+    kind_rules.check_roles(kind_type, roles, nuevo_schema)
+
+    # El estado tiene que decir qué es «hecho»: si la base no lo declara, grupos de partida.
+    status = next(p for p in nuevo_schema if p["key"] == roles["status"])
+    regla = db_def.closed if db_def.closed and db_def.closed.get(closed.PROPERTY_KEY) == roles["status"] else None
+    nueva_regla = Ellipsis
+    if regla is None:
+        grupos = kind_rules.default_groups_for(status.get("options") or [])
+        if grupos is None:
+            status["options"] = [*(status.get("options") or []), "Hecha"]
+            grupos = kind_rules.default_groups_for(status["options"])
+        nueva_regla = closed.validate(nuevo_schema, roles["status"], None, grupos)
+
+    record = {"type": kind_type, "roles": roles, "options": options}
+    with _vault_errors():
+        actualizada = repo.set_kind(
+            database_id, record,
+            schema=nuevo_schema if (nuevas or nueva_regla is not Ellipsis) else None,
+            closed_rule=UNSET if nueva_regla is Ellipsis else nueva_regla,
+        )
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
+
+
+@router.delete("/{database_id}/kind", response_model=schemas.DatabaseRead)
+def clear_kind(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    """La base vuelve a ser normal: las columnas se quedan, ya sin estar protegidas."""
+    _get_database_or_404(repo, database_id)
+    with _vault_errors():
+        actualizada = repo.set_kind(database_id, None)
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
 
 
 @router.get("/{database_id}", response_model=schemas.DatabaseRead)
@@ -469,6 +574,10 @@ def update_database(
             "la regla de estado cerrado no se cambia con PATCH /databases/{id}: "
             f"usa PUT /databases/{database_id}/closed (o DELETE para quitarla)",
         )
+    if payload.schema_def is not None:
+        # Plan H4: una base tipada no pierde ni cambia de tipo las columnas de sus roles.
+        actual = _get_database_or_404(repo, database_id)
+        kind_rules.check_schema(actual.kind, [p.model_dump() for p in payload.schema_def])
     with _vault_errors():
         db_def = repo.update_database(
             database_id,

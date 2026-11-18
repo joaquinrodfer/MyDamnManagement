@@ -256,6 +256,29 @@ class ClosedValues(BaseModel):
     groups: Optional[list[ClosedGroup]] = None
 
 
+class KindRead(BaseModel):
+    """El tipo de una base (plan H4): Proyectos o Tareas, y qué columna hace de qué."""
+
+    type: str
+    roles: dict[str, str] = {}
+    options: dict[str, Any] = {}
+
+
+class KindSet(BaseModel):
+    """Convertir una base en Proyectos o en Tareas (o cambiar sus opciones).
+
+    `roles` sobrescribe la correspondencia que el servidor propone (columna →
+    rol); lo que falte se crea. `estimate` añade la columna de estimación de un
+    proyecto; `project_database` enlaza las tareas con una base de Proyectos.
+    """
+
+    type: Literal["projects", "tasks"]
+    roles: Optional[dict[str, str]] = None
+    options: Optional[dict[str, Any]] = None
+    estimate: bool = False
+    project_database: Optional[uuid.UUID] = None
+
+
 class ClosedRule(BaseModel):
     """La regla efectiva de una base, tal y como la lee la interfaz.
 
@@ -292,6 +315,10 @@ class DatabaseFromTemplate(BaseModel):
     template: str
     title: Optional[str] = None
     parent_id: Optional[uuid.UUID] = None
+    # Plan H4: en la plantilla de Tareas, la base de Proyectos a la que pertenecen
+    # (opcional: una tarea puede no tener proyecto).
+    project_database: Optional[uuid.UUID] = None
+    section: Optional[Literal["shared", "private"]] = None
 
 
 class RowTemplate(BaseModel):
@@ -384,6 +411,7 @@ class DatabaseRead(BaseModel):
     # los filtros). Viene resuelta: la interfaz no tiene que mirar los `done`
     # viejos del schema.
     closed: Optional[ClosedRule] = None
+    kind: Optional[KindRead] = None
     # Plantillas de fila de ESTA base, en el orden del `.md`: el «+ Nueva fila»
     # las ofrece y el servidor las aplica por nombre. `[]` = la base no tiene.
     # Viajan con sus valores ya coaccionados (`values`) y, si no encajan, con el

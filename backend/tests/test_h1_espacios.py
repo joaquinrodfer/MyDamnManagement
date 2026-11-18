@@ -262,7 +262,7 @@ def test_migracion_14_conserva_permisos_y_mete_a_todos_en_general(tmp_path, monk
     c.close()
     index._ready.clear()
 
-    assert index.ensure_index(str(ruta)).version == index.SCHEMA_VERSION == 14
+    assert index.ensure_index(str(ruta)).version == index.SCHEMA_VERSION
     c = sqlite3.connect(ruta)
     assert c.execute("SELECT name, slug FROM workspaces").fetchall() == [("General", "general")]
     assert dict(c.execute("SELECT subject_id, role FROM workspace_members")) == {"u1": "admin", "u2": "editor"}

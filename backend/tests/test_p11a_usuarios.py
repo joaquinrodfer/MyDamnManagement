@@ -798,11 +798,11 @@ def test_una_base_v3_migra_a_la_actual_y_conserva_sus_notas(client, index_path):
     # `acl_roots`, `pages.acl_source`; 3.0 hito 3) y `pages.title_key` a la 12
     # (3.0 hito 5): la migración encadena 4 a 12 sobre el mismo fichero, que es
     # lo que se comprueba.
-    assert info.version == SCHEMA_VERSION == 14
+    assert info.version == SCHEMA_VERSION == 15
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 15
         tablas = {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
