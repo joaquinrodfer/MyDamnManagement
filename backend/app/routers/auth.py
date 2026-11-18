@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from app import auth, capture_tokens, config
+from app import audit, auth, capture_tokens, config
 from app import workspaces as ws_mod
 from app.dependencies import get_current_user
 
@@ -228,6 +228,8 @@ def setup(
         )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc
+    audit.record(conn, user, "user.created", target_type="user", target_id=user.id,
+                 target_name=user.display_name, metadata={"admin": True, "first_user": True})
     return signed_in(conn, request, user, status_code=201)
 
 
@@ -412,6 +414,9 @@ def update_user(
         raise HTTPException(400, str(exc)) from exc
     if actualizado is None:
         raise HTTPException(404, "no hay ningún usuario con ese id")
+    audit.record(conn, user, "user.updated", target_type="user", target_id=user_id,
+                 target_name=actualizado.display_name,
+                 metadata=payload.model_dump(exclude_none=True))
     return actualizado.as_dict()
 
 
@@ -438,4 +443,6 @@ def create_user(
         )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc
+    audit.record(conn, user, "user.created", target_type="user", target_id=created.id,
+                 target_name=created.display_name, metadata={"admin": payload.is_admin})
     return created.as_dict()

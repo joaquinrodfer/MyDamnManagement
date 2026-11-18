@@ -365,6 +365,13 @@
   /* ---------- espacios de trabajo (plan H1) ---------- */
   .template-sep { margin: 8px 0 2px; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-muted); }
   .kind-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; font-weight: 500; white-space: nowrap; }
+  .audit-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .audit-filters select, .audit-filters input { font: inherit; font-size: 12.5px; padding: 4px 6px; max-width: 180px; }
+  .audit-wrap { overflow-x: auto; }
+  .audit-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .audit-table th, .audit-table td { padding: 4px 8px; border-bottom: 1px solid var(--panel-border); text-align: left; vertical-align: top; }
+  .audit-table th { color: var(--ink-muted); font-weight: 500; white-space: nowrap; }
+  .audit-table .audit-meta { color: var(--ink-muted); font-size: 11.5px; word-break: break-word; }
   .estado-grupos { display: grid; gap: 6px; padding: 4px 8px 8px; min-width: 260px; }
   .estado-grupo, .estado-opcion { display: flex; align-items: center; gap: 8px; }
   .estado-grupo-nombre { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; padding: 4px 6px; }
@@ -5819,6 +5826,23 @@
             <p class="form-note">Un grupo reúne personas para darles acceso de una vez a un espacio o a una página.</p>
             <div id="groups-admin"></div>
             <p class="form-note" id="groups-note"></p>
+          </div>
+          <div class="settings-group" id="audit-group">
+            <h5>Auditoría</h5>
+            <p class="form-note">Quién hizo qué y cuándo: espacios, permisos, usuarios, borrados, exportaciones y copias. No guarda contenido.</p>
+            <div class="audit-filters">
+              <select id="audit-action" aria-label="Acción"><option value="">Todas las acciones</option></select>
+              <select id="audit-actor" aria-label="Persona"><option value="">Todas las personas</option></select>
+              <input type="date" id="audit-since" aria-label="Desde" />
+              <input type="date" id="audit-until" aria-label="Hasta" />
+              <button type="button" class="btn" id="btn-audit-filter">Filtrar</button>
+            </div>
+            <div class="audit-wrap"><table class="audit-table" id="audit-table"></table></div>
+            <div class="dialog-actions dialog-actions-start">
+              <button type="button" class="btn" id="btn-audit-prev">‹ Anteriores</button>
+              <button type="button" class="btn" id="btn-audit-next">Siguientes ›</button>
+              <span class="form-note" id="audit-note"></span>
+            </div>
           </div>
           <div class="settings-group" id="backups-group">
             <h5>Copias de seguridad</h5>

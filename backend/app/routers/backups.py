@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from app import auth, backup
+from app import audit, auth, backup
 from app import index as index_mod
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
@@ -56,7 +56,7 @@ def get_backups(repo: Repository = Depends(get_repo), _: auth.User = Depends(_ad
 def put_settings(
     payload: BackupSettings,
     repo: Repository = Depends(get_repo),
-    _: auth.User = Depends(_admin),
+    user: auth.User = Depends(_admin),
 ):
     if payload.frequency != "off" and not settings.backup_dir:
         raise HTTPException(409, "BACKUP_DIR no está configurado en el servidor: no hay dónde guardar")
@@ -65,22 +65,26 @@ def put_settings(
     repo.conn.commit()
     if settings.backup_dir:
         backup.prune(payload.keep)
+    audit.record(repo.conn, user, "backup.settings_changed", target_type="backup",
+                 metadata={"frequency": payload.frequency, "keep": payload.keep})
     return _state(repo.conn)
 
 
 @router.post("/backups/run")
-def run_now(repo: Repository = Depends(get_repo), _: auth.User = Depends(_admin)):
+def run_now(repo: Repository = Depends(get_repo), user: auth.User = Depends(_admin)):
     try:
         made = backup.run_scheduled(repo.conn)
     except backup.BackupError as exc:
         raise HTTPException(409, str(exc)) from exc
+    audit.record(repo.conn, user, "backup.created", target_type="backup", target_name=made["name"])
     return {"made": made, **_state(repo.conn)}
 
 
 @router.post("/backups/download")
-def download(_: auth.User = Depends(_admin)):
+def download(repo: Repository = Depends(get_repo), user: auth.User = Depends(_admin)):
     dest = os.path.join(settings.export_dir, backup.file_name())
     manifest = backup.make_backup(dest, kind="descarga")
+    audit.record(repo.conn, user, "backup.downloaded", target_type="backup", target_name=os.path.basename(dest))
     return FileResponse(
         dest,
         media_type="application/gzip",

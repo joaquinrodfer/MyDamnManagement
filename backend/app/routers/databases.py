@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app import closed, due, hierarchy, schemas
 from app import kinds as kind_rules
-from app import notifications
+from app import audit, notifications
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -389,6 +389,7 @@ def set_kind(
     database_id: uuid.UUID,
     payload: schemas.KindSet,
     repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
 ):
     """Convierte una base en Proyectos o en Tareas, o cambia sus opciones.
 
@@ -451,15 +452,23 @@ def set_kind(
             closed_rule=UNSET if nueva_regla is Ellipsis else nueva_regla,
         )
     publish_database(database_id, "updated")
+    audit.record(repo.conn, user, "database.kind_changed", target_type="database", target_id=database_id,
+                 target_name=actualizada.title, metadata={"type": kind_type, "options": options})
     return _serialize_database(actualizada, repo.database_ids())
 
 
 @router.delete("/{database_id}/kind", response_model=schemas.DatabaseRead)
-def clear_kind(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+def clear_kind(
+    database_id: uuid.UUID,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
     """La base vuelve a ser normal: las columnas se quedan, ya sin estar protegidas."""
     _get_database_or_404(repo, database_id)
     with _vault_errors():
         actualizada = repo.set_kind(database_id, None)
+    audit.record(repo.conn, user, "database.kind_changed", target_type="database", target_id=database_id,
+                 target_name=actualizada.title, metadata={"type": None})
     publish_database(database_id, "updated")
     return _serialize_database(actualizada, repo.database_ids())
 
@@ -596,9 +605,17 @@ def update_database(
 
 
 @router.delete("/{database_id}", status_code=204)
-def delete_database(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+def delete_database(
+    database_id: uuid.UUID,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    previa = repo.get_database(database_id)
     with _vault_errors():
         borrada = repo.delete_database(database_id)
+    if borrada and previa is not None:
+        audit.record(repo.conn, user, "database.deleted", target_type="database",
+                     target_id=database_id, target_name=previa.title)
     if not borrada:
         raise HTTPException(404, "Base de datos no encontrada")
     # M2: la base ya no está; el bloque incrustado tiene que enseñar «Base no

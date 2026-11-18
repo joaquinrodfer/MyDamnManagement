@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -340,6 +340,24 @@ MIGRATIONS: dict[int, list[str]] = {
 )""",
         "CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, is_read, created_at)",
         "CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+    ],
+    # v17 (plan H8): registro de auditoría (`app.audit`). Sin claves foráneas:
+    # un registro sobrevive a lo que registra (un espacio o una página borrados).
+    17: [
+        """CREATE TABLE IF NOT EXISTS audit_logs (
+    id          TEXT PRIMARY KEY,
+    ts          TEXT NOT NULL,
+    actor_id    TEXT,
+    actor_name  TEXT,
+    workspace_id TEXT,
+    action      TEXT NOT NULL,
+    target_type TEXT,
+    target_id   TEXT,
+    target_name TEXT,
+    metadata    TEXT
+)""",
+        "CREATE INDEX IF NOT EXISTS audit_logs_ts ON audit_logs(ts)",
+        "CREATE INDEX IF NOT EXISTS audit_logs_action ON audit_logs(action, ts)",
     ],
 }
 
@@ -664,7 +682,23 @@ CREATE TABLE page_subscriptions (
 CREATE INDEX notifications_user ON notifications(user_id, is_read, created_at);
 CREATE UNIQUE INDEX notifications_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 
-PRAGMA user_version = 16;
+-- Registro de auditoría (v17, plan H8). Ver la migración 17.
+CREATE TABLE audit_logs (
+    id          TEXT PRIMARY KEY,
+    ts          TEXT NOT NULL,
+    actor_id    TEXT,
+    actor_name  TEXT,
+    workspace_id TEXT,
+    action      TEXT NOT NULL,
+    target_type TEXT,
+    target_id   TEXT,
+    target_name TEXT,
+    metadata    TEXT
+);
+CREATE INDEX audit_logs_ts ON audit_logs(ts);
+CREATE INDEX audit_logs_action ON audit_logs(action, ts);
+
+PRAGMA user_version = 17;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1153,6 +1187,11 @@ DUMP_EXCLUDED = {
     "groups",
     "group_members",
     "workspace_members",
+    # Avisos, suscripciones y auditoría (v16 y v17): estado de la app, no
+    # contenido del vault.
+    "notifications",
+    "page_subscriptions",
+    "audit_logs",
 }
 
 
