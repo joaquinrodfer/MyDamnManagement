@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -197,6 +197,27 @@ MIGRATIONS: dict[int, list[str]] = {
     # que mira antes si la columna ya está, para que siga siendo inocua en un
     # fichero creado ya con `SCHEMA_SQL` (como las de arriba).
     9: [lambda conn: _add_column(conn, "pages", "frontmatter", "TEXT")],
+    # v10 (3.0, hito 2): la verdad pasa a la base (ADR-0005).
+    #
+    # - `documents`: cada `.md` del vault (papelera incluida) es una fila con su
+    #   texto entero. Es lo que antes era el disco: el almacén lee y escribe
+    #   aquí (`app.vault.docfs.DocsFS`) y `pages` se deriva de esto en la misma
+    #   transacción. El `.md` en disco pasa a ser una proyección opcional.
+    # - `pages.version`: cuántas veces se ha escrito la página (ADR-0009 D3).
+    #   Sube en cada escritura; `If-Match` y la colaboración se apoyan en ella.
+    #
+    # La tabla nace vacía: la llena la migración de datos del primer arranque
+    # (`VaultStore.rebuild`, que importa el vault de disco una sola vez y lo
+    # apunta en `meta.storage`).
+    10: [
+        """CREATE TABLE IF NOT EXISTS documents (
+    path  TEXT PRIMARY KEY,
+    text  TEXT NOT NULL,
+    mtime REAL NOT NULL,
+    size  INTEGER NOT NULL
+)""",
+        lambda conn: _add_column(conn, "pages", "version", "INTEGER NOT NULL DEFAULT 1"),
+    ],
 }
 
 
@@ -233,7 +254,19 @@ CREATE TABLE pages (
     -- El frontmatter tal cual (v9): ver la migración 9. Al final, para que un
     -- índice migrado (ALTER TABLE añade al final) y uno nuevo tengan las
     -- columnas en el mismo orden.
-    frontmatter       TEXT
+    frontmatter       TEXT,
+    -- Cuántas veces se ha escrito (v10, ADR-0009 D3): `If-Match` y la
+    -- colaboración. No es contenido: no está en el `.md` ni en la huella.
+    version           INTEGER NOT NULL DEFAULT 1
+);
+
+-- El vault, dentro de la base (v10, ADR-0005): cada `.md` con su texto entero.
+-- Ver la migración 10.
+CREATE TABLE documents (
+    path  TEXT PRIMARY KEY,
+    text  TEXT NOT NULL,
+    mtime REAL NOT NULL,
+    size  INTEGER NOT NULL
 );
 CREATE INDEX pages_parent ON pages(parent_id);
 CREATE INDEX pages_title ON pages(title COLLATE NOCASE);
@@ -371,7 +404,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -517,8 +550,15 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def _forget_checked(path: str) -> None:
+    ident = _identity(path)
+    if ident is not None:
+        _quick_checked.discard(ident)
+
+
 def _quarantine(path: str) -> str:
     """Aparta un fichero ilegible en vez de borrarlo. Devuelve la ruta nueva."""
+    _forget_checked(path)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = f"{path}.corrupto-{stamp}"
     n = 1
@@ -543,7 +583,7 @@ def _create(path: str) -> None:
         conn.close()
 
 
-def _inspect_readonly(path: str) -> int | None:
+def _inspect_readonly(path: str, quick_check: bool = True) -> int | None:
     """Mira el fichero sin escribirlo: su `user_version`, o None si no hay
     ninguna tabla (fichero SQLite válido pero vacío).
 
@@ -572,7 +612,7 @@ def _inspect_readonly(path: str) -> int | None:
                 "No se ha tocado nada; apunta INDEX_PATH al índice o aparta ese "
                 "fichero tú mismo."
             )
-        check = conn.execute("PRAGMA quick_check").fetchone()[0]
+        check = conn.execute("PRAGMA quick_check").fetchone()[0] if quick_check else "ok"
         if check != "ok":
             raise IndexSchemaError(
                 f"el índice {path} no pasa quick_check ({check}). No se toca: "
@@ -583,6 +623,30 @@ def _inspect_readonly(path: str) -> int | None:
         return conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()
+
+
+# Ficheros (dispositivo, inodo) que ya pasaron `quick_check` en este proceso.
+#
+# `ensure_index` vuelve a inspeccionar el índice cada vez que cambia su `mtime`
+# o su tamaño, y en WAL eso es casi cada escritura (cada checkpoint toca el
+# fichero principal). `quick_check` recorre la base ENTERA: medido con 12.000
+# notas, ~40-46 ms por petición tras cada guardado, más de la cuarta parte de
+# un PATCH. Desde la 3.0 la base es la verdad y crece (`documents`), así que
+# ese coste solo iba a más. Se comprueba una vez por fichero: al arrancar y
+# cuando el fichero se sustituye (otro inodo: un restore, un `mv`). El resto de
+# la inspección (tablas, columnas, versión) sigue en cada cambio: es barata y
+# es la que detecta un esquema que hay que migrar.
+_quick_checked: set[tuple[str, int, int]] = set()
+
+
+def _identity(path: str) -> tuple[str, int, int] | None:
+    """(ruta, dispositivo, inodo): con la ruta, un inodo reciclado en otro sitio
+    (un temporal borrado) no hereda la comprobación de otro fichero."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (os.path.abspath(path), st.st_dev, st.st_ino)
 
 
 def _inspect(path: str) -> IndexInfo:
@@ -609,7 +673,10 @@ def _inspect(path: str) -> IndexInfo:
                          reason=f"fichero ilegible: no es una base de datos (apartado en {dest})")
 
     try:
-        version = _inspect_readonly(path)
+        ident = _identity(path)
+        version = _inspect_readonly(path, quick_check=ident not in _quick_checked)
+        if ident is not None:
+            _quick_checked.add(ident)
     except IndexSchemaError:
         # Esquema ajeno, versión futura o daño que SQLite todavía puede leer:
         # se para en claro y no se toca nada.
@@ -763,6 +830,9 @@ def count_rows(conn: sqlite3.Connection) -> dict[str, int]:
 # el índice y no en el vault: dice cuándo se leyó el vault, no qué contiene, y
 # viaja con el índice al que describe.
 META_LAST_REINDEX = "last_reindex_at"
+# 3.0, hito 2: `db` cuando el vault de disco ya se volcó a `documents` y la
+# verdad es la base. Sin la marca, el primer arranque hace esa migración.
+META_STORAGE = "storage"
 
 
 def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
@@ -812,6 +882,15 @@ DUMP_EXCLUDED = {
 }
 
 
+# Columnas que no entran en la huella, con su motivo.
+DUMP_EXCLUDED_COLUMNS = {
+    # Cuántas veces se ha escrito la página (v10): es historia de la base, no
+    # contenido. No está en el `.md`, así que un índice reconstruido desde un
+    # export empieza en 1 y la huella tiene que seguir siendo la misma.
+    "pages": {"version"},
+}
+
+
 def dump_hash(path: str) -> tuple[str, dict[str, int]]:
     """Huella del contenido del índice, tabla a tabla. Devuelve (hash, conteos).
 
@@ -843,7 +922,12 @@ def dump_hash(path: str) -> tuple[str, dict[str, int]]:
             if not r[0].startswith("pages_fts_") and r[0] not in DUMP_EXCLUDED
         ]
         for table in tables:
-            rows = conn.execute(f'SELECT * FROM "{table}"').fetchall()
+            skip = DUMP_EXCLUDED_COLUMNS.get(table, set())
+            cols = [
+                r[1] for r in conn.execute(f'PRAGMA table_info("{table}")') if r[1] not in skip
+            ]
+            col_sql = ", ".join(f'"{c}"' for c in cols)
+            rows = conn.execute(f'SELECT {col_sql} FROM "{table}"').fetchall()
             counts[table] = len(rows)
             for line in sorted(_canon_row(r) for r in rows):
                 digest.update(line.encode())

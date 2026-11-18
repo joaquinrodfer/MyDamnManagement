@@ -107,7 +107,7 @@ def _nfc_key(text: str) -> str:
 
 
 def _busy(directory: str, candidate: str, taken: set[str],
-          ignore: set[str] | None = None) -> bool:
+          ignore: set[str] | None = None, listdir=os.listdir) -> bool:
     """¿Está ocupado `candidate` en `directory`?
 
     Cuentan el fichero `<candidate>.md` y una carpeta con ese nombre (la
@@ -121,19 +121,28 @@ def _busy(directory: str, candidate: str, taken: set[str],
     if keys & taken:
         return True
     try:
-        entries = os.listdir(directory)
+        # `listdir` (3.0): el del disco o el de la base (`docfs.DocsFS`).
+        entries = listdir(directory)
     except FileNotFoundError:
         return False
     return any(_nfc_key(e) in keys for e in entries)
 
 
-def unique_stem(directory: str, stem: str, taken: set[str] | None = None) -> tuple[str, bool]:
+def unique_stem(directory: str, stem: str, taken: set[str] | None = None,
+                listdir=os.listdir) -> tuple[str, bool]:
     """`stem` si está libre en `directory`, si no `stem (2)`, ` (3)`..."""
     taken = taken or set()
-    if not _busy(directory, stem, taken):
+    try:
+        entries = listdir(directory)
+    except FileNotFoundError:
+        entries = []
+    # Una sola lectura de la carpeta para todos los intentos (en la base, una
+    # consulta; antes era un `listdir` por candidato).
+    listdir = lambda _d: entries  # noqa: E731
+    if not _busy(directory, stem, taken, listdir=listdir):
         return stem, False
     n = 2
-    while _busy(directory, f"{stem} ({n})", taken):
+    while _busy(directory, f"{stem} ({n})", taken, listdir=listdir):
         n += 1
     return f"{stem} ({n})", True
 
@@ -179,7 +188,7 @@ def is_row_stem(stem: str, row_id) -> bool:
 
 
 def row_stem(directory: str, row_id, *,
-             ignore: set[str] | None = None) -> tuple[str, bool]:
+             ignore: set[str] | None = None, listdir=os.listdir) -> tuple[str, bool]:
     """Stem de una fila: `<id8>`, alargando a 10, 12… si choca en la carpeta.
 
     Devuelve `(stem, alargado)`, como `unique_stem`: `alargado` dice que los 8
@@ -188,9 +197,14 @@ def row_stem(directory: str, row_id, *,
     """
     hexed = hexed_id(row_id)
     ignore_keys = {_nfc_key(stem) for stem in (ignore or set())}
+    try:
+        entries = listdir(directory)
+    except FileNotFoundError:
+        entries = []
+    once = lambda _d: entries  # noqa: E731
     length = ROW_STEM_MIN
     while length < len(hexed):
-        if not _busy(directory, hexed[:length], set(), ignore_keys):
+        if not _busy(directory, hexed[:length], set(), ignore_keys, listdir=once):
             return hexed[:length], length != ROW_STEM_MIN
         length += ROW_STEM_STEP
     return hexed, True

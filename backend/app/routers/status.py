@@ -57,6 +57,9 @@ def _check_index() -> dict:
 
 def _check_drift() -> dict:
     """Índice contra disco. Nunca lanza: el estado no debe tumbar el panel."""
+    if not settings.vault_projection:
+        # 3.0: sin proyección no hay `.md` en disco que puedan ir por detrás.
+        return {"ok": True, **drift.Drift().as_dict(), "projection": False}
     conn = None
     try:
         conn = index.open_index(settings.index_path)
@@ -84,7 +87,11 @@ def post_reindex(force: bool = False):
     """
     conn = index.open_index(settings.index_path)
     try:
-        stats = Repository(conn).reindex(force=force)
+        # 3.0: con la proyección encendida el disco es un espejo y reindexar
+        # es importar lo que se haya tocado en él; sin ella, el índice se
+        # rehace desde la base (los `.md` del disco no mandan).
+        source = "disk" if settings.vault_projection else "docs"
+        stats = Repository(conn).reindex(force=force, source=source)
     except VaultError as exc:
         raise HTTPException(409, str(exc)) from exc
     except OSError as exc:

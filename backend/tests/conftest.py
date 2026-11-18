@@ -34,6 +34,13 @@ os.environ["VAULT_PATH"] = str(_SESSION_TMP / "vault")
 # encienden ellos mismos, con `WATCH_INTERVAL` bajo (ver
 # `test_p8_watcher_sse.py`).
 os.environ["WATCH_ENABLED"] = "0"
+# 3.0, hito 2: la verdad de las notas está en la base (`documents`). La suite de
+# antes de la 3.0 comprueba el contrato del `.md` (lo que se escribe, lo que se
+# lee a mano, la papelera en disco), así que corre con la proyección encendida:
+# cada cambio se escribe además al disco, y lo que un test escribe a mano entra
+# con `POST /reindex`, igual que antes. Los tests del hito 2
+# (`test_h2_verdad_en_base.py`) la apagan para probar el modo de producción.
+os.environ["VAULT_PROJECTION"] = "1"
 # P11a: el primer usuario se crea desde la pantalla de alta (o `ADMIN_USER`).
 # En los tests se crea por el camino normal —`POST /auth/setup`— así que las
 # dos variables se vacían para que un `.env` del desarrollador no cambie el

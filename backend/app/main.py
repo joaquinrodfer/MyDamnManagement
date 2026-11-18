@@ -482,6 +482,23 @@ def on_startup() -> None:
     try:
         repo = Repository(conn)
         repo.ensure_workspace()
+        if repo.migrated():
+            # 3.0, hito 2: la verdad ya está en la base. No hay vault de disco
+            # que releer: el arranque no reindexa nada.
+            if settings.vault_projection and not Path(settings.vault_path).is_dir():
+                # Con proyección sí hay disco, y escribir en la raíz de un
+                # volumen sin montar sería escribir donde nadie lo espera.
+                raise RuntimeError(
+                    f"no se puede arrancar: la raíz del vault {settings.vault_path!r} "
+                    "no existe y VAULT_PROJECTION=1 proyecta ahí cada cambio: monta "
+                    "el directorio (o apaga la proyección) y vuelve a arrancar."
+                )
+            repo.vault.ensure_structure()
+            conn.close()
+            conn = None
+            _admin_from_env()
+            startup_index.start(_index_ready_without_rebuild)
+            return
         if _index_has_no_notes(conn):
             # Instalación nueva (el índice no tiene notas): se crea la
             # estructura del vault, que es lo que espera el primer POST /pages.
@@ -515,13 +532,27 @@ def on_startup() -> None:
                 "(el índice no se puede reconstruir desde el vault)"
             ) from exc
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     _admin_from_env()
 
     # Fase lenta: hilo propio (daemon). `on_shutdown` no lo espera: el índice
     # es derivado y el arranque siguiente lo reconstruye.
     startup_index.start(_rebuild_index_in_background)
+
+
+def _index_ready_without_rebuild(job) -> None:
+    """Arranque de un índice ya migrado (3.0): nada que releer.
+
+    Antes el arranque reconstruía el índice desde el vault en cada arranque
+    (ADR-0001 D1, los ficheros eran la verdad). Con la verdad en la base, el
+    índice ES el dato: se da por listo y, si hay proyección, arranca el
+    vigilante. Va por el mismo `startup_index` que el reindexado para que
+    `/health` y el middleware no tengan dos caminos.
+    """
+    job.succeed("la verdad está en la base: no se relee el vault")
+    _start_watcher()
 
 
 def _rebuild_index_in_background(job) -> None:
@@ -636,6 +667,12 @@ def _start_watcher() -> None:
         log.warning(
             "el índice terminó de construirse durante el apagado: no se arranca "
             "el vigilante"
+        )
+        return
+    if not settings.vault_projection:
+        log.info(
+            "VAULT_PROJECTION=0: el vault vive en la base y no hay .md que "
+            "vigilar; el vigilante no arranca"
         )
         return
     if not settings.watch_enabled:

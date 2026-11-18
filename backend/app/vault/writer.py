@@ -44,24 +44,34 @@ def page_markdown(*, id_: str, icon: str | None, description: str | None,
     return fm.compose(raw, body_block(body))
 
 
+def _fs(vault_root: str, fs):
+    """El disco salvo que el llamador pase otro sitio (`docfs.DocsFS`, 3.0)."""
+    if fs is not None:
+        return fs
+    from app.vault import docfs  # import tardío: docfs importa este módulo
+
+    return docfs.DiskFS(vault_root)
+
+
 def create_page(vault_root: str, folder: str, title: str, *, icon: str | None = None,
                 description: str | None = None, body: str = "",
-                page_id: str | None = None, extra: dict | None = None
+                page_id: str | None = None, extra: dict | None = None, fs=None
                 ) -> tuple[reader.Page, list[str]]:
+    fs = _fs(vault_root, fs)
     stem, notes = names.sanitize(title)
     # `folder` lo escribe el usuario (o un cliente HTTP): se valida ANTES de
     # `makedirs`. Sin esto, folder="../../FUERA" creaba el fichero fuera del vault.
     rel_dir = vaultfs.safe_rel(vault_root, folder) if folder else ""
     directory = os.path.join(vault_root, rel_dir) if rel_dir else vault_root
-    os.makedirs(directory, exist_ok=True)
-    stem, collided = names.unique_stem(directory, stem)
+    fs.makedirs(directory)
+    stem, collided = names.unique_stem(directory, stem, listdir=fs.listdir)
     if collided:
         notes.append(f"colisión en {rel_dir or '.'}: nombre final '{stem}'")
     rel = f"{rel_dir}/{stem}.md" if rel_dir else f"{stem}.md"
     text = page_markdown(id_=page_id or new_id(), icon=icon, description=description,
                          body=body, extra=extra)
-    vaultfs.atomic_write(os.path.join(vault_root, rel), text)
-    return reader.read_file(os.path.join(vault_root, rel), rel), notes
+    fs.write(os.path.join(vault_root, rel), text)
+    return fs.read_page(os.path.join(vault_root, rel), rel), notes
 
 
 def sin_reservadas(properties: dict, notes: list[str], donde: str) -> dict:
@@ -323,14 +333,16 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
                     created_by: str | None = None,
                     title_name: str | None = None, title_hidden: bool = False,
                     closed: dict | None = None,
-                    row_templates: list[dict] | None = None
+                    row_templates: list[dict] | None = None,
+                    fs=None,
                     ) -> tuple[reader.Page, list[str]]:
     """Crea `folder/title.md` y su carpeta de filas (mismo nombre sin .md)."""
+    fs = _fs(vault_root, fs)
     stem, notes = names.sanitize(title)
     rel_dir = vaultfs.safe_rel(vault_root, folder) if folder else ""
     directory = os.path.join(vault_root, rel_dir) if rel_dir else vault_root
-    os.makedirs(directory, exist_ok=True)
-    stem, collided = names.unique_stem(directory, stem)
+    fs.makedirs(directory)
+    stem, collided = names.unique_stem(directory, stem, listdir=fs.listdir)
     if collided:
         notes.append(f"colisión de base en {rel_dir or '.'}: nombre final '{stem}'")
     rel = f"{rel_dir}/{stem}.md" if rel_dir else f"{stem}.md"
@@ -339,9 +351,9 @@ def create_database(vault_root: str, folder: str, title: str, schema: list[dict]
                              created_by=created_by, title_name=title_name,
                              title_hidden=title_hidden, closed=closed,
                              row_templates=row_templates)
-    vaultfs.atomic_write(os.path.join(vault_root, rel), text)
-    os.makedirs(os.path.join(vault_root, rel[:-3]), exist_ok=True)
-    return reader.read_file(os.path.join(vault_root, rel), rel), notes
+    fs.write(os.path.join(vault_root, rel), text)
+    fs.makedirs(os.path.join(vault_root, rel[:-3]))
+    return fs.read_page(os.path.join(vault_root, rel), rel), notes
 
 
 def row_markdown(*, id_: str, title: str | None = None, properties: dict,
@@ -372,7 +384,7 @@ def row_markdown(*, id_: str, title: str | None = None, properties: dict,
 
 def create_row(vault_root: str, folder: str, title: str,
                properties: dict, *, body: str = "", row_id: str | None = None,
-               created: str | None = None, icon: str | None = None
+               created: str | None = None, icon: str | None = None, fs=None
                ) -> tuple[reader.Page, list[str]]:
     """Escribe una fila en `folder`: `<id8>.md` con su `title` en el frontmatter.
 
@@ -385,10 +397,11 @@ def create_row(vault_root: str, folder: str, title: str,
     # (`store.save_row`): si no, la fila se quedaría sin `title` y la API
     # enseñaría el `<id8>` del nombre del fichero como si fuera su título.
     title = names.nfc(str(title)).strip() or "Sin título"
+    fs = _fs(vault_root, fs)
     rel_dir = vaultfs.safe_rel(vault_root, folder)
     directory = os.path.join(vault_root, rel_dir)
-    os.makedirs(directory, exist_ok=True)
-    stem, extended = names.row_stem(directory, row_id)
+    fs.makedirs(directory)
+    stem, extended = names.row_stem(directory, row_id, listdir=fs.listdir)
     if extended:
         notes.append(f"colisión de fila en {rel_dir}: el id se acorta a '{stem}'")
     rel = f"{rel_dir}/{stem}.md"
@@ -399,8 +412,8 @@ def create_row(vault_root: str, folder: str, title: str,
         text = text.rstrip("\n") + ("\n" if not body.startswith("\n") else "") + body
         if not text.endswith("\n"):
             text += "\n"
-    vaultfs.atomic_write(os.path.join(vault_root, rel), text)
-    page = reader.read_file(os.path.join(vault_root, rel), rel)
+    fs.write(os.path.join(vault_root, rel), text)
+    page = fs.read_page(os.path.join(vault_root, rel), rel)
     # `read_file` titula por el nombre del fichero; en una fila el título es el
     # del frontmatter. Sin esto, el `Page` que sale de aquí se llama `<id8>`.
     reader.apply_row_title(page)

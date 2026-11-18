@@ -179,15 +179,19 @@ def test_un_indexado_atascado_es_un_fallo_no_un_arranque_eterno(
 
 
 def test_un_vault_que_no_se_puede_recorrer_deja_la_app_en_error(
-    abrir_app, client, vault_path
+    abrir_app, vault_path
 ):
     """El caso de P7, ahora sin que el proceso se muera.
 
     Antes el PermissionError tumbaba el arranque y el contenedor reiniciaba en
     bucle; ahora la app queda en pie diciendo qué pasa, y el `healthcheck` del
     compose falla (que es lo que tiene que hacer).
+
+    3.0 (hito 2): el disco solo se lee en el arranque que MIGRA (índice sin
+    migrar); después la verdad es la base. Por eso el test arranca sobre un
+    índice nuevo, en vez de reiniciar uno ya migrado. Y la carpeta ilegible no
+    se salta: migrar un vault a medias sería peor que no arrancar.
     """
-    esperar_indice_listo(client)
     roto = vault_path / "Notas" / "Cerrada"
     roto.mkdir(parents=True, exist_ok=True)
     (roto / "dentro.md").write_text("---\nid: roto-1\n---\nhola", encoding="utf-8")
@@ -201,10 +205,15 @@ def test_un_vault_que_no_se_puede_recorrer_deja_la_app_en_error(
         os.chmod(roto, 0o700)
 
 
-def test_el_arranque_sigue_reindexando_lo_que_cambio_por_fuera(
+def test_el_arranque_ya_no_relee_el_disco_y_reindex_si(
     abrir_app, client, vault_path, acceso
 ):
-    """No se cambia QUÉ se indexa, solo CUÁNDO: el vault se relee en cada arranque."""
+    """3.0 (hito 2): antes «el arranque sigue reindexando lo que cambió por fuera».
+
+    Con la verdad en la base, reiniciar no relee el vault (ADR-0005; el objetivo
+    del hito es que arrancar no cueste lo que cuesta reindexar). Un `.md` puesto
+    a mano en la proyección entra con `POST /reindex` (o con el vigilante).
+    """
     esperar_indice_listo(client)
     (vault_path / "Notas").mkdir(parents=True, exist_ok=True)
     (vault_path / "Notas" / "Escrita por fuera.md").write_text(
@@ -215,6 +224,8 @@ def test_el_arranque_sigue_reindexando_lo_que_cambio_por_fuera(
     with abrir_app() as otro:
         esperar_indice_listo(otro)
         acceso(otro)
+        assert "Escrita por fuera" not in [p["title"] for p in otro.get("/pages").json()]
+        assert otro.post("/reindex").status_code == 200
         titulos = [p["title"] for p in otro.get("/pages").json()]
         assert "Escrita por fuera" in titulos
 

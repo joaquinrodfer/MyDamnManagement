@@ -55,7 +55,9 @@ def restore_from_trash(
         raise HTTPException(400, str(exc)) from exc
 
     try:
-        stats = repo.reindex()
+        # Restaurar ya dejó el documento en su sitio (en la base): el índice
+        # se rehace desde ella, no desde el disco.
+        stats = repo.reindex(source="docs")
     except VaultError as exc:
         raise HTTPException(
             409, f"restaurado {rel}, pero el índice no se pudo reconstruir: {exc}"

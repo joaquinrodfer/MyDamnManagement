@@ -31,7 +31,13 @@ from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica 
 from app.properties import DEFAULT_TITLE_NAME, plan_schema
 from app.vault.reader import PERSON
 from app.vault import suggestions
-from app.vault.store import EMPTY_VAULT_HINT_HTTP, UNSET, VaultError, VaultStore
+from app.vault.store import (
+    EMPTY_VAULT_HINT_HTTP,
+    UNSET,
+    VaultError,
+    VaultStore,
+    VersionConflict,
+)
 from app.vault.suggestions import (
     Suggestion,
     SuggestionError,
@@ -90,6 +96,8 @@ class Page:
     header_image_path: Optional[str] = None
     properties: dict[str, Any] = field(default_factory=dict)
     body_markdown: str = ""
+    # Cuántas veces se ha escrito (3.0, hito 2): lo que `If-Match` compara.
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -129,7 +137,7 @@ class View:
 
 PAGE_FIELDS = (
     "id, workspace_id, parent_id, type, title, icon, description, created_by,"
-    " header_image_path, body, created_at, updated_at"
+    " header_image_path, body, created_at, updated_at, version"
 )
 PAGE_FIELDS_P = ", ".join("p." + name.strip() for name in PAGE_FIELDS.split(","))
 
@@ -159,6 +167,7 @@ def _page(row: sqlite3.Row) -> Page:
         header_image_path=row["header_image_path"],
         properties=_load(row["properties_json"], {}) if "properties_json" in keys else {},
         body_markdown=row["body"],
+        version=row["version"] if "version" in keys else 1,
     )
 
 
@@ -300,7 +309,8 @@ class Repository:
         return [dict(row) for row in rows]
 
     def reindex(
-        self, force: bool = False, empty_hint: str | None = None, progress=None
+        self, force: bool = False, empty_hint: str | None = None, progress=None,
+        source: str = "auto",
     ):
         """Reconstruye las notas del índice desde el vault (ADR D1).
 
@@ -315,7 +325,12 @@ class Repository:
             allow_empty=force,
             empty_hint=empty_hint or EMPTY_VAULT_HINT_HTTP,
             progress=progress,
+            source=source,
         )
+
+    def migrated(self) -> bool:
+        """¿La verdad ya está en la base? (3.0, hito 2; ver `VaultStore.migrated`)."""
+        return self.vault.migrated()
 
     def check_can_rebuild(
         self, *, force: bool = False, empty_hint: str | None = None
@@ -462,9 +477,15 @@ class Repository:
         description: Optional[str] = None,
         body_markdown: Optional[str] = None,
         parent_id: Any = UNSET,
+        expected_version: Optional[int] = None,
     ) -> Optional[Page]:
         """Actualiza solo los campos que llegan (None = no tocar), como el PATCH
         de siempre.
+
+        `expected_version` (3.0, hito 2) es el `If-Match` de la petición: si la
+        página ya va por otra versión, `VersionConflict` y no se escribe nada.
+        Se comprueba aquí (aunque el cambio no cambie nada) y otra vez dentro de
+        la transacción del almacén, que es la que cuenta.
 
         Un escalar que llega con el valor que ya tenía **no** cuenta como
         cambio: `updated_at` no se mueve y, desde P1.2a, tampoco se reescribe el
@@ -477,6 +498,8 @@ class Repository:
         current = self.get_page(page_id)
         if current is None:
             return None
+        if expected_version is not None and current.version != expected_version:
+            raise VersionConflict(page_id, current.version, expected_version)
 
         changes: dict[str, Any] = {}
         if title is not None and title != current.title:
@@ -496,6 +519,7 @@ class Repository:
         if not changes:
             return current
 
+        changes["expected_version"] = expected_version
         if current.type == PageType.note:
             self.vault.save(page_id, **changes)
         elif current.type == PageType.database:
@@ -1412,6 +1436,7 @@ class Repository:
         icon: Optional[str] = None,
         properties: Optional[dict[str, Any]] = None,
         body_markdown: Any = UNSET,
+        expected_version: Optional[int] = None,
     ) -> Optional[Page]:
         """Escribe la fila (frontmatter y/o cuerpo) y reindexa el MISMO `.md`.
 
@@ -1423,6 +1448,8 @@ class Repository:
         current = self.get_row(database_id, row_id)
         if current is None:
             return None
+        if expected_version is not None and current.version != expected_version:
+            raise VersionConflict(row_id, current.version, expected_version)
         merged: Optional[dict[str, Any]] = None
         if properties is not None:
             # Solo lo que cambia llega al escritor: el PATCH de una celda escribe
@@ -1443,6 +1470,7 @@ class Repository:
             icon=UNSET if icon is None else icon,
             properties=UNSET if merged is None else merged,
             body=body_markdown,
+            expected_version=expected_version,
         )
         return self.get_row(database_id, row_id)
 
