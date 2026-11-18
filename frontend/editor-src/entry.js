@@ -1585,14 +1585,20 @@ function startDragGhost(view, block, nodes = null) {
   // Con `nodes` se clona lo que estaba pintado ANTES de marcar el bloque: al
   // marcar una base incrustada su widget se repinta y, mientras llega la tabla,
   // la copia se quedaría en una caja vacía.
-  if (!nodes) nodes = renderedBlockNodes(view, block);
+  const live = renderedBlockNodes(view, block);
+  if (!nodes) nodes = live;
   if (!nodes.length) return null;
+  // La altura se mide en lo que está pintado AHORA: esos `nodes` de antes de
+  // marcar pueden estar ya fuera del documento (la base incrustada se repinta
+  // al marcarse) y un nodo suelto mide 0, con lo que la copia salía pegada
+  // arriba de la ventana en vez de encima del bloque.
+  const anchor = [live[0], nodes[0]].find((n) => n && n.isConnected);
   const content = view.contentDOM.getBoundingClientRect();
   const ghost = document.createElement("div");
   ghost.className = "cm-mdm-drag-ghost";
   ghost.setAttribute("aria-hidden", "true");
   ghost.style.left = `${Math.round(content.left)}px`;
-  ghost.style.top = `${Math.round(nodes[0].getBoundingClientRect().top)}px`;
+  ghost.style.top = `${Math.round(anchor ? anchor.getBoundingClientRect().top : view.coordsAtPos(block.from)?.top ?? 0)}px`;
   ghost.style.width = `${Math.round(content.width)}px`;
   // La copia va dentro de un `.cm-content` colgado del propio editor: así le
   // llegan los mismos estilos que al original (el margen de la izquierda, el
@@ -3237,6 +3243,53 @@ const blockDeleteKeymap = keymap.of([
   { key: "Backspace", run: (view) => deleteSelectedBlocks(view) },
 ]);
 
+/** ⌫ al principio de la línea de debajo de una base incrustada, o Supr al final
+ * de la de encima: como en Notion, la base se MARCA (y otra pulsación la
+ * borra) en vez de pegar el texto a la valla. Antes el ⌫ dejaba «```asdf»,
+ * la valla dejaba de cerrarse y la tabla desaparecía de golpe; con un hueco
+ * en medio, el cursor se colaba dentro del bloque de la base.
+ *
+ * Si la línea del cursor está vacía, esa línea se va con la misma pulsación
+ * (es un bloque vacío: borrarlo es lo que se espera) y la base queda marcada. */
+function runDatabaseEdgeKey(view, backward) {
+  const { state } = view;
+  if (state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
+  const head = state.selection.main.head;
+  const line = state.doc.lineAt(head);
+  if (backward ? head !== line.from : head !== line.to) return false;
+  const text = state.doc.toString();
+  const fence = scanDatabaseBlocks(text).find((b) => {
+    if (!b.parse || !b.parse.ok) return false;
+    // Entre la base y el cursor, como mucho una línea en blanco (el
+    // separador): con más, hay un bloque vacío en medio y eso lo decide la
+    // lógica de los huecos.
+    const between = backward ? text.slice(b.to, line.from) : text.slice(line.to, b.from);
+    return /^\s*$/.test(between) && (between.match(/\n/g) || []).length <= 2 && between.includes("\n");
+  });
+  if (!fence) return false;
+  const changes = [];
+  if (line.text.trim() === "") {
+    changes.push(
+      backward
+        ? { from: line.from - 1, to: line.to }
+        : { from: line.from, to: Math.min(line.to + 1, state.doc.length) },
+    );
+  }
+  if (changes.length) {
+    view.dispatch({ changes, userEvent: backward ? "delete.backward" : "delete.forward" });
+  }
+  // Con Supr la línea borrada está ANTES de la base: la valla se corre.
+  const from = changes.length && !backward ? fence.from - (changes[0].to - changes[0].from) : fence.from;
+  const idx = view.state.field(blockField).blocks.findIndex((b) => from >= b.from && from <= b.to);
+  if (idx >= 0) selectBlocks(view, new Set([idx]));
+  return true;
+}
+
+const databaseEdgeKeymap = keymap.of([
+  { key: "Backspace", run: (view) => runDatabaseEdgeKey(view, true) },
+  { key: "Delete", run: (view) => runDatabaseEdgeKey(view, false) },
+]);
+
 // ⌫ que fusiona dos ítems de lista: por delante del Backspace de Markdown, que
 // es el que pegaba las dos frases («- uno- dos», D9).
 const backspaceJoinKeymap = keymap.of([{ key: "Backspace", run: (view) => runBackspaceJoin(view) }]);
@@ -4195,6 +4248,7 @@ export function createNoteEditor({
         linkKeymap,
         blockKeymap,
         blockDeleteKeymap,
+        databaseEdgeKeymap,
         backspaceJoinKeymap,
         gapDeleteKeymap,
         listIndentKeymap,
