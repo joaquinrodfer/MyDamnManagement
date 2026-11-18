@@ -380,6 +380,9 @@ def _clave_de_orden(
         # `False < True`: en asc, primero las sin marcar; en desc, las marcadas.
         return (0, 1 if _marcado(valor) else 0)
     if tipo == "person" or persona:
+        if isinstance(valor, list):
+            nombres = [(people or {}).get(str(v).strip(), v) for v in valor if not _vacio(v)]
+            return None if not nombres else (0, min(_natural(n) for n in nombres))
         nombre = (people or {}).get(str(valor).strip())
         return (0, _natural(nombre if nombre is not None else valor))
     if tipo == "relation":
@@ -572,6 +575,8 @@ def _igual_persona(
         return _vacio(actual)
     if _vacio(actual):
         return False
+    if isinstance(actual, list):  # varias personas: basta con que una coincida
+        return any(_igual_persona(a, esperado, people) for a in actual)
     if _texto_eq(actual, esperado):
         return True
     nombre = (people or {}).get(str(actual).strip())

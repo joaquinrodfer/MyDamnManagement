@@ -286,6 +286,13 @@ def _parent_value(raw):
     if isinstance(raw, (list, dict)):
         return None
     return relation_id(raw)
+def _person_ids(raw):
+    """Las personas de una celda `person` con varias personas: lista de ids, o `None`."""
+    items = raw if isinstance(raw, list) else [raw]
+    ids = [str(v).strip() for v in items if v is not None and not isinstance(v, (list, dict)) and str(v).strip()]
+    return list(dict.fromkeys(ids)) or None
+
+
 def _person_value(raw):
     """El id de usuario que hay en una celda `person`, o `None` si no hay.
 
@@ -309,7 +316,7 @@ def _coerce(prop: dict, raw):
     if ptype == PARENT_ROW:
         return _parent_value(raw)
     if ptype == PERSON:
-        return _person_value(raw)
+        return _person_ids(raw) if prop.get("multiple") in (True, "true", "True", 1) else _person_value(raw)
     if ptype == "number":
         try:
             return float(raw)

@@ -290,6 +290,8 @@ def plan_schema(
             prop["icon"] = str(icono).strip()
         if item.get("type") == RELATION:
             _plan_relation(prop, item, origen)
+        if item.get("type") == PERSON:
+            _plan_person(prop, item, origen, name)
         if item.get("type") == PARENT_ROW:
             if any(otra.get("type") == PARENT_ROW for otra in finales):
                 otra = next(p for p in finales if p.get("type") == PARENT_ROW)
@@ -338,6 +340,29 @@ def _plan_relation(prop: dict, item: dict, origen: Optional[dict]) -> None:
     if multiple is None:
         multiple = (origen or {}).get("multiple")
     if relation_multiple({"multiple": multiple}):
+        prop["multiple"] = True
+
+
+def _plan_person(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:
+    """`multiple` de una propiedad `person` (plan H4): varias personas por celda.
+
+    Se decide al crear la propiedad y no se cambia después: pasar de varias a una
+    perdería personas en las filas, y de una a varias cambiaría la forma de la
+    celda. Si la petición no lo trae, se conserva el que ya tenía.
+    """
+    pedido = item.get("multiple")
+    anterior = bool((origen or {}).get("type") == PERSON and relation_multiple({"multiple": (origen or {}).get("multiple")}))
+    if pedido is None:
+        multiple = anterior
+    else:
+        multiple = relation_multiple({"multiple": pedido})
+        if origen is not None and origen.get("type") == PERSON and multiple != anterior:
+            raise HTTPException(
+                400,
+                f"«{name}»: no se puede cambiar si admite varias personas. "
+                "Crea otra propiedad y mueve los valores.",
+            )
+    if multiple:
         prop["multiple"] = True
 
 
@@ -728,20 +753,24 @@ def _coerce_person(prop: dict, value: Any, users: Optional[UserRefs]) -> Any:
     que es lo que hace que `is_empty` del filtro ya sirva sin un valor especial.
     """
     nombre = f"«{prop.get('name') or prop.get('key')}»"
-    if isinstance(value, (list, dict)):
+    multiple = relation_multiple(prop)
+    if isinstance(value, dict) or (isinstance(value, list) and not multiple):
         raise HTTPException(
             400, f"{nombre} guarda una persona: manda el id de un usuario, no una lista"
         )
-    user_id = str(value).strip()
-    if not user_id:
+    ids = [str(v).strip() for v in (value if isinstance(value, list) else [value]) if str(v).strip()]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
         return None
     if users is None:           # pragma: no cover - el router siempre lo pasa
         raise HTTPException(
             500, f"{nombre}: no se puede comprobar el usuario sin acceso a la tabla de usuarios"
         )
-    if user_id not in users([user_id]):
-        raise HTTPException(400, f"{nombre}: el usuario {user_id} no existe")
-    return user_id
+    existentes = users(ids)
+    for user_id in ids:
+        if user_id not in existentes:
+            raise HTTPException(400, f"{nombre}: el usuario {user_id} no existe")
+    return ids if multiple else ids[0]
 
 
 def person_properties(schema_def: list[dict]) -> list[dict]:
@@ -769,8 +798,9 @@ def person_ids(schema_def: list[dict], properties: Iterable[dict]) -> list[str]:
     for row in properties:
         for prop in props:
             value = (row or {}).get(prop["key"])
-            if isinstance(value, str) and value.strip():
-                ids.setdefault(value.strip(), None)
+            for v in (value if isinstance(value, list) else [value]):
+                if isinstance(v, str) and v.strip():
+                    ids.setdefault(v.strip(), None)
     return list(ids)
 
 
@@ -786,20 +816,29 @@ def people_of(
     es lo que el interfaz necesita para decirlo en vez de enseñar un hueco que
     no explica nada.
     """
-    out: dict[str, dict[str, Any]] = {}
-    for prop in person_properties(schema_def):
-        value = (properties or {}).get(prop["key"])
-        user_id = value.strip() if isinstance(value, str) else ""
-        if not user_id:
-            continue
+    out: dict[str, Any] = {}
+
+    def ref(user_id: str) -> dict[str, Any]:
         usuario = users.get(user_id)
-        out[prop["key"]] = {
+        return {
             "id": user_id,
             "display_name": usuario[0] if usuario else None,
             "username": usuario[1] if usuario else None,
             "color": usuario[2] if usuario else None,
             "avatar": usuario[3] if usuario and len(usuario) > 3 else None,
         }
+
+    for prop in person_properties(schema_def):
+        value = (properties or {}).get(prop["key"])
+        if relation_multiple(prop):
+            # Varias personas (plan H4): una lista de referencias, en el orden de la celda.
+            ids = [v.strip() for v in (value if isinstance(value, list) else [value]) if isinstance(v, str) and v.strip()]
+            if ids:
+                out[prop["key"]] = [ref(i) for i in ids]
+            continue
+        user_id = value.strip() if isinstance(value, str) else ""
+        if user_id:
+            out[prop["key"]] = ref(user_id)
     return out
 
 

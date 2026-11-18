@@ -538,7 +538,8 @@ class RowRead(BaseModel):
     # nombre visible ya resuelto por el servidor: la celda enseña el nombre y
     # no el id, y el cliente no necesita la tabla de usuarios. Una fila sin
     # personas devuelve `{}`.
-    people: dict[str, PersonRef] = {}
+    # Una persona por clave, o una lista si la propiedad admite varias (plan H4).
+    people: dict[str, PersonRef | list[PersonRef]] = {}
     created_at: datetime
     updated_at: datetime
 

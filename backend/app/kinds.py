@@ -255,7 +255,10 @@ def new_column(role: str, taken_names: set[str], **extra: Any) -> dict[str, Any]
         name = f"{ROLE_LABELS[role]} {n}"
         n += 1
     taken_names.add(name.casefold())
+    multiple_people = extra.pop("multiple_people", False)
     prop: dict[str, Any] = {"key": "", "name": name, "type": ROLE_TYPES[role], **extra}
+    if role == "assignee" and multiple_people:
+        prop["multiple"] = True
     if role == "status":
         prop["options"] = list(DEFAULT_STATUS_OPTIONS)
     return prop

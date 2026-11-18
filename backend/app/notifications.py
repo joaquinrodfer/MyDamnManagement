@@ -206,7 +206,7 @@ def after_row_change(
         if not ahora or ahora == antes or ahora == actor_id:
             continue
         for uid in (ahora if isinstance(ahora, list) else [ahora]):
-            if isinstance(uid, str) and uid and uid not in (antes if isinstance(antes, list) else [antes]):
+            if isinstance(uid, str) and uid and uid != actor_id and uid not in (antes if isinstance(antes, list) else [antes]):
                 notify(conn, uid, "task_assigned", f"Te han asignado «{title}»",
                        page_id=str(row_id), dedupe_key=f"assign:{row_id}:{uid}:{today}")
 
