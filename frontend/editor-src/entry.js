@@ -1013,12 +1013,15 @@ function blockMarkDecorations(state) {
   for (const index of [...selected].sort((a, b) => a - b)) {
     const block = blocks[index];
     if (!block) continue;
-    let pos = block.from;
-    while (pos <= block.to) {
-      const line = doc.lineAt(pos);
-      ranges.push(Decoration.line({ class: "cm-mdm-line-marked" }).range(line.from));
-      if (line.to >= block.to) break;
-      pos = line.to + 1;
+    // Las líneas de un bloque se pintan como UNA caja: la primera lleva las
+    // esquinas de arriba, la última las de abajo, y las de en medio ninguna.
+    const first = doc.lineAt(block.from).number;
+    const last = doc.lineAt(Math.max(block.from, block.to)).number;
+    for (let n = first; n <= last; n++) {
+      let cls = "cm-mdm-line-marked";
+      if (n === first) cls += " cm-mdm-line-marked-first";
+      if (n === last) cls += " cm-mdm-line-marked-last";
+      ranges.push(Decoration.line({ class: cls }).range(doc.line(n).from));
     }
   }
   return Decoration.set(ranges, true);

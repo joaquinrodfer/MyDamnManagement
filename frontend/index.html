@@ -1694,8 +1694,15 @@
   #row-page-body .cm-line.cm-mdm-line-marked {
     background: var(--accent-soft);
     box-shadow: inset 3px 0 0 var(--accent);
-    border-radius: 4px;
+    border-radius: 0;
   }
+  /* Un bloque de varias líneas se ve como UNA caja: solo la primera línea
+     redondea arriba y solo la última abajo (antes cada línea era su propia
+     cajita y el bloque parecía un montón de líneas sueltas). */
+  #note-body .cm-line.cm-mdm-line-marked-first,
+  #row-page-body .cm-line.cm-mdm-line-marked-first { border-top-left-radius: 4px; border-top-right-radius: 4px; }
+  #note-body .cm-line.cm-mdm-line-marked-last,
+  #row-page-body .cm-line.cm-mdm-line-marked-last { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
   .cm-mdm-dblock-marked {
     background: var(--accent-soft);
     border-radius: 6px;
@@ -2432,7 +2439,7 @@
      píxeles (la suma de sus columnas): con `max-content` el navegador decidía
      el ancho por su cuenta y repartía el hueco entre las columnas que no se
      estaban arrastrando. */
-  table.rows-table.has-col-widths { table-layout: fixed; }
+  table.rows-table.has-col-widths { table-layout: fixed; min-width: 0; }
   /* Mientras dura la medida de «ajustar al contenido» el tope de 240 px de las
      celdas no cuenta: es el recorte de la pintura, no el contenido, y cortaba
      la medida en 240 px (cualquier texto más largo se quedaba igual y con
@@ -2459,7 +2466,35 @@
      colgado de <body> con `position: fixed` (ver `abrirPanelFlotante`). */
   /* 34 px de hueco a la derecha: el botón «⋯» (18 px a 13 px del borde) y el
      asa del ancho (9 px; 12 en táctil) no comparten ni un píxel. */
-  .rows-table th.db-col-head { position: relative; padding-right: 34px; }
+  /* La cabecera ENTERA es el botón del menú, como en Notion: al pasar el
+     ratón se resalta la celda con su margen justo y el cursor dice que se
+     puede pulsar. El asa del ancho queda encima, en el borde derecho. */
+  .rows-table th.db-col-head { position: relative; padding: 0; }
+  .db-col-head-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    height: 100%;
+    min-height: 33px;
+    padding: 0 12px 0 10px;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease-std);
+  }
+  .db-col-head-btn:disabled { cursor: default; }
+  .db-col-head-btn:not(:disabled):hover,
+  .db-col-head-btn[aria-expanded="true"] { background: var(--row-hover); color: var(--ink); }
+  .db-col-head-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 3px; }
+  .db-col-head-btn.is-sorted { color: var(--accent-ink); }
+  .db-col-head-btn .db-col-label { flex: 0 1 auto; min-width: 0; }
+  .db-col-type { display: inline-flex; flex: none; width: 14px; justify-content: center; opacity: 0.75; }
+  .db-col-type .svg-icon { width: 14px; height: 14px; }
+  .db-type-aa { font-size: 11px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
   .db-col-label {
     display: inline-block;
     max-width: 100%;
@@ -2504,13 +2539,13 @@
   @media (hover: hover) and (pointer: fine) {
     .db-col-menu-btn { opacity: 0; }
   }
-  .rows-table th.db-col-add-head { width: 30px; padding: 0; text-align: center; }
+  .rows-table th.db-col-add-head { width: 40px; padding: 0; text-align: center; }
   /* Las filas llevan el hueco del «+» en la misma posición (antes de
      «Acciones») y con la misma anchura: si no, la cabecera tendría una celda
      más que las filas y el «+» caería encima de las papeleras. */
-  .rows-table td.db-col-add-cell { width: 30px; padding: 0; }
-  .db-col-add-btn { width: 100%; height: 100%; min-height: 26px; color: var(--ink-muted); }
-  .db-col-add-btn:hover { background: var(--accent-soft); color: var(--accent-ink); }
+  .rows-table td.db-col-add-cell { width: 40px; padding: 0; }
+  .db-col-add-btn { width: 100%; height: 100%; min-height: 33px; border-radius: 0; color: var(--ink-muted); }
+  .db-col-add-btn:hover { background: var(--row-hover); color: var(--ink); }
   .db-col-add-btn .svg-icon { width: 14px; height: 14px; }
   /* Renombrar en el sitio: el campo ocupa el hueco del rótulo, sin versalitas
      (el th las hereda) y con el foco a la vista. */
@@ -2590,6 +2625,95 @@
     color: var(--ink-muted);
   }
   .db-col-menu-note:empty { display: none; }
+  /* El menú de columna al estilo Notion: el nombre editable arriba con el
+     icono de su tipo, y cada acción con su icono a la izquierda. */
+  .db-col-menu-notion { min-width: 240px; }
+  .db-col-menu-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 4px 6px;
+  }
+  .db-col-menu-name .db-col-type {
+    width: 28px;
+    height: 28px;
+    align-items: center;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm);
+    opacity: 1;
+    color: var(--ink-muted);
+  }
+  .db-col-menu-name input {
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+  }
+  .db-col-menu-name input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .db-col-menu-item .db-col-menu-icon {
+    display: inline-flex;
+    flex: none;
+    width: 16px;
+    justify-content: center;
+    color: var(--ink-muted);
+  }
+  .db-col-menu-item .db-col-menu-icon .svg-icon { width: 15px; height: 15px; }
+  .db-col-menu-item.danger .db-col-menu-icon { color: inherit; }
+  .db-col-menu-item .db-col-menu-text { flex: 1; }
+  .db-col-menu-notion .db-col-menu-item { justify-content: flex-start; gap: 10px; }
+  /* Las opciones de una selección: cada valor con su color y su «×». */
+  .db-col-options { padding: 0 0 4px; }
+  .db-col-options-list { list-style: none; margin: 0; padding: 0 4px; display: flex; flex-direction: column; gap: 2px; }
+  .db-col-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 28px;
+    padding: 0 0 0 4px;
+    border-radius: var(--radius-sm);
+  }
+  .db-col-option:hover { background: var(--row-hover); }
+  .db-col-option-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+  }
+  .db-col-option-remove:hover,
+  .db-col-option-remove:focus-visible { background: var(--down-bg); color: var(--down); }
+  .db-col-option-remove .svg-icon { width: 13px; height: 13px; }
+  .db-col-options-empty { padding: 4px; color: var(--ink-muted); font-size: 12px; }
+  .db-col-options-add {
+    display: block;
+    width: calc(100% - 8px);
+    margin: 6px 4px 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px dashed var(--panel-border);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+  }
+  .db-col-options-add:focus { outline: none; border-style: solid; border-color: var(--accent); }
+  @media (max-width: 768px) {
+    .db-col-menu-name input, .db-col-options-add { height: 44px; font-size: 16px; }
+    .db-col-option-remove { width: 44px; height: 44px; }
+  }
   /* Selector de filas de una celda de relación. Cuelga de <body> (la tabla
      recorta lo que vive dentro: `.table-wrap` desplaza en horizontal) y lleva
      su propia caja con scroll: a 375 px cabe en la ventana sin arrastrar la

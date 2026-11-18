@@ -4323,8 +4323,16 @@ function handleDatabaseEvent(data) {
   ) {
     return;
   }
+  // Con el menú de una columna abierto (añadiendo opciones, renombrando), el
+  // repintado se aplaza a cuando se cierre: rehacer el bloque ahora se llevaría
+  // el ancla del menú y lo cerraría a mitad.
+  if (panelDeColumnaAbierto) {
+    refrescoDeBasesPendiente = true;
+    return;
+  }
   session.refreshDatabaseEmbeds?.();
 }
+let refrescoDeBasesPendiente = false;
 
 function connectVaultEvents() {
   if (typeof EventSource === "undefined") return; // sin SSE, sin avisos en vivo
@@ -5828,6 +5836,18 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 
   // Guardar el filtro o el orden es un PATCH a la vista y un repintado con lo
   // que el servidor acaba de escribir: la pantalla no guarda su propia copia.
+  const crearVistaYAplicar = async (cambios) => {
+    try {
+      const nueva = await crearVistaPorDefecto(database, cambios);
+      const [fresca, vistas] = await Promise.all([
+        api(`/databases/${database.id}`),
+        api(`/databases/${database.id}/views`),
+      ]);
+      await renderDatabase(fresca, vistas, nueva?.id ?? vistas[0]?.id ?? null);
+    } catch (e) {
+      reportError("No se pudo guardar la vista", e);
+    }
+  };
   const aplicarConfig = async (cambios) => {
     // El ancho y el orden de las columnas repintan la base entera (el `.md`
     // manda, la pantalla no guarda su propia copia): se apunta dónde estaba
@@ -5894,7 +5914,14 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       // El ancho y el orden de las columnas se guardan en la vista activa:
       // sin vista no hay entrada en el `.md` donde escribirlos.
       view: activeView,
-      onCambioColumnas: activeView ? aplicarConfig : null,
+      // Una base sin ninguna vista no tiene dónde guardar anchos ni orden: el
+      // primer cambio crea su vista «Tabla», como la que trae toda base de
+      // Notion. Con vistas, «Todas (sin vista)» se queda como está.
+      onCambioColumnas: activeView ? aplicarConfig : views.length ? null : crearVistaYAplicar,
+      onOrdenar: activeView || !views.length
+        ? (key, dir) =>
+            (activeView ? aplicarConfig : crearVistaYAplicar)({ sort: fijarOrden(clavesOrden, key, dir) })
+        : null,
       onChanged: recargarVistas,
       // Tras borrar o cambiar una propiedad en bloque, la tabla se repinta
       // con lo que diga el servidor: nada de ir tocando filas a mano.
@@ -6334,6 +6361,29 @@ function celdaDeCabecera(prop, claves, onToggleSort) {
   boton.addEventListener("click", () => onToggleSort(prop.key));
   th.appendChild(boton);
   return th;
+}
+
+/** «Orden ascendente/descendente» del menú de una columna: esa columna pasa a
+ * mandar con ese sentido (las demás quedan de desempate); `dir` nulo la quita. */
+function fijarOrden(claves, key, dir) {
+  const resto = claves.filter((clave) => clave.key !== key);
+  return dir ? [{ key, dir }, ...resto] : resto;
+}
+
+/** La vista «Tabla» de una base que no tiene ninguna, con `config` dentro.
+ * Es donde se guardan anchos, orden y ordenación de las columnas. */
+async function crearVistaPorDefecto(database, config = {}) {
+  const limpia = {};
+  for (const [k, v] of Object.entries(config || {})) {
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v) && !v.length) continue;
+    if (typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) continue;
+    limpia[k] = v;
+  }
+  return api(`/databases/${database.id}/views`, {
+    method: "POST",
+    body: JSON.stringify({ name: "Tabla", type: "table", config: limpia }),
+  });
 }
 
 /** Clic en la cabecera: si esa columna manda, invierte el sentido; si no,
@@ -6906,13 +6956,13 @@ async function renderDatabaseEmbed(block, container) {
 
   // La vista se busca por nombre; si el bloque no la dice (o ya no existe), la
   // primera -- el mismo criterio que selectDatabase.
-  const activeView = views.find((v) => view && v.name === view) || views[0] || null;
+  let activeView = views.find((v) => view && v.name === view) || views[0] || null;
 
   // La tabla incrustada usa la vista con la que está configurada, y eso
   // incluye su filtro y su orden: los aplica el mismo `apply_view` del
   // servidor, así que no hay una segunda versión de la regla en el navegador.
   const filtros = filtrosDeVista(activeView);
-  const clavesOrden = clavesDeOrden(activeView?.config);
+  let clavesOrden = clavesDeOrden(activeView?.config);
   let rows;
   let total = null;
   try {
@@ -7001,6 +7051,11 @@ async function renderDatabaseEmbed(block, container) {
         vacio: filtros.length ? "Ninguna fila cumple el filtro." : null,
         view: activeView,
         onChanged: recargar,
+        // Ancho, orden de columnas y ordenación también desde la nota: se
+        // guardan en la vista del bloque (y si la base no tiene ninguna, se
+        // crea su «Tabla», que pasa a ser la del bloque).
+        onCambioColumnas: guardarVistaDelBloque,
+        onOrdenar: (key, dir) => guardarVistaDelBloque({ sort: fijarOrden(clavesOrden, key, dir) }),
         // La fila nueva ya está en su sitio (o fuera, si el filtro no la
         // enseña): contador, aviso y los demás bloques de esta base. El eco
         // de este POST se descarta (ver `handleDatabaseEvent`), así que si no
@@ -7049,6 +7104,21 @@ async function renderDatabaseEmbed(block, container) {
    * clave o de cambiar las columnas de la vista. El aviso `updated` de /events
    * también rehace el widget; si eso pasa antes de que llegue la respuesta,
    * este contenedor ya no está en el documento y no se pinta en el vacío. */
+  const guardarVistaDelBloque = async (cambios) => {
+    try {
+      if (activeView) {
+        await guardarConfigDeVista(database, activeView, cambios);
+      } else {
+        activeView = await crearVistaPorDefecto(database, cambios);
+      }
+    } catch (e) {
+      reportError("No se pudo guardar la vista", e);
+      return;
+    }
+    clavesOrden = clavesDeOrden(activeView?.config);
+    // El orden de las filas depende de la vista: se vuelven a pedir.
+    await recargar();
+  };
   const recargar = async () => {
     try {
       const [fresca, vistas] = await Promise.all([
@@ -9538,6 +9608,28 @@ function claveDeAncho(domKey) {
   return CLAVES_DE_SERVICIO.has(domKey) ? null : domKey;
 }
 
+/** El ancho de una columna que la vista no ha guardado, como en Notion: cada
+ * columna nace con un ancho fijo según su tipo (el título algo más ancho), y
+ * la tabla mide la suma. Antes la tabla ocupaba todo el ancho de la página y
+ * el navegador repartía el hueco, así que el «+» de añadir columna se iba al
+ * borde derecho por lejos que quedara la última. */
+const ANCHO_POR_TIPO = { checkbox: 110, number: 130, date: 170, url: 200, person: 170 };
+function anchoPorDefecto(claveMd, propiedades) {
+  if (claveMd === "title") return 260;
+  const prop = propiedades.find((p) => p.key === claveMd);
+  return ANCHO_POR_TIPO[prop?.type] || 200;
+}
+
+/** Las columnas de servicio (la casilla de la fila, abrir la fila, el «+») no
+ * se guardan en la vista: su ancho es parte del dibujo y es el mismo que les
+ * da el CSS (44 px en el móvil, donde se tocan con el dedo). */
+function anchoDeServicio(domKey) {
+  const movil = typeof window !== "undefined" && window.matchMedia?.("(max-width: 768px)").matches;
+  if (domKey === "@actions") return movil ? 44 : 32;
+  if (domKey === "@add") return 40;
+  return movil ? 44 : 34; // @open
+}
+
 /** Los anchos guardados de una vista: clave de propiedad (o `title` para la
  * columna del título) -> píxeles, ya dentro de los límites.
  *
@@ -10061,6 +10153,18 @@ function cerrarPanelDeColumna({ foco = false } = {}) {
   abierto.el.remove();
   abierto.alCerrar?.();
   if (foco && abierto.anchor?.isConnected) abierto.anchor.focus({ preventScroll: true });
+  if (refrescoDeBasesPendiente) {
+    refrescoDeBasesPendiente = false;
+    // Un panel que se abre desde otro (el menú pasa al formulario de la
+    // columna nueva) cierra el primero: el repintado espera al último.
+    setTimeout(() => {
+      if (panelDeColumnaAbierto) {
+        refrescoDeBasesPendiente = true;
+        return;
+      }
+      state.noteSession?.refreshDatabaseEmbeds?.();
+    }, 0);
+  }
 }
 
 /** Coloca un panel `position: fixed` pegado a su ancla, sin salirse del
@@ -10073,13 +10177,25 @@ function colocarPanelFlotante(el, anchor) {
   let left = r.left;
   if (left + caja.width > window.innerWidth - margen) left = window.innerWidth - caja.width - margen;
   left = Math.max(margen, left);
-  let top = r.bottom + 4;
-  if (top + caja.height > window.innerHeight - margen) {
-    const arriba = r.top - 4 - caja.height;
-    top = arriba >= margen ? arriba : Math.max(margen, window.innerHeight - caja.height - margen);
+  // Debajo del ancla, sin taparla nunca: si no cabe entero, se queda debajo
+  // con su propio scroll mientras haya un sitio razonable; si abajo casi no hay
+  // sitio, va encima (también con scroll si hace falta). Antes, sin sitio, se
+  // subía hasta tapar la cabecera que lo había abierto.
+  const abajo = window.innerHeight - margen - (r.bottom + 4);
+  const encima = r.top - 4 - margen;
+  el.style.maxHeight = "";
+  const natural = el.scrollHeight || caja.height;
+  let top;
+  if (natural <= abajo || abajo >= 240 || abajo >= encima) {
+    top = r.bottom + 4;
+    if (natural > abajo) el.style.maxHeight = `${Math.max(120, Math.floor(abajo))}px`;
+  } else {
+    const alto = Math.min(natural, Math.floor(encima));
+    if (natural > encima) el.style.maxHeight = `${Math.floor(encima)}px`;
+    top = r.top - 4 - alto;
   }
   el.style.left = `${Math.round(left)}px`;
-  el.style.top = `${Math.round(top)}px`;
+  el.style.top = `${Math.round(Math.max(margen, top))}px`;
 }
 
 /** Cuelga `el` de <body> junto a `anchor` y lo cierra al pinchar fuera, con
@@ -10157,14 +10273,25 @@ function abrirPanelFlotante(anchor, el, { etiqueta = "", foco = null, alCerrar =
 /** Una fila del menú. `motivo` (con `alElegir` nulo) la deja visible pero
  * apagada: al pulsarla se escribe el motivo dentro del menú, que es lo que
  * hace un estado apagado sin explicación (y en táctil no hay `hover`). */
-function itemDeColumna(texto, { alElegir = null, peligro = false, motivo = "", marca = "", radio = false } = {}) {
+function itemDeColumna(
+  texto,
+  { alElegir = null, peligro = false, motivo = "", marca = "", radio = false, icono = "" } = {},
+) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "db-col-menu-item" + (peligro ? " danger" : "") + (motivo ? " is-off" : "");
   btn.setAttribute("role", radio ? "menuitemradio" : "menuitem");
   if (radio) btn.setAttribute("aria-checked", marca === "✓" ? "true" : "false");
   if (motivo) btn.title = motivo;
+  if (icono) {
+    const ic = document.createElement("span");
+    ic.className = "db-col-menu-icon";
+    ic.setAttribute("aria-hidden", "true");
+    ic.innerHTML = icono;
+    btn.appendChild(ic);
+  }
   const etiqueta = document.createElement("span");
+  etiqueta.className = "db-col-menu-text";
   etiqueta.textContent = texto;
   btn.appendChild(etiqueta);
   if (marca) {
@@ -10454,7 +10581,7 @@ async function borrarColumna({ database, prop, onChanged }) {
  * (`visible_properties`), la nueva entra también al final de la lista: una
  * columna recién creada que no se ve en la pestaña en la que estás es un
  * misterio, no un resultado. */
-async function crearColumnaEnLaBase(contexto, { nombre, tipo, destino, multiple = false }) {
+async function crearColumnaEnLaBase(contexto, { nombre, tipo, destino, multiple = false, posicion = null }) {
   const { database, view, onChanged } = contexto;
   const nueva = { name: nombre, type: tipo };
   if (tipo === "relation") {
@@ -10476,6 +10603,18 @@ async function crearColumnaEnLaBase(contexto, { nombre, tipo, destino, multiple 
     });
     Object.assign(view, vista);
   }
+  // «Insertar a la izquierda/derecha»: la columna nueva se coloca junto a la
+  // de partida en el orden de la vista (`views[].order`). Sin dónde guardar
+  // el orden, va al final, como el «+».
+  if (creada && posicion && contexto.onCambioColumnas) {
+    const claves = columnasEnOrden(database, view).map((p) => p.key).filter((k) => k !== creada.key);
+    let i = posicion.junto === "@title" ? 0 : claves.indexOf(posicion.junto);
+    if (i < 0) i = claves.length;
+    else if (posicion.junto !== "@title" && posicion.lado === "derecha") i += 1;
+    claves.splice(i, 0, creada.key);
+    await guardarColumnasDeVista(contexto, { order: claves });
+    return;
+  }
   await onChanged?.();
 }
 
@@ -10492,7 +10631,7 @@ function mostrarTiposDeColumna(menu, contexto, anchor) {
   menu.appendChild(cabecera);
   menu.appendChild(
     itemDeColumna("‹ Volver", {
-      alElegir: () => abrirMenuDeColumna(contexto.th, contexto),
+      alElegir: () => abrirMenuDeColumna(anchor, contexto),
     }),
   );
   Object.entries(TIPOS_VISIBLES).forEach(([tipo, etiqueta]) => {
@@ -10548,7 +10687,7 @@ function pintarEstadoDeColumna(menu, contexto, anchor) {
   cabecera.textContent = `«${prop.name}» dice si está hecha`;
   menu.appendChild(cabecera);
   menu.appendChild(
-    itemDeColumna("‹ Volver", { alElegir: () => abrirMenuDeColumna(contexto.th, contexto) }),
+    itemDeColumna("‹ Volver", { alElegir: () => abrirMenuDeColumna(anchor, contexto) }),
   );
 
   const regla = reglaDeCierre(database);
@@ -10644,19 +10783,154 @@ function pintarEstadoDeColumna(menu, contexto, anchor) {
   }
 }
 
-/** El menú de la cabecera: renombrar, ocultar (en la vista), tipo, borrar y el
- * acceso al diálogo de siempre. `prop` nulo es la columna del título, que
- * comparte el gesto pero no tiene tipo ni se borra. */
+const ICONOS_DE_MENU = (() => {
+  const svg = (d) =>
+    `<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  return {
+    asc: svg('<path d="M12 19V5M5 12l7-7 7 7"/>'),
+    desc: svg('<path d="M12 5v14M19 12l-7 7-7-7"/>'),
+    sinOrden: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+    ocultar: svg('<path d="M9.9 4.2A10 10 0 0 1 12 4c7 0 10 8 10 8a17 17 0 0 1-2.2 3.2M6.6 6.6C3.6 8.6 2 12 2 12s3 8 10 8a9.7 9.7 0 0 0 5.4-1.6"/><path d="m2 2 20 20"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
+    izquierda: svg('<path d="M4 4v16"/><path d="M20 12H9M13 8l-4 4 4 4"/>'),
+    derecha: svg('<path d="M20 4v16"/><path d="M4 12h11M11 8l4 4-4 4"/>'),
+    hecha: svg('<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>'),
+    borrar: svg('<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'),
+    ajustes: svg('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
+  };
+})();
+
+/** Guarda un cambio de ancho/orden de columnas en la vista. `contexto.onCambioColumnas`
+ * ya sabe dónde (y crea la vista si la base no tiene ninguna). */
+function guardarColumnasDeVista(contexto, cambios) {
+  if (!contexto.onCambioColumnas) return Promise.resolve(false);
+  return Promise.resolve(contexto.onCambioColumnas(cambios)).then(() => true);
+}
+
+/** Las opciones de una selección, dentro del menú de su columna: cada valor
+ * como su etiqueta de color, con su botón de quitar, y un campo para añadir
+ * uno nuevo con Enter. Es la alternativa a la lista separada por comas del
+ * diálogo de propiedades: se ve lo que hay, con el color que tendrá en la
+ * tabla, y cada valor es un control con nombre propio para el lector de
+ * pantalla. Guardar no cierra el menú (se pueden añadir varios seguidos); la
+ * tabla se repinta al cerrarlo. */
+function seccionDeOpciones(menu, contexto, marcarCambio) {
+  const { database, prop } = contexto;
+  const caja = document.createElement("div");
+  caja.className = "db-col-options";
+  const rotulo = document.createElement("div");
+  rotulo.className = "db-col-menu-label";
+  rotulo.id = `db-col-opts-${prop.key}`;
+  rotulo.textContent = "Opciones";
+  const lista = document.createElement("ul");
+  lista.className = "db-col-options-list";
+  lista.setAttribute("aria-labelledby", rotulo.id);
+  const nueva = document.createElement("input");
+  nueva.type = "text";
+  nueva.className = "db-col-options-add";
+  nueva.placeholder = "Añadir una opción…";
+  nueva.setAttribute("aria-label", `Añadir una opción a «${prop.name}»`);
+  nueva.autocomplete = "off";
+  const aviso = document.createElement("p");
+  aviso.className = "db-col-menu-note";
+  aviso.setAttribute("role", "status");
+  aviso.hidden = true;
+  const avisar = (texto) => {
+    aviso.textContent = texto;
+    aviso.hidden = !texto;
+  };
+
+  const actual = () =>
+    (database.schema_def || []).find((p) => p.key === prop.key) || prop;
+  const guardar = async (opciones, texto) => {
+    try {
+      const cambios = { options: opciones };
+      const p = actual();
+      if (p.sort_mode === "manual") {
+        cambios.sort_order = (p.sort_order || []).filter((v) => opciones.includes(v));
+        opciones.forEach((v) => {
+          if (!cambios.sort_order.includes(v)) cambios.sort_order.push(v);
+        });
+      }
+      await guardarEsquemaDeColumnas(database, esquemaConPropiedad(database, prop.key, cambios));
+      marcarCambio();
+      pintar();
+      avisar(texto);
+    } catch (e) {
+      reportError("No se pudieron guardar las opciones", e);
+      avisar(describeError(e));
+    }
+  };
+
+  const pintar = () => {
+    const p = actual();
+    const opciones = Array.isArray(p.options) ? p.options : [];
+    lista.textContent = "";
+    if (!opciones.length) {
+      const vacio = document.createElement("li");
+      vacio.className = "db-col-options-empty";
+      vacio.textContent = "Todavía no hay ninguna. Escribe una abajo y pulsa Intro.";
+      lista.appendChild(vacio);
+    }
+    opciones.forEach((valor) => {
+      const li = document.createElement("li");
+      li.className = "db-col-option";
+      const tag = document.createElement("span");
+      tag.innerHTML = htmlDeEtiqueta(valor, p);
+      const quitar = document.createElement("button");
+      quitar.type = "button";
+      quitar.className = "db-col-option-remove";
+      quitar.innerHTML = svgIcon("i-x");
+      quitar.setAttribute("aria-label", `Quitar la opción «${valor}»`);
+      quitar.title = "Quitar la opción (las filas que la tengan la conservan)";
+      quitar.addEventListener("click", (e) => {
+        e.stopPropagation();
+        guardar(
+          opciones.filter((v) => v !== valor),
+          `«${valor}» ya no es una opción. Las filas que la tenían la conservan.`,
+        ).then(() => nueva.focus({ preventScroll: true }));
+      });
+      li.append(tag, quitar);
+      lista.appendChild(li);
+    });
+  };
+
+  nueva.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const valor = nueva.value.trim();
+    if (!valor) return;
+    const opciones = Array.isArray(actual().options) ? actual().options : [];
+    if (opciones.some((v) => v.toLowerCase() === valor.toLowerCase())) {
+      avisar(`«${valor}» ya es una opción.`);
+      return;
+    }
+    nueva.value = "";
+    guardar([...opciones, valor], `Añadida «${valor}».`);
+  });
+
+  pintar();
+  caja.append(rotulo, lista, nueva, aviso);
+  return caja;
+}
+
+/** El menú de una columna, como el de Notion: arriba el nombre (se edita ahí
+ * mismo: Intro o cerrar el menú guarda) con el icono de su tipo; debajo el
+ * tipo, las opciones si es una selección, ordenar, ocultar, insertar a la
+ * izquierda o a la derecha, el estado de la base, borrar y el diálogo de todas
+ * las propiedades. Va colgado debajo de la cabecera, alineado a su IZQUIERDA.
+ * `prop` nulo es la columna del título: no tiene tipo, no se borra y no se le
+ * puede insertar nada a la izquierda (es siempre la primera). */
 function abrirMenuDeColumna(anchor, contexto) {
   const { database, view, prop } = contexto;
   const esTitulo = !prop;
   const nombre = esTitulo ? database.title_name || "Título" : prop.name;
   const menu = document.createElement("div");
-  menu.className = "db-col-menu";
-  const cabecera = document.createElement("div");
-  cabecera.className = "db-col-menu-label";
-  cabecera.textContent = nombre;
-  menu.appendChild(cabecera);
+  menu.className = "db-col-menu db-col-menu-notion";
+  let huboCambios = false;
+  const marcarCambio = () => {
+    huboCambios = true;
+  };
 
   const avisar = (texto) => {
     const nota = notaDeMenu(menu);
@@ -10664,131 +10938,236 @@ function abrirMenuDeColumna(anchor, contexto) {
     nota.hidden = false;
   };
 
-  menu.appendChild(
-    itemDeColumna("Renombrar", {
-      alElegir: () => {
-        cerrarPanelDeColumna();
-        editarNombreEnCabecera(contexto.th, {
-          nombre,
-          prop,
-          database,
-          onChanged: contexto.onChanged,
-          label: esTitulo ? "Nombre de la columna del título" : `Nombre de la columna «${nombre}»`,
-        });
-      },
-    }),
-  );
+  // --- el nombre, editable en el sitio
+  const filaNombre = document.createElement("div");
+  filaNombre.className = "db-col-menu-name";
+  filaNombre.innerHTML = iconoDeTipo(esTitulo ? "title" : prop.type);
+  const campo = document.createElement("input");
+  campo.type = "text";
+  campo.value = nombre;
+  campo.autocomplete = "off";
+  campo.setAttribute("aria-label", esTitulo ? "Nombre de la columna del título" : "Nombre de la propiedad");
+  filaNombre.appendChild(campo);
+  menu.appendChild(filaNombre);
+  let nombreGuardado = false;
+  const guardarNombre = async () => {
+    const nuevo = campo.value.trim();
+    if (nombreGuardado || !nuevo || nuevo === nombre) return false;
+    nombreGuardado = true;
+    try {
+      await renombrarColumna({ database, prop, onChanged: null }, nuevo);
+      marcarCambio();
+      return true;
+    } catch (e) {
+      nombreGuardado = false;
+      reportError("No se pudo renombrar la columna", e);
+      return false;
+    }
+  };
+  campo.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      cerrarPanelDeColumna({ foco: true });
+    }
+  });
 
-  if (esTitulo) {
-    // La columna del título no es una propiedad del schema: ocultarla es de la
-    // BASE (`title_hidden`), no de la vista, y el rótulo lo dice.
+  // Lo que se hace al elegir una acción: primero se guarda el nombre si se ha
+  // tocado (la acción puede repintar la tabla), luego se cierra el menú.
+  const accion = (fn) => async () => {
+    await guardarNombre();
+    huboCambios = false; // la acción repinta por su cuenta
+    cerrarPanelDeColumna();
+    try {
+      await fn();
+    } catch (e) {
+      reportError("No se pudo completar la acción", e);
+    }
+  };
+
+  // --- tipo y opciones
+  if (!esTitulo) {
     menu.appendChild(
-      itemDeColumna("Ocultar la columna del título (en toda la base)", {
+      itemDeColumna("Tipo", {
+        icono: ICONOS_DE_TIPO[prop.type] || ICONOS_DE_TIPO.text,
+        marca: `${tipoVisible(prop.type)} ›`,
         alElegir: async () => {
-          cerrarPanelDeColumna();
-          try {
-            const actualizada = await api(`/databases/${database.id}`, {
-              method: "PATCH",
-              body: JSON.stringify({ title_hidden: true }),
-            });
-            Object.assign(database, actualizada);
-            await contexto.onChanged?.();
-          } catch (e) {
-            reportError("No se pudo ocultar la columna del título", e);
-          }
+          await guardarNombre();
+          mostrarTiposDeColumna(menu, contexto, anchor);
         },
       }),
     );
-  } else {
-    const visibles =
-      clavesVisibles(database, view) || (database.schema_def || []).map((p) => p.key);
-    if (!view) {
+    if (prop.type === "select" || prop.type === "multiselect") {
+      menu.appendChild(separadorDeMenu());
+      menu.appendChild(seccionDeOpciones(menu, contexto, marcarCambio));
+    }
+  }
+
+  // --- ordenar
+  const claveOrden = contexto.claveOrden;
+  if (claveOrden && contexto.onOrdenar) {
+    const actual = (contexto.sort || []).find((c) => c.key === claveOrden);
+    menu.appendChild(separadorDeMenu());
+    menu.appendChild(
+      itemDeColumna("Orden ascendente", {
+        icono: ICONOS_DE_MENU.asc,
+        radio: true,
+        marca: actual?.dir === "asc" ? "✓" : "",
+        alElegir: accion(() => contexto.onOrdenar(claveOrden, "asc")),
+      }),
+    );
+    menu.appendChild(
+      itemDeColumna("Orden descendente", {
+        icono: ICONOS_DE_MENU.desc,
+        radio: true,
+        marca: actual?.dir === "desc" ? "✓" : "",
+        alElegir: accion(() => contexto.onOrdenar(claveOrden, "desc")),
+      }),
+    );
+    if (actual) {
       menu.appendChild(
-        itemDeColumna("Ocultar esta columna", {
-          motivo:
-            "«Todas (sin vista)» no guarda columnas: elige una vista y se ocultará solo en ella.",
-          alElegir: () =>
-            avisar("«Todas (sin vista)» no guarda columnas: elige una vista y se ocultará solo en ella."),
-        }),
-      );
-    } else if (visibles.length <= 1) {
-      // La columna del título no es una propiedad y sigue en la tabla, pero
-      // una vista sin NINGUNA propiedad no se puede guardar: la lista vacía
-      // se lee como «todas». El motivo cuenta la columna del título en vez
-      // de decir «la última columna visible» con el título a la vista.
-      const motivo = database.title_hidden
-        ? "Es la única propiedad de esta vista: ocultarla dejaría la tabla sin ninguna columna, y una vista sin columnas no se puede guardar."
-        : "Es la única propiedad de esta vista: quedaría solo la columna del título, y una vista sin propiedades se guarda como «todas».";
-      menu.appendChild(
-        itemDeColumna("Ocultar esta columna", {
-          motivo,
-          alElegir: () => avisar(motivo),
-        }),
-      );
-    } else {
-      menu.appendChild(
-        itemDeColumna("Ocultar esta columna", {
-          alElegir: () => {
-            cerrarPanelDeColumna();
-            ocultarColumna({ database, view, prop, onChanged: contexto.onChanged }).catch((e) =>
-              reportError("No se pudo ocultar la columna", e),
-            );
-          },
+        itemDeColumna("Quitar el orden", {
+          icono: ICONOS_DE_MENU.sinOrden,
+          alElegir: accion(() => contexto.onOrdenar(claveOrden, null)),
         }),
       );
     }
   }
 
-  if (!esTitulo) {
+  menu.appendChild(separadorDeMenu());
+
+  // --- ocultar
+  if (esTitulo) {
+    // La columna del título no es una propiedad del schema: ocultarla es de la
+    // BASE (`title_hidden`), no de la vista, y el rótulo lo dice.
     menu.appendChild(
-      itemDeColumna(`Tipo: ${tipoVisible(prop.type)}`, {
-        marca: "›",
-        alElegir: () => mostrarTiposDeColumna(menu, contexto, anchor),
+      itemDeColumna("Ocultar (en toda la base)", {
+        icono: ICONOS_DE_MENU.ocultar,
+        alElegir: accion(async () => {
+          const actualizada = await api(`/databases/${database.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ title_hidden: true }),
+          });
+          Object.assign(database, actualizada);
+          await contexto.onChanged?.();
+        }),
       }),
     );
-    if (["checkbox", "select", "multiselect"].includes(prop.type)) {
-      const regla = reglaDeCierre(database);
+  } else {
+    const visibles =
+      clavesVisibles(database, view) || (database.schema_def || []).map((p) => p.key);
+    let motivo = "";
+    if (!view && !contexto.onCambioColumnas) {
+      motivo = "«Todas (sin vista)» no guarda columnas: elige una vista y se ocultará solo en ella.";
+    } else if (visibles.length <= 1) {
+      motivo = database.title_hidden
+        ? "Es la única propiedad de esta vista: ocultarla dejaría la tabla sin ninguna columna."
+        : "Es la única propiedad de esta vista: quedaría solo la columna del título, y una vista sin propiedades se guarda como «todas».";
+    }
+    menu.appendChild(
+      motivo
+        ? itemDeColumna("Ocultar", { icono: ICONOS_DE_MENU.ocultar, motivo, alElegir: () => avisar(motivo) })
+        : itemDeColumna("Ocultar", {
+            icono: ICONOS_DE_MENU.ocultar,
+            // Sin vista (una base que aún no tiene ninguna), ocultar crea su
+            // «Tabla» con la lista de columnas visibles.
+            alElegir: accion(() =>
+              view
+                ? ocultarColumna({ database, view, prop, onChanged: contexto.onChanged })
+                : guardarColumnasDeVista(contexto, {
+                    visible_properties: visibles.filter((k) => k !== prop.key),
+                  }),
+            ),
+          }),
+    );
+  }
+
+  // --- insertar
+  if (contexto.onCambioColumnas || contexto.onChanged) {
+    if (!esTitulo) {
       menu.appendChild(
-        itemDeColumna("Esta columna dice si está hecha", {
-          radio: true,
-          marca: regla && regla.property === prop.key ? "✓" : "",
-          alElegir: () => mostrarEstadoDeColumna(menu, contexto, anchor),
+        itemDeColumna("Insertar a la izquierda", {
+          icono: ICONOS_DE_MENU.izquierda,
+          alElegir: async () => {
+            await guardarNombre();
+            huboCambios = false; // la columna nueva repinta la tabla
+            abrirFormularioDeColumna(anchor, contexto, { junto: prop.key, lado: "izquierda" });
+          },
         }),
       );
     }
     menu.appendChild(
-      itemDeColumna("Borrar la propiedad", {
-        peligro: true,
-        alElegir: () => {
-          cerrarPanelDeColumna();
-          borrarColumna({ database, prop, onChanged: contexto.onChanged }).catch((e) =>
-            reportError("No se pudo borrar la propiedad", e),
-          );
+      itemDeColumna("Insertar a la derecha", {
+        icono: ICONOS_DE_MENU.derecha,
+        alElegir: async () => {
+          await guardarNombre();
+          huboCambios = false; // la columna nueva repinta la tabla
+          abrirFormularioDeColumna(anchor, contexto, {
+            junto: esTitulo ? "@title" : prop.key,
+            lado: "derecha",
+          });
+        },
+      }),
+    );
+  }
+
+  // --- estado de la base
+  if (!esTitulo && ["checkbox", "select", "multiselect"].includes(prop.type)) {
+    const regla = reglaDeCierre(database);
+    menu.appendChild(
+      itemDeColumna("Dice si la fila está hecha", {
+        icono: ICONOS_DE_MENU.hecha,
+        marca: regla && regla.property === prop.key ? "✓ ›" : "›",
+        alElegir: async () => {
+          await guardarNombre();
+          huboCambios = false; // el panel del estado repinta al cerrarse
+          mostrarEstadoDeColumna(menu, contexto, anchor);
         },
       }),
     );
   }
 
   menu.appendChild(separadorDeMenu());
+  if (!esTitulo) {
+    menu.appendChild(
+      itemDeColumna("Borrar la propiedad", {
+        icono: ICONOS_DE_MENU.borrar,
+        peligro: true,
+        alElegir: accion(() =>
+          borrarColumna({ database, prop, onChanged: contexto.onChanged }),
+        ),
+      }),
+    );
+  }
   menu.appendChild(
-    itemDeColumna("Propiedades…", {
-      alElegir: () => {
-        cerrarPanelDeColumna();
-        openDatabaseDialog(database, contexto.onChanged);
-      },
+    itemDeColumna("Todas las propiedades…", {
+      icono: ICONOS_DE_MENU.ajustes,
+      alElegir: accion(() => openDatabaseDialog(database, contexto.onChanged)),
     }),
   );
 
   abrirPanelFlotante(anchor, menu, {
     etiqueta: esTitulo ? "Opciones de la columna del título" : `Opciones de la columna «${nombre}»`,
+    foco: "input",
+    // Cerrar el menú guarda el nombre si se ha tocado, y repinta la tabla si
+    // algo ha cambiado (nombre u opciones).
+    alCerrar: () => {
+      guardarNombre().then(() => {
+        if (huboCambios) {
+          huboCambios = false;
+          contexto.onChanged?.();
+        }
+      });
+    },
   });
+  campo.select();
 }
 
 // --- el «+» del final de la cabecera -------------------------------------
 
 /** El formulario de una columna nueva, en un panel junto al «+»: nombre, tipo
  * y —si el tipo es Relación— la base destino. */
-function abrirFormularioDeColumna(anchor, contexto) {
+function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
   const { database } = contexto;
   const form = document.createElement("form");
   form.className = "db-col-add-form";
@@ -10797,7 +11176,11 @@ function abrirFormularioDeColumna(anchor, contexto) {
 
   const titulo = document.createElement("div");
   titulo.className = "db-col-add-title";
-  titulo.textContent = "Nueva columna";
+  titulo.textContent = !posicion
+    ? "Nueva columna"
+    : posicion.lado === "izquierda"
+      ? "Nueva columna a la izquierda"
+      : "Nueva columna a la derecha";
 
   const campoNombre = document.createElement("label");
   campoNombre.textContent = "Nombre";
@@ -10921,6 +11304,7 @@ function abrirFormularioDeColumna(anchor, contexto) {
         tipo: tipo.value,
         destino: tipo.value === "relation" ? destino.value : null,
         multiple: tipo.value === "relation" ? multiple.checked : false,
+        posicion,
       });
       cerrarPanelDeColumna();
     } catch (err) {
@@ -10936,75 +11320,101 @@ function abrirFormularioDeColumna(anchor, contexto) {
 }
 
 
-/** Un `<th>` de columna: ordena cuando hay vista donde guardar el orden (la
- * cabecera de `filtros-vista`, con su flecha y su prioridad) y lleva encima el
- * botón de tres puntos que abre el menú de la columna.
+/** El icono del tipo de una columna, como en Notion: delante del nombre en la
+ * cabecera y en la cabecera de su menú. `title` es la columna del título. */
+const ICONOS_DE_TIPO = {
+  title: '<span class="db-type-aa" aria-hidden="true">Aa</span>',
+  text: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+  number: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M5 9h14M5 15h14M10 4 8 20M16 4l-2 16"/></svg>',
+  date: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v4M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>',
+  select: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 11 4 4 4-4"/></svg>',
+  multiselect: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>',
+  checkbox: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="m8 12 3 3 5-6"/></svg>',
+  url: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>',
+  relation: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>',
+  person: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+  parent_row: '<svg class="svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12h-8M21 6H8M21 18h-8M3 6v4c0 1.1.9 2 2 2h3M3 10v6c0 1.1.9 2 2 2h3"/></svg>',
+};
+function iconoDeTipo(tipo) {
+  return `<span class="db-col-type">${ICONOS_DE_TIPO[tipo] || ICONOS_DE_TIPO.text}</span>`;
+}
+
+/** Un `<th>` de columna, como en Notion: la cabecera ENTERA es un botón (icono
+ * del tipo + nombre) que abre el menú de la columna, anclado a su izquierda.
+ * Al pasar el ratón se resalta la celda entera. Ordenar está dentro del menú
+ * (ascendente, descendente, quitar); la flecha y la prioridad del orden se
+ * siguen viendo junto al nombre, y `aria-sort` en el `<th>`.
  *
- * Las dos cosas conviven en el mismo `<th>` sin pisarse: el rótulo ordena y el
- * botón abre el menú. Sin flecha de orden (la columna del título, que el
- * servidor no ordena, o una tabla sin vista) el rótulo es el que abre el menú:
- * un `<th>` que no hace nada al pincharlo parece roto.
- */
+ * Sin `onChanged` (una tabla de solo lectura) el botón solo ordena, si hay
+ * dónde guardar el orden. */
 function cabeceraDeColumna(contexto, prop, nombre, paraOrdenar = prop) {
-  // El `<th>` de ordenar es el de siempre: así la flecha, el «N de M» de la
-  // prioridad y el `aria-sort` no se reimplementan aquí. `paraOrdenar` es la
-  // propiedad con la que ordena una columna que no está en el `schema`: la del
-  // título, que el servidor ordena con la clave `title` (texto natural) aunque
-  // su `<th>` siga siendo `@title`.
-  const th = paraOrdenar
-    ? celdaDeCabecera(paraOrdenar, contexto.sort || [], contexto.onToggleSort)
-    : document.createElement("th");
+  const th = document.createElement("th");
   th.scope = "col";
-  th.classList.add("db-col-head");
+  th.className = "db-col-head";
   // La clave de la columna en el DOM: de aquí cuelgan el asa del ancho y el
   // arrastre para reordenar (`views[].widths` / `views[].order`). Las columnas
   // de servicio llevan `@` delante para no chocar con una propiedad con esa
-  // clave —una propiedad «Open» comparte clave con el botón de abrir la fila—;
-  // `claveDeAncho` traduce `@title` a `title`, que es como se guarda el ancho
-  // de la columna del título.
+  // clave; `claveDeAncho` traduce `@title` a `title`.
   th.dataset.colKey = prop ? prop.key : "@title";
   // En el bloque incrustado, el widget del editor previene el `mousedown` del
   // bloque salvo en lo que lleve `data-db-action` (ver DatabaseBlockWidget).
   if (contexto.embed) th.dataset.dbAction = "columna";
 
-  let etiqueta = th.querySelector(".th-sort");
-  if (!etiqueta) {
-    etiqueta = document.createElement("span");
-    etiqueta.className = "db-col-label";
-    etiqueta.textContent = nombre;
-    th.textContent = "";
-    th.appendChild(etiqueta);
+  const claveOrden = paraOrdenar?.key || null;
+  const orden = contexto.sort || [];
+  const indice = claveOrden ? orden.findIndex((c) => c.key === claveOrden) : -1;
+  const puedeOrdenar = Boolean(claveOrden && (contexto.onOrdenar || contexto.onToggleSort));
+  if (puedeOrdenar) {
+    th.setAttribute(
+      "aria-sort",
+      indice < 0 ? "none" : orden[indice].dir === "desc" ? "descending" : "ascending",
+    );
   }
 
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "db-col-head-btn" + (indice >= 0 ? " is-sorted" : "");
+  boton.innerHTML = iconoDeTipo(prop ? prop.type : "title");
+  const etiqueta = document.createElement("span");
+  etiqueta.className = "db-col-label";
+  etiqueta.textContent = nombre;
+  boton.appendChild(etiqueta);
+  if (indice >= 0) {
+    const flecha = document.createElement("span");
+    flecha.className = "sort-arrow";
+    flecha.setAttribute("aria-hidden", "true");
+    flecha.textContent = orden[indice].dir === "desc" ? "↓" : "↑";
+    boton.appendChild(flecha);
+    if (orden.length > 1) {
+      const prioridad = document.createElement("span");
+      prioridad.className = "sort-priority";
+      prioridad.textContent = String(indice + 1);
+      prioridad.title = `Clave ${indice + 1} de ${orden.length}`;
+      boton.appendChild(prioridad);
+    }
+  }
+  if (contexto.embed) boton.dataset.dbAction = "columna";
+  boton.addEventListener("keydown", (e) => {
+    // En la tabla incrustada, el Enter que activa el botón no puede subir al
+    // keymap de CodeMirror (insertaría un salto en el `.md` de la nota).
+    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+  });
+
   if (contexto.onChanged) {
-    const boton = document.createElement("button");
-    boton.type = "button";
-    boton.className = "db-col-menu-btn";
-    boton.innerHTML = svgIcon("i-more");
     boton.setAttribute("aria-haspopup", "menu");
     boton.setAttribute("aria-expanded", "false");
-    boton.setAttribute("aria-label", `Opciones de la columna «${nombre}»`);
-    boton.title = "Opciones de la columna";
-    if (contexto.embed) boton.dataset.dbAction = "columna";
-    boton.addEventListener("keydown", (e) => {
-      // En la tabla incrustada, el Enter que activa el botón no puede subir al
-      // keymap de CodeMirror (insertaría un salto en el `.md` de la nota).
-      if (e.key === "Enter" || e.key === " ") e.stopPropagation();
-    });
+    boton.title = `Opciones de «${nombre}»`;
     boton.addEventListener("click", (e) => {
       e.stopPropagation();
-      abrirMenuDeColumna(boton, { ...contexto, th, prop });
+      abrirMenuDeColumna(boton, { ...contexto, th, prop, boton, claveOrden });
     });
-    // Cuando el rótulo ordena, el clic en él ya tiene dueño (la flecha); si no
-    // ordena, el rótulo es la puerta al menú.
-    if (!th.querySelector(".th-sort")) {
-      th.addEventListener("click", (e) => {
-        if (e.target !== th && e.target !== etiqueta) return;
-        abrirMenuDeColumna(boton, { ...contexto, th, prop });
-      });
-    }
-    th.appendChild(boton);
+  } else if (puedeOrdenar) {
+    boton.title = indice >= 0 ? `Ordenado por ${nombre}: pulsa para invertir` : `Ordenar por ${nombre}`;
+    boton.addEventListener("click", () => contexto.onToggleSort?.(claveOrden));
+  } else {
+    boton.disabled = true;
   }
+  th.appendChild(boton);
   return th;
 }
 
@@ -11087,6 +11497,7 @@ function renderTable(
     onChanged = null,
     onRepintar = null,
     onCambioColumnas = null,
+    onOrdenar = null,
     onAlta = null,
     barraEn = null,
   } = {},
@@ -11125,6 +11536,8 @@ function renderTable(
     onChanged,
     sort,
     onToggleSort,
+    onOrdenar,
+    onCambioColumnas,
     embed: Boolean(hooks?.embed),
   };
 
@@ -11225,11 +11638,17 @@ function renderTable(
     // `widths` con una clave que no es de ninguna columna —o una de servicio—
     // no pinta nada.
     const anchoMd = claveDeAncho(clave);
-    const ancho = anchoMd ? anchos.get(anchoMd) : null;
-    if (ancho) col.style.width = `${ancho}px`;
+    const ancho = anchoMd
+      ? anchos.get(anchoMd) || anchoPorDefecto(anchoMd, propiedades)
+      : anchoDeServicio(clave);
+    col.style.width = `${ancho}px`;
     cols.set(clave, col);
     colgroup.appendChild(col);
   });
+  // Siempre con anchos: la tabla mide lo que sus columnas (y el «+» queda
+  // justo detrás de la última), no el ancho de la página.
+  table.classList.add("has-col-widths");
+  fijarAnchoDeTabla(table, cols);
   if (onCambioColumnas) {
     headRow.querySelectorAll("th[data-col-key]").forEach((th) => {
       const clave = claveDeAncho(th.dataset.colKey);
