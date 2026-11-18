@@ -95,3 +95,32 @@ no puede ser estado, retira la regla con el schema.
   reindexar se aplica. Un valor que no exista en las opciones **no** se rechaza
   en la lectura (el `.md` es del usuario): simplemente no cuenta, que es lo
   honesto cuando el fichero se ha escrito fuera de la app.
+
+## Actualización (plan H3): grupos de estado
+
+Una selección puede organizar sus opciones en **grupos** que define cada equipo
+(`Pendiente`: «Bloqueada», «En revisión»…; `En curso`; `Hecho`), y cada grupo
+dice si **cuenta como cerrado**. El bloque `closed` del `.md` gana una clave
+`groups`:
+
+```yaml
+closed:
+  property: estado
+  values: [hecha, descartada]        # derivada: las opciones de los grupos cerrados
+  groups:
+    - {name: Pendiente, closed: false, options: [por hacer, bloqueada]}
+    - {name: Hecho, closed: true, options: [hecha, descartada]}
+```
+
+- **`values` sigue mandando.** Es lo único que miran `is_closed`, Mis tareas, los
+  contadores de subtareas, los avisos de vencimiento y la carga. Con grupos se
+  **deriva** al guardar, así que reorganizar los grupos no rompe ningún cálculo.
+- Una opción sin grupo cuenta como abierta. Cada opción está en un solo grupo;
+  tiene que haber al menos un grupo cerrado con alguna opción (si no, nada
+  cerraría). Una casilla no tiene grupos.
+- Sin `groups` todo funciona como antes; las bases que ya tienen regla se abren
+  en el editor con «Pendiente» (lo abierto) y «Hecho» (lo que ya cerraba).
+- **Pendiente:** renombrar o borrar una opción de la propiedad no actualiza los
+  grupos (igual que ya pasaba con `values`): la opción vieja queda sin efecto
+  hasta que se vuelve a guardar la regla. El tablero todavía agrupa por opción,
+  no por grupo.

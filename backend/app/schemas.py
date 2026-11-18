@@ -232,16 +232,28 @@ class PropertyDef(BaseModel):
         return str(v).strip().lower() in ("true", "1", "yes", "on", "si", "sí")
 
 
+class ClosedGroup(BaseModel):
+    """Un grupo de estados (plan H3): un nombre, si cuenta como cerrado y las
+    opciones de la propiedad que contiene."""
+
+    name: str
+    closed: bool = False
+    options: list[str] = []
+
+
 class ClosedValues(BaseModel):
     """Lo que la interfaz manda al declarar qué cuenta como fila cerrada.
 
     `property` es la clave de la columna de estado y `values` los valores que
-    cierran (vacía en una casilla). El servidor lo valida contra las opciones
-    reales de la propiedad antes de escribir nada (`app.closed.validate`).
+    cierran (vacía en una casilla). Con `groups` (plan H3), `values` se deriva
+    de los grupos cerrados y no hace falta mandarla. El servidor lo valida
+    contra las opciones reales de la propiedad antes de escribir nada
+    (`app.closed.validate`).
     """
 
     property: str = ""
     values: list[str] = []
+    groups: Optional[list[ClosedGroup]] = None
 
 
 class ClosedRule(BaseModel):
@@ -254,6 +266,7 @@ class ClosedRule(BaseModel):
 
     property: str
     values: list[str] = []
+    groups: list[ClosedGroup] = []
     source: str = "base"
 
 

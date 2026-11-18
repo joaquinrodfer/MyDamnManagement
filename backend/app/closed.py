@@ -19,6 +19,21 @@ La regla ahora es **una sola por base** y se declara en el frontmatter de
   selección `values` no puede estar vacía y cada valor tiene que ser una opción
   real de la propiedad (`validate`); en una casilla no hay valores —«marcada»
   es el único estado que cierra— y `values` va vacía.
+- **Grupos (plan H3).** Una selección puede organizar sus opciones en grupos
+  que define cada equipo (`Pendiente`: «Bloqueada», «En revisión»…; `En curso`;
+  `Hecho`), y cada grupo dice si **cuenta como cerrado**:
+
+      closed:
+        property: estado
+        values: [hecha, cerrada]          # = las opciones de los grupos cerrados
+        groups:
+          - {name: Pendiente, closed: false, options: [por hacer, bloqueada]}
+          - {name: Hecho, closed: true, options: [hecha, cerrada]}
+
+  `values` sigue siendo lo único que miran los consumidores (`is_closed`): con
+  grupos se **deriva** de ellos al guardar, así que reorganizar los grupos no
+  rompe ningún contador ni «Mis tareas». Una opción que no está en ningún grupo
+  cuenta como abierta.
 - Sin bloque `closed`, la base **no declara estado** y nada se considera
   cerrado: el contador sale «0 de N» y «Mis tareas» no esconde nada. No hay
   lista de respaldo escondida en el código: una sola verdad, la del `.md`.
@@ -50,6 +65,8 @@ STATUS_TYPES = ("select", "multiselect", "checkbox")
 CLOSED_KEY = "closed"
 PROPERTY_KEY = "property"
 VALUES_KEY = "values"
+GROUPS_KEY = "groups"
+MAX_GROUPS = 20
 
 # De dónde sale la regla efectiva de una base.
 SOURCE_BASE = "base"
@@ -87,6 +104,25 @@ def _values(raw: Any) -> list[str]:
     return [str(v).strip() for v in items if v is not None and str(v).strip()]
 
 
+def normalize_groups(raw: Any) -> list[dict[str, Any]]:
+    """Los grupos de estado tal como los trae el `.md`, sin lo que no vale."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        out.append({
+            "name": name.strip(),
+            "closed": _flag(item.get("closed")),
+            "options": _values(item.get("options")),
+        })
+    return out
+
+
 def normalize(raw: Any) -> Optional[dict[str, Any]]:
     """`{property, values}` a partir de lo que trae el `.md`, o `None`.
 
@@ -100,7 +136,11 @@ def normalize(raw: Any) -> Optional[dict[str, Any]]:
     prop = raw.get(PROPERTY_KEY)
     if not isinstance(prop, str) or not prop.strip():
         return None
-    return {PROPERTY_KEY: prop.strip(), VALUES_KEY: _values(raw.get(VALUES_KEY))}
+    rule = {PROPERTY_KEY: prop.strip(), VALUES_KEY: _values(raw.get(VALUES_KEY))}
+    groups = normalize_groups(raw.get(GROUPS_KEY))
+    if groups:
+        rule[GROUPS_KEY] = groups
+    return rule
 
 
 def from_frontmatter(front: Optional[dict]) -> Optional[dict[str, Any]]:
@@ -178,8 +218,62 @@ def _rechazar(motivo: str) -> None:
     raise HTTPException(400, motivo)
 
 
+def validate_groups(
+    nombre: str, opciones: list[str], groups: Any
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Los grupos pedidos, comprobados contra las opciones de la propiedad.
+
+    Devuelve `(grupos_canónicos, valores_cerrados)`; 400 si algo no vale: un
+    nombre vacío o repetido, una opción que no existe, una opción en dos grupos
+    o ningún grupo cerrado con opciones (entonces nada cerraría).
+    """
+    if not isinstance(groups, (list, tuple)) or not groups:
+        _rechazar(f"{nombre}: define al menos un grupo.")
+    if len(groups) > MAX_GROUPS:
+        _rechazar(f"{nombre}: como mucho {MAX_GROUPS} grupos.")
+    canonica = {o.casefold(): o for o in opciones}
+    vistos: set[str] = set()
+    usadas: dict[str, str] = {}
+    salida: list[dict[str, Any]] = []
+    cerradas: list[str] = []
+    for g in groups:
+        g = g if isinstance(g, dict) else {}
+        gname = str(g.get("name") or "").strip()
+        if not gname:
+            _rechazar(f"{nombre}: cada grupo necesita un nombre.")
+        if len(gname) > 40:
+            _rechazar(f"{nombre}: el nombre de un grupo tiene como mucho 40 caracteres.")
+        if gname.casefold() in vistos:
+            _rechazar(f"{nombre}: hay dos grupos llamados «{gname}».")
+        vistos.add(gname.casefold())
+        elegidas: list[str] = []
+        for valor in _values(g.get("options")):
+            real = canonica.get(valor.casefold())
+            if real is None:
+                _rechazar(
+                    f"{nombre}: «{valor}» no es un valor de esa propiedad. "
+                    f"Los que hay: {', '.join(opciones)}."
+                )
+            if real in usadas:
+                _rechazar(
+                    f"{nombre}: «{real}» está en dos grupos («{usadas[real]}» y «{gname}»)."
+                )
+            usadas[real] = gname
+            elegidas.append(real)
+        cierra = _flag(g.get("closed"))
+        salida.append({"name": gname, "closed": cierra, "options": elegidas})
+        if cierra:
+            cerradas.extend(elegidas)
+    if not cerradas:
+        _rechazar(
+            f"{nombre}: marca como cerrado al menos un grupo con alguna opción; "
+            "si no, nada contaría como hecho."
+        )
+    return salida, cerradas
+
+
 def validate(
-    schema_def: Iterable[dict], property_key: Any, values: Any
+    schema_def: Iterable[dict], property_key: Any, values: Any, groups: Any = None
 ) -> dict[str, Any]:
     """La regla pedida, comprobada contra el schema; 400 si no vale.
 
@@ -213,6 +307,14 @@ def validate(
         )
 
     pedidos = _values(values)
+    if groups:
+        if tipo == "checkbox":
+            _rechazar(f"{nombre} es una casilla: no tiene grupos, se cierra al marcarla.")
+        opciones_g = _values(prop.get("options"))
+        if not opciones_g:
+            _rechazar(f"{nombre} no tiene opciones: añádelas antes de usarla como estado.")
+        grupos, cerradas = validate_groups(nombre, opciones_g, groups)
+        return {PROPERTY_KEY: key, VALUES_KEY: cerradas, GROUPS_KEY: grupos}
     if tipo == "checkbox":
         if pedidos:
             _rechazar(

@@ -127,6 +127,7 @@ def test_la_base_declara_que_cuenta_como_hecha(client, vault_path):
     assert declarado == {
         "property": "estado",
         "values": ["hecha", "cerrada"],
+        "groups": [],
         "source": "base",
     }
 
@@ -148,7 +149,7 @@ def test_se_puede_declarar_al_crear_la_base(client, vault_path):
         client, closed={"property": "estado", "values": ["hecha"]}
     )
 
-    assert base["closed"] == {"property": "estado", "values": ["hecha"], "source": "base"}
+    assert base["closed"] == {"property": "estado", "values": ["hecha"], "groups": [], "source": "base"}
     assert "closed:" in md_base(vault_path)
 
 
@@ -228,6 +229,7 @@ def test_una_casilla_cierra_marcada_y_no_lleva_valores(client, vault_path):
     assert respuesta.json()["closed"] == {
         "property": "terminada",
         "values": [],
+        "groups": [],
         "source": "base",
     }
     con_valores = cerrar(client, base["id"], prop="terminada", valores=("hecha",))
@@ -275,6 +277,7 @@ def test_el_done_viejo_se_lee_como_si_fuera_closed(client, vault_path):
     assert leida["closed"] == {
         "property": "estado",
         "values": ["hecha"],
+        "groups": [],
         "source": "done",
     }
     assert "done: [hecha]" in md_base(vault_path, "Vieja")
@@ -530,6 +533,7 @@ def test_el_frontmatter_escrito_a_mano_se_lee_al_reindexar(client, vault_path):
     assert leida["closed"] == {
         "property": "estado",
         "values": ["hecha", "cerrada"],
+        "groups": [],
         "source": "base",
     }
     assert contador(client, base["id"], madre["id"]) == {"total": 3, "closed": 2}

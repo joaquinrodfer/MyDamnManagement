@@ -81,6 +81,7 @@ def test_crear_desde_proyecto_deja_esquema_vistas_y_estado(client, vault_path):
     assert base["closed"] == {
         "property": "estado",
         "values": ["hecha"],
+        "groups": [],
         "source": "base",
     }
 
