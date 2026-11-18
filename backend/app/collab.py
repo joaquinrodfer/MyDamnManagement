@@ -44,6 +44,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -174,6 +175,24 @@ class Rooms:
         self._store = store
         self._rooms: dict[str, Room] = {}
         self._guard = asyncio.Lock()
+        # Lo que tardan los últimos guardados (ms), para `/status` (hito 5).
+        # Acotado: no crece con el tiempo ni con el número de notas.
+        self.persist_ms: deque[float] = deque(maxlen=500)
+
+    def stats(self) -> dict:
+        """Salas y guardados, para `/status`: lo que hace falta para vigilarlas."""
+        tiempos = sorted(self.persist_ms)
+
+        def pct(p: float):
+            return round(tiempos[min(len(tiempos) - 1, int(len(tiempos) * p))], 1) if tiempos else None
+
+        return {
+            "rooms": len(self._rooms),
+            "peers": sum(len(r.peers) for r in self._rooms.values()),
+            "persists": len(tiempos),
+            "persist_ms_p50": pct(0.5),
+            "persist_ms_p95": pct(0.95),
+        }
 
     @property
     def open_rooms(self) -> int:
@@ -313,6 +332,7 @@ class Rooms:
             return
         room.persisted_body = stored
         room.last_persist_ms = (time.perf_counter() - t0) * 1000
+        self.persist_ms.append(room.last_persist_ms)
 
     async def _reset(self, room: Room, body: str) -> None:
         """El cuerpo cambió por otro camino: la sala empieza de nuevo con él."""

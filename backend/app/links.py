@@ -86,6 +86,38 @@ class TitleIndex:
             by_folded.setdefault(fold_title(row["title"]), []).append(row["id"])
         return cls(workspace_id, by_folded)
 
+    @classmethod
+    def load_for(
+        cls, conn: sqlite3.Connection, workspace_id: str, titles
+    ) -> "TitleIndex":
+        """Solo los títulos que se van a resolver (3.0, hito 5).
+
+        Una consulta por el índice `pages(workspace_id, title_key)`, a trozos
+        si el cuerpo nombra muchos. Es lo que usa el guardado de una nota
+        suelta: antes cargaba todos los títulos del workspace (`load`), que con
+        miles de notas era la mayor parte de lo que costaba guardar.
+        """
+        # Una página sin `title_key` (la escribió otro programa directamente en
+        # la base, sin pasar por el almacén) no se encontraría por el índice:
+        # entonces se vuelve al mapa entero. Comprobarlo es una búsqueda por el
+        # mismo índice; lo normal es que no haya ninguna.
+        if conn.execute(
+            "SELECT 1 FROM pages WHERE workspace_id = ? AND title_key IS NULL LIMIT 1",
+            (workspace_id,),
+        ).fetchone() is not None:
+            return cls.load(conn, workspace_id)
+        keys = sorted({fold_title(t) for t in titles})
+        by_folded: dict[str, list[str]] = {}
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            for row in conn.execute(
+                f"SELECT id, title_key FROM pages WHERE workspace_id = ? AND title_key IN ({marks})",
+                (workspace_id, *chunk),
+            ):
+                by_folded.setdefault(row["title_key"], []).append(row["id"])
+        return cls(workspace_id, by_folded)
+
     def ids_for(self, title: str) -> list[str]:
         """Ids de las páginas cuyo título pliega igual que `title` (o nada)."""
         return self.by_folded.get(fold_title(title), [])
@@ -150,7 +182,9 @@ def _sync_title_links(
     # reindexado no hay consulta; en un guardado suelto es una sola (la de
     # antes), no una por nota.
     index = (
-        title_index if title_index is not None else TitleIndex.load(conn, workspace_id)
+        title_index
+        if title_index is not None
+        else TitleIndex.load_for(conn, workspace_id, titles)
     )
     # Destino -> forma del título que se guarda. El `dict` conserva el orden
     # del cuerpo y `setdefault` deja la primera forma encontrada: dos guardados

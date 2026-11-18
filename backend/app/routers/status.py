@@ -33,7 +33,16 @@ def get_status():
             "db": _check_index(),
         },
         "drift": _check_drift(),
+        # 3.0, hito 4/5: salas de edición en vivo abiertas y lo que tarda
+        # guardarlas (p50/p95 de los últimos 500 guardados).
+        "collab": _collab_stats(),
     }
+
+
+def _collab_stats() -> dict:
+    from app.routers.collab import rooms
+
+    return rooms.stats()
 
 
 def _check_index() -> dict:
