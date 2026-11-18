@@ -66,6 +66,10 @@ class Page:
     content_hash: str = ""
     body: str = ""
     frontmatter: dict = field(default_factory=dict)      # tal cual, cadenas
+    # El texto del frontmatter entre los dos `---` (sin ellos), o None si el
+    # fichero no tiene (o lo tiene roto: entonces todo es cuerpo). Va al índice
+    # (`pages.frontmatter`) para que el export reconstruya el fichero entero.
+    frontmatter_raw: str | None = None
     extra_keys: dict = field(default_factory=dict)       # claves que no gestiona la app
     database_id: str | None = None
     properties: dict = field(default_factory=dict)       # solo filas, ya coercionadas
@@ -833,6 +837,7 @@ def read_file(abs_path: str, rel_path: str, st=None) -> Page:
         content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
         body=body,
         frontmatter=data,
+        frontmatter_raw=raw,
         warnings=warnings,
     )
     return page

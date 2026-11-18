@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     # documento dice cuántas quedaron fuera (`_Mostrando 200 de 340 filas._`).
     export_max_rows: int = 200
 
+    # --- Export íntegro del vault (3.0, hito 1) ----------------------------
+    # Dónde deja `POST /export` lo que exporta (una carpeta por export, o el
+    # `.zip` mientras se descarga). Fuera del vault: un export dentro del vault
+    # se reindexaría como notas duplicadas.
+    export_dir: str = "/data/exports"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

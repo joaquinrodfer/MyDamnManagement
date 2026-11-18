@@ -32,6 +32,7 @@ from app.routers import (
     trash,
 )
 from app.routers import auth as auth_routes
+from app.routers import export as export_routes
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 from app.vault.watcher import VaultWatcher
 
@@ -59,6 +60,8 @@ app.include_router(databases.router)
 # se asigna una fila, no la lista de administración de `/auth/users`.
 app.include_router(people.router)
 app.include_router(status.router)
+# `/export` (3.0, hito 1): el vault entero desde el índice, en zip o carpeta.
+app.include_router(export_routes.router)
 app.include_router(trash.router)
 app.include_router(search.router)
 app.include_router(dashboard.router)
