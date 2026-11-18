@@ -270,6 +270,8 @@ def create_database(
             schema_def=schema_def,
             closed_rule=closed_rule,
         )
+        if payload.section == "shared" and not payload.parent_id:
+            repo.set_section(db_def.page_id, "shared")  # plan H2
     return _serialize_database(db_def, repo.database_ids())
 
 

@@ -363,6 +363,8 @@
     text-overflow: ellipsis;
   }
   /* ---------- espacios de trabajo (plan H1) ---------- */
+  .tree-guest-ws { margin-left: auto; padding-left: 6px; font-size: 11px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+  .tree-empty-section { padding: 2px 16px 6px; font-size: 12px; color: var(--ink-muted); }
   .workspace-switcher { padding: 2px 8px 6px; }
   .workspace-btn {
     display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px;
@@ -5342,15 +5344,35 @@
 
         <div class="sidebar-section">
           <div class="sidebar-section-head">
-            <span>Páginas</span>
+            <span>Compartido</span>
             <div class="sidebar-head-actions">
               <button class="icon-btn" id="btn-new-from-template" title="Crear desde plantilla" aria-label="Crear desde plantilla"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-database"/></svg></button>
-              <button class="icon-btn" id="btn-new-note" title="Nueva nota" aria-label="Nueva nota"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
+              <button class="icon-btn" id="btn-new-note" title="Nueva nota compartida con el espacio" aria-label="Nueva nota compartida con el espacio"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
             </div>
           </div>
           <!-- role="tree": contenedor ARIA del árbol de páginas (SPEC-B §5 #1).
                Las filas son treeitem y .tree-children es group. -->
-          <div id="tree-container" role="tree" aria-label="Páginas"></div>
+          <div id="tree-container" role="tree" aria-label="Compartido"></div>
+        </div>
+
+        <!-- Plan H2: lo mío, lo que me han compartido de fuera y (solo para el
+             superadministrador) lo privado de otras personas. -->
+        <div class="sidebar-section" id="private-section">
+          <div class="sidebar-section-head">
+            <span>Privado</span>
+            <div class="sidebar-head-actions">
+              <button class="icon-btn" id="btn-new-private" title="Nueva nota privada" aria-label="Nueva nota privada"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
+            </div>
+          </div>
+          <div id="tree-private" role="tree" aria-label="Privado"></div>
+        </div>
+        <div class="sidebar-section" id="with-me-section" hidden>
+          <div class="sidebar-section-head"><span>Compartido conmigo</span></div>
+          <div id="tree-with-me" role="tree" aria-label="Compartido conmigo"></div>
+        </div>
+        <div class="sidebar-section" id="others-section" hidden>
+          <div class="sidebar-section-head"><span>Privado de otras personas</span></div>
+          <div id="tree-others" role="tree" aria-label="Privado de otras personas"></div>
         </div>
 
       </div>
