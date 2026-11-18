@@ -2,7 +2,7 @@ import re
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -20,6 +20,9 @@ class PageBase(BaseModel):
 
 class PageCreate(PageBase):
     body_markdown: Optional[str] = ""
+    # Plan H2: en la raíz, `shared` (todo el espacio) o `private` (solo yo). Sin
+    # él, privada como siempre.
+    section: Optional[Literal["shared", "private"]] = None
 
 
 class PageUpdate(BaseModel):
@@ -32,6 +35,10 @@ class PageUpdate(BaseModel):
     # cambios" si el valor por defecto es None, así que se mira el campo
     # presente en el cuerpo del PATCH — ver routers/pages.py).
     parent_id: Optional[uuid.UUID] = None
+    # Plan H2: pasar a Compartido o a Privado (página de la raíz) y mover a
+    # otro espacio (queda en la raíz del destino).
+    section: Optional[Literal["shared", "private"]] = None
+    workspace_id: Optional[uuid.UUID] = None
 
 
 class PageRead(PageBase):
@@ -254,6 +261,7 @@ class DatabaseCreate(BaseModel):
     title: str = "Sin título"
     icon: Optional[str] = None
     parent_id: Optional[uuid.UUID] = None
+    section: Optional[Literal["shared", "private"]] = None
     schema_def: list[PropertyDef] = []
     # La regla de qué cuenta como fila cerrada, si la plantilla la trae. Se
     # valida contra las opciones del schema: un valor que no existe es un 400.

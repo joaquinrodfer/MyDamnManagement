@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from app import acl, auth
 from app.dependencies import get_current_user, get_repo
-from app.index import DEFAULT_WORKSPACE_ID
+from app import workspaces as ws_mod
 from app.repository import Repository
 
 router = APIRouter(prefix="/acl", tags=["acl"])
@@ -66,6 +66,25 @@ def _read(repo: Repository, user: auth.User, resource_type: str, resource_id: uu
         r["id"]: (r["display_name"], r["color"], auth.avatar_of(r))
         for r in repo.conn.execute("SELECT id, username, display_name, color, avatar FROM users")
     }
+    # Plan H2: quien no es miembro del espacio de la página es invitado.
+    members = {
+        m["subject_id"]
+        for m in ws_mod.members(repo.conn, row["workspace_id"])
+        if m["subject_type"] == "user"
+    }
+    groups_of_ws = {
+        m["subject_id"]
+        for m in ws_mod.members(repo.conn, row["workspace_id"])
+        if m["subject_type"] == "group"
+    }
+    if groups_of_ws:
+        marks = ",".join("?" * len(groups_of_ws))
+        members |= {
+            r[0]
+            for r in repo.conn.execute(
+                f"SELECT user_id FROM group_members WHERE group_id IN ({marks})", tuple(groups_of_ws)
+            )
+        }
     entries = []
     for e in acl.entries(repo.conn, source) if source else []:
         name, color, avatar = users.get(e.subject_id, (None, None, None))
@@ -81,6 +100,7 @@ def _read(repo: Repository, user: auth.User, resource_type: str, resource_id: uu
             "color": color,
             "avatar": avatar,
             "level": e.level,
+            "guest": e.subject_type == "user" and e.subject_id not in members,
         })
     # Propietarios primero, luego quien edita y quien ve; el espacio, delante
     # de su nivel; dentro de cada nivel, por nombre.

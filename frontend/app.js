@@ -3215,15 +3215,50 @@ async function loadTree() {
       (n) => !(state.inboxIds.has(n.id) && !n.children?.length),
     );
 
+    // Plan H2: las páginas de la raíz van a su sección (Compartido, Privado,
+    // «Compartido conmigo» u «Otras personas», esta solo para el superadmin).
+    const porSeccion = { shared: [], private: [], with_me: [], others: [] };
+    for (const n of notes) (porSeccion[n.section] || porSeccion.shared).push(n);
+    // Lo que me han compartido de espacios que no son los míos (invitado).
+    let invitado = [];
+    try {
+      invitado = await api("/pages/shared-with-me");
+      indexTree(invitado);
+    } catch {
+      invitado = [];
+    }
+    const pintarSeccion = (idArbol, idSeccion, nodos, { vacia = "" } = {}) => {
+      const cont = document.getElementById(idArbol);
+      if (!cont) return;
+      cont.innerHTML = "";
+      if (idSeccion) document.getElementById(idSeccion).hidden = nodos.length === 0;
+      if (!nodos.length && vacia) {
+        const v = document.createElement("div");
+        v.className = "tree-empty-section";
+        v.textContent = vacia;
+        cont.appendChild(v);
+      }
+      nodos.forEach((n) => {
+        const el = renderTreeNode(n);
+        if (n.workspace) {
+          const etiqueta = document.createElement("span");
+          etiqueta.className = "tree-guest-ws";
+          etiqueta.textContent = n.workspace.name;
+          el.querySelector(".tree-row")?.appendChild(etiqueta);
+        }
+        cont.appendChild(el);
+      });
+    };
     const treeContainer = document.getElementById("tree-container");
-    treeContainer.innerHTML = "";
-
-    if (notes.length === 0) {
+    pintarSeccion("tree-container", null, porSeccion.shared);
+    pintarSeccion("tree-private", null, porSeccion.private);
+    pintarSeccion("tree-with-me", "with-me-section", [...porSeccion.with_me, ...invitado]);
+    pintarSeccion("tree-others", "others-section", porSeccion.others);
+    if (notes.length === 0 && invitado.length === 0) {
       treeContainer.innerHTML =
         '<div class="empty-hint empty-hint--side"><p class="empty-hint-title">Todavía no hay páginas.</p>' +
         '<p class="empty-hint-note">Pulsa «+» aquí arriba para escribir la primera nota.</p></div>';
     }
-    notes.forEach((n) => treeContainer.appendChild(renderTreeNode(n)));
 
     if (state.current) markActive(state.current.id);
     applyPageSelectionClasses();
@@ -3251,6 +3286,20 @@ function indexTree(nodes) {
     state.pagesById.set(n.id, n);
     if (n.children?.length) indexTree(n.children);
   }
+}
+
+/** Compartido/Privado y mover a otro espacio (plan H2): un PATCH y el árbol
+ * de nuevo. Si la página abierta se va a otro espacio, se vuelve al inicio. */
+async function reorganizarPagina(node, cuerpo, aviso, cambiaDeEspacio = false) {
+  try {
+    await api(`/pages/${node.id}`, { method: "PATCH", body: JSON.stringify(cuerpo) });
+  } catch (e) {
+    reportError("No se pudo mover la página", e);
+    return;
+  }
+  await loadTree();
+  if (cambiaDeEspacio && state.current && !state.pagesById.has(state.current.id)) await showEmpty();
+  showNotice(aviso);
 }
 
 function renderTreeNode(node, depth = 1) {
@@ -3329,6 +3378,30 @@ function renderTreeNode(node, depth = 1) {
       sections.push({
         items: [{ label: "Nueva subpágina", onClick: () => createSubpage(items[0]) }],
       });
+    }
+    if (items.length === 1) {
+      const unica = items[0];
+      const mover = [];
+      // Solo una página de la raíz está en Compartido o en Privado.
+      if (!unica.parent_id && unica.section === "private") {
+        mover.push({ label: "Pasar a Compartido", onClick: () => reorganizarPagina(unica, { section: "shared" }, "Ahora la ve todo el espacio.") });
+      } else if (!unica.parent_id && unica.section === "shared") {
+        mover.push({ label: "Pasar a Privado", onClick: () => reorganizarPagina(unica, { section: "private" }, "Ahora solo la ves tú.") });
+      }
+      for (const w of state.workspaces) {
+        if (w.id === state.workspaceId || w.role === "viewer") continue;
+        mover.push({
+          label: `Mover al espacio «${w.name}»`,
+          onClick: () =>
+            reorganizarPagina(
+              unica,
+              { workspace_id: w.id, section: unica.section === "shared" ? "shared" : "private" },
+              `Movida a «${w.name}».`,
+              true,
+            ),
+        });
+      }
+      if (mover.length) sections.push({ items: mover });
     }
     sections.push({
       items: [
@@ -11593,8 +11666,13 @@ function botonCompartir(tipo, id, titulo) {
 async function abrirCompartir(anchor, tipo, id, titulo) {
   let datos;
   let gente;
+  let grupos = [];
   try {
-    [datos, gente] = await Promise.all([api(`/acl/${tipo}/${id}`), cargarPersonas()]);
+    [datos, gente, grupos] = await Promise.all([
+      api(`/acl/${tipo}/${id}`),
+      cargarPersonas(),
+      api("/groups").catch(() => []),
+    ]);
   } catch (e) {
     reportError("No se pudieron leer los permisos", e);
     return;
@@ -11603,7 +11681,7 @@ async function abrirCompartir(anchor, tipo, id, titulo) {
   panel.className = "db-col-menu share-panel";
   panel.setAttribute("role", "dialog");
   const yo = String(sessionUser.me?.id ?? "");
-  const pintar = () => pintarCompartir(panel, { tipo, id, titulo, datos, gente, yo, guardar });
+  const pintar = () => pintarCompartir(panel, { tipo, id, titulo, datos, gente, grupos, yo, guardar });
   async function guardar(cuerpo) {
     try {
       datos = await api(`/acl/${tipo}/${id}`, { method: "PUT", body: JSON.stringify(cuerpo) });
@@ -11617,7 +11695,7 @@ async function abrirCompartir(anchor, tipo, id, titulo) {
   abrirPanelFlotante(anchor, panel, { etiqueta: `Compartir «${titulo}»`, foco: "select, input" });
 }
 
-function pintarCompartir(panel, { titulo, datos, gente, yo, guardar }) {
+function pintarCompartir(panel, { titulo, datos, gente, grupos = [], yo, guardar }) {
   panel.textContent = "";
   const h = document.createElement("h3");
   h.textContent = `Compartir «${titulo}»`;
@@ -11678,7 +11756,7 @@ function pintarCompartir(panel, { titulo, datos, gente, yo, guardar }) {
     fila.className = "share-row";
     const dot = document.createElement("span");
     dot.className = "share-dot";
-    if (e.subject_type === "workspace") {
+    if (e.subject_type === "workspace" || e.subject_type === "group") {
       dot.innerHTML = svgIcon("i-users");
     } else if (avatarImg(e.avatar)) {
       dot.classList.add("has-img");
@@ -11692,6 +11770,14 @@ function pintarCompartir(panel, { titulo, datos, gente, yo, guardar }) {
     nombre.textContent =
       (e.name || "Usuario borrado") + (e.subject_type === "user" && e.subject_id === yo ? " (tú)" : "");
     fila.append(dot, nombre);
+    if (e.guest) {
+      // Plan H2: alguien de fuera del espacio ve esta página (y sus hijas), no el espacio.
+      const invitado = document.createElement("span");
+      invitado.className = "share-note";
+      invitado.textContent = "invitado";
+      invitado.title = "No es miembro del espacio: solo ve esta página y las de dentro.";
+      fila.append(invitado);
+    }
     if (editable) {
       const nivel = document.createElement("select");
       nivel.className = "share-level";
@@ -11729,6 +11815,9 @@ function pintarCompartir(panel, { titulo, datos, gente, yo, guardar }) {
     if (!ya.has(`workspace:${datos.workspace_id}`)) {
       quien.add(new Option("Todo el espacio", `workspace:${datos.workspace_id}`));
     }
+    grupos
+      .filter((g) => !ya.has(`group:${g.id}`))
+      .forEach((g) => quien.add(new Option(`Grupo: ${g.name}`, `group:${g.id}`)));
     gente
       .filter((p) => !ya.has(`user:${p.id}`))
       .forEach((p) => quien.add(new Option(p.display_name || p.username, `user:${p.id}`)));
@@ -17527,10 +17616,13 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
 /** Crea una nota y navega a ella, lista para renombrar. Compartida por el
  * "+" de la barra lateral (siempre en la raíz) y "Nueva subpágina" del
  * menú contextual (bajo la página sobre la que se hizo clic derecho). */
-async function createNote(parent_id) {
+async function createNote(parent_id, section = null) {
   let page;
   try {
-    page = await api("/pages", { method: "POST", body: JSON.stringify({ title: "Sin título", parent_id, body_markdown: "" }) });
+    page = await api("/pages", {
+      method: "POST",
+      body: JSON.stringify({ title: "Sin título", parent_id, body_markdown: "", ...(parent_id ? {} : { section: section || "shared" }) }),
+    });
   } catch (e) {
     // Antes esto dejaba una promesa rechazada sin capturar y cero avisos: el
     // "+" parecía no hacer nada.
@@ -17551,7 +17643,8 @@ function createSubpage(node) {
   return createNote(node.id);
 }
 
-document.getElementById("btn-new-note").addEventListener("click", () => createNote(null));
+document.getElementById("btn-new-note").addEventListener("click", () => createNote(null, "shared"));
+document.getElementById("btn-new-private")?.addEventListener("click", () => createNote(null, "private"));
 
 // -------------------------------------------------------------------- buscar
 

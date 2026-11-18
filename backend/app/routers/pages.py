@@ -4,7 +4,8 @@ from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, UploadFile
 
-from app import auth, export, schemas
+from app import acl, auth, export, schemas
+from app import workspaces as ws_mod
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
 from app.enums import PageType
@@ -75,6 +76,8 @@ def create_page(
         # Padre inexistente o de un tipo que todavía no vive en ficheros: 400
         # con el motivo, en vez de un 500 desde el fondo del vault.
         raise HTTPException(400, str(exc)) from exc
+    if payload.section == "shared" and not payload.parent_id:
+        repo.set_section(page.id, "shared")  # plan H2: nace para todo el espacio
     bus.publish({"type": "tree", "action": "created", "page_id": str(page.id)})
     return serialize_page(page, repo.author_colors())
 
@@ -87,6 +90,12 @@ def get_tree(repo: Repository = Depends(get_repo)):
     la tabla/tablero de su database, no como nodos sueltos del árbol.
     """
     return repo.tree()
+
+
+@router.get("/shared-with-me")
+def get_shared_with_me(repo: Repository = Depends(get_repo)):
+    """Lo que me han compartido como invitado en espacios que no son los míos."""
+    return repo.guest_tree()
 
 
 @router.get("/{page_id}", response_model=schemas.PageRead)
@@ -106,12 +115,20 @@ def update_page(
     payload: schemas.PageUpdate,
     response: Response,
     repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
     if_match: str | None = Header(default=None),
 ):
     """Guarda los campos que llegan. Con `If-Match: <version>` (3.0, hito 2),
     solo si la página sigue en esa versión; si no, 409 con la de ahora."""
     expected = parse_if_match(if_match)
     antes = repo.get_page(page_id)
+    if payload.section is not None or payload.workspace_id is not None:
+        _reorganizar(repo, user, page_id, payload)
+        if not _tiene_otros_cambios(payload):
+            despues = _get_or_404(repo, page_id)
+            bus.publish({"type": "tree", "action": "changed", "page_id": str(page_id)})
+            response.headers["ETag"] = etag(despues.version)
+            return serialize_page(despues, repo.author_colors())
     extra = {}
     if "parent_id" in payload.model_fields_set:
         # Presente en el cuerpo: mover (o `null` para subir a la raíz).
@@ -136,6 +153,36 @@ def update_page(
     avisar_de_cambio(antes, page)
     response.headers["ETag"] = etag(page.version)
     return serialize_page(page, repo.author_colors())
+
+
+def _tiene_otros_cambios(payload: schemas.PageUpdate) -> bool:
+    return bool(
+        {"title", "icon", "description", "body_markdown", "parent_id"} & payload.model_fields_set
+    )
+
+
+def _reorganizar(repo: Repository, user: auth.User, page_id: uuid.UUID, payload: schemas.PageUpdate) -> None:
+    """Compartido/Privado y mover a otro espacio (plan H2). Solo el propietario
+    cambia con quién se comparte, y mover pide poder editar en el destino."""
+    try:
+        acl.authorize(repo.conn, user, page_id, "owner")
+    except acl.NotVisible:
+        raise HTTPException(404, "Página no encontrada") from None
+    except acl.Forbidden:
+        raise HTTPException(403, "Solo el propietario puede cambiar con quién se comparte o mover la página") from None
+    try:
+        if payload.workspace_id is not None:
+            destino = str(payload.workspace_id)
+            role = ws_mod.role_of(repo.conn, user, destino)
+            if ws_mod.get(repo.conn, destino) is None or role is None:
+                raise HTTPException(404, "No existe ese espacio")
+            if role == "viewer":
+                raise HTTPException(403, "En ese espacio solo puedes leer")
+            repo.move_to_workspace(page_id, destino, payload.section)
+        elif payload.section is not None:
+            repo.set_section(page_id, payload.section)
+    except VaultError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.delete("/{page_id}", status_code=204)

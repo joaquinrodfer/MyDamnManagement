@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
 from app import acl, auth, closed, index as index_mod, templates as template_defs
+from app import workspaces as ws_mod
+from app.vault import store as store_mod
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
@@ -634,12 +636,44 @@ class Repository:
 
     def tree(self) -> list[dict[str, Any]]:
         cond, args = self._visible("p")
+        me = str(self.user.id) if self.user is not None else ""
         rows = self.conn.execute(
             "SELECT p.id, p.title, p.type, p.icon, p.parent_id,"
-            f" {acl.is_shared_sql('p')} AS shared FROM pages p"
-            f" WHERE p.type != ? AND {cond} ORDER BY p.title COLLATE NOCASE, p.title",
-            (PageType.database_row.value, *args),
+            f" {acl.is_shared_sql('p')} AS shared,"
+            # Plan H2: en qué sección de la barra lateral va una página de la raíz.
+            " EXISTS (SELECT 1 FROM acl s WHERE s.resource_id = p.acl_source"
+            "  AND s.subject_type = 'workspace') AS ws_shared,"
+            " EXISTS (SELECT 1 FROM acl s WHERE s.resource_id = p.acl_source"
+            "  AND s.subject_type = 'user' AND s.subject_id = ? AND s.level = 'owner') AS mine"
+            f" FROM pages p WHERE p.type != ? AND {cond}"
+            " ORDER BY p.title COLLATE NOCASE, p.title",
+            (me, PageType.database_row.value, *args),
         ).fetchall()
+        return self._build_tree(rows, sections=True)
+
+    def guest_tree(self) -> list[dict[str, Any]]:
+        """Lo que me han compartido en espacios que no son los míos (invitado).
+
+        Cada raíz trae el espacio al que pertenece (`workspace`); lo de dentro
+        sale con el permiso que ya heredaba. El superadministrador no es
+        invitado de nada: lista vacía.
+        """
+        user = self.user
+        if user is None or getattr(user, "is_admin", False):
+            return []
+        cond, args = acl.visible_clause(user, "p", None)
+        member_sql, member_args = ws_mod.member_workspaces_sql(user.id)
+        rows = self.conn.execute(
+            "SELECT p.id, p.title, p.type, p.icon, p.parent_id, 0 AS shared,"
+            " p.workspace_id AS workspace_id, w.name AS workspace_name"
+            " FROM pages p JOIN workspaces w ON w.id = p.workspace_id"
+            f" WHERE p.type != ? AND {cond} AND p.workspace_id NOT IN ({member_sql})"
+            " ORDER BY p.title COLLATE NOCASE, p.title",
+            (PageType.database_row.value, *args, *member_args),
+        ).fetchall()
+        return self._build_tree(rows, sections=False)
+
+    def _build_tree(self, rows, *, sections: bool) -> list[dict[str, Any]]:
         database_by_page = {
             r["page_id"]: r["id"]
             for r in self.conn.execute("SELECT id, page_id FROM databases")
@@ -660,14 +694,94 @@ class Repository:
             for r in rows
         }
         roots: list[dict[str, Any]] = []
+        system = self.user is None or getattr(self.user, "is_admin", False)
         for r in rows:
             node = nodes[r["id"]]
             parent = r["parent_id"]
             if parent and parent in nodes:
                 nodes[parent]["children"].append(node)
-            else:
-                roots.append(node)
+                continue
+            if sections:
+                # Compartido (con todo el espacio), Privado (mío y de nadie más),
+                # «con_migo» (me lo han compartido) u «otros» (solo el superadmin).
+                if r["ws_shared"]:
+                    node["section"] = "shared"
+                elif r["mine"]:
+                    node["section"] = "private"
+                else:
+                    node["section"] = "others" if system else "with_me"
+            elif "workspace_name" in r.keys():
+                node["workspace"] = {"id": r["workspace_id"], "name": r["workspace_name"]}
+            roots.append(node)
         return roots
+
+    # -------------------------------------- Compartido / Privado / mover (H2)
+
+    def set_section(self, page_id: uuid.UUID | str, section: str) -> None:
+        """Una página de la raíz pasa a Compartido (todo el espacio) o a Privado.
+
+        Privado: solo sus propietarios (se quitan el espacio, los grupos y las
+        personas con las que estuviera compartida). Compartido: lo que tenía y,
+        además, todo el espacio en edición.
+        """
+        row = self.conn.execute(
+            "SELECT type, parent_id, workspace_id FROM pages WHERE id = ?", (str(page_id),)
+        ).fetchone()
+        if row is None:
+            raise VaultError("la página no existe")
+        if row["parent_id"] or row["type"] == "database_row":
+            raise VaultError("solo una página de la raíz está en Compartido o en Privado")
+        kind = "database" if row["type"] == "database" else "page"
+        current = acl.entries(self.conn, page_id) if acl.declared(self.conn, page_id) else []
+        keep = [e for e in current if e.subject_type != "workspace"]
+        owners = [e for e in keep if e.subject_type == "user" and e.level == "owner"]
+        if not owners and self.user is not None:
+            keep.append(acl.Entry("user", str(self.user.id), "owner"))
+        if section == "private":
+            new = [e for e in keep if e.subject_type == "user" and e.level == "owner"]
+        else:
+            new = keep + [acl.Entry("workspace", row["workspace_id"], "edit")]
+        with self._tx():
+            acl.set_entries(self.conn, kind, page_id, new)
+            acl.refresh_sources(self.conn)
+
+    def move_to_workspace(
+        self, page_id: uuid.UUID | str, workspace_id: str, section: str | None = None
+    ) -> int:
+        """Mueve una página (y todo lo que cuelga de ella) a otro espacio.
+
+        Queda en la raíz del destino. Sus permisos propios se rehacen: se
+        mantienen las personas y los grupos (los invitados siguen siéndolo), se
+        quita el espacio de origen y, si va a Compartido, entra el del destino.
+        """
+        row = self.conn.execute(
+            "SELECT type, parent_id, workspace_id FROM pages WHERE id = ?", (str(page_id),)
+        ).fetchone()
+        if row is None:
+            raise VaultError("la página no existe")
+        if row["type"] == "database_row":
+            raise VaultError("una fila se mueve con su base")
+        if row["workspace_id"] == workspace_id and not row["parent_id"]:
+            if section:
+                self.set_section(page_id, section)
+            return 0
+        kind = "database" if row["type"] == "database" else "page"
+        with self._tx():
+            was_shared = False
+            if acl.declared(self.conn, page_id):
+                was_shared = any(e.subject_type == "workspace" for e in acl.entries(self.conn, page_id))
+            if row["parent_id"]:
+                self.update_page(uuid.UUID(str(page_id)), parent_id=None)
+            moved = store_mod.set_workspace_for_subtree(self.conn, page_id, workspace_id)
+            current = acl.entries(self.conn, page_id) if acl.declared(self.conn, page_id) else []
+            new = [e for e in current if e.subject_type != "workspace"]
+            if not any(e.subject_type == "user" and e.level == "owner" for e in new) and self.user is not None:
+                new.append(acl.Entry("user", str(self.user.id), "owner"))
+            if (section or ("shared" if was_shared else "private")) == "shared":
+                new.append(acl.Entry("workspace", workspace_id, "edit"))
+            acl.set_entries(self.conn, kind, page_id, new)
+            acl.refresh_sources(self.conn)
+        return moved
 
     def backlinks(self, page_id: uuid.UUID) -> list[Page]:
         """Páginas que enlazan a esta: con un wikilink o incrustando una base.

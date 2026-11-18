@@ -549,6 +549,38 @@ def fill_title_keys(conn: sqlite3.Connection) -> None:
     )
 
 
+def set_workspace_for_subtree(conn: sqlite3.Connection, page_id: Any, workspace_id: str) -> int:
+    """La página, sus descendientes y las filas de las bases que contienen pasan
+    a `workspace_id` (plan H2). Devuelve cuántas páginas cambian."""
+    ids = [
+        r[0]
+        for r in conn.execute(
+            "WITH RECURSIVE t(id) AS (SELECT ? UNION ALL"
+            " SELECT c.id FROM pages c JOIN t ON c.parent_id = t.id) SELECT id FROM t",
+            (str(page_id),),
+        )
+    ]
+    for desde in range(0, len(ids), 400):
+        trozo = ids[desde:desde + 400]
+        marks = ",".join("?" * len(trozo))
+        ids.extend(
+            r[0]
+            for r in conn.execute(
+                "SELECT r.id FROM rows r JOIN databases d ON d.id = r.database_id"
+                f" WHERE d.page_id IN ({marks})",
+                trozo,
+            )
+        )
+    ids = list(dict.fromkeys(ids))
+    for desde in range(0, len(ids), 400):
+        trozo = ids[desde:desde + 400]
+        conn.execute(
+            f"UPDATE pages SET workspace_id = ? WHERE id IN ({','.join('?' * len(trozo))})",
+            (workspace_id, *trozo),
+        )
+    return len(ids)
+
+
 def inherit_acl_source(conn: sqlite3.Connection, page_id: Any) -> None:
     """`acl_source` de UNA página: ella si declara, su base si es fila, si no su madre."""
     conn.execute(
