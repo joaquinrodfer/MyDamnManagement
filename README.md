@@ -1,4 +1,4 @@
-# MyDamnManagement
+# Noteping (antes MyDamnManagement)
 
 ![Logo MyDamnManagement](public/MDMLogo.png)
 
@@ -130,6 +130,17 @@ docker compose run --rm \
 El nombre del volumen es el del proyecto de compose que lo creó: `docker volume ls | grep attachments` dice cuál es si no es `mydamnmanagement`.
 
 Documentación interactiva de la API en [http://localhost:8000/docs](http://localhost:8000/docs) (con `DOCS_ENABLED` encendido, el valor por defecto). Panel visual en [http://localhost:8000/](http://localhost:8000/) (barra lateral a la izquierda con «Mis cosas» —Inicio, Mis tareas, Grafo—, el árbol de páginas con las bases dentro y tu usuario abajo, que abre **Ajustes**: tema, perfil, contraseña, tokens de captura y, para un admin, usuarios).
+
+## Espacios, grupos, tipos de base, carga del equipo y avisos
+
+Lo que añadió el plan de [`docs/PLAN-ESPACIOS-Y-CARGA.md`](docs/PLAN-ESPACIOS-Y-CARGA.md) (todo implementado):
+
+- **Espacios de trabajo** (`/workspaces`): contextos separados (Desarrollo, Dirección…). Quien no está en un espacio no ve nada de él. Roles `admin`, `editor` y `viewer`, para personas o **grupos** (`/groups`). El espacio activo viaja en la cabecera `X-Workspace`; sin ella, la API se comporta como siempre. Cada espacio tiene **Compartido** (lo ve todo el espacio) y **Privado** (solo quien lo crea), se puede **mover** una página a otro espacio y compartir con alguien de fuera como **invitado** (ve esa página y sus hijas).
+- **Estado con grupos** (ADR-0007): las opciones de un estado se organizan en grupos (Pendiente, En curso, Hecho…) y cada grupo dice si cuenta como cerrado.
+- **Bases de Proyectos y de Tareas**: una base declara qué columna hace de qué (responsable —uno o varios—, estado, inicio, fin, horas, proyecto). Las columnas de un rol se renombran pero no se borran. Las horas de un proyecto salen de sus tareas (`GET /databases/{id}/rows/{fila}/tasks`).
+- **Carga del equipo** (`GET /workload`, vista `/carga-del-equipo`; superadministrador o `can_view_global_workload`): horas de las tareas abiertas de **todos** los espacios por persona y semana, con el origen de cada hora; lo que no se ve sale como «Proyecto privado [Espacio]».
+- **Avisos** (`/notifications`): menciones `@usuario`, tareas asignadas, plazos y cambios (con una suscripción por página: todo, solo menciones o silenciada). La campana y el sonar del logo salen de ahí. **Presencia** (`/presence`): quién está en línea y en qué página (solo si puedes leerla).
+- **Administración**: copias de seguridad (`BACKUP_DIR`, descarga y programadas, y copia del índice antes de migrar), **auditoría** (`GET /audit`) y **webhooks salientes** por espacio (firmados con HMAC-SHA256 y solo a servidores públicos; `WEBHOOK_ALLOW_PRIVATE=1` abre la red interna).
 
 ## Panel visual
 
