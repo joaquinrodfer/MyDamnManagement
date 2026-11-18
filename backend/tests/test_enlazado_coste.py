@@ -69,8 +69,21 @@ def test_el_reindexado_pide_el_mapa_de_titulos_una_vez(index_path, monkeypatch):
         # haya ni una nota todavía.
         assert len(cargas) == 1, cargas
 
-        # El guardado de una nota suelta sigue por su cuenta: construye el mapa
-        # para ella (una consulta), que es lo que hacía antes.
+        # El guardado de una nota suelta NO construye el mapa entero: desde la
+        # 3.0 (hito 5) pide solo los títulos que nombra su cuerpo
+        # (`TitleIndex.load_for`, una consulta por índice). Antes este test
+        # contaba una carga completa por guardado (7 en total), que con miles
+        # de notas era la mayor parte de lo que costaba guardar.
+        from app import links as links_mod
+
+        acotadas: list[str] = []
+        original_for = links_mod.TitleIndex.load_for.__func__
+
+        def cargar_para(cls, conn, workspace_id, titles):
+            acotadas.append(str(workspace_id))
+            return original_for(cls, conn, workspace_id, titles)
+
+        monkeypatch.setattr(links_mod.TitleIndex, "load_for", classmethod(cargar_para))
         for i in range(6):
             creada = cliente.post(
                 "/pages",
@@ -80,7 +93,8 @@ def test_el_reindexado_pide_el_mapa_de_titulos_una_vez(index_path, monkeypatch):
                 },
             )
             assert creada.status_code == 200, creada.text
-        assert len(cargas) == 7, "un guardado suelto no debe pedir el mapa por nota"
+        assert len(cargas) == 1, "un guardado suelto no debe cargar el mapa entero"
+        assert len(acotadas) == 6, "una consulta acotada por guardado"
 
         # Y el reindexado entero: otra vez una sola vez.
         cargas.clear()

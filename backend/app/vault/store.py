@@ -59,7 +59,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 from app import acl as acl_mod
 from app import index as index_mod
 from app import closed as closed_rules
-from app.links import TitleIndex, sync_wikilinks
+from app.links import TitleIndex, fold_title, sync_wikilinks
 from app.config import settings
 from app.vault import docfs, fm, names, reader, suggestions, vaultfs, writer
 
@@ -422,17 +422,17 @@ class _PageRecord:
             self.id, self.workspace_id, self.parent_id, self.type, self.title,
             self.icon, self.description, self.created_by, self.header_image,
             self.body, self.path, self.mtime, self.size, self.content_hash,
-            self.created_at, self.updated_at, self.frontmatter,
+            self.created_at, self.updated_at, self.frontmatter, fold_title(self.title or ""),
         )
 
 
 PAGE_COLUMNS = (
     "id, workspace_id, parent_id, type, title, icon, description, created_by,"
     " header_image_path, body, path, mtime, size, content_hash, created_at,"
-    " updated_at, frontmatter"
+    " updated_at, frontmatter, title_key"
 )
 
-INSERT_PAGE = f"INSERT INTO pages ({PAGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+INSERT_PAGE = f"INSERT INTO pages ({PAGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 UPSERT_PAGE = INSERT_PAGE + """
 ON CONFLICT(id) DO UPDATE SET
@@ -452,6 +452,7 @@ ON CONFLICT(id) DO UPDATE SET
     created_at = excluded.created_at,
     updated_at = excluded.updated_at,
     frontmatter = excluded.frontmatter,
+    title_key = excluded.title_key,
     version = pages.version + (excluded.content_hash IS NOT pages.content_hash)
 """
 
@@ -537,6 +538,15 @@ class TrashEntry:
 #
 # Viven aquí y no en `app.acl` porque solo el almacén escribe en `pages` (lo
 # comprueba `scripts/verify_p2.py`). `app.acl` explica el modelo y las llama.
+
+
+def fill_title_keys(conn: sqlite3.Connection) -> None:
+    """`title_key` de las páginas que no lo tienen (migración 12, una pasada)."""
+    filas = conn.execute("SELECT id, title FROM pages WHERE title_key IS NULL").fetchall()
+    conn.executemany(
+        "UPDATE pages SET title_key = ? WHERE id = ?",
+        [(fold_title(r[1] or ""), r[0]) for r in filas],
+    )
 
 
 def inherit_acl_source(conn: sqlite3.Connection, page_id: Any) -> None:

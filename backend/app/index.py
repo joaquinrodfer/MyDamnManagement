@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -253,7 +253,26 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS pages_acl_source ON pages(acl_source)",
         lambda conn: _share_existing_roots(conn),
     ],
+    # v12 (3.0, hito 5): `pages.title_key`, el título plegado (`links.fold_title`:
+    # NFKC + casefold) con su índice. Resolver los `[[enlaces]]` de un guardado
+    # era cargar TODOS los títulos del workspace (`TitleIndex.load`): con 5.000
+    # notas, la mayor parte de lo que cuesta guardar. Con la columna se piden
+    # solo los títulos que nombra el cuerpo. No es contenido (sale del título):
+    # fuera de la huella, como `version`.
+    12: [
+        lambda conn: _add_column(conn, "pages", "title_key", "TEXT"),
+        lambda conn: _fill_title_keys(conn),
+        "CREATE INDEX IF NOT EXISTS pages_title_key ON pages(workspace_id, title_key)",
+    ],
 }
+
+
+def _fill_title_keys(conn: sqlite3.Connection) -> None:
+    """Migración 12: rellena `title_key` de lo que ya había (en el almacén:
+    solo él escribe en `pages`, lo comprueba `scripts/verify_p2.py`)."""
+    from app.vault import store  # import tardío: el almacén importa este módulo
+
+    store.fill_title_keys(conn)
 
 
 def _share_existing_roots(conn: sqlite3.Connection) -> None:
@@ -304,9 +323,12 @@ CREATE TABLE pages (
     -- colaboración. No es contenido: no está en el `.md` ni en la huella.
     version           INTEGER NOT NULL DEFAULT 1,
     -- De qué página sale su permiso (v11): ver la migración 11 y `app.acl`.
-    acl_source        TEXT
+    acl_source        TEXT,
+    -- El título plegado para resolver enlaces (v12): ver la migración 12.
+    title_key         TEXT
 );
 CREATE INDEX pages_acl_source ON pages(acl_source);
+CREATE INDEX pages_title_key ON pages(workspace_id, title_key);
 
 -- Permisos por nota (v11, 3.0 hito 3). Ver la migración 11.
 CREATE TABLE acl (
@@ -468,7 +490,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 11;
+PRAGMA user_version = 12;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -956,7 +978,7 @@ DUMP_EXCLUDED_COLUMNS = {
     # Cuántas veces se ha escrito la página (v10): es historia de la base, no
     # contenido. No está en el `.md`, así que un índice reconstruido desde un
     # export empieza en 1 y la huella tiene que seguir siendo la misma.
-    "pages": {"version", "acl_source"},
+    "pages": {"version", "acl_source", "title_key"},
 }
 
 
