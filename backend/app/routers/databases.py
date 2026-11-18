@@ -83,6 +83,7 @@ def _serialize_database(
             schemas.ClosedRule(
                 property=str(db_def.closed[closed.PROPERTY_KEY]),
                 values=list(db_def.closed.get(closed.VALUES_KEY) or []),
+                groups=[schemas.ClosedGroup(**g) for g in (db_def.closed.get(closed.GROUPS_KEY) or [])],
                 source=closed.SOURCE_DONE if db_def.closed_from_done else closed.SOURCE_BASE,
             )
             if db_def.closed
@@ -259,7 +260,10 @@ def create_database(
     closed_rule = None
     if payload.closed is not None:
         closed_rule = closed.validate(
-            schema_def, payload.closed.property, payload.closed.values
+            schema_def,
+            payload.closed.property,
+            payload.closed.values,
+            [g.model_dump() for g in payload.closed.groups] if payload.closed.groups else None,
         )
     with _vault_errors():
         db_def = repo.create_database(
@@ -337,6 +341,7 @@ def create_from_template(
             schema_def,
             template["closed"].get(closed.PROPERTY_KEY),
             template["closed"].get(closed.VALUES_KEY),
+            template["closed"].get(closed.GROUPS_KEY),
         )
 
     with _vault_errors():
@@ -378,7 +383,12 @@ def set_closed(
     regla de la base, así que cambiarla recalcula sin reescribir los `.md`.
     """
     db_def = _get_database_or_404(repo, database_id)
-    rule = closed.validate(db_def.schema_def, payload.property, payload.values)
+    rule = closed.validate(
+        db_def.schema_def,
+        payload.property,
+        payload.values,
+        [g.model_dump() for g in payload.groups] if payload.groups else None,
+    )
     with _vault_errors():
         actualizada = repo.set_closed(database_id, rule)
     if actualizada is None:

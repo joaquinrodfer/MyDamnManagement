@@ -6760,6 +6760,7 @@ function reglaDeCierre(database) {
   return {
     property: String(regla.property),
     values: Array.isArray(regla.values) ? regla.values : [],
+    groups: Array.isArray(regla.groups) ? regla.groups : [],
     source: regla.source === "done" ? "done" : "base",
   };
 }
@@ -12357,6 +12358,105 @@ function mostrarEstadoDeColumna(menu, contexto, anchor) {
   });
 }
 
+/** El editor de grupos del estado (plan H3): los estados (opciones) se reparten
+ * en grupos que define cada equipo, y cada grupo dice si cuenta como hecho. Se
+ * edita en local y se guarda con un solo botón (el servidor valida todo). Una
+ * opción sin grupo cuenta como abierta. */
+function editorDeGruposDeEstado({ opciones, regla, activa, valores, mismo, aplicarGrupos, avisar }) {
+  let grupos;
+  if (activa && regla.groups?.length) {
+    grupos = regla.groups.map((g) => ({ name: g.name, closed: g.closed, options: [...g.options] }));
+  } else {
+    // Sin grupos todavía: lo que ya cerraba va a «Hecho» y el resto a «Pendiente».
+    const cerradas = activa ? valores : [];
+    grupos = [
+      { name: "Pendiente", closed: false, options: opciones.filter((o) => !cerradas.some((v) => mismo(v, o))) },
+      { name: "Hecho", closed: true, options: opciones.filter((o) => cerradas.some((v) => mismo(v, o))) },
+    ];
+  }
+  const caja = crearEl("div", "estado-grupos");
+  let selectores = [];
+  // El nombre de un grupo se teclea sin repintar (se perdería el foco): los
+  // desplegables de abajo toman el texto nuevo en el sitio.
+  const rotular = () =>
+    selectores.forEach((sel) =>
+      grupos.forEach((g, i) => {
+        if (sel.options[i + 1]) sel.options[i + 1].text = g.name || `Grupo ${i + 1}`;
+      }),
+    );
+
+  const pintar = () => {
+    selectores = [];
+    caja.replaceChildren();
+    caja.append(crearEl("div", "db-col-menu-label", "Grupos de estado"));
+    grupos.forEach((g, i) => {
+      const fila = crearEl("div", "estado-grupo");
+      const nombre = crearEl("input", "estado-grupo-nombre");
+      nombre.type = "text";
+      nombre.value = g.name;
+      nombre.maxLength = 40;
+      nombre.setAttribute("aria-label", `Nombre del grupo ${i + 1}`);
+      nombre.addEventListener("input", () => {
+        g.name = nombre.value;
+        rotular();
+      });
+      const etiqueta = crearEl("label", "estado-grupo-cierra");
+      const marca = crearEl("input");
+      marca.type = "checkbox";
+      marca.checked = g.closed;
+      marca.addEventListener("change", () => (g.closed = marca.checked));
+      etiqueta.append(marca, "Hecho");
+      etiqueta.title = "Las filas de este grupo cuentan como terminadas";
+      const quitar = crearEl("button", "icon-btn", "✕");
+      quitar.type = "button";
+      quitar.title = "Quitar el grupo (sus estados quedan sin grupo)";
+      quitar.setAttribute("aria-label", `Quitar el grupo ${g.name}`);
+      quitar.addEventListener("click", () => {
+        grupos.splice(i, 1);
+        pintar();
+      });
+      fila.append(nombre, etiqueta, quitar);
+      caja.append(fila);
+    });
+    const anadir = crearEl("button", "btn", "+ Añadir grupo");
+    anadir.type = "button";
+    anadir.addEventListener("click", () => {
+      grupos.push({ name: `Grupo ${grupos.length + 1}`, closed: false, options: [] });
+      pintar();
+    });
+    caja.append(anadir, crearEl("div", "db-col-menu-label", "Estados"));
+    for (const opcion of opciones) {
+      const fila = crearEl("div", "estado-opcion");
+      fila.append(crearEl("span", "estado-opcion-nombre", opcion));
+      const sel = crearEl("select");
+      sel.setAttribute("aria-label", `Grupo de ${opcion}`);
+      sel.add(new Option("Sin grupo", ""));
+      grupos.forEach((g, i) => sel.add(new Option(g.name || `Grupo ${i + 1}`, String(i))));
+      const actual = grupos.findIndex((g) => g.options.some((o) => mismo(o, opcion)));
+      sel.value = actual >= 0 ? String(actual) : "";
+      selectores.push(sel);
+      sel.addEventListener("change", () => {
+        grupos.forEach((g) => (g.options = g.options.filter((o) => !mismo(o, opcion))));
+        if (sel.value !== "") grupos[Number(sel.value)].options.push(opcion);
+      });
+      fila.append(sel);
+      caja.append(fila);
+    }
+    const guardar = crearEl("button", "btn btn-primary", "Guardar grupos");
+    guardar.type = "button";
+    guardar.addEventListener("click", () => {
+      if (!grupos.some((g) => g.closed && g.options.length)) {
+        avisar("Marca como «Hecho» al menos un grupo con algún estado: si no, nada contaría como hecho.");
+        return;
+      }
+      aplicarGrupos(grupos.map((g) => ({ name: g.name.trim(), closed: g.closed, options: g.options })));
+    });
+    caja.append(guardar);
+  };
+  pintar();
+  return caja;
+}
+
 /** Pinta las opciones del estado sin abrir ni recolocar el panel: lo usan la
  * primera apertura y cada guardado (para enseñar las marcas nuevas). */
 function pintarEstadoDeColumna(menu, contexto, anchor) {
@@ -12408,6 +12508,21 @@ function pintarEstadoDeColumna(menu, contexto, anchor) {
     }
   };
 
+  const aplicarGrupos = async (grupos) => {
+    try {
+      const actualizada = await api(`/databases/${database.id}/closed`, {
+        method: "PUT",
+        body: JSON.stringify({ property: prop.key, groups: grupos }),
+      });
+      Object.assign(database, actualizada);
+      pintarEstadoDeColumna(menu, contexto, anchor);
+      colocarPanelFlotante(menu, anchor);
+      avisar("Guardado: los grupos y qué cuenta como hecho están en el `.md` de la base.");
+    } catch (e) {
+      avisar(describeError(e));
+    }
+  };
+
   if (prop.type === "checkbox") {
     menu.appendChild(
       itemDeColumna("Marcada cuenta como hecha", {
@@ -12427,24 +12542,9 @@ function pintarEstadoDeColumna(menu, contexto, anchor) {
         }),
       );
     }
-    opciones.forEach((valor) => {
-      const marcada = activa && valores.some((v) => mismo(v, valor));
-      menu.appendChild(
-        itemDeColumna(valor, {
-          radio: true,
-          marca: marcada ? "✓" : "",
-          alElegir: () => {
-            const resto = activa ? valores.filter((v) => !mismo(v, valor)) : [];
-            const nuevos = marcada ? resto : [...resto, valor];
-            if (!nuevos.length) {
-              avisar("Marca al menos un valor: sin valores no hay nada que cuente como cerrado.");
-              return;
-            }
-            aplicar(nuevos);
-          },
-        }),
-      );
-    });
+    if (opciones.length) {
+      menu.appendChild(editorDeGruposDeEstado({ opciones, regla, activa, valores, mismo, aplicarGrupos, avisar }));
+    }
     if (activa) {
       menu.appendChild(separadorDeMenu());
       menu.appendChild(
