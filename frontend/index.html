@@ -913,6 +913,34 @@
   .share-add select { flex: 1; min-width: 0; font-size: 13px; }
   /* Candado de la barra lateral: la página no la ve nadie más que sus
      propietarios. Discreto, a la derecha del título. */
+  /* Cursores de los demás en una nota compartida (3.0, hito 4): una raya de su
+     color y su nombre encima, y su selección teñida. No ocupan sitio en la
+     línea (márgenes negativos): el texto no se mueve cuando alguien entra. */
+  .cm-mdm-peer-caret {
+    position: relative;
+    display: inline-block;
+    width: 0;
+    height: 1.2em;
+    vertical-align: text-bottom;
+    border-left: 2px solid var(--peer);
+    margin-left: -1px;
+    margin-right: -1px;
+    pointer-events: none;
+  }
+  .cm-mdm-peer-label {
+    position: absolute;
+    left: -2px;
+    bottom: 100%;
+    padding: 0 4px;
+    border-radius: 3px 3px 3px 0;
+    background: var(--peer);
+    color: #fff;
+    font: 600 10.5px/1.5 var(--font-body);
+    white-space: nowrap;
+    user-select: none;
+    opacity: 0.92;
+  }
+  .cm-mdm-peer-sel { background: color-mix(in srgb, var(--peer) 22%, transparent); }
   .tree-lock { display: inline-flex; margin-left: 4px; color: var(--ink-muted); opacity: 0.8; flex: none; }
   .tree-lock .svg-icon { width: 11px; height: 11px; }
   .note-savestatus-icon { display: inline-flex; width: 12px; height: 12px; align-items: center; justify-content: center; font-size: 11px; }

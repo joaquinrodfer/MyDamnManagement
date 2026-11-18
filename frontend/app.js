@@ -314,6 +314,12 @@ function clearMain() {
     state.noteWidthObserver = null;
   }
   state.refitNoteText = null;
+  // La sala de la nota que se deja (3.0, hito 4): se cierra cuando el servidor
+  // confirma lo último que se mandó (como mucho, un par de segundos).
+  if (state.collabSession) {
+    state.collabSession.stop({ graceful: true });
+    state.collabSession = null;
+  }
   if (state.editor) {
     state.editor.destroy();
     state.editor = null;
@@ -2886,6 +2892,14 @@ function renderNote(page, backlinks) {
     } else if (s === "error") {
       saveIcon.textContent = "!";
       saveLabel.textContent = "Error al guardar";
+    } else if (s === "readonly") {
+      // 3.0 (hitos 3 y 4): la nota la puedes ver pero no editar.
+      saveIcon.innerHTML = svgIcon("i-lock");
+      saveLabel.textContent = "Solo lectura";
+    } else if (s === "offline") {
+      // La sala se cayó y se reintenta: lo escrito sigue aquí y se manda al volver.
+      saveIcon.textContent = "•";
+      saveLabel.textContent = "Reconectando…";
     } else {
       saveIcon.innerHTML = svgIcon("i-check");
       saveLabel.textContent = "Guardado";
@@ -3109,6 +3123,9 @@ function renderNote(page, backlinks) {
   // el de esta nota, y es el único texto que este guardado puede mandar.
   let noteEditor = null;
   let noteBodyFallback = page.body_markdown || ""; // último texto visto, si el editor ya no está
+  // 3.0, hito 4: si la nota está en una sala de edición en vivo (ver abajo,
+  // `startCollab`). Mientras lo esté, el cuerpo no se guarda por `PATCH`.
+  let collabLive = false;
   let session = null; // la de esta nota; la crea renderNote() al final
 
   /** Texto del cuerpo de ESTA nota -- nunca el de la que esté abierta ahora.
@@ -3136,12 +3153,16 @@ function renderNote(page, backlinks) {
     // El icono es "obligatorio": si lo han vaciado, se restaura un valor por
     // defecto en vez de guardar un icono vacío.
     if (!page.icon) page.icon = "📄";
-    return JSON.stringify({
+    const cuerpo = {
       title: titleInput.value,
       icon: page.icon,
       description: descInput.value,
-      body_markdown: bodyText(),
-    });
+    };
+    // En una sala (3.0, hito 4) el cuerpo no va por aquí: lo guarda el
+    // servidor. Mandarlo sería escribir por un camino que la sala no ve, y la
+    // reiniciaría para todos.
+    if (!collabLive) cuerpo.body_markdown = bodyText();
+    return JSON.stringify(cuerpo);
   }
 
   function scheduleSave() {
@@ -3398,7 +3419,10 @@ function renderNote(page, backlinks) {
       // persona), el servidor contesta 409 y decide el usuario (abajo).
       const known = pageVersions.get(String(page.id)) ?? page.version;
       const headers = { "Content-Type": "application/json" };
-      if (Number.isInteger(known)) headers["If-Match"] = `"${known}"`;
+      // En una sala la versión la mueve el servidor al guardar el cuerpo: el
+      // título y la descripción van sin `If-Match` (el último gana, como
+      // cualquier campo suelto); el conflicto del cuerpo lo resuelve la sala.
+      if (Number.isInteger(known) && !collabLive) headers["If-Match"] = `"${known}"`;
       const updated = await api(`/pages/${page.id}`, { method: "PATCH", body, headers });
       page.updated_at = updated.updated_at;
       page.version = updated.version;
@@ -3666,10 +3690,15 @@ function renderNote(page, backlinks) {
     doc: page.body_markdown || "",
     resolvePage: (title) => findPageByTitle(title),
     onNavigate: (pageId) => navigateToPage(pageId),
-    onChange: () => {
+    onChange: (_text, info) => {
       noteBodyFallback = bodyText();
-      scheduleSave();
       renderOutline();
+      // 3.0, hito 4: en una sala, el cuerpo lo guarda el servidor (los cambios
+      // propios salen por el WebSocket; los ajenos ya vienen guardados). El
+      // autoguardado de siempre queda para el título y la descripción, y para
+      // cuando no hay sala (servidor viejo, proxy sin WebSocket).
+      if (info?.remote || collabLive) return;
+      scheduleSave();
     },
     onCreatePage: createChildPage,
     onOpenPage: openPageFromSlash,
@@ -3692,6 +3721,35 @@ function renderNote(page, backlinks) {
     renderDatabaseBlock: renderDatabaseEmbed,
   });
   noteEditor = state.editor;
+
+  // ---- edición en vivo (3.0, hito 4) ----
+  // La nota entra en su sala: lo que escribes llega a los demás al momento y
+  // lo suyo a ti, con su cursor. Si no hay sala (servidor sin WebSocket), todo
+  // sigue como antes: autoguardado por PATCH.
+  state.collabSession = state.editor.startCollab({
+    pageId: page.id,
+    onStatus: (estado) => {
+      if (state.editor !== noteEditor) return; // la nota ya se dejó atrás
+      if (estado === "unavailable") {
+        collabLive = false;
+        return;
+      }
+      if (estado === "connecting") return;
+      collabLive = estado !== "gone";
+      if (estado === "gone") {
+        showError("Esta nota se ha borrado.");
+        return;
+      }
+      // El indicador habla del cuerpo cuando no hay nada más pendiente (el
+      // título y la descripción siguen con su autoguardado).
+      if (estado === "saving") setSaveState("saving");
+      else if (estado === "offline") setSaveState("offline");
+      else if (estado === "readonly") setSaveState("readonly");
+      else if (!dirty) setSaveState("saved");
+    },
+    onRemoteReset: () =>
+      showError("La nota se ha cambiado por otro camino y se ha recargado: lo último que escribiste no llegó a guardarse."),
+  });
 
   // El árbol ya está cargado cuando se abre una nota (lo pide el arranque y
   // cada navegación), pero setLinkTargets es un efecto sobre el estado del

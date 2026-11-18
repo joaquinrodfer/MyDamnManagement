@@ -90,3 +90,8 @@ delante de la colaboración en vivo.
   ninguno pierda texto y viendo el cursor del otro.
 - **Si la 2.5 no aguanta lo que se le pide**, ese es el dato que justifica el
   CRDT; no antes.
+
+## Estado de la implementación (3.0, hito 4)
+
+Hecho como dice D2 y D5: una sala por nota (`app/collab.py`, `app/routers/collab.py`), con `@codemirror/collab` en el cliente (`frontend/editor-src/collab-client.js`). El servidor **no rebasa**: acepta los cambios hechos sobre su versión y, si no, devuelve los que faltan para que el cliente rebase (el modelo de `prosemirror-collab`, que es el que este ADR nombra). La versión de la sala es la de la colaboración; `pages.version` (D3) sigue subiendo con cada guardado de la sala. La prueba de aceptación de este ADR —dos navegadores, mismo párrafo y párrafos distintos, sin perder texto y viendo el cursor del otro— está hecha con Playwright y su resultado va en el PR del hito 4.
+
