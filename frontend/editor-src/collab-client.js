@@ -70,6 +70,8 @@ class CaretWidget extends WidgetType {
     label.className = "cm-mdm-peer-label";
     label.textContent = this.name;
     caret.append(label);
+    // El nombre sale al pasar el ratón (CSS); para un lector de pantalla, aquí.
+    caret.setAttribute("aria-label", `Cursor de ${this.name}`);
     return caret;
   }
   ignoreEvent() {

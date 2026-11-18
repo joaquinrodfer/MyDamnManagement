@@ -36,6 +36,14 @@ COPY frontend/ ./frontend/
 # del vault la primera vez que hay algo que guardar (P1.2b).
 RUN mkdir -p /data/vault
 
+# Qué versión es esta imagen (Ajustes > Información, `GET /about`). Las pasa el
+# CI (edge.yml, release.yml); un build a mano sin ellas sale como «desarrollo».
+# Van al final para no invalidar la caché de las capas de arriba en cada commit.
+ARG MDM_VERSION=desarrollo
+ARG MDM_REVISION=
+ARG MDM_BUILT=
+ENV MDM_VERSION=${MDM_VERSION} MDM_REVISION=${MDM_REVISION} MDM_BUILT=${MDM_BUILT}
+
 EXPOSE 8000
 
 # Sin `alembic upgrade head`: el esquema del índice se crea/migra al arrancar

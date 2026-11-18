@@ -1703,11 +1703,254 @@ const profileForm = document.getElementById("form-profile");
 const profileNote = document.getElementById("profile-note");
 const PROFILE_NOTE_HTML = profileNote?.innerHTML || "";
 
+// ------------------------------------------- Ajustes > Información
+// La versión que corre (la pone el CI en la imagen y se actualiza sola en cada
+// despliegue), el estado de la API y la base y, para los administradores, las
+// cifras de la instalación. Todo sale de `GET /about`; mientras el apartado está
+// abierto se refresca cada 15 s. Si la versión del servidor ya no es la que
+// cargó esta pestaña, se ofrece recargar.
+
+let versionAlCargar = null;
+let infoTimer = null;
+
+function pararInformacion() {
+  if (infoTimer) clearInterval(infoTimer);
+  infoTimer = null;
+}
+
+async function cargarInformacion() {
+  pararInformacion();
+  await pintarInformacion();
+  infoTimer = setInterval(() => {
+    if (!settingsDialog?.open) return pararInformacion();
+    pintarInformacion();
+  }, 15000);
+}
+
+const fmtNum = (n) => (n ?? 0).toLocaleString("es-ES");
+
+function fmtBytes(b) {
+  if (!b) return "0 B";
+  const u = ["B", "KB", "MB", "GB"];
+  const i = Math.min(u.length - 1, Math.floor(Math.log(b) / Math.log(1024)));
+  return `${(b / 1024 ** i).toLocaleString("es-ES", { maximumFractionDigits: i ? 1 : 0 })} ${u[i]}`;
+}
+
+function fmtDuracion(s) {
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d} d ${h} h`;
+  if (h) return `${h} h ${m} min`;
+  return `${m} min`;
+}
+
+function fmtFecha(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function infoEl(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function infoGroup(titulo, ...hijos) {
+  const g = infoEl("div", "settings-group");
+  g.append(infoEl("h5", null, titulo), ...hijos);
+  return g;
+}
+
+function infoCard(label, value, note) {
+  const c = infoEl("div", "info-card");
+  c.append(infoEl("div", "info-card-label", label), infoEl("div", "info-card-value", value));
+  if (note) c.append(infoEl("div", "info-card-note", note));
+  return c;
+}
+
+function infoRows(pares) {
+  const dl = infoEl("dl", "info-rows");
+  for (const [k, v] of pares) {
+    const dd = infoEl("dd");
+    if (v instanceof Node) dd.append(v);
+    else dd.textContent = v;
+    dl.append(infoEl("dt", null, k), dd);
+  }
+  return dl;
+}
+
+function infoEstado(ok, texto) {
+  const s = infoEl("span");
+  const dot = infoEl("span", "info-dot" + (ok ? "" : " is-bad"));
+  s.append(dot, texto);
+  return s;
+}
+
+const COLORES_TIPO = { note: "var(--accent)", database: "#f59e0b", database_row: "#10b981" };
+
+function grafMeses(meses) {
+  const caja = infoEl("div");
+  const max = Math.max(1, ...meses.map((m) => m.note + m.database + m.database_row));
+  const fila = infoEl("div", "info-months");
+  fila.setAttribute("role", "img");
+  fila.setAttribute(
+    "aria-label",
+    meses.map((m) => `${m.month}: ${m.note + m.database + m.database_row}`).join(", "),
+  );
+  for (const m of meses) {
+    const col = infoEl("div", "info-month");
+    const total = m.note + m.database + m.database_row;
+    const barra = infoEl("div", "info-month-bar");
+    barra.style.height = `${Math.max(1, Math.round((total / max) * 100))}%`;
+    barra.title = `${m.month}: ${total} (${m.note} notas, ${m.database} bases, ${m.database_row} filas)`;
+    for (const tipo of ["note", "database", "database_row"]) {
+      if (!m[tipo]) continue;
+      const tramo = infoEl("span");
+      tramo.style.flex = `${m[tipo]} 0 0`;
+      tramo.style.background = COLORES_TIPO[tipo];
+      barra.append(tramo);
+    }
+    const [y, mm] = m.month.split("-");
+    const nombre = new Date(Number(y), Number(mm) - 1, 1).toLocaleString("es-ES", { month: "short" });
+    col.append(barra, infoEl("div", "info-month-label", nombre));
+    fila.append(col);
+  }
+  const leyenda = infoEl("div", "info-legend");
+  for (const [tipo, texto] of [["note", "Notas"], ["database", "Bases"], ["database_row", "Filas"]]) {
+    const i = infoEl("span");
+    const muestra = infoEl("i");
+    muestra.style.background = COLORES_TIPO[tipo];
+    i.append(muestra, texto);
+    leyenda.append(i);
+  }
+  caja.append(fila, leyenda);
+  return caja;
+}
+
+async function pintarInformacion() {
+  const caja = document.getElementById("info-content");
+  if (!caja) return;
+  let info;
+  try {
+    info = await api("/about");
+  } catch (e) {
+    caja.replaceChildren(
+      infoGroup("Estado", infoRows([["API", infoEstado(false, `Sin respuesta (${describeError(e)})`)]])),
+    );
+    return;
+  }
+  const v = info.version || {};
+  if (versionAlCargar === null) versionAlCargar = v.revision || v.version;
+  const partes = [];
+
+  // Versión
+  const cab = infoEl("div", "info-version");
+  cab.append(infoEl("span", "info-version-name", v.version === "desarrollo" ? "Desarrollo" : v.version));
+  if (v.revision_short) {
+    const rev = infoEl("span", "info-version-rev", v.revision_short);
+    rev.title = v.revision;
+    cab.append(rev);
+  }
+  const grupoVersion = infoGroup(
+    "Versión",
+    cab,
+    infoRows([
+      ["Publicada", fmtFecha(v.built_at)],
+      ["Esquema de la base", `v${v.schema_version}`],
+      ["Python · SQLite", `${v.python} · ${v.sqlite}`],
+    ]),
+  );
+  const actual = v.revision || v.version;
+  if (versionAlCargar && actual && actual !== versionAlCargar) {
+    const aviso = infoEl("div", "info-update");
+    const btn = infoEl("button", "btn", "Recargar");
+    btn.type = "button";
+    btn.addEventListener("click", () => location.reload());
+    aviso.append(infoEl("span", null, "Hay una versión nueva desplegada. Recarga para usarla."), btn);
+    grupoVersion.append(aviso);
+  }
+  partes.push(grupoVersion);
+
+  // Estado
+  const db = info.db || {};
+  partes.push(
+    infoGroup(
+      "Estado",
+      infoRows([
+        ["API", infoEstado(info.api?.ok, "Funcionando")],
+        ["Base de datos", infoEstado(db.ok, db.ok ? `Funcionando · ${db.latency_ms} ms · ${String(db.journal_mode).toUpperCase()}` : db.error || "Con errores")],
+        ["Arranque", infoEstado(info.server?.startup === "ok", info.server?.startup === "ok" ? "Índice listo" : info.server?.startup)],
+        ["En marcha desde", `${fmtFecha(info.server?.started_at)} (${fmtDuracion(info.server?.uptime_s || 0)})`],
+      ]),
+    ),
+  );
+
+  const a = info.admin;
+  if (a) {
+    const c = a.counts;
+    const grid = infoEl("div", "info-grid");
+    grid.append(
+      infoCard("Notas", fmtNum(c.notes)),
+      infoCard("Bases de datos", fmtNum(c.databases), `${fmtNum(c.views)} vistas`),
+      infoCard("Filas", fmtNum(c.rows)),
+      infoCard("Enlaces", fmtNum(c.links)),
+      infoCard("Usuarios", fmtNum(c.users), `${fmtNum(c.admins)} admin.`),
+      infoCard("Sesiones activas", fmtNum(c.sessions_active)),
+      infoCard("En la papelera", fmtNum(c.trash)),
+    );
+    partes.push(infoGroup("Contenido", grid));
+
+    const act = a.activity;
+    const gridAct = infoEl("div", "info-grid");
+    gridAct.append(
+      infoCard("Creadas (7 días)", fmtNum(act.created_7d)),
+      infoCard("Creadas (30 días)", fmtNum(act.created_30d)),
+      infoCard("Editadas (24 h)", fmtNum(act.edited_24h)),
+      infoCard("Editadas (7 días)", fmtNum(act.edited_7d)),
+    );
+    partes.push(infoGroup("Actividad", gridAct));
+    if (a.by_month?.length) partes.push(infoGroup("Altas por mes", grafMeses(a.by_month)));
+
+    if (a.top_creators?.length) {
+      const ul = infoEl("ul", "info-list");
+      for (const t of a.top_creators) {
+        const li = infoEl("li");
+        li.append(infoEl("span", null, t.name), infoEl("span", null, `${fmtNum(t.count)} páginas`));
+        ul.append(li);
+      }
+      partes.push(infoGroup("Quién crea más", ul));
+    }
+
+    const s = a.storage;
+    const co = a.collab;
+    partes.push(
+      infoGroup(
+        "Almacenamiento y uso",
+        infoRows([
+          ["Base de datos", fmtBytes(s.index_bytes)],
+          ["Texto de las notas", fmtBytes(s.documents_bytes)],
+          ["Copia en disco (.md)", s.projection ? "Activada" : "Desactivada (se exporta a petición)"],
+          ["Páginas de la raíz", `${fmtNum(a.sharing.shared)} compartidas · ${fmtNum(a.sharing.private)} privadas`],
+          ["Edición en vivo", `${fmtNum(co.rooms)} notas abiertas · ${fmtNum(co.peers)} personas`],
+          ["Guardado en vivo", co.persist_ms_p50 == null ? "—" : `${co.persist_ms_p50} ms (p95 ${co.persist_ms_p95} ms)`],
+          ["Usuarios desde", fmtFecha(a.users_since)],
+        ]),
+      ),
+    );
+  }
+  caja.replaceChildren(...partes);
+}
+
 function mostrarApartadoDeAjustes(nombre) {
   if (!settingsDialog) return;
   const pestana = settingsDialog.querySelector(`.settings-tab[data-section="${nombre}"]`);
   // Un apartado que no toca (Administración sin ser admin) no se abre.
-  if (!pestana || pestana.hidden) nombre = "app";
+  if (!pestana || pestana.hidden) nombre = "info";
   settingsDialog.querySelectorAll(".settings-tab").forEach((tab) => {
     const activa = tab.dataset.section === nombre;
     tab.classList.toggle("active", activa);
@@ -1718,6 +1961,8 @@ function mostrarApartadoDeAjustes(nombre) {
   });
   settingsDialog.querySelector(".settings-body")?.scrollTo?.(0, 0);
   if (nombre === "app") sincronizarTemaEnAjustes();
+  if (nombre === "info") cargarInformacion();
+  else pararInformacion();
   if (nombre === "user") {
     prepararPerfil();
     prepararContrasena();
@@ -1726,7 +1971,7 @@ function mostrarApartadoDeAjustes(nombre) {
   if (nombre === "admin") cargarUsuariosDeAjustes();
 }
 
-function openSettings(apartado = "app") {
+function openSettings(apartado = "info") {
   if (!settingsDialog) return;
   if (!settingsDialog.open) settingsDialog.showModal();
   mostrarApartadoDeAjustes(apartado);

@@ -77,6 +77,12 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Qué versión es (Ajustes > Información): la app no ve las
+          # etiquetas de su propia imagen, así que van también como ENV.
+          build-args: |
+            MDM_VERSION=${{ steps.meta.outputs.version }}
+            MDM_REVISION=${{ github.sha }}
+            MDM_BUILT=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
