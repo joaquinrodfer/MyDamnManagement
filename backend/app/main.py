@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app import agent_auth, auth, capture_tokens, login_page
 from app import backup as backup_mod
 from app import notifications as notifications_mod
+from app import webhooks as webhooks_mod
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
@@ -469,6 +470,8 @@ watcher: Optional[VaultWatcher] = None
 backup_scheduler: Optional[backup_mod.BackupScheduler] = None
 # Avisos de plazo (plan H6): un hilo que mira cada hora las tareas de cada persona.
 deadline_worker: Optional[notifications_mod.DeadlineWorker] = None
+# Entregas de webhooks pendientes (plan H9).
+webhook_worker: Optional[webhooks_mod.WebhookWorker] = None
 
 # El reindexado de arranque va en un hilo (P16): si el proceso se apaga antes
 # de que termine, el hilo puede terminar después y llamar a `_start_watcher`.
@@ -517,7 +520,10 @@ def on_startup() -> None:
     if info.recreated:
         log.warning("índice creado de cero en %s (%s)", info.path, info.reason)
 
-    global backup_scheduler, deadline_worker
+    global backup_scheduler, deadline_worker, webhook_worker
+    if webhook_worker is None:
+        webhook_worker = webhooks_mod.WebhookWorker()
+        webhook_worker.start()
     if backup_scheduler is None:
         backup_scheduler = backup_mod.BackupScheduler()
         backup_scheduler.start()
@@ -753,8 +759,11 @@ async def guardar_salas() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     """Para el vigilante. Sin esto, el hilo seguiría sondeando tras cerrar."""
-    global watcher, _shutting_down, backup_scheduler, deadline_worker
+    global watcher, _shutting_down, backup_scheduler, deadline_worker, webhook_worker
     _shutting_down = True
+    if webhook_worker is not None:
+        webhook_worker.stop()
+        webhook_worker = None
     if deadline_worker is not None:
         deadline_worker.stop()
         deadline_worker = None

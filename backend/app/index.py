@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -358,6 +358,33 @@ MIGRATIONS: dict[int, list[str]] = {
 )""",
         "CREATE INDEX IF NOT EXISTS audit_logs_ts ON audit_logs(ts)",
         "CREATE INDEX IF NOT EXISTS audit_logs_action ON audit_logs(action, ts)",
+    ],
+    # v18 (plan H9): webhooks salientes por espacio y su cola de entregas
+    # (`app.webhooks`). El secreto firma cada envío y no se vuelve a leer.
+    18: [
+        """CREATE TABLE IF NOT EXISTS workspace_webhooks (
+    workspace_id TEXT PRIMARY KEY,
+    url          TEXT NOT NULL,
+    secret       TEXT NOT NULL,
+    events       TEXT NOT NULL DEFAULT '[]',
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL
+)""",
+        """CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    next_attempt TEXT NOT NULL,
+    last_error   TEXT,
+    created_at   TEXT NOT NULL,
+    delivered_at TEXT,
+    dedupe_key   TEXT
+)""",
+        "CREATE INDEX IF NOT EXISTS webhook_deliveries_pending ON webhook_deliveries(status, next_attempt)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS webhook_deliveries_dedupe ON webhook_deliveries(workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
     ],
 }
 
@@ -698,7 +725,32 @@ CREATE TABLE audit_logs (
 CREATE INDEX audit_logs_ts ON audit_logs(ts);
 CREATE INDEX audit_logs_action ON audit_logs(action, ts);
 
-PRAGMA user_version = 17;
+-- Webhooks salientes por espacio y su cola (v18, plan H9). Ver la migración 18.
+CREATE TABLE workspace_webhooks (
+    workspace_id TEXT PRIMARY KEY,
+    url          TEXT NOT NULL,
+    secret       TEXT NOT NULL,
+    events       TEXT NOT NULL DEFAULT '[]',
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL
+);
+CREATE TABLE webhook_deliveries (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    next_attempt TEXT NOT NULL,
+    last_error   TEXT,
+    created_at   TEXT NOT NULL,
+    delivered_at TEXT,
+    dedupe_key   TEXT
+);
+CREATE INDEX webhook_deliveries_pending ON webhook_deliveries(status, next_attempt);
+CREATE UNIQUE INDEX webhook_deliveries_dedupe ON webhook_deliveries(workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
+
+PRAGMA user_version = 18;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1192,6 +1244,8 @@ DUMP_EXCLUDED = {
     "notifications",
     "page_subscriptions",
     "audit_logs",
+    "workspace_webhooks",
+    "webhook_deliveries",
 }
 
 

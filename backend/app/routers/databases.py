@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app import closed, due, hierarchy, schemas
 from app import kinds as kind_rules
-from app import audit, notifications
+from app import audit, notifications, webhooks
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -685,6 +685,7 @@ def create_row(
         notifications.after_row_change(
             repo.conn, db_def.schema_def, row.id, None, cleaned, str(user.id)
         )
+        webhooks.emit_task(repo.conn, "task.created", row.id)
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
@@ -829,6 +830,10 @@ def update_row(
         notifications.after_row_change(
             repo.conn, db_def.schema_def, row_id, antes_fila.properties, cleaned, str(user.id)
         )
+        # Plan H9: pasar de abierta a cerrada, según la regla de la base.
+        if db_def.closed and not closed.is_closed(db_def.closed, antes_fila.properties or {}) \
+                and closed.is_closed(db_def.closed, row.properties or {}):
+            webhooks.emit_task(repo.conn, "task.completed", row_id)
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
 
