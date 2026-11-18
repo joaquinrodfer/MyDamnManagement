@@ -5,6 +5,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 ## [Sin publicar]
 
 ### Añadido
+- **Ajustes > Información.** Ajustes se abre ahora en un apartado nuevo con la **versión** que corre (versión, commit y fecha de publicación, que el CI mete en la imagen: se actualizan solas con cada despliegue; si la pestaña es de una versión anterior a la desplegada, se ofrece recargar), el **estado de la API y de la base** (latencia, WAL), el arranque y desde cuándo está en marcha. Los **administradores** ven además las cifras de la instalación: notas, bases, vistas, filas, enlaces, usuarios, sesiones activas y papelera; lo creado y editado en 24 h, 7 y 30 días; las altas de los últimos 12 meses por tipo; quién crea más; el tamaño de la base y del texto; cuánto está compartido o es privado, y las salas de edición en vivo abiertas con lo que tardan en guardar. Sale de `GET /about`. El título «Ajustes» es más grande y claro (también en el móvil).
+
+### Cambiado
+- **El nombre de quien escribe en una nota compartida solo sale al pasar el ratón por su cursor**, y debajo de la línea: antes se veía siempre encima del cursor y en la primera línea de la nota se cortaba.
 - **Presupuesto de memoria y carga de la 3.0, medido (hito 5).** Con 5.000 notas y 10 usuarios escribiendo a la vez cada uno en su nota (WebSocket + `/events`), el proceso se queda en **148-159 MB de RSS** (presupuesto: 400) y la pila completa en Docker en **≈ 405 MB** (presupuesto: 1,5 GB); 5 minutos de carga no lo hacen crecer. Informe con la tabla de medidas en `docs/MEDICIONES-3.0-H5.md` y el guion en `backend/scripts/carga_colaboracion.py`. `/status` cuenta ahora las salas abiertas, quién hay dentro y el p50/p95 de lo que tardan en guardar.
 
 ### Cambiado

@@ -35,6 +35,7 @@ from app.routers import auth as auth_routes
 from app.routers import export as export_routes
 from app.routers import acl as acl_routes
 from app.routers import collab as collab_routes
+from app.routers import about as about_routes
 from app.guard import guard
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 from app.vault.watcher import VaultWatcher
@@ -74,6 +75,8 @@ app.include_router(databases.router, dependencies=GUARDED)
 # se asigna una fila, no la lista de administración de `/auth/users`.
 app.include_router(people.router, dependencies=GUARDED)
 app.include_router(status.router, dependencies=GUARDED)
+# `/about` (Ajustes > Información): versión, estado y, para admins, estadísticas.
+app.include_router(about_routes.router, dependencies=GUARDED)
 # `/export` (3.0, hito 1): el vault entero desde el índice, en zip o carpeta.
 app.include_router(export_routes.router, dependencies=GUARDED)
 app.include_router(trash.router, dependencies=GUARDED)

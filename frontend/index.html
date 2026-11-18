@@ -914,8 +914,11 @@
   /* Candado de la barra lateral: la página no la ve nadie más que sus
      propietarios. Discreto, a la derecha del título. */
   /* Cursores de los demás en una nota compartida (3.0, hito 4): una raya de su
-     color y su nombre encima, y su selección teñida. No ocupan sitio en la
-     línea (márgenes negativos): el texto no se mueve cuando alguien entra. */
+     color y su selección teñida. El nombre NO se ve siempre: sale al pasar el
+     ratón por encima del cursor (una franja invisible de 10 px alrededor de la
+     raya, para poder acertarle) y DEBAJO de la línea, que encima se cortaba en
+     la primera línea de la nota. No ocupan sitio en la línea (márgenes
+     negativos): el texto no se mueve cuando alguien entra. */
   .cm-mdm-peer-caret {
     position: relative;
     display: inline-block;
@@ -925,21 +928,34 @@
     border-left: 2px solid var(--peer);
     margin-left: -1px;
     margin-right: -1px;
-    pointer-events: none;
+  }
+  .cm-mdm-peer-caret::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -6px;
+    width: 10px;
+    cursor: default;
   }
   .cm-mdm-peer-label {
     position: absolute;
     left: -2px;
-    bottom: 100%;
-    padding: 0 4px;
-    border-radius: 3px 3px 3px 0;
+    top: 100%;
+    z-index: 5;
+    padding: 1px 6px;
+    border-radius: 0 4px 4px 4px;
     background: var(--peer);
     color: #fff;
-    font: 600 10.5px/1.5 var(--font-body);
+    font: 600 11px/1.45 var(--font-body);
     white-space: nowrap;
     user-select: none;
-    opacity: 0.92;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-2px);
+    transition: opacity 0.12s, transform 0.12s;
   }
+  .cm-mdm-peer-caret:hover .cm-mdm-peer-label { opacity: 1; transform: none; }
   .cm-mdm-peer-sel { background: color-mix(in srgb, var(--peer) 22%, transparent); }
   .tree-lock { display: inline-flex; margin-left: 4px; color: var(--ink-muted); opacity: 0.8; flex: none; }
   .tree-lock .svg-icon { width: 11px; height: 11px; }
@@ -4491,7 +4507,9 @@
     border-right: 1px solid var(--panel-border);
     background: var(--panel);
   }
-  .settings-nav h3 { margin: 0 8px 10px; font-size: var(--text-base); color: var(--ink-muted); font-weight: 600; }
+  /* El título del diálogo: claro y grande (antes era un rótulo gris del tamaño
+     del texto, y se perdía encima de las pestañas). */
+  .settings-nav h3 { margin: 2px 8px 14px; font-size: 20px; line-height: 1.2; color: var(--ink); font-weight: 700; letter-spacing: -0.01em; }
   .settings-tab {
     display: flex;
     align-items: center;
@@ -4556,13 +4574,41 @@
       border-right: 0;
       border-bottom: 1px solid var(--panel-border);
     }
-    .settings-nav h3 { display: none; }
+    .settings-nav h3 { margin: 0 10px 0 6px; font-size: 17px; flex: none; }
     .settings-tab { flex: none; min-height: 40px; }
     .settings-body { padding: 18px 16px 24px; }
     .settings-close { position: fixed; top: 8px; right: 8px; }
     .settings-section h4 { padding-right: 0; }
   }
   .form-note.form-error { color: var(--down); }
+  /* Ajustes > Información: versión, estado y (admins) estadísticas. */
+  .info-content { display: flex; flex-direction: column; }
+  .info-content .settings-group { margin-bottom: 22px; }
+  .info-content .settings-group h5 { margin-bottom: 10px; }
+  .info-version { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .info-version-name { font-size: 22px; font-weight: 700; color: var(--ink); }
+  .info-version-rev { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-muted); padding: 1px 6px; border-radius: 5px; background: var(--code-bg); }
+  .info-update { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--accent); font-size: 13px; }
+  .info-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .info-card { padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); min-width: 0; }
+  .info-card-label { font-size: 11.5px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .info-card-value { font-size: 20px; font-weight: 600; color: var(--ink); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .info-card-note { font-size: 11.5px; color: var(--ink-muted); margin-top: 2px; }
+  .info-rows { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13px; }
+  .info-rows dt { color: var(--ink-muted); }
+  .info-rows dd { margin: 0; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+  .info-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--up, #22c55e); vertical-align: 1px; }
+  .info-dot.is-bad { background: var(--down); }
+  .info-months { display: flex; align-items: flex-end; gap: 6px; height: 120px; padding-top: 6px; }
+  .info-month { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; height: 100%; justify-content: flex-end; }
+  .info-month-bar { width: 100%; max-width: 28px; display: flex; flex-direction: column-reverse; border-radius: 4px 4px 0 0; overflow: hidden; min-height: 1px; }
+  .info-month-bar span { display: block; }
+  .info-month-label { font-size: 10.5px; color: var(--ink-muted); white-space: nowrap; }
+  .info-legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--ink-muted); flex-wrap: wrap; }
+  .info-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .info-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .info-list li { display: flex; justify-content: space-between; gap: 12px; }
+  .info-list li span:last-child { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
   .form-note.form-ok { color: var(--ok); }
   /* --- «Procesar» hacia un nombre que ya existe (M1) ---
      Una página nueva con un nombre repetido la duplica el backend
@@ -5451,6 +5497,7 @@
     <div class="settings-shell">
       <nav class="settings-nav" aria-label="Apartados de los ajustes">
         <h3 id="settings-title">Ajustes</h3>
+        <button type="button" class="settings-tab" data-section="info">Información</button>
         <button type="button" class="settings-tab" data-section="app">Aplicación</button>
         <button type="button" class="settings-tab" data-section="user">Usuario</button>
         <button type="button" class="settings-tab" data-section="admin" hidden>Administración</button>
@@ -5458,7 +5505,14 @@
       <div class="settings-body">
         <button type="button" class="icon-btn settings-close" id="btn-close-settings" title="Cerrar (Esc)" aria-label="Cerrar los ajustes"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
 
-        <section class="settings-section" data-section="app" aria-labelledby="settings-app-title">
+        <section class="settings-section" data-section="info" aria-labelledby="settings-info-title">
+          <h4 id="settings-info-title">Información</h4>
+          <div id="info-content" class="info-content" aria-live="polite">
+            <p class="form-note">Cargando…</p>
+          </div>
+        </section>
+
+        <section class="settings-section" data-section="app" aria-labelledby="settings-app-title" hidden>
           <h4 id="settings-app-title">Ajustes de la aplicación</h4>
           <div class="settings-group">
             <h5>Tema</h5>
