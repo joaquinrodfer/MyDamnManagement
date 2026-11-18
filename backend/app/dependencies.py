@@ -14,8 +14,13 @@ from app.index import open_index
 from app.repository import Repository
 
 
-def get_repo() -> Iterator[Repository]:
-    repo = Repository(open_index(settings.index_path))
+def get_repo(request: Request) -> Iterator[Repository]:
+    # El repositorio sabe quién pregunta (3.0, hito 3): con eso filtra los
+    # listados a lo que esa persona ve y hace propietario a quien crea una
+    # página en la raíz. Sin usuario (rutas sin sesión), lo ve todo.
+    repo = Repository(
+        open_index(settings.index_path), user=getattr(request.state, "user", None)
+    )
     try:
         yield repo
     finally:

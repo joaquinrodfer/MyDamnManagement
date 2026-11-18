@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -218,7 +218,52 @@ MIGRATIONS: dict[int, list[str]] = {
 )""",
         lambda conn: _add_column(conn, "pages", "version", "INTEGER NOT NULL DEFAULT 1"),
     ],
+    # v11 (3.0, hito 3): permisos por nota, heredados (ver `app.acl`).
+    #
+    # - `acl`: quién (`user` o `workspace`) puede qué (`view` < `edit` <
+    #   `owner`) sobre qué página o base. Sin claves foráneas a `pages` a
+    #   propósito: un reindexado vacía y rellena `pages`, y una cascada se
+    #   llevaría los permisos; una nota en la papelera conserva los suyos para
+    #   cuando vuelva.
+    # - `acl_roots`: las páginas que DECLARAN su permiso (y con él cortan la
+    #   herencia). Hace falta aparte de `acl` para poder declarar «nadie más»
+    #   (una hija privada dentro de una página compartida) sin ninguna fila.
+    # - `pages.acl_source`: la página (ella misma o un ancestro; para una fila,
+    #   su base) cuyo permiso manda. Es lo que evita la recursión por consulta:
+    #   saber si alguien ve una página es un JOIN con `acl` por esta columna.
+    #
+    # Al migrar un índice con páginas, las de la raíz quedan compartidas con
+    # el espacio (`edit`): nadie pierde de vista lo que veía el día de antes.
+    11: [
+        """CREATE TABLE IF NOT EXISTS acl (
+    id            TEXT PRIMARY KEY,
+    subject_type  TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace')),
+    subject_id    TEXT NOT NULL,
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('page', 'database')),
+    resource_id   TEXT NOT NULL,
+    level         TEXT NOT NULL CHECK (level IN ('view', 'edit', 'owner')),
+    UNIQUE (resource_id, subject_type, subject_id)
+)""",
+        "CREATE INDEX IF NOT EXISTS acl_subject ON acl(subject_type, subject_id)",
+        """CREATE TABLE IF NOT EXISTS acl_roots (
+    resource_id   TEXT PRIMARY KEY,
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('page', 'database'))
+)""",
+        lambda conn: _add_column(conn, "pages", "acl_source", "TEXT"),
+        "CREATE INDEX IF NOT EXISTS pages_acl_source ON pages(acl_source)",
+        lambda conn: _share_existing_roots(conn),
+    ],
 }
+
+
+def _share_existing_roots(conn: sqlite3.Connection) -> None:
+    """Migración 11: lo que ya existía queda compartido con el espacio."""
+    from app import acl  # import tardío: `acl` usa este módulo
+
+    if conn.execute("SELECT 1 FROM pages LIMIT 1").fetchone() is None:
+        return
+    acl.share_roots_with_workspace(conn)
+    acl.refresh_sources(conn)
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
@@ -257,7 +302,26 @@ CREATE TABLE pages (
     frontmatter       TEXT,
     -- Cuántas veces se ha escrito (v10, ADR-0009 D3): `If-Match` y la
     -- colaboración. No es contenido: no está en el `.md` ni en la huella.
-    version           INTEGER NOT NULL DEFAULT 1
+    version           INTEGER NOT NULL DEFAULT 1,
+    -- De qué página sale su permiso (v11): ver la migración 11 y `app.acl`.
+    acl_source        TEXT
+);
+CREATE INDEX pages_acl_source ON pages(acl_source);
+
+-- Permisos por nota (v11, 3.0 hito 3). Ver la migración 11.
+CREATE TABLE acl (
+    id            TEXT PRIMARY KEY,
+    subject_type  TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace')),
+    subject_id    TEXT NOT NULL,
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('page', 'database')),
+    resource_id   TEXT NOT NULL,
+    level         TEXT NOT NULL CHECK (level IN ('view', 'edit', 'owner')),
+    UNIQUE (resource_id, subject_type, subject_id)
+);
+CREATE INDEX acl_subject ON acl(subject_type, subject_id);
+CREATE TABLE acl_roots (
+    resource_id   TEXT PRIMARY KEY,
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('page', 'database'))
 );
 
 -- El vault, dentro de la base (v10, ADR-0005): cada `.md` con su texto entero.
@@ -404,7 +468,7 @@ CREATE TABLE capture_tokens (
 );
 CREATE INDEX capture_tokens_user ON capture_tokens(user_id);
 
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -879,6 +943,11 @@ DUMP_EXCLUDED = {
     # Tokens de captura (P13): mismo motivo que `users`/`sessions`, son
     # credenciales de acceso y no contenido del vault.
     "capture_tokens",
+    # Permisos (v11): quién ve qué no es contenido del vault ni está en el
+    # `.md` (como `users`), así que reconstruir el índice desde un export da
+    # la misma huella aunque los permisos no viajen en él.
+    "acl",
+    "acl_roots",
 }
 
 
@@ -887,7 +956,7 @@ DUMP_EXCLUDED_COLUMNS = {
     # Cuántas veces se ha escrito la página (v10): es historia de la base, no
     # contenido. No está en el `.md`, así que un índice reconstruido desde un
     # export empieza en 1 y la huella tiene que seguir siendo la misma.
-    "pages": {"version"},
+    "pages": {"version", "acl_source"},
 }
 
 

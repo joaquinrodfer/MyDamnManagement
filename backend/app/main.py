@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -33,6 +33,8 @@ from app.routers import (
 )
 from app.routers import auth as auth_routes
 from app.routers import export as export_routes
+from app.routers import acl as acl_routes
+from app.guard import guard
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 from app.vault.watcher import VaultWatcher
 
@@ -49,48 +51,55 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
-app.include_router(pages.router)
+# Permisos (3.0, hito 3): TODOS los routers pasan por la misma guarda
+# (`app.guard`), que es la única que pregunta a `acl.authorize`. Ninguna ruta
+# lleva su propio `if` de permisos; los listados los filtra el repositorio.
+GUARDED = [Depends(guard)]
+
+app.include_router(pages.router, dependencies=GUARDED)
+# `/acl/{tipo}/{id}` (3.0, hito 3): ver y cambiar quién puede qué.
+app.include_router(acl_routes.router, dependencies=GUARDED)
 # `/capture` (P13): el endpoint que llaman los atajos del sistema operativo y
 # `/inbox`, la bandeja que pinta el panel. Los dos piden identidad; un token
 # personal de captura solo vale para `POST /capture` (ver el middleware).
-app.include_router(capture.router)
-app.include_router(databases.router)
+app.include_router(capture.router, dependencies=GUARDED)
+app.include_router(databases.router, dependencies=GUARDED)
 # `/people`: el directorio de usuarios para las celdas de tipo `person`
 # («Responsable»). Cualquier sesión puede leerlo: es con lo que se elige a quién
 # se asigna una fila, no la lista de administración de `/auth/users`.
-app.include_router(people.router)
-app.include_router(status.router)
+app.include_router(people.router, dependencies=GUARDED)
+app.include_router(status.router, dependencies=GUARDED)
 # `/export` (3.0, hito 1): el vault entero desde el índice, en zip o carpeta.
-app.include_router(export_routes.router)
-app.include_router(trash.router)
-app.include_router(search.router)
-app.include_router(dashboard.router)
+app.include_router(export_routes.router, dependencies=GUARDED)
+app.include_router(trash.router, dependencies=GUARDED)
+app.include_router(search.router, dependencies=GUARDED)
+app.include_router(dashboard.router, dependencies=GUARDED)
 # `/my-tasks`: «Mis tareas», la vista que cruza **todas** las bases y devuelve
 # las filas cuyo responsable es quien pregunta. Una llamada y no cuarenta: el
 # cálculo (qué bases tienen propiedad `person`, qué filas son mías) se hace en
 # dos consultas dentro de `app.mytasks`.
-app.include_router(mytasks.router)
+app.include_router(mytasks.router, dependencies=GUARDED)
 # `/files` es una ruta y no un `StaticFiles` (P1.2b): los adjuntos viven dentro
 # del vault (`_attachments/`) y la URL es su ruta ahí, así que hay que resolver
 # el tipo por magic bytes y decidir qué se sirve inline en cada petición.
-app.include_router(files.router)
+app.include_router(files.router, dependencies=GUARDED)
 # `/events` (SSE, P8): avisos de lo que cambia en el vault. Es una ruta y no
 # parte de `/pages` porque no habla de páginas sino del vault entero.
-app.include_router(events.router)
+app.include_router(events.router, dependencies=GUARDED)
 # `/graph` (P9): la tabla `links` servida como nodos y aristas para el visor.
-app.include_router(graph.router)
+app.include_router(graph.router, dependencies=GUARDED)
 # `/pages/{id}/suggestions` y `/suggestions/{sid}/...` (P10a): los parches que
 # proponen los agentes, en el sidecar de la nota. Solo backend: la interfaz va
 # en su propia tarjeta.
-app.include_router(suggestions.router)
+app.include_router(suggestions.router, dependencies=GUARDED)
 # `/agent/...` (P10b): la puerta de los agentes — leer contexto, proponer y ver
 # lo decidido, con `X-Agent-Token`. Sin `AGENT_TOKENS` las tres rutas dan 404
 # (no existen), que es lo que hace un despliegue sin agentes configurados.
-app.include_router(agent.router)
+app.include_router(agent.router, dependencies=GUARDED)
 # `/auth/...` (P11a): entrar, salir, saber quién eres y crear usuarios. Ojo:
 # estas rutas están DESPUÉS de `/agent` y de nada más; el middleware de abajo
 # es el que decide cuáles no piden sesión.
-app.include_router(auth_routes.router)
+app.include_router(auth_routes.router, dependencies=GUARDED)
 
 
 # Rutas que no piden sesión. Las tres de `/auth` son las que permiten entrar

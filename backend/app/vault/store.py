@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, Optional
 
+from app import acl as acl_mod
 from app import index as index_mod
 from app import closed as closed_rules
 from app.links import TitleIndex, sync_wikilinks
@@ -530,6 +531,62 @@ class TrashEntry:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# herencia de permisos (3.0, hito 3): `pages.acl_source`
+# --------------------------------------------------------------------------
+#
+# Viven aquí y no en `app.acl` porque solo el almacén escribe en `pages` (lo
+# comprueba `scripts/verify_p2.py`). `app.acl` explica el modelo y las llama.
+
+
+def inherit_acl_source(conn: sqlite3.Connection, page_id: Any) -> None:
+    """`acl_source` de UNA página: ella si declara, su base si es fila, si no su madre."""
+    conn.execute(
+        "UPDATE pages SET acl_source = CASE"
+        " WHEN EXISTS (SELECT 1 FROM acl_roots r WHERE r.resource_id = pages.id) THEN pages.id"
+        " WHEN pages.type = 'database_row' THEN (SELECT d.acl_source FROM rows r"
+        "   JOIN pages d ON d.id = r.database_id WHERE r.id = pages.id)"
+        " ELSE (SELECT pp.acl_source FROM pages pp WHERE pp.id = pages.parent_id) END"
+        " WHERE id = ?",
+        (str(page_id),),
+    )
+
+
+def refresh_acl_sources(conn: sqlite3.Connection) -> None:
+    """`acl_source` de todas las páginas: una CTE recursiva y dos UPDATE.
+
+    El árbol se recorre una vez (de las raíces hacia abajo) y el resultado va a
+    una tabla temporal con clave, para que el UPDATE no recalcule la CTE por
+    fila. Las filas de una base heredan después, en una sola sentencia.
+    Medido con 10.000 notas (profundidad media 52): ~90 ms.
+    """
+    conn.execute("DROP TABLE IF EXISTS temp._acl_src")
+    conn.execute("CREATE TEMP TABLE _acl_src (id TEXT PRIMARY KEY, src TEXT)")
+    conn.execute(
+        "INSERT INTO temp._acl_src (id, src)"
+        " WITH RECURSIVE t(id, src) AS ("
+        "  SELECT p.id, CASE WHEN r.resource_id IS NOT NULL THEN p.id END"
+        "  FROM pages p LEFT JOIN acl_roots r ON r.resource_id = p.id"
+        "  WHERE p.parent_id IS NULL AND p.type != 'database_row'"
+        "  UNION ALL"
+        "  SELECT c.id, CASE WHEN r.resource_id IS NOT NULL THEN c.id ELSE t.src END"
+        "  FROM pages c JOIN t ON c.parent_id = t.id"
+        "  LEFT JOIN acl_roots r ON r.resource_id = c.id"
+        "  WHERE c.type != 'database_row'"
+        " ) SELECT id, src FROM t"
+    )
+    conn.execute(
+        "UPDATE pages SET acl_source = (SELECT s.src FROM temp._acl_src s WHERE s.id = pages.id)"
+        " WHERE type != 'database_row'"
+    )
+    conn.execute(
+        "UPDATE pages SET acl_source = (SELECT d.acl_source FROM rows r"
+        " JOIN pages d ON d.id = r.database_id WHERE r.id = pages.id)"
+        " WHERE type = 'database_row'"
+    )
+    conn.execute("DROP TABLE temp._acl_src")
+
+
 def _atomic(fn):
     """La operación entera en una transacción (ver `VaultStore._tx`)."""
 
@@ -908,6 +965,9 @@ class VaultStore:
         elif database_id:
             self._index_row(page, record, database_id)
         sync_wikilinks(self.conn, record.id, workspace_id, record.body)
+        # De quién hereda el permiso (3.0, hito 3): solo esta página; si cambió
+        # de madre, quien la movió recalcula el subárbol (`refresh_sources`).
+        inherit_acl_source(self.conn, record.id)
         return record.id
 
     # ------------------------------------------------------------- escribir
@@ -1073,6 +1133,9 @@ class VaultStore:
             self._index_file(new_rel, new_parent)
             if folder_moved:
                 self._repath_children(old_children, new_children)
+            if (new_parent or None) != (row["parent_id"] or None):
+                # Cambia de madre: ella y todo lo que cuelga heredan de otra.
+                refresh_acl_sources(self.conn)
 
     def check_version(self, page_id: Any, expected: Optional[int]) -> None:
         """`VersionConflict` si `expected` no es la versión actual de la página.
@@ -1474,6 +1537,8 @@ class VaultStore:
             self._index_file(new_rel, new_parent)
             if folder_moved:
                 self._repath_rows(old_children, new_children)
+            if (new_parent or None) != (row["parent_id"] or None):
+                refresh_acl_sources(self.conn)
 
     @_atomic
     def reindex_rows(self, database_id: Any) -> int:
@@ -2149,6 +2214,11 @@ class VaultStore:
             if event is not None:
                 events.append(event)
 
+        if events:
+            # Un fichero puede haber cambiado de carpeta (de madre): la
+            # herencia de permisos se recalcula una vez por pasada.
+            with self._tx():
+                refresh_acl_sources(self.conn)
         return events
 
     @staticmethod
@@ -2550,6 +2620,11 @@ class VaultStore:
             # el disco y dice cuánto ha cambiado por fuera desde aquí.
             stats.reindexed_at = now_iso()
             index_mod.set_meta(self.conn, index_mod.META_LAST_REINDEX, stats.reindexed_at)
+            if self.fs.in_db and not self.migrated():
+                # Migración (primera importación del vault de disco): lo que
+                # ya existía queda compartido con el espacio (3.0, hito 3).
+                acl_mod.share_roots_with_workspace(self.conn)
+            refresh_acl_sources(self.conn)
             if self.fs.in_db:
                 # Migrado: desde aquí la verdad es la base y el arranque no
                 # vuelve a leer el disco.

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
-from app import closed, index as index_mod, templates as template_defs
+from app import acl, closed, index as index_mod, templates as template_defs
 from app.config import settings
 from app.enums import LinkKind, PageType, ViewType
 from app.links import fold_title, sync_wikilinks  # noqa: F401 - API histórica del módulo
@@ -229,9 +229,14 @@ class Repository:
     mismo que el fichero. Ningún camino escribe solo en el índice.
     """
 
-    def __init__(self, conn: sqlite3.Connection, vault: VaultStore | None = None):
+    def __init__(
+        self, conn: sqlite3.Connection, vault: VaultStore | None = None, user: Any = None
+    ):
         self.conn = conn
         self.vault = vault or VaultStore(settings.vault_path, conn)
+        # Quién pregunta (3.0, hito 3). `None` = el sistema (arranque, scripts):
+        # lo ve todo. Los listados se filtran con `acl.visible_clause`.
+        self.user = user
 
     def close(self) -> None:
         self.conn.close()
@@ -240,14 +245,32 @@ class Repository:
 
     @contextlib.contextmanager
     def _tx(self) -> Iterator[None]:
+        # Reentrante y con la proyección del almacén, como `VaultStore._tx`:
+        # una operación del repositorio que llama a varias del almacén las
+        # confirma juntas (y solo entonces proyecta al disco).
+        if self.conn.in_transaction:
+            yield
+            return
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             yield
         except BaseException:
             self.conn.rollback()
+            self.vault.fs.discard()
             raise
         else:
             self.conn.commit()
+            self.vault.fs.flush()
+
+    def _visible(self, alias: str = "p") -> tuple[str, list[Any]]:
+        """Condición SQL «lo ve quien pregunta» (3.0, hito 3)."""
+        return acl.visible_clause(self.user, alias)
+
+    def _own_if_root(self, resource_type: str, page_id: Any, parent_id: Any) -> None:
+        """Una página nueva en la raíz es de quien la crea (y solo suya)."""
+        if parent_id or self.user is None:
+            return
+        acl.make_owner(self.conn, resource_type, page_id, self.user.id)
 
     def stats(self) -> dict[str, int]:
         return index_mod.count_rows(self.conn)
@@ -366,8 +389,11 @@ class Repository:
     # -------------------------------------------------------------- pages
 
     def list_pages(self) -> list[Page]:
+        cond, args = self._visible("p")
         rows = self.conn.execute(
-            f"SELECT {PAGE_FIELDS} FROM pages ORDER BY created_at DESC, rowid DESC"
+            f"SELECT {PAGE_FIELDS_P} FROM pages p WHERE {cond}"
+            " ORDER BY p.created_at DESC, p.rowid DESC",
+            args,
         ).fetchall()
         return [_page(r) for r in rows]
 
@@ -389,28 +415,32 @@ class Repository:
         body_markdown: str = "",
     ) -> Page:
         if PageType(type) == PageType.note:
-            page_id = self.vault.create(
-                title=title,
-                parent_id=parent_id,
-                icon=icon,
-                description=description,
-                body=body_markdown or "",
-                created_by=created_by,
-            )
+            with self._tx():
+                page_id = self.vault.create(
+                    title=title,
+                    parent_id=parent_id,
+                    icon=icon,
+                    description=description,
+                    body=body_markdown or "",
+                    created_by=created_by,
+                )
+                self._own_if_root("page", page_id, parent_id)
             return self.get_page(page_id)
 
         if PageType(type) == PageType.database:
             # Una base también nace con su fichero (P2): el `POST /pages` con
             # `type: database` crea la base vacía, no una página sin `databases`
             # detrás que el reindexado no podría reconstruir.
-            page_id = self.vault.create_database(
-                title=title,
-                schema=[],
-                parent_id=parent_id,
-                icon=icon,
-                description=description,
-                created_by=created_by,
-            )
+            with self._tx():
+                page_id = self.vault.create_database(
+                    title=title,
+                    schema=[],
+                    parent_id=parent_id,
+                    icon=icon,
+                    description=description,
+                    created_by=created_by,
+                )
+                self._own_if_root("database", page_id, parent_id)
             return self.get_page(page_id)
 
         raise VaultError(
@@ -436,17 +466,20 @@ class Repository:
         vault. Lo único distinto es la carpeta (la bandeja no es `Notas/`) y
         tres claves de frontmatter que solo tienen sentido en una captura.
         """
-        page_id = self.vault.create(
-            title=title,
-            body=text,
-            created_by=captured_by,
-            folder=folder,
-            extra={
-                "captured_at": captured_at or _iso(_now()),
-                "capture_source": source,
-                "captured_by": captured_by,
-            },
-        )
+        with self._tx():
+            page_id = self.vault.create(
+                title=title,
+                body=text,
+                created_by=captured_by,
+                folder=folder,
+                extra={
+                    "captured_at": captured_at or _iso(_now()),
+                    "capture_source": source,
+                    "captured_by": captured_by,
+                },
+            )
+            # La bandeja es de quien captura: su nota nace suya.
+            self._own_if_root("page", page_id, None)
         page = self.get_page(page_id)
         assert page is not None
         return page
@@ -460,11 +493,12 @@ class Repository:
         la bandeja: siguen siendo cosas por procesar.
         """
         prefix = folder.strip("/") + "/"
+        cond, args = self._visible("p")
         rows = self.conn.execute(
             SELECT_PAGE
-            + " WHERE p.type = ? AND substr(p.path, 1, ?) = ?"
+            + f" WHERE p.type = ? AND substr(p.path, 1, ?) = ? AND {cond}"
             " ORDER BY p.created_at DESC, p.rowid DESC",
-            (PageType.note.value, len(prefix), prefix),
+            (PageType.note.value, len(prefix), prefix, *args),
         ).fetchall()
         return [_page(row) for row in rows]
 
@@ -579,10 +613,12 @@ class Repository:
         return self.vault.delete_row(page_id)
 
     def tree(self) -> list[dict[str, Any]]:
+        cond, args = self._visible("p")
         rows = self.conn.execute(
-            "SELECT id, title, type, icon, parent_id FROM pages"
-            " WHERE type != ? ORDER BY title COLLATE NOCASE, title",
-            (PageType.database_row.value,),
+            "SELECT p.id, p.title, p.type, p.icon, p.parent_id,"
+            f" {acl.is_shared_sql('p')} AS shared FROM pages p"
+            f" WHERE p.type != ? AND {cond} ORDER BY p.title COLLATE NOCASE, p.title",
+            (PageType.database_row.value, *args),
         ).fetchall()
         database_by_page = {
             r["page_id"]: r["id"]
@@ -596,6 +632,9 @@ class Repository:
                 "icon": r["icon"],
                 "parent_id": _uuid(r["parent_id"]),
                 "database_id": _uuid(database_by_page.get(r["id"])),
+                # 3.0, hito 3: si alguien más que sus propietarios la ve. La
+                # barra lateral pinta un candado en las que no (privadas).
+                "shared": bool(r["shared"]),
                 "children": [],
             }
             for r in rows
@@ -618,11 +657,12 @@ class Repository:
         `[[título]]`. El `GROUP BY` deja una fila por página aunque la nota la
         enlace de las dos formas; el grafo, en cambio, pinta las dos aristas.
         """
+        cond, args = self._visible("p")
         rows = self.conn.execute(
             f"SELECT {PAGE_FIELDS_P} FROM links l JOIN pages p ON p.id = l.from_id"
-            " WHERE l.to_id = ? AND l.kind IN (?, ?)"
+            f" WHERE l.to_id = ? AND l.kind IN (?, ?) AND {cond}"
             " GROUP BY p.id ORDER BY p.title COLLATE NOCASE",
-            (str(page_id), LinkKind.wikilink.value, LinkKind.embed.value),
+            (str(page_id), LinkKind.wikilink.value, LinkKind.embed.value, *args),
         ).fetchall()
         return [_page(r) for r in rows]
 
@@ -880,8 +920,11 @@ class Repository:
     # ---------------------------------------------------------- databases
 
     def list_databases(self) -> list[Database]:
+        cond, args = self._visible("p")
         rows = self.conn.execute(
-            "SELECT id, page_id, schema_json FROM databases ORDER BY rowid"
+            "SELECT d.id, d.page_id, d.schema_json FROM databases d"
+            f" JOIN pages p ON p.id = d.page_id WHERE {cond} ORDER BY d.rowid",
+            args,
         ).fetchall()
         return [_database(self.conn, r) for r in rows]
 
@@ -912,16 +955,19 @@ class Repository:
         plantillas de fila que trae la base (ya validadas contra el schema), y
         se escriben en su frontmatter: la plantilla es parte de la base.
         """
-        return self.get_database(uuid.UUID(self.vault.create_database(
-            title=title,
-            schema=schema_def,
-            views=views,
-            parent_id=parent_id,
-            icon=icon,
-            created_by=created_by,
-            closed=closed_rule,
-            row_templates=row_templates,
-        )))
+        with self._tx():
+            database_id = self.vault.create_database(
+                title=title,
+                schema=schema_def,
+                views=views,
+                parent_id=parent_id,
+                icon=icon,
+                created_by=created_by,
+                closed=closed_rule,
+                row_templates=row_templates,
+            )
+            self._own_if_root("database", database_id, parent_id)
+        return self.get_database(uuid.UUID(database_id))
 
     def set_closed(
         self, database_id: uuid.UUID, rule: Optional[dict[str, Any]]
@@ -1579,21 +1625,23 @@ class Repository:
         query = index_mod.fts_query(text)
         if not query:
             return []
+        cond, args = self._visible("p")
         rows = self.conn.execute(
             f"SELECT {PAGE_FIELDS_P} FROM pages_fts JOIN pages p"
             " ON p.rowid = pages_fts.rowid"
-            " WHERE pages_fts MATCH ? ORDER BY bm25(pages_fts), p.title COLLATE NOCASE"
-            " LIMIT ?",
-            (query, limit),
+            f" WHERE pages_fts MATCH ? AND {cond}"
+            " ORDER BY bm25(pages_fts), p.title COLLATE NOCASE LIMIT ?",
+            (query, *args, limit),
         ).fetchall()
         return [_page(r) for r in rows]
 
     # ---------------------------------------------------------- dashboard
 
     def list_recent_pages(self, limit: int) -> list[Page]:
+        cond, args = self._visible("p")
         rows = self.conn.execute(
-            f"SELECT {PAGE_FIELDS} FROM pages WHERE type != ?"
-            " ORDER BY updated_at DESC, rowid DESC LIMIT ?",
-            (PageType.database_row.value, limit),
+            f"SELECT {PAGE_FIELDS_P} FROM pages p WHERE p.type != ? AND {cond}"
+            " ORDER BY p.updated_at DESC, p.rowid DESC LIMIT ?",
+            (PageType.database_row.value, *args, limit),
         ).fetchall()
         return [_page(r) for r in rows]

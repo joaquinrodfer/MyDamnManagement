@@ -895,6 +895,26 @@
   }
   .note-savestatus.is-error { color: var(--down); }
   .note-topbar-right { display: flex; align-items: center; gap: 10px; }
+  /* «Compartir» (3.0, hito 3): botón de texto en la barra de la nota y en la
+     cabecera de la base; abre el panel de quién puede qué. */
+  .share-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 3px 10px; }
+  .share-btn .svg-icon { width: 14px; height: 14px; }
+  .share-panel { width: 360px; max-width: calc(100vw - 16px); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .share-panel h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .share-note { font-size: 12px; color: var(--ink-muted); line-height: 1.4; }
+  .share-list { display: flex; flex-direction: column; gap: 4px; }
+  .share-row { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .share-dot { width: 22px; height: 22px; border-radius: 50%; flex: none; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; background: var(--ink-muted); }
+  .share-dot .svg-icon { width: 13px; height: 13px; }
+  .share-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .share-level { font-size: 12px; padding: 2px 4px; }
+  .share-remove { width: 24px; height: 24px; }
+  .share-add { display: flex; gap: 6px; }
+  .share-add select { flex: 1; min-width: 0; font-size: 13px; }
+  /* Candado de la barra lateral: la página no la ve nadie más que sus
+     propietarios. Discreto, a la derecha del título. */
+  .tree-lock { display: inline-flex; margin-left: 4px; color: var(--ink-muted); opacity: 0.8; flex: none; }
+  .tree-lock .svg-icon { width: 11px; height: 11px; }
   .note-savestatus-icon { display: inline-flex; width: 12px; height: 12px; align-items: center; justify-content: center; font-size: 11px; }
   /* El ✓ medía 16 px dentro de una caja de 12: se salía 2 px por cada lado y
      dejaba de coincidir con la altura de la palabra «Guardado» (12 px). */
@@ -2818,7 +2838,7 @@
     text-transform: none;
   }
   /* Un interruptor con su texto (p. ej. «Varias filas» de una relación). */
-  .db-col-add-field .db-switch-row {
+  :is(.db-col-add-field, .share-panel) .db-switch-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -2834,7 +2854,7 @@
   .db-switch-text { display: grid; gap: 2px; min-width: 0; }
   .db-switch-title { font-weight: 500; }
   .db-switch-note { font-size: 11.5px; color: var(--ink-muted); line-height: 1.35; }
-  .db-col-add-field input.db-switch {
+  :is(.db-col-add-field, .share-panel) input.db-switch {
     appearance: none;
     -webkit-appearance: none;
     flex: none;
@@ -2850,7 +2870,7 @@
     cursor: pointer;
     transition: background-color var(--dur-fast) var(--ease-std);
   }
-  .db-col-add-field input.db-switch::after {
+  :is(.db-col-add-field, .share-panel) input.db-switch::after {
     content: "";
     position: absolute;
     top: 2px;
@@ -2862,9 +2882,9 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     transition: transform var(--dur-fast) var(--ease-std);
   }
-  .db-col-add-field input.db-switch:checked { background: var(--accent); }
-  .db-col-add-field input.db-switch:checked::after { transform: translateX(12px); }
-  .db-col-add-field input.db-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  :is(.db-col-add-field, .share-panel) input.db-switch:checked { background: var(--accent); }
+  :is(.db-col-add-field, .share-panel) input.db-switch:checked::after { transform: translateX(12px); }
+  :is(.db-col-add-field, .share-panel) input.db-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .db-prop-new .db-col-add-actions { padding: 6px 4px 2px; }
   @media (max-width: 768px) {
     .db-type-option { min-height: 44px; }
@@ -5109,6 +5129,8 @@
       <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></symbol>
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
       <symbol id="i-grip-vertical" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></symbol>
       <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></symbol>

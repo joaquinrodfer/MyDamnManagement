@@ -69,6 +69,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import hierarchy, schemas
+from app import acl
 from app.dependencies import get_repo
 from app.links import fold_title
 from app.repository import Repository
@@ -485,13 +486,18 @@ def get_graph(
     """Grafo listo para pintar: nodos, aristas, si se ha cortado y enlaces rotos."""
     conn = repo.conn
     conn.execute(f"PRAGMA mmap_size = {_MMAP_BYTES}")
+    # 3.0, hito 3: el grafo enseña solo lo que ve quien pregunta (None = todo).
+    visible = acl.visible_ids(conn, repo.user)
+
+    def solo_visibles(ids: list[str]) -> list[str]:
+        return ids if visible is None else [i for i in ids if i in visible]
 
     if mode == "local":
         if page_id is None:
             raise HTTPException(422, "mode=local necesita page_id")
-        if repo.get_page(page_id) is None:
+        if repo.get_page(page_id) is None or (visible is not None and str(page_id) not in visible):
             raise HTTPException(404, "Página no encontrada")
-        ids = _local_ids(conn, str(page_id), depth)
+        ids = solo_visibles(_local_ids(conn, str(page_id), depth))
         nodes, bodies = _nodes(conn, ids, _degrees(conn, ids))
         return {
             "nodes": nodes,
@@ -521,6 +527,12 @@ def get_graph(
         # son nodos del grafo (una nota aislada es un punto, no un error).
         sin_enlaces = [p for p in _all_page_ids(conn) if p not in degrees]
         chosen = linked + sin_enlaces[: limit - len(linked)]
+    if visible is not None:
+        # El corte por `limit` se hace sobre lo visible: lo que no se ve no
+        # puede quitarle hueco a lo que sí.
+        todos = solo_visibles(linked + [p for p in _all_page_ids(conn) if p not in degrees])
+        chosen = todos if limit is None else todos[:limit]
+        total = len(todos)
     nodes, bodies = _nodes(conn, chosen, degrees)
     return {
         "nodes": nodes,

@@ -793,14 +793,15 @@ def test_una_base_v3_migra_a_la_actual_y_conserva_sus_notas(client, index_path):
     # P13 subió el esquema a la 5 (tokens de captura), la columna del título a
     # la 6 (`database_titles`), la regla de cerrada a la 7 (`database_closed`) y
     # las plantillas de fila a la 8 (`database_row_templates`), el frontmatter
-    # tal cual a la 9 (`pages.frontmatter`, 3.0 hito 1) y `documents` +
-    # `pages.version` a la 10 (3.0 hito 2): la migración encadena 4 a 10 sobre
-    # el mismo fichero, que es lo que se comprueba.
-    assert info.version == SCHEMA_VERSION == 10
+    # tal cual a la 9 (`pages.frontmatter`, 3.0 hito 1), `documents` +
+    # `pages.version` a la 10 (3.0 hito 2) y los permisos a la 11 (`acl`,
+    # `acl_roots`, `pages.acl_source`; 3.0 hito 3): la migración encadena 4 a
+    # 11 sobre el mismo fichero, que es lo que se comprueba.
+    assert info.version == SCHEMA_VERSION == 11
 
     conn = sqlite3.connect(index_path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
         tablas = {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
