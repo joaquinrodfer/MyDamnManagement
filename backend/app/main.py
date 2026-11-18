@@ -33,6 +33,7 @@ from app.routers import (
     suggestions,
     trash,
 )
+from app.routers import audit as audit_routes
 from app.routers import auth as auth_routes
 from app.routers import backups as backups_routes
 from app.routers import notifications as notifications_routes
@@ -91,6 +92,7 @@ app.include_router(workspaces_routes.router, dependencies=GUARDED)
 app.include_router(workload_routes.router, dependencies=GUARDED)
 app.include_router(notifications_routes.router, dependencies=GUARDED)
 app.include_router(presence_routes.router, dependencies=GUARDED)
+app.include_router(audit_routes.router, dependencies=GUARDED)
 app.include_router(trash.router, dependencies=GUARDED)
 app.include_router(search.router, dependencies=GUARDED)
 app.include_router(dashboard.router, dependencies=GUARDED)

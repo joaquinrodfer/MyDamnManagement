@@ -4,7 +4,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, UploadFile
 
-from app import acl, auth, export, notifications, schemas
+from app import acl, audit, auth, export, notifications, schemas
 from app import workspaces as ws_mod
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
@@ -184,15 +184,23 @@ def _reorganizar(repo: Repository, user: auth.User, page_id: uuid.UUID, payload:
             if role == "viewer":
                 raise HTTPException(403, "En ese espacio solo puedes leer")
             repo.move_to_workspace(page_id, destino, payload.section)
+            audit.record(repo.conn, user, "page.moved", workspace_id=destino, target_type="page",
+                         target_id=page_id, metadata={"to_workspace": destino, "section": payload.section})
         elif payload.section is not None:
             repo.set_section(page_id, payload.section)
+            audit.record(repo.conn, user, "page.section_changed", target_type="page",
+                         target_id=page_id, metadata={"section": payload.section})
     except VaultError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @router.delete("/{page_id}", status_code=204)
-def delete_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
-    _get_or_404(repo, page_id)
+def delete_page(
+    page_id: uuid.UUID,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    borrada = _get_or_404(repo, page_id)
     # El borrado en cascada del índice se lleva, para una página type=database,
     # su database, sus vistas y sus filas -- el mismo estado que DELETE
     # /databases/{id}, sin dejar filas huérfanas fuera del árbol.
@@ -202,6 +210,8 @@ def delete_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
         # p. ej. una base colgando de la nota: la cascada se la llevaría sin
         # papelera. 400 con el motivo, como el resto de reglas del vault.
         raise HTTPException(400, str(exc)) from exc
+    audit.record(repo.conn, user, "page.deleted", workspace_id=str(borrada.workspace_id),
+                 target_type="page", target_id=page_id, target_name=borrada.title)
     bus.publish({"type": "tree", "action": "deleted", "page_id": str(page_id)})
 
 
@@ -214,7 +224,11 @@ def get_backlinks(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
 
 
 @router.get("/{page_id}/export.md", response_class=Response)
-def export_page_markdown(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+def export_page_markdown(
+    page_id: uuid.UUID,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
     """El `.md` de la nota, con cada bloque de base sustituido por su tabla (P17.4).
 
     Descarga de verdad (`Content-Disposition: attachment`), y **solo lectura**:
@@ -223,6 +237,8 @@ def export_page_markdown(page_id: uuid.UUID, repo: Repository = Depends(get_repo
     lee fuera de la app.
     """
     page = _get_or_404(repo, page_id)
+    audit.record(repo.conn, user, "database.exported" if page.type == "database" else "page.exported",
+                 workspace_id=str(page.workspace_id), target_type=page.type, target_id=page_id, target_name=page.title)
     return Response(
         content=export.export_page(repo, page),
         media_type="text/markdown; charset=utf-8",

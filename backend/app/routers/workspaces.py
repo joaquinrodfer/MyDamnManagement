@@ -18,7 +18,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app import auth
+from app import audit, auth
 from app import workspaces as ws
 from app.dependencies import get_current_user
 from app.routers.auth import get_conn
@@ -88,6 +88,8 @@ def create_workspace(
         ws.set_member(conn, created["id"], "user", str(user.id), "admin")
     except ws.WorkspaceError as exc:
         _raise(exc)
+    audit.record(conn, user, "workspace.created", workspace_id=created["id"],
+                 target_type="workspace", target_id=created["id"], target_name=created["name"])
     return ws.get_dict(conn, user, created["id"])
 
 
@@ -103,17 +105,23 @@ def update_workspace(
         ws.update(conn, workspace_id, name=payload.name, icon=payload.icon, settings=payload.settings)
     except ws.WorkspaceError as exc:
         _raise(exc)
+    audit.record(conn, user, "workspace.updated", workspace_id=workspace_id, target_type="workspace",
+                 target_id=workspace_id, target_name=payload.name,
+                 metadata={k: v for k, v in payload.model_dump(exclude_none=True).items()})
     return ws.get_dict(conn, user, workspace_id)
 
 
 @router.delete("/workspaces/{workspace_id}", status_code=204)
 def delete_workspace(
-    workspace_id: str, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)
+    workspace_id: str, user: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)
 ):
+    nombre = (ws.get(conn, workspace_id) or {"name": None})["name"]
     try:
         ws.delete(conn, workspace_id)
     except ws.WorkspaceError as exc:
         _raise(exc)
+    audit.record(conn, user, "workspace.deleted", workspace_id=workspace_id,
+                 target_type="workspace", target_id=workspace_id, target_name=nombre)
 
 
 # ---------------------------------------------------------------- miembros
@@ -144,6 +152,8 @@ def put_member(
         ws.set_member(conn, workspace_id, subject_type, subject_id, payload.role)
     except ws.WorkspaceError as exc:
         _raise(exc)
+    audit.record(conn, user, "workspace.member_set", workspace_id=workspace_id, target_type=subject_type,
+                 target_id=subject_id, metadata={"role": payload.role})
     return ws.members(conn, workspace_id)
 
 
@@ -157,6 +167,8 @@ def delete_member(
 ):
     _manager(conn, user, workspace_id)
     ws.remove_member(conn, workspace_id, subject_type, subject_id)
+    audit.record(conn, user, "workspace.member_removed", workspace_id=workspace_id,
+                 target_type=subject_type, target_id=subject_id)
     return ws.members(conn, workspace_id)
 
 
@@ -171,11 +183,13 @@ def list_groups(user: auth.User = Depends(get_current_user), conn: sqlite3.Conne
 
 
 @router.post("/groups", status_code=201)
-def create_group(payload: GroupIn, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
+def create_group(payload: GroupIn, user: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
     try:
-        return ws.create_group(conn, payload.name)
+        creado = ws.create_group(conn, payload.name)
     except ws.WorkspaceError as exc:
         _raise(exc)
+    audit.record(conn, user, "group.created", target_type="group", target_id=creado["id"], target_name=creado["name"])
+    return creado
 
 
 @router.patch("/groups/{group_id}")
@@ -188,17 +202,20 @@ def rename_group(group_id: str, payload: GroupIn, _: auth.User = Depends(_supera
 
 
 @router.put("/groups/{group_id}/members")
-def put_group_members(group_id: str, payload: GroupMembers, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
+def put_group_members(group_id: str, payload: GroupMembers, user: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
     try:
         ws.set_group_members(conn, group_id, payload.user_ids)
     except ws.WorkspaceError as exc:
         _raise(exc)
+    audit.record(conn, user, "group.members_changed", target_type="group", target_id=group_id,
+                 metadata={"members": len(payload.user_ids)})
     return next(g for g in ws.list_groups(conn) if g["id"] == group_id)
 
 
 @router.delete("/groups/{group_id}", status_code=204)
-def delete_group(group_id: str, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
+def delete_group(group_id: str, user: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
     try:
         ws.delete_group(conn, group_id)
     except ws.WorkspaceError as exc:
         _raise(exc)
+    audit.record(conn, user, "group.deleted", target_type="group", target_id=group_id)

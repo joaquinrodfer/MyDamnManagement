@@ -1590,6 +1590,115 @@ function tarjetaDeGrupo(g, usuarios) {
   return det;
 }
 
+// ------------------------------------------------------ auditoría (plan H8)
+
+const ACCIONES_DE_AUDITORIA = {
+  "user.created": "Usuario creado",
+  "user.updated": "Usuario modificado",
+  "workspace.created": "Espacio creado",
+  "workspace.updated": "Espacio modificado",
+  "workspace.deleted": "Espacio borrado",
+  "workspace.member_set": "Miembro añadido o cambiado",
+  "workspace.member_removed": "Miembro quitado",
+  "group.created": "Grupo creado",
+  "group.deleted": "Grupo borrado",
+  "group.members_changed": "Miembros de un grupo",
+  "permission.changed": "Permisos cambiados",
+  "page.deleted": "Página borrada",
+  "page.moved": "Página movida de espacio",
+  "page.section_changed": "Compartido/Privado",
+  "page.exported": "Página exportada",
+  "database.exported": "Base exportada",
+  "database.deleted": "Base borrada",
+  "database.kind_changed": "Tipo de base cambiado",
+  "vault.exported": "Vault exportado",
+  "backup.created": "Copia hecha",
+  "backup.downloaded": "Copia descargada",
+  "backup.settings_changed": "Copias programadas",
+};
+const AUDITORIA_POR_PAGINA = 25;
+let auditoriaDesde = 0;
+let auditoriaTotal = 0;
+
+async function cargarAuditoria({ reiniciar = false } = {}) {
+  const tabla = document.getElementById("audit-table");
+  if (!tabla) return;
+  if (reiniciar) auditoriaDesde = 0;
+  const q = new URLSearchParams({ limit: String(AUDITORIA_POR_PAGINA), offset: String(auditoriaDesde) });
+  const accion = document.getElementById("audit-action").value;
+  const quien = document.getElementById("audit-actor").value;
+  const desde = document.getElementById("audit-since").value;
+  const hasta = document.getElementById("audit-until").value;
+  if (accion) q.set("action", accion);
+  if (quien) q.set("actor", quien);
+  if (desde) q.set("since", desde);
+  if (hasta) {
+    const d = new Date(`${hasta}T00:00:00`);
+    d.setDate(d.getDate() + 1); // «hasta» incluye ese día
+    q.set("until", d.toISOString().slice(0, 10));
+  }
+  const nota = document.getElementById("audit-note");
+  try {
+    const datos = await api(`/audit?${q}`);
+    auditoriaTotal = datos.total;
+    // El desplegable de acciones se rellena una vez, con las que existen.
+    const sel = document.getElementById("audit-action");
+    if (sel.options.length <= 1) {
+      for (const a of datos.actions) sel.add(new Option(ACCIONES_DE_AUDITORIA[a] || a, a));
+      sel.value = accion;
+    }
+    const cab = crearEl("tr");
+    for (const t of ["Fecha", "Quién", "Acción", "Sobre qué", "Espacio", "Detalle"]) cab.append(crearEl("th", "", t));
+    tabla.replaceChildren(cab);
+    for (const i of datos.items) {
+      const fila = crearEl("tr");
+      const meta = i.metadata
+        ? Object.entries(i.metadata).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join(" · ")
+        : "";
+      fila.append(
+        crearEl("td", "", fmtFecha(i.ts)),
+        crearEl("td", "", i.actor_name || "—"),
+        crearEl("td", "", ACCIONES_DE_AUDITORIA[i.action] || i.action),
+        crearEl("td", "", i.target_name || i.target_type || "—"),
+        crearEl("td", "", i.workspace_name || "—"),
+        crearEl("td", "audit-meta", meta),
+      );
+      tabla.append(fila);
+    }
+    const hasta2 = Math.min(auditoriaDesde + AUDITORIA_POR_PAGINA, auditoriaTotal);
+    nota.textContent = auditoriaTotal ? `${auditoriaDesde + 1}–${hasta2} de ${auditoriaTotal}` : "Sin registros con esos filtros.";
+    document.getElementById("btn-audit-prev").disabled = auditoriaDesde === 0;
+    document.getElementById("btn-audit-next").disabled = auditoriaDesde + AUDITORIA_POR_PAGINA >= auditoriaTotal;
+  } catch (e) {
+    if (e?.status === 401) return;
+    nota.textContent = e?.message || "No se pudo leer la auditoría.";
+  }
+}
+
+function initAuditoria() {
+  document.getElementById("btn-audit-filter")?.addEventListener("click", () => cargarAuditoria({ reiniciar: true }));
+  document.getElementById("btn-audit-prev")?.addEventListener("click", () => {
+    auditoriaDesde = Math.max(0, auditoriaDesde - AUDITORIA_POR_PAGINA);
+    cargarAuditoria();
+  });
+  document.getElementById("btn-audit-next")?.addEventListener("click", () => {
+    auditoriaDesde += AUDITORIA_POR_PAGINA;
+    cargarAuditoria();
+  });
+}
+
+async function prepararAuditoria() {
+  const quien = document.getElementById("audit-actor");
+  if (quien && quien.options.length <= 1) {
+    try {
+      for (const u of await api("/auth/users")) quien.add(new Option(u.display_name, u.id));
+    } catch {
+      /* sin lista de personas: el filtro se queda en «todas» */
+    }
+  }
+  cargarAuditoria({ reiniciar: true });
+}
+
 // ----------------------------------------------- copias de seguridad (plan H0)
 
 const copiasNota = document.getElementById("backup-note");
@@ -2714,6 +2823,7 @@ function mostrarApartadoDeAjustes(nombre) {
   if (nombre === "admin") {
     cargarUsuariosDeAjustes();
     cargarAdministracionDeEspacios();
+    prepararAuditoria();
     cargarCopias();
   }
 }
@@ -3603,6 +3713,7 @@ function initCarga() {
 }
 
 initCarga();
+initAuditoria();
 initAvisos();
 initPresencia();
 

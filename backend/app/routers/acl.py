@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from app import acl, auth
 from app.dependencies import get_current_user, get_repo
+from app import audit
 from app import workspaces as ws_mod
 from app.repository import Repository
 
@@ -177,4 +178,10 @@ def put_acl(
                 [acl.Entry(e.subject_type, e.subject_id, e.level) for e in payload.entries],
             )
         acl.refresh_sources(repo.conn)
+    audit.record(
+        repo.conn, user, "permission.changed", workspace_id=row["workspace_id"],
+        target_type=resource_type, target_id=resource_id, target_name=row["title"],
+        metadata={"inherit": payload.inherit,
+                  "entries": [f"{e.subject_type}:{e.subject_id}={e.level}" for e in payload.entries]},
+    )
     return _read(repo, user, resource_type, resource_id)

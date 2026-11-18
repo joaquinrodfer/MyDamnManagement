@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from app import auth
+from app import audit, auth
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
@@ -47,6 +47,7 @@ def post_export(
     if not user.is_admin:
         raise HTTPException(403, "solo un administrador puede exportar el vault entero")
     fmt = (payload or ExportRequest()).format
+    audit.record(repo.conn, user, "vault.exported", target_type="vault", metadata={"format": fmt})
     stamp = _stamp()
     try:
         if fmt == "folder":
