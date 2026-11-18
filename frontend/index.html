@@ -374,6 +374,19 @@
   /* ---------- carga del equipo (plan H5) ---------- */
   #workload-nav[hidden] { display: none; }
   /* ---------- avisos (plan H6) ---------- */
+  .presence-strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 16px 4px; }
+  .presence-strip[hidden] { display: none; }
+  .presence-av { position: relative; display: inline-flex; width: 26px; height: 26px; border-radius: 50%; }
+  .presence-av img { width: 26px; height: 26px; border-radius: 50%; display: block; }
+  .presence-av::after {
+    content: ""; position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--ok); border: 2px solid var(--bg);
+  }
+  .presence-av--focus::after { background: var(--down); }
+  .presence-av--meeting::after { background: var(--warn); }
+  .presence-av--custom::after { background: var(--accent); }
+  .user-menu-label { padding: 6px 12px 2px; font-size: 11.5px; color: var(--ink-muted); }
+  .user-menu-item[aria-checked="true"]::after { content: " ✓"; color: var(--accent-ink); }
   .bell-btn { position: relative; margin-left: auto; }
   .bell-badge {
     position: absolute; top: -2px; right: -3px; min-width: 16px; height: 16px; padding: 0 4px;
@@ -5436,6 +5449,7 @@
       <!-- Tú, abajo del todo (como el espacio de trabajo en Notion): tu nombre
            y, al pulsarlo, Ajustes y Cerrar sesión. app.js lo rellena con
            /auth/me y lo deja oculto hasta saberlo. -->
+      <div class="presence-strip" id="presence-strip" role="list" aria-label="Equipo en línea" hidden></div>
       <div class="sidebar-user user-chip-wrap" id="user-chip-wrap" hidden>
         <button type="button" class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Tu cuenta">
           <span class="user-avatar" aria-hidden="true"></span>
@@ -5443,6 +5457,11 @@
           <svg class="svg-icon user-chip-caret" aria-hidden="true" focusable="false"><use href="#i-chevron-down"/></svg>
         </button>
         <div class="user-menu" id="user-menu" role="menu" aria-label="Tu cuenta" hidden>
+          <div class="user-menu-label" id="user-status-label">Tu estado</div>
+          <button type="button" class="user-menu-item" role="menuitemradio" data-status="available">Disponible</button>
+          <button type="button" class="user-menu-item" role="menuitemradio" data-status="focus">En foco (no molestar)</button>
+          <button type="button" class="user-menu-item" role="menuitemradio" data-status="meeting">En reunión</button>
+          <button type="button" class="user-menu-item" role="menuitemradio" data-status="custom">Otro estado…</button>
           <button type="button" class="user-menu-item" role="menuitem" data-action="settings">Ajustes</button>
           <button type="button" class="user-menu-item is-danger" role="menuitem" data-action="logout">Cerrar sesión</button>
         </div>

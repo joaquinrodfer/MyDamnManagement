@@ -3183,6 +3183,117 @@ async function showMisTareas() {
   renderMisTareas(main);
 }
 
+// ---------------------------------------------------- presencia (plan H7)
+
+const ESTADOS_DE_PRESENCIA = {
+  available: "Disponible",
+  focus: "En foco (no molestar)",
+  meeting: "En reunión",
+};
+
+/** La página que se está mirando (id de página), o `null` si no es una. */
+function paginaMirada() {
+  const cur = state.current;
+  if (!cur) return null;
+  if (cur.kind === "note") return cur.id;
+  if (cur.kind === "database") {
+    return [...state.pagesById.values()].find((n) => n.database_id === cur.id)?.id ?? null;
+  }
+  return null;
+}
+
+async function latidoDePresencia() {
+  if (document.visibilityState === "hidden") return;
+  try {
+    const pagina = paginaMirada();
+    await fetch("/presence/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(state.workspaceId ? { "X-Workspace": state.workspaceId } : {}) },
+      body: JSON.stringify({ page_id: pagina }),
+    });
+  } catch {
+    /* sin red: el próximo latido lo arregla */
+  }
+}
+
+function textoDePresencia(p) {
+  const estado = p.status === "custom" ? p.status_text : ESTADOS_DE_PRESENCIA[p.status];
+  const partes = [p.display_name];
+  if (p.status !== "available") partes.push(estado);
+  partes.push(p.viewing ? `Viendo: ${p.viewing.title}` : "En línea");
+  return partes.join(" · ");
+}
+
+function pintarPresencia(datos) {
+  const caja = document.getElementById("presence-strip");
+  if (!caja) return;
+  const otros = (datos.online || []).filter((p) => !p.you);
+  caja.hidden = otros.length === 0;
+  caja.replaceChildren(
+    ...otros.slice(0, 10).map((p) => {
+      const av = crearEl("span", `presence-av presence-av--${p.status}`);
+      av.setAttribute("role", "listitem");
+      av.tabIndex = 0;
+      const texto = textoDePresencia(p);
+      av.title = texto;
+      av.setAttribute("aria-label", texto);
+      const img = avatarImg(p.avatar, "");
+      if (img) av.append(img);
+      else av.append(p.display_name.slice(0, 1).toUpperCase());
+      return av;
+    }),
+  );
+  // Mi estado, marcado en el menú de la cuenta.
+  const mio = datos.me?.status || "available";
+  document.querySelectorAll("#user-menu [data-status]").forEach((b) => {
+    b.setAttribute("aria-checked", String(b.dataset.status === mio));
+  });
+  const etiqueta = document.getElementById("user-status-label");
+  if (etiqueta) {
+    etiqueta.textContent =
+      mio === "custom" ? `Tu estado: ${datos.me.text}` : `Tu estado: ${ESTADOS_DE_PRESENCIA[mio] || "Disponible"}`;
+  }
+}
+
+async function cargarPresencia() {
+  try {
+    pintarPresencia(await api("/presence"));
+  } catch (e) {
+    if (e?.status === 401) return;
+  }
+}
+
+function initPresencia() {
+  latidoDePresencia().then(cargarPresencia);
+  setInterval(latidoDePresencia, 25000);
+  setInterval(cargarPresencia, 20000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") latidoDePresencia().then(cargarPresencia);
+  });
+  window.addEventListener("pagehide", () => {
+    try {
+      navigator.sendBeacon("/presence/leave");
+    } catch {
+      /* nada */
+    }
+  });
+  document.querySelectorAll("#user-menu [data-status]").forEach((boton) => {
+    boton.addEventListener("click", async () => {
+      let texto = "";
+      if (boton.dataset.status === "custom") {
+        texto = (prompt("¿En qué estás? (hasta 80 caracteres)") || "").trim();
+        if (!texto) return;
+      }
+      try {
+        await api("/presence/status", { method: "PUT", body: JSON.stringify({ status: boton.dataset.status, text: texto }) });
+        cargarPresencia();
+      } catch (e) {
+        reportError("No se pudo cambiar tu estado", e);
+      }
+    });
+  });
+}
+
 // ------------------------------------------------------- avisos (plan H6)
 
 const avisos = { unread: 0, items: [] };
@@ -3493,6 +3604,7 @@ function initCarga() {
 
 initCarga();
 initAvisos();
+initPresencia();
 
 function initMyTasks() {
   const boton = document.getElementById("btn-mytasks");
@@ -6063,6 +6175,8 @@ function connectVaultEvents() {
   vaultEvents.addEventListener("tree", () => scheduleTreeRefresh());
   // `event: notification` (plan H6): un aviso nuevo (o leído en otra pestaña).
   vaultEvents.addEventListener("notification", () => cargarAvisos());
+  // `event: presence` (plan H7): alguien se conectó, cambió de página o de estado.
+  vaultEvents.addEventListener("presence", () => cargarPresencia());
   // `event: database` (M2): una base incrustada ha cambiado en otra ventana.
   vaultEvents.addEventListener("database", (ev) => {
     let data;
@@ -6223,6 +6337,7 @@ function destinoDeRuta(pathname = location.pathname) {
  * `localStorage` (una preferencia de pantalla, como el tema; no es un dato del
  * vault). El inicio no se guarda: ir a Inicio es ir a Inicio. */
 function recordarRuta(kind, id) {
+  latidoDePresencia(); // plan H7: la página que miro cambió
   try {
     if (kind === "home") localStorage.removeItem(LAST_ROUTE_KEY);
     else localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify({ kind, id: id ?? null }));
