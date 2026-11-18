@@ -36,6 +36,7 @@ from app.routers import (
 from app.routers import auth as auth_routes
 from app.routers import backups as backups_routes
 from app.routers import notifications as notifications_routes
+from app.routers import presence as presence_routes
 from app.routers import workload as workload_routes
 from app.routers import workspaces as workspaces_routes
 from app.routers import export as export_routes
@@ -89,6 +90,7 @@ app.include_router(backups_routes.router, dependencies=GUARDED)
 app.include_router(workspaces_routes.router, dependencies=GUARDED)
 app.include_router(workload_routes.router, dependencies=GUARDED)
 app.include_router(notifications_routes.router, dependencies=GUARDED)
+app.include_router(presence_routes.router, dependencies=GUARDED)
 app.include_router(trash.router, dependencies=GUARDED)
 app.include_router(search.router, dependencies=GUARDED)
 app.include_router(dashboard.router, dependencies=GUARDED)
