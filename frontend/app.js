@@ -8,6 +8,15 @@ import { createNoteEditor } from "/vendor/editor.bundle.js";
 import { openGraph } from "/graph.js";
 
 const state = {
+  // Espacio de trabajo activo (plan H1): viaja en `X-Workspace` en cada petición.
+  workspaceId: (() => {
+    try {
+      return localStorage.getItem("np_workspace");
+    } catch {
+      return null;
+    }
+  })(),
+  workspaces: [], // [{id, name, icon, role, pages, ...}] los que ve esta persona
   pagesById: new Map(), // id -> {id,title,type,icon,parent_id,children} (del árbol; para resolver [[wikilinks]])
   current: null, // {kind: 'note'|'database', id}
   editor: null, // instancia activa del editor de notas (createNoteEditor), o null
@@ -80,9 +89,12 @@ function recordVersion(data) {
 async function api(path, opts = {}) {
   let res;
   try {
+    // Con `opts.headers` mandan los suyos (If-Match, multipart…); en cualquier
+    // caso viaja el espacio activo.
+    const base = opts.headers ? opts.headers : { "Content-Type": "application/json" };
     res = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
       ...opts,
+      headers: state.workspaceId ? { ...base, "X-Workspace": state.workspaceId } : base,
     });
   } catch (e) {
     // `fetch` solo lanza por red/DNS/servidor inalcanzable -- un 4xx/5xx llega
@@ -111,6 +123,11 @@ async function api(path, opts = {}) {
     throw err;
   }
   recordVersion(data);
+  // Abrir una página de otro espacio (un enlace, el historial) cambia el
+  // espacio activo al suyo: el árbol y los listados pasan a ser de ese.
+  if (data?.workspace_id && (!opts.method || opts.method === "GET") && /^\/pages\/[0-9a-f-]{36}$/.test(path)) {
+    adoptarEspacio(data.workspace_id);
+  }
   return data;
 }
 
@@ -797,6 +814,112 @@ function paintCreatedBy(el, createdBy, createdByColor, createdByAvatar = null) {
 
 // ---------------------------------------------------------------- el chip
 
+// ------------------------------------------------- espacios de trabajo (plan H1)
+
+const WORKSPACE_KEY = "np_workspace";
+const ROLES_DE_ESPACIO = { admin: "Administrador", editor: "Editor", viewer: "Lector" };
+
+function guardarEspacio(id) {
+  try {
+    if (id) localStorage.setItem(WORKSPACE_KEY, id);
+    else localStorage.removeItem(WORKSPACE_KEY);
+  } catch {
+    // sin localStorage el espacio activo se pierde al recargar y nada más
+  }
+}
+
+/** Lee los espacios de esta persona y deja activo el recordado (o el primero). */
+async function cargarEspacios() {
+  try {
+    state.workspaces = await api("/workspaces");
+  } catch (e) {
+    if (e?.status === 401) return;
+    state.workspaces = [];
+  }
+  if (!state.workspaces.some((w) => w.id === state.workspaceId)) {
+    state.workspaceId = state.workspaces[0]?.id ?? null;
+    guardarEspacio(state.workspaceId);
+  }
+  pintarSelectorDeEspacio();
+}
+
+/** Cambia de espacio: se recarga en la raíz, con el árbol y los listados nuevos. */
+function cambiarDeEspacio(id) {
+  if (id === state.workspaceId) return;
+  guardarEspacio(id);
+  try {
+    localStorage.removeItem(LAST_ROUTE_KEY); // «donde lo dejaste» era del otro espacio
+  } catch {
+    /* nada */
+  }
+  location.assign("/");
+}
+
+/** La página abierta es de otro espacio de los míos: pasa a ser el activo. */
+function adoptarEspacio(id) {
+  if (!id || id === state.workspaceId || !state.workspaces.some((w) => w.id === id)) return;
+  state.workspaceId = id;
+  guardarEspacio(id);
+  pintarSelectorDeEspacio();
+  scheduleTreeRefresh();
+}
+
+function pintarSelectorDeEspacio() {
+  const caja = document.getElementById("workspace-switcher");
+  if (!caja) return;
+  const actual = state.workspaces.find((w) => w.id === state.workspaceId);
+  // Con un solo espacio no hay nada que elegir; el administrador lo ve siempre
+  // porque desde ahí gestiona los espacios.
+  caja.hidden = !actual || (state.workspaces.length < 2 && !sessionUser.me?.is_admin);
+  if (caja.hidden) return;
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "workspace-btn";
+  boton.setAttribute("aria-haspopup", "menu");
+  boton.setAttribute("aria-expanded", "false");
+  boton.setAttribute("aria-label", `Espacio de trabajo: ${actual.name}`);
+  const icono = document.createElement("span");
+  icono.className = "workspace-icon";
+  icono.setAttribute("aria-hidden", "true");
+  icono.textContent = actual.icon || actual.name.trim().charAt(0).toUpperCase();
+  const nombre = document.createElement("span");
+  nombre.className = "workspace-name";
+  nombre.textContent = actual.name;
+  boton.append(icono, nombre);
+  boton.insertAdjacentHTML("beforeend", svgIcon("i-chevron-down"));
+  boton.addEventListener("click", () => {
+    if (boton.getAttribute("aria-expanded") === "true") {
+      cerrarPanelDeColumna({ foco: true });
+      return;
+    }
+    const panel = document.createElement("div");
+    for (const w of state.workspaces) {
+      panel.append(
+        itemDeColumna(w.name, {
+          radio: true,
+          marca: w.id === state.workspaceId ? "✓" : "",
+          alElegir: () => {
+            cerrarPanelDeColumna();
+            cambiarDeEspacio(w.id);
+          },
+        }),
+      );
+    }
+    if (sessionUser.me?.is_admin) {
+      panel.append(
+        itemDeColumna("Gestionar espacios…", {
+          alElegir: () => {
+            cerrarPanelDeColumna();
+            openSettings("admin");
+          },
+        }),
+      );
+    }
+    abrirPanelFlotante(boton, panel, { etiqueta: "Espacios de trabajo" });
+  });
+  caja.replaceChildren(boton);
+}
+
 // ------------------------------------------------------------- marca: Noteping
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -936,6 +1059,7 @@ async function loadCurrentUser() {
     sessionUser.me = me;
     rememberUser(me);
     paintUserChip();
+    pintarSelectorDeEspacio();
     // La nota abierta pudo pintarse antes de saber quién eres: se repinta su
     // autoría para que el color no falte por una carrera de milisegundos.
     state.repaintAuthor?.();
@@ -1080,6 +1204,27 @@ function renderUsers(users) {
       badge.className = "user-admin-badge";
       badge.textContent = "admin";
       row.appendChild(badge);
+    } else if (u.id && sessionUser.me?.is_admin) {
+      // El administrador ya lo ve todo; al resto se le puede dar la carga global.
+      const etiqueta = document.createElement("label");
+      etiqueta.className = "user-workload";
+      const caja = document.createElement("input");
+      caja.type = "checkbox";
+      caja.checked = u.can_view_global_workload === true;
+      caja.addEventListener("change", async () => {
+        try {
+          const nuevo = await api(`/auth/users/${u.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ can_view_global_workload: caja.checked }),
+          });
+          rememberUser(nuevo);
+        } catch (e) {
+          caja.checked = !caja.checked;
+          reportError("No se pudo cambiar el permiso", e);
+        }
+      });
+      etiqueta.append(caja, "Carga global");
+      row.appendChild(etiqueta);
     }
     usersList.appendChild(row);
   });
@@ -1117,6 +1262,330 @@ async function cargarUsuariosDeAjustes() {
     usersListUnavailable = true;
     renderKnownUsers(); // pinta la lista conocida y el aviso con su cuenta
   }
+}
+
+// ------------------------------------ administración de espacios y grupos (H1)
+
+const wsNota = document.getElementById("ws-note");
+const gruposNota = document.getElementById("groups-note");
+
+function crearEl(tag, clase, texto) {
+  const el = document.createElement(tag);
+  if (clase) el.className = clase;
+  if (texto != null) el.textContent = texto;
+  return el;
+}
+
+function opcionesDeRol(actual) {
+  const sel = crearEl("select");
+  for (const [valor, texto] of Object.entries(ROLES_DE_ESPACIO)) {
+    const o = crearEl("option", "", texto);
+    o.value = valor;
+    o.selected = valor === actual;
+    sel.append(o);
+  }
+  return sel;
+}
+
+async function cargarAdministracionDeEspacios() {
+  const caja = document.getElementById("ws-admin");
+  const cajaGrupos = document.getElementById("groups-admin");
+  if (!caja || !cajaGrupos) return;
+  try {
+    const [lista, grupos, usuarios] = await Promise.all([
+      api("/workspaces"),
+      api("/groups"),
+      api("/auth/users").catch(() => []),
+    ]);
+    state.workspaces = lista;
+    pintarSelectorDeEspacio();
+    caja.replaceChildren(...lista.map((w) => tarjetaDeEspacio(w, grupos, usuarios)), formularioDeEspacioNuevo());
+    cajaGrupos.replaceChildren(...grupos.map((g) => tarjetaDeGrupo(g, usuarios)), formularioDeGrupoNuevo());
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(wsNota, e?.message || "No se pudieron leer los espacios.", "error");
+  }
+}
+
+function formularioDeEspacioNuevo() {
+  const form = crearEl("form", "ws-row");
+  const nombre = crearEl("input", "ws-grow");
+  nombre.type = "text";
+  nombre.placeholder = "Nuevo espacio (Desarrollo, Investigación…)";
+  nombre.maxLength = 80;
+  nombre.setAttribute("aria-label", "Nombre del espacio nuevo");
+  const boton = crearEl("button", "btn", "Crear espacio");
+  boton.type = "submit";
+  form.append(nombre, boton);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!nombre.value.trim()) return setFormNote(wsNota, "Escribe un nombre.", "error");
+    try {
+      await api("/workspaces", { method: "POST", body: JSON.stringify({ name: nombre.value.trim() }) });
+      setFormNote(wsNota, "Espacio creado.", "ok");
+      await cargarAdministracionDeEspacios();
+    } catch (e) {
+      setFormNote(wsNota, e?.message || "No se pudo crear.", "error");
+    }
+  });
+  return form;
+}
+
+function tarjetaDeEspacio(w, grupos, usuarios) {
+  const det = crearEl("details", "ws-card");
+  const resumen = crearEl("summary");
+  resumen.append(
+    crearEl("span", "workspace-icon", w.icon || w.name.trim().charAt(0).toUpperCase()),
+    crearEl("strong", "", w.name),
+    crearEl("span", "ws-meta", `${ROLES_DE_ESPACIO[w.role] || ""} · ${w.pages} páginas`),
+  );
+  det.append(resumen);
+  const cuerpo = crearEl("div", "ws-body");
+  det.append(cuerpo);
+  let cargado = false;
+  det.addEventListener("toggle", () => {
+    if (!det.open || cargado) return;
+    cargado = true;
+    pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios);
+  });
+  return det;
+}
+
+async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
+  cuerpo.replaceChildren();
+  const esAdminDelEspacio = w.role === "admin";
+  // nombre e icono
+  const fila = crearEl("div", "ws-row");
+  const nombre = crearEl("input", "ws-grow");
+  nombre.type = "text";
+  nombre.value = w.name;
+  nombre.maxLength = 80;
+  nombre.setAttribute("aria-label", "Nombre del espacio");
+  nombre.disabled = !esAdminDelEspacio;
+  const icono = crearEl("input");
+  icono.type = "text";
+  icono.value = w.icon || "";
+  icono.maxLength = 8;
+  icono.size = 3;
+  icono.placeholder = "🙂";
+  icono.setAttribute("aria-label", "Icono del espacio");
+  icono.disabled = !esAdminDelEspacio;
+  const guardar = crearEl("button", "btn", "Guardar");
+  guardar.type = "button";
+  guardar.disabled = !esAdminDelEspacio;
+  guardar.addEventListener("click", async () => {
+    try {
+      await api(`/workspaces/${w.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: nombre.value, icon: icono.value }),
+      });
+      setFormNote(wsNota, "Guardado.", "ok");
+      await cargarAdministracionDeEspacios();
+    } catch (e) {
+      setFormNote(wsNota, e?.message || "No se pudo guardar.", "error");
+    }
+  });
+  fila.append(icono, nombre, guardar);
+  cuerpo.append(fila);
+
+  // miembros
+  const lista = crearEl("div", "ws-members");
+  const pintarMiembros = async () => {
+    let miembros;
+    try {
+      miembros = await api(`/workspaces/${w.id}/members`);
+    } catch (e) {
+      lista.textContent = e?.message || "No se pudieron leer los miembros.";
+      return;
+    }
+    lista.replaceChildren(
+      ...miembros.map((m) => {
+        const f = crearEl("div", "ws-member");
+        const av = m.subject_type === "user" ? avatarImg(m.avatar, "user-avatar has-img") : null;
+        if (av) f.append(av);
+        const n = crearEl("span", "ws-member-name", m.subject_type === "group" ? `${m.name} (grupo, ${m.members})` : m.name);
+        const rol = opcionesDeRol(m.role);
+        rol.disabled = !esAdminDelEspacio;
+        rol.setAttribute("aria-label", `Rol de ${m.name}`);
+        rol.addEventListener("change", async () => {
+          try {
+            await api(`/workspaces/${w.id}/members/${m.subject_type}/${m.subject_id}`, {
+              method: "PUT",
+              body: JSON.stringify({ role: rol.value }),
+            });
+            setFormNote(wsNota, "Rol cambiado.", "ok");
+          } catch (e) {
+            setFormNote(wsNota, e?.message || "No se pudo cambiar el rol.", "error");
+            pintarMiembros();
+          }
+        });
+        const quitar = crearEl("button", "icon-btn", "✕");
+        quitar.type = "button";
+        quitar.title = "Quitar del espacio";
+        quitar.setAttribute("aria-label", `Quitar a ${m.name} del espacio`);
+        quitar.disabled = !esAdminDelEspacio;
+        quitar.addEventListener("click", async () => {
+          try {
+            await api(`/workspaces/${w.id}/members/${m.subject_type}/${m.subject_id}`, { method: "DELETE" });
+            pintarMiembros();
+          } catch (e) {
+            setFormNote(wsNota, e?.message || "No se pudo quitar.", "error");
+          }
+        });
+        f.append(n, rol, quitar);
+        return f;
+      }),
+    );
+    miembrosActuales = new Set(miembros.map((m) => `${m.subject_type}:${m.subject_id}`));
+    pintarAnadir();
+  };
+  let miembrosActuales = new Set();
+  cuerpo.append(crearEl("strong", "", "Miembros"), lista);
+
+  // añadir miembro
+  const anadir = crearEl("div", "ws-row");
+  const pintarAnadir = () => {
+    const sel = crearEl("select", "ws-grow");
+    sel.setAttribute("aria-label", "Persona o grupo a añadir");
+    const vacio = crearEl("option", "", "Añadir una persona o un grupo…");
+    vacio.value = "";
+    sel.append(vacio);
+    for (const g of grupos) {
+      if (miembrosActuales.has(`group:${g.id}`)) continue;
+      const o = crearEl("option", "", `Grupo: ${g.name}`);
+      o.value = `group:${g.id}`;
+      sel.append(o);
+    }
+    for (const u of usuarios) {
+      if (miembrosActuales.has(`user:${u.id}`)) continue;
+      const o = crearEl("option", "", u.display_name);
+      o.value = `user:${u.id}`;
+      sel.append(o);
+    }
+    const rol = opcionesDeRol("editor");
+    rol.setAttribute("aria-label", "Rol del miembro nuevo");
+    const boton = crearEl("button", "btn", "Añadir");
+    boton.type = "button";
+    boton.addEventListener("click", async () => {
+      if (!sel.value) return;
+      const [tipo, id] = sel.value.split(":");
+      try {
+        await api(`/workspaces/${w.id}/members/${tipo}/${id}`, { method: "PUT", body: JSON.stringify({ role: rol.value }) });
+        pintarMiembros();
+      } catch (e) {
+        setFormNote(wsNota, e?.message || "No se pudo añadir.", "error");
+      }
+    });
+    anadir.replaceChildren(sel, rol, boton);
+  };
+  anadir.hidden = !esAdminDelEspacio;
+  cuerpo.append(anadir);
+
+  // borrar (solo el superadministrador)
+  if (sessionUser.me?.is_admin) {
+    const borrar = crearEl("button", "btn btn-danger", "Borrar espacio");
+    borrar.type = "button";
+    borrar.addEventListener("click", async () => {
+      if (!confirm(`¿Borrar el espacio «${w.name}»? Tiene que estar vacío.`)) return;
+      try {
+        await api(`/workspaces/${w.id}`, { method: "DELETE" });
+        if (state.workspaceId === w.id) cambiarDeEspacio(state.workspaces.find((x) => x.id !== w.id)?.id ?? null);
+        setFormNote(wsNota, "Espacio borrado.", "ok");
+        await cargarAdministracionDeEspacios();
+      } catch (e) {
+        setFormNote(wsNota, e?.message || "No se pudo borrar.", "error");
+      }
+    });
+    cuerpo.append(borrar);
+  }
+  await pintarMiembros();
+}
+
+function formularioDeGrupoNuevo() {
+  const form = crearEl("form", "ws-row");
+  const nombre = crearEl("input", "ws-grow");
+  nombre.type = "text";
+  nombre.placeholder = "Nuevo grupo (Desarrolladores, Diseño…)";
+  nombre.maxLength = 60;
+  nombre.setAttribute("aria-label", "Nombre del grupo nuevo");
+  const boton = crearEl("button", "btn", "Crear grupo");
+  boton.type = "submit";
+  form.append(nombre, boton);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!nombre.value.trim()) return setFormNote(gruposNota, "Escribe un nombre.", "error");
+    try {
+      await api("/groups", { method: "POST", body: JSON.stringify({ name: nombre.value.trim() }) });
+      setFormNote(gruposNota, "Grupo creado.", "ok");
+      await cargarAdministracionDeEspacios();
+    } catch (e) {
+      setFormNote(gruposNota, e?.message || "No se pudo crear.", "error");
+    }
+  });
+  return form;
+}
+
+function tarjetaDeGrupo(g, usuarios) {
+  const det = crearEl("details", "ws-card");
+  const resumen = crearEl("summary");
+  resumen.append(crearEl("strong", "", g.name), crearEl("span", "ws-meta", `${g.members.length} personas`));
+  det.append(resumen);
+  const cuerpo = crearEl("div", "ws-body");
+  const fila = crearEl("div", "ws-row");
+  const nombre = crearEl("input", "ws-grow");
+  nombre.type = "text";
+  nombre.value = g.name;
+  nombre.maxLength = 60;
+  nombre.setAttribute("aria-label", "Nombre del grupo");
+  const guardar = crearEl("button", "btn", "Renombrar");
+  guardar.type = "button";
+  guardar.addEventListener("click", async () => {
+    try {
+      await api(`/groups/${g.id}`, { method: "PATCH", body: JSON.stringify({ name: nombre.value }) });
+      setFormNote(gruposNota, "Guardado.", "ok");
+      await cargarAdministracionDeEspacios();
+    } catch (e) {
+      setFormNote(gruposNota, e?.message || "No se pudo renombrar.", "error");
+    }
+  });
+  fila.append(nombre, guardar);
+  const checks = crearEl("div", "ws-checks");
+  checks.setAttribute("role", "group");
+  checks.setAttribute("aria-label", `Miembros de ${g.name}`);
+  const enviar = async () => {
+    const ids = [...checks.querySelectorAll("input:checked")].map((c) => c.value);
+    try {
+      const nuevo = await api(`/groups/${g.id}/members`, { method: "PUT", body: JSON.stringify({ user_ids: ids }) });
+      resumen.querySelector(".ws-meta").textContent = `${nuevo.members.length} personas`;
+      setFormNote(gruposNota, "Miembros guardados.", "ok");
+    } catch (e) {
+      setFormNote(gruposNota, e?.message || "No se pudieron guardar los miembros.", "error");
+    }
+  };
+  for (const u of usuarios) {
+    const etiqueta = crearEl("label");
+    const c = crearEl("input");
+    c.type = "checkbox";
+    c.value = u.id;
+    c.checked = g.members.includes(u.id);
+    c.addEventListener("change", enviar);
+    etiqueta.append(c, u.display_name);
+    checks.append(etiqueta);
+  }
+  const borrar = crearEl("button", "btn btn-danger", "Borrar grupo");
+  borrar.type = "button";
+  borrar.addEventListener("click", async () => {
+    if (!confirm(`¿Borrar el grupo «${g.name}»? Pierde los accesos que daba.`)) return;
+    try {
+      await api(`/groups/${g.id}`, { method: "DELETE" });
+      await cargarAdministracionDeEspacios();
+    } catch (e) {
+      setFormNote(gruposNota, e?.message || "No se pudo borrar.", "error");
+    }
+  });
+  cuerpo.append(fila, crearEl("strong", "", "Miembros"), checks, borrar);
+  det.append(cuerpo);
+  return det;
 }
 
 // ----------------------------------------------- copias de seguridad (plan H0)
@@ -1235,6 +1704,7 @@ newUserForm?.addEventListener("submit", async (event) => {
   const displayName = document.getElementById("nu-display").value.trim();
   const password = document.getElementById("nu-password").value;
   const isAdmin = document.getElementById("nu-admin").checked;
+  const verCarga = document.getElementById("nu-workload")?.checked === true;
 
   if (!username) {
     return setFormNote(newUserNote, "El usuario no puede estar vacío.", "error");
@@ -1260,6 +1730,7 @@ newUserForm?.addEventListener("submit", async (event) => {
         username,
         display_name: displayName,
         password,
+        can_view_global_workload: verCarga,
         is_admin: isAdmin,
         ...(selectorDeAlta.valor ? { avatar: selectorDeAlta.valor } : {}),
       }),
@@ -2240,6 +2711,7 @@ function mostrarApartadoDeAjustes(nombre) {
   }
   if (nombre === "admin") {
     cargarUsuariosDeAjustes();
+    cargarAdministracionDeEspacios();
     cargarCopias();
   }
 }
@@ -5594,6 +6066,7 @@ window.addEventListener("pageshow", (event) => {
  *   dirección: recargar no apaga «atrás» ni «adelante».
  */
 async function abrirAlArrancar() {
+  await cargarEspacios();
   const arbolListo = await loadTree();
   if (!arbolListo) {
     // Sin árbol no hay direcciones que resolver: se pinta el inicio y se deja
