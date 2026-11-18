@@ -36,6 +36,7 @@ services:
       # verdad de las notas y lo único que hay que respaldar (README, "Backup").
       INDEX_PATH: /data/index.sqlite
       VAULT_PATH: /data/vault
+      BACKUP_DIR: /data/backups # copias programadas y copia previa a migrar (plan H0)
       # Usuarios y sesiones (P11a). NADA de secretos en este fichero: si
       # quieres que el primer administrador se cree al arrancar, pon
       # ADMIN_USER y ADMIN_PASSWORD en el `.env` del servidor y el compose

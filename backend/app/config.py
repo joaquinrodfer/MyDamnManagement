@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     # se reindexaría como notas duplicadas.
     export_dir: str = "/data/exports"
 
+    # --- Copias de seguridad (plan H0) -------------------------------------
+    # Carpeta de las copias programadas y de la copia que se hace antes de
+    # migrar el índice (si está vacía, esa va junto al índice y las
+    # programadas no existen). Fuera del vault, como el export.
+    backup_dir: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

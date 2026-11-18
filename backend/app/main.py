@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import agent_auth, auth, capture_tokens, login_page
+from app import backup as backup_mod
 from app.config import settings
 from app.index import ensure_index, open_index
 from app.repository import Repository
@@ -32,6 +33,7 @@ from app.routers import (
     trash,
 )
 from app.routers import auth as auth_routes
+from app.routers import backups as backups_routes
 from app.routers import export as export_routes
 from app.routers import acl as acl_routes
 from app.routers import collab as collab_routes
@@ -79,6 +81,7 @@ app.include_router(status.router, dependencies=GUARDED)
 app.include_router(about_routes.router, dependencies=GUARDED)
 # `/export` (3.0, hito 1): el vault entero desde el índice, en zip o carpeta.
 app.include_router(export_routes.router, dependencies=GUARDED)
+app.include_router(backups_routes.router, dependencies=GUARDED)
 app.include_router(trash.router, dependencies=GUARDED)
 app.include_router(search.router, dependencies=GUARDED)
 app.include_router(dashboard.router, dependencies=GUARDED)
@@ -451,6 +454,8 @@ async def index_is_ready(request: Request, call_next):
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
 # los tests y el apagado puedan pararlo sin depender del objeto `app`.
 watcher: Optional[VaultWatcher] = None
+# Copias programadas (plan H0): un hilo que mira cada 10 minutos si toca.
+backup_scheduler: Optional[backup_mod.BackupScheduler] = None
 
 # El reindexado de arranque va en un hilo (P16): si el proceso se apaga antes
 # de que termine, el hilo puede terminar después y llamar a `_start_watcher`.
@@ -498,6 +503,11 @@ def on_startup() -> None:
     info = ensure_index(settings.index_path)
     if info.recreated:
         log.warning("índice creado de cero en %s (%s)", info.path, info.reason)
+
+    global backup_scheduler
+    if backup_scheduler is None:
+        backup_scheduler = backup_mod.BackupScheduler()
+        backup_scheduler.start()
 
     conn = open_index(settings.index_path)
     try:
@@ -727,8 +737,11 @@ async def guardar_salas() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     """Para el vigilante. Sin esto, el hilo seguiría sondeando tras cerrar."""
-    global watcher, _shutting_down
+    global watcher, _shutting_down, backup_scheduler
     _shutting_down = True
+    if backup_scheduler is not None:
+        backup_scheduler.stop()
+        backup_scheduler = None
     if watcher is not None:
         watcher.stop()
         watcher = None
