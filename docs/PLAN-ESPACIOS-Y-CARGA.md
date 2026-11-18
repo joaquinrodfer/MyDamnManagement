@@ -4,7 +4,9 @@ Estado: **borrador para revisión** (2026-11-18). No hay nada implementado de es
 
 Sale del planning en cuatro fases que trajo el dueño y de la conversación posterior, donde se cambiaron varias piezas. Aquí está lo **decidido**; lo que todavía es suposición va marcado como tal en «Supuestos a confirmar», al final.
 
-Cada hito es una rama y un PR contra `develop`, que revisa y fusiona el dueño (develop despliega a producción). Un hito grande puede ir en varias tiradas apiladas, como en la 3.0.
+Cada hito es una rama y un PR contra `develop`. **Los fusiona Claude** cuando los tests, los guiones de verificación y la prueba en el navegador están en verde (acordado con el dueño el 2026-11-18: «si sale mal puedo volver atrás»). Develop despliega a producción en unos 5 minutos. Las dudas que surjan las decide Claude con el criterio de este plan y las apunta en el PR, en «Decisiones que he tomado yo». Un hito grande puede ir en varias tiradas, cada una con su PR.
+
+**Volver atrás un hito con migración.** Revertir el código no deshace un cambio de esquema del índice. Por eso H0 incluye una copia automática del índice antes de cada migración: para volver atrás hay que revertir el PR **y** restaurar esa copia.
 
 ---
 
@@ -91,6 +93,16 @@ Va primero porque, desde la ADR-0005, la base de datos es la verdad y copiar el 
   - descargar la copia ahora, con un aviso de que lleva usuarios y contraseñas cifradas;
   - programarla cada día o cada semana en `BACKUP_DIR`, conservando las N últimas.
 - **Restaurar:** un procedimiento documentado y probado (arrancar con una copia y comprobar que todo está).
+- **Copia antes de migrar.** Al arrancar, si el esquema del índice va a cambiar, se copia el índice tal cual estaba, por ejemplo `index.sqlite.antes-v14`, junto a él o en `BACKUP_DIR`, y después se migra. Esto va en producción antes que cualquier hito que migre.
+
+### H0b — Reajuste de la versión móvil
+
+Lo que se ve hoy en el móvil (captura del dueño, 2026-11-18): el `+` y los seis puntos de cada bloque están siempre a la vista y se comen el margen izquierdo, así que el texto queda apretado a la derecha. La barra de la nota (Guardado, Compartir, Descargar, Backlinks) ocupa una fila entera.
+
+- **Asas de bloque en el móvil:** no se ven siempre. Solo aparecen en el bloque donde está el cursor, o con una pulsación larga. El texto usa todo el ancho, sin reservar el margen de las asas.
+- **Compartir arriba a la derecha**, en la fila de la cabecera (menú, atrás, adelante).
+- **Menú «⋯» junto a Compartir** con Descargar y Backlinks. Ahí irán las opciones de la página y de la interfaz que se añadan más adelante. El mismo menú se usa también en escritorio, para que las dos versiones sean iguales.
+- **Repaso general a 375 px** de las pantallas principales (nota, base en tabla, tablero y calendario, Inicio, Mis tareas, Ajustes, diálogos): nada que se salga, botones de al menos 44 px y nada tapado por el teclado.
 
 ### H1 — Espacios, grupos y roles
 
