@@ -52,6 +52,10 @@ class PageRead(PageBase):
     # 3.0, hito 2: cuántas veces se ha escrito. Va de vuelta en `If-Match` al
     # guardar; si ya no es la actual, `PATCH` da 409 con el documento de ahora.
     version: int = 1
+    # Solo en una fila (`type=database_row`): la base a la que pertenece. Con
+    # él la página de la fila pide el esquema y pinta sus propiedades; en una
+    # nota o una base es `null`.
+    database_id: Optional[uuid.UUID] = None
 
 
 # --- Grafo de nodos (P9) ------------------------------------------------
