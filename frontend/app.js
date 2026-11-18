@@ -300,6 +300,7 @@ function pageIconProps(type, icon) {
  * memoria) aunque su DOM ya no exista, porque quitarle el nodo padre no lo
  * destruye por sí solo. */
 function clearMain() {
+  document.getElementById("btn-workload")?.setAttribute("aria-current", "false");
   // El selector de bases (/base) escribe su filtro DENTRO del documento
   // mientras está abierto. Al dejar la nota su ViewPlugin se destruye y nadie
   // borraba ese tramo: el filtro se quedaba de párrafo suelto y el
@@ -1060,6 +1061,7 @@ async function loadCurrentUser() {
     rememberUser(me);
     paintUserChip();
     pintarSelectorDeEspacio();
+    pintarBotonDeCarga();
     // La nota abierta pudo pintarse antes de saber quién eres: se repinta su
     // autoría para que el color no falte por una carrera de milisegundos.
     state.repaintAuthor?.();
@@ -3180,6 +3182,158 @@ async function showMisTareas() {
   paintMyTasks();
   renderMisTareas(main);
 }
+
+// ----------------------------------------------- carga del equipo (plan H5)
+
+function pintarBotonDeCarga() {
+  const nav = document.getElementById("workload-nav");
+  if (nav) nav.hidden = !(sessionUser.me?.is_admin || sessionUser.me?.can_view_global_workload);
+}
+
+let cargaSemanas = 8;
+
+async function showCarga() {
+  state.current = { kind: "workload", id: null };
+  markActive(null);
+  const main = clearMain();
+  updateNavButtons();
+  document.getElementById("btn-workload")?.setAttribute("aria-current", "page");
+  const caja = crearEl("div", "carga");
+  main.append(caja);
+  caja.append(crearEl("h2", "", "Carga del equipo"));
+  caja.append(crearEl("p", "form-note", "Cargando…"));
+  let datos;
+  try {
+    datos = await api(`/workload?weeks=${cargaSemanas}`);
+  } catch (e) {
+    caja.replaceChildren(crearEl("h2", "", "Carga del equipo"), crearEl("p", "form-note form-error", describeError(e)));
+    return;
+  }
+  pintarCarga(caja, datos);
+}
+
+function pintarCarga(caja, datos) {
+  const esAdmin = Boolean(sessionUser.me?.is_admin);
+  const fmtH = (h) => (h ? `${Math.round(h * 10) / 10} h` : "–");
+  const fmtSemana = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+  caja.replaceChildren(crearEl("h2", "", "Carga del equipo"));
+
+  const herramientas = crearEl("div", "carga-tools");
+  const etiqueta = crearEl("label", "", "Semanas ");
+  const selector = crearEl("select");
+  for (const n of [4, 8, 12, 26]) selector.add(new Option(String(n), String(n), false, n === cargaSemanas));
+  selector.addEventListener("change", () => {
+    cargaSemanas = Number(selector.value);
+    showCarga();
+  });
+  etiqueta.append(selector);
+  const leyenda = crearEl("span", "carga-leyenda");
+  leyenda.innerHTML =
+    '<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el 70 %</span>' +
+    '<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>70–100 %</span>' +
+    '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>';
+  herramientas.append(etiqueta, leyenda, crearEl("span", "", "Solo tareas sin cerrar, de todos los espacios."));
+  caja.append(herramientas);
+
+  if (!datos.people.length) {
+    caja.append(crearEl("p", "form-note", "Nadie tiene tareas abiertas con responsable en las bases de Tareas."));
+    return;
+  }
+  const tabla = crearEl("table", "carga-table");
+  const cab = crearEl("tr");
+  cab.append(crearEl("th", "", "Persona"), crearEl("th", "", "Tareas"), crearEl("th", "", "Capacidad"));
+  for (const w of datos.weeks) cab.append(crearEl("th", "", fmtSemana(w)));
+  cab.append(crearEl("th", "", "Más tarde"), crearEl("th", "", "Sin fecha"));
+  const encabezado = crearEl("thead");
+  encabezado.append(cab);
+  tabla.append(encabezado);
+  const cuerpo = crearEl("tbody");
+  tabla.append(cuerpo);
+  const columnas = 3 + datos.weeks.length + 2;
+
+  for (const p of datos.people) {
+    const fila = crearEl("tr");
+    const celdaNombre = crearEl("td");
+    const boton = crearEl("button", "carga-persona");
+    boton.type = "button";
+    boton.setAttribute("aria-expanded", "false");
+    boton.insertAdjacentHTML("beforeend", svgIcon("i-chevron-right"));
+    const av = avatarImg(p.avatar, "user-avatar has-img");
+    if (av) boton.append(av);
+    boton.append(p.display_name || "(ya no está)");
+    celdaNombre.append(boton);
+    fila.append(celdaNombre, crearEl("td", "", String(p.tasks)));
+    const celdaCap = crearEl("td");
+    if (esAdmin) {
+      const cap = crearEl("input", "carga-cap");
+      cap.type = "number";
+      cap.min = "1";
+      cap.max = "168";
+      cap.step = "1";
+      cap.value = String(p.capacity);
+      cap.setAttribute("aria-label", `Horas por semana de ${p.display_name || "esta persona"}`);
+      cap.addEventListener("change", async () => {
+        try {
+          await api(`/workload/capacity/${p.id}`, { method: "PUT", body: JSON.stringify({ hours: Number(cap.value) || null }) });
+          showCarga();
+        } catch (e) {
+          reportError("No se pudo guardar la capacidad", e);
+        }
+      });
+      celdaCap.append(cap, " h");
+    } else {
+      celdaCap.textContent = `${p.capacity} h`;
+    }
+    fila.append(celdaCap);
+    for (const w of datos.weeks) {
+      const h = p.weeks[w] || 0;
+      const celda = crearEl("td", "", fmtH(h));
+      const ratio = h / p.capacity;
+      if (h > 0) celda.classList.add(ratio > 1 ? "carga-celda--over" : ratio >= 0.7 ? "carga-celda--warn" : "carga-celda--ok");
+      if (h > 0) celda.title = `${Math.round(ratio * 100)} % de ${p.capacity} h`;
+      fila.append(celda);
+    }
+    fila.append(crearEl("td", "", fmtH(p.before + p.after)), crearEl("td", "", fmtH(p.unscheduled)));
+    cuerpo.append(fila);
+
+    // El desglose: de dónde sale cada hora (espacio, proyecto, base y tarea).
+    const detalle = crearEl("tr", "carga-detalle");
+    detalle.hidden = true;
+    const celdaDetalle = crearEl("td");
+    celdaDetalle.colSpan = columnas;
+    const sub = crearEl("table");
+    const sc = crearEl("tr");
+    for (const t of ["Semana", "Espacio", "Proyecto", "Tarea", "Horas"]) sc.append(crearEl("th", "", t));
+    sub.append(sc);
+    for (const pz of p.pieces) {
+      const f = crearEl("tr");
+      f.append(
+        crearEl("td", "", pz.week ? `Sem. ${fmtSemana(pz.week)}` : "Sin fecha"),
+        crearEl("td", "", pz.workspace_name),
+        crearEl("td", "", pz.project || "–"),
+        crearEl("td", "", pz.masked ? pz.row_title : `${pz.base_title} › ${pz.row_title}`),
+        crearEl("td", "", fmtH(pz.hours)),
+      );
+      sub.append(f);
+    }
+    celdaDetalle.append(sub);
+    detalle.append(celdaDetalle);
+    cuerpo.append(detalle);
+    boton.addEventListener("click", () => {
+      detalle.hidden = !detalle.hidden;
+      boton.setAttribute("aria-expanded", String(!detalle.hidden));
+    });
+  }
+  const envoltorio = crearEl("div", "carga-wrap");
+  envoltorio.append(tabla);
+  caja.append(envoltorio);
+}
+
+function initCarga() {
+  document.getElementById("btn-workload")?.addEventListener("click", () => goTo("workload"));
+}
+
+initCarga();
 
 function initMyTasks() {
   const boton = document.getElementById("btn-mytasks");
@@ -5858,6 +6012,7 @@ function marcaDeEntrada(pos) {
  * para esa vista y `/` para el inicio. */
 function rutaDe(kind, id) {
   if (kind === "mytasks") return "/mis-tareas";
+  if (kind === "workload") return "/carga-del-equipo";
   if (kind === "home" || !id) return "/";
   return "/" + encodeURIComponent(id);
 }
@@ -5880,6 +6035,7 @@ function destinoDeRuta(pathname = location.pathname) {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/") return { kind: "home", id: null };
   if (path === "/mis-tareas") return { kind: "mytasks", id: null };
+  if (path === "/carga-del-equipo") return { kind: "workload", id: null };
   let id;
   try {
     id = decodeURIComponent(path.replace(/^\//, ""));
@@ -5962,6 +6118,10 @@ async function pintar(kind, id, { focus = null } = {}) {
   if (kind === "database") return selectDatabase(id, { focus });
   if (kind === "mytasks") {
     await showMisTareas();
+    return true;
+  }
+  if (kind === "workload") {
+    await showCarga();
     return true;
   }
   if (kind === "home" || !id) {

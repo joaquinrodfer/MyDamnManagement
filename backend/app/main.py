@@ -34,6 +34,7 @@ from app.routers import (
 )
 from app.routers import auth as auth_routes
 from app.routers import backups as backups_routes
+from app.routers import workload as workload_routes
 from app.routers import workspaces as workspaces_routes
 from app.routers import export as export_routes
 from app.routers import acl as acl_routes
@@ -84,6 +85,7 @@ app.include_router(about_routes.router, dependencies=GUARDED)
 app.include_router(export_routes.router, dependencies=GUARDED)
 app.include_router(backups_routes.router, dependencies=GUARDED)
 app.include_router(workspaces_routes.router, dependencies=GUARDED)
+app.include_router(workload_routes.router, dependencies=GUARDED)
 app.include_router(trash.router, dependencies=GUARDED)
 app.include_router(search.router, dependencies=GUARDED)
 app.include_router(dashboard.router, dependencies=GUARDED)
@@ -162,7 +164,7 @@ AVATAR_PATH = re.compile(r"/avatars/[a-z0-9]+\.svg")
 # sirviéndose como fichero.
 UUID_SHAPE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 PANEL_ROUTE = re.compile(rf"/{UUID_SHAPE}")
-PANEL_VIEWS = frozenset({"/mis-tareas"})
+PANEL_VIEWS = frozenset({"/mis-tareas", "/carga-del-equipo"})
 
 
 def _parece_ruta_de_panel(path: str) -> bool:
