@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     # lee como vault vacío.
     vault_allow_empty: bool = False
 
+    # Proyección del vault al disco (3.0, hito 2; ADR-0005). Desde la 3.0 las
+    # notas, bases y filas viven en la base (`documents` del índice) y el `.md`
+    # ya no se escribe al guardar: sale con `POST /export`. Con
+    # `VAULT_PROJECTION=1` cada cambio se proyecta además a `VAULT_PATH` (el
+    # `.md` de siempre, con el mismo `mtime`), el vigilante importa a la base lo
+    # que se toque por fuera y `POST /reindex` relee el disco. Apagado (lo
+    # normal), el vigilante no arranca: no hay ficheros que vigilar.
+    vault_projection: bool = False
+
     # Documentación interactiva de la API (`/docs`, `/redoc` y
     # `/openapi.json`). `DOCS_ENABLED=0` las apaga: esas tres rutas pasan a
     # dar 404 y la app no publica el esquema OpenAPI. Solo hace eso — oculta

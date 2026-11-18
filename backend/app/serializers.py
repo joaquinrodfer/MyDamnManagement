@@ -55,4 +55,5 @@ def serialize_page(
         created_at=as_utc(page.created_at),
         updated_at=as_utc(page.updated_at),
         body_markdown=page.body_markdown,
+        version=page.version,
     )

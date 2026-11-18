@@ -166,6 +166,11 @@ def test_reescribe_tambien_la_cabecera_de_una_nota_que_ya_estaba_en_la_papelera(
     assert old_url not in despues
     assert fm.split_document(despues)[1] == fm.split_document(antes)[1]
 
+    # 3.0 (hito 2): el script de migración trabaja sobre el disco; lo que
+    # reescribió entra en la base con `POST /reindex` (proyección). Antes lo
+    # recogía el reindexado que `restore` hacía desde el disco.
+    assert client.post("/reindex").status_code == 200
+
     # Y restaurar devuelve una nota cuya imagen se sirve, no un 404.
     restaurada = client.post("/trash/restore", json={"path": entrada["path"]})
     assert restaurada.status_code == 200, restaurada.text

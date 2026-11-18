@@ -64,6 +64,19 @@ function sesionExpirada(res) {
   return true;
 }
 
+// 3.0, hito 2: la última `version` conocida de cada página (lo que va en
+// `If-Match` al guardar). La alimenta `api()` con cada respuesta buena que trae
+// `{id, version}`, así que un PATCH hecho desde otro sitio de ESTA pestaña
+// (renombrar desde el árbol, cambiar el icono) no hace saltar un conflicto
+// falso en el siguiente autoguardado del editor.
+const pageVersions = new Map();
+
+function recordVersion(data) {
+  if (data && data.id && Number.isInteger(data.version)) {
+    pageVersions.set(String(data.id), data.version);
+  }
+}
+
 async function api(path, opts = {}) {
   let res;
   try {
@@ -97,6 +110,7 @@ async function api(path, opts = {}) {
     err.data = data;
     throw err;
   }
+  recordVersion(data);
   return data;
 }
 
@@ -3291,6 +3305,9 @@ function renderNote(page, backlinks) {
         .then((res) => {
           // Un 4xx/5xx llega aquí como promesa resuelta: solo vale un 2xx.
           if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "sin respuesta"}`);
+          // La versión que deja este guardado (3.0): si no se apunta, el
+          // siguiente autoguardado iría con la de antes y saldría un 409 falso.
+          res.clone().json().then(recordVersion, () => {});
           if (state.flushSaveBeacon !== flushSaveBeacon) return; // ya no es la nota abierta
           if (buildSaveBody() === body) {
             // El servidor tiene exactamente lo que hay en el editor.
@@ -3367,8 +3384,15 @@ function renderNote(page, backlinks) {
     savingBody = body; // para que el guardado de emergencia sepa qué va de camino
 
     try {
-      const updated = await api(`/pages/${page.id}`, { method: "PATCH", body });
+      // `If-Match` (3.0): el guardado solo vale si nadie ha escrito la nota
+      // desde la versión que tenemos. Si alguien lo hizo (otra pestaña, otra
+      // persona), el servidor contesta 409 y decide el usuario (abajo).
+      const known = pageVersions.get(String(page.id)) ?? page.version;
+      const headers = { "Content-Type": "application/json" };
+      if (Number.isInteger(known)) headers["If-Match"] = `"${known}"`;
+      const updated = await api(`/pages/${page.id}`, { method: "PATCH", body, headers });
       page.updated_at = updated.updated_at;
+      page.version = updated.version;
       page.title = updated.title;
       // Si el servidor ha cambiado el título, la cabecera tiene que enseñar el
       // que se ha guardado de verdad: si no, la nota se llama de una forma en
@@ -3423,6 +3447,28 @@ function renderNote(page, backlinks) {
         markActive(page.id);
       }
     } catch (e) {
+      if (e.status === 409 && e.data && Number.isInteger(e.data.version) && noteIsOpen()) {
+        // Alguien guardó esta nota mientras escribíamos (3.0, `If-Match`). No
+        // se pisa ni se pierde nada: lo de esta pestaña sigue en el editor sin
+        // guardar, y el usuario elige. «Recargar» trae lo del otro; «Quedarme
+        // con lo mío» guarda esto encima (con la versión de ahora).
+        const actual = e.data.version;
+        setSaveState("dirty");
+        session.suspendSave();
+        showRemoteBanner({
+          session,
+          text: "Alguien ha guardado esta nota mientras escribías. Tus cambios siguen aquí, sin guardar.",
+          reloadTitle: "Traer lo que se ha guardado y perder lo tuyo",
+          dismissLabel: "Quedarme con lo mío",
+          dismissTitle: "Guardar lo que hay en el editor encima",
+          onReload: () => reloadOpenNoteFromDisk(session),
+          onDismiss: () => {
+            pageVersions.set(String(page.id), actual);
+            session.resumeSave();
+          },
+        });
+        return;
+      }
       // El indicador de error también es el de la nota abierta: si el PATCH
       // fallido era de una que ya se dejó atrás, el aviso sería de otra nota.
       if (noteIsOpen()) setSaveState("error");
@@ -4111,7 +4157,16 @@ function renderNote(page, backlinks) {
 let vaultEvents = null;
 
 /** Aviso discreto dentro de #main: "esta nota cambió en disco". */
-function showRemoteBanner({ deleted = false, session, onReload, onDismiss }) {
+function showRemoteBanner({
+  deleted = false,
+  session,
+  onReload,
+  onDismiss,
+  text: customText,
+  reloadTitle,
+  dismissLabel,
+  dismissTitle,
+}) {
   const main = document.getElementById("main");
   if (!main) return;
   main.querySelector(".note-remote-banner")?.remove();
@@ -4122,17 +4177,17 @@ function showRemoteBanner({ deleted = false, session, onReload, onDismiss }) {
 
   const text = document.createElement("span");
   text.className = "note-remote-banner-text";
-  text.textContent = deleted
+  text.textContent = customText || (deleted
     ? "Esta nota se ha borrado en disco. Tienes cambios sin guardar."
-    : "Esta nota cambió en disco. Tienes cambios sin guardar.";
+    : "Esta nota cambió en disco. Tienes cambios sin guardar.");
 
   const reloadBtn = document.createElement("button");
   reloadBtn.type = "button";
   reloadBtn.className = "btn";
   reloadBtn.textContent = "Recargar";
-  reloadBtn.title = deleted
+  reloadBtn.title = reloadTitle || (deleted
     ? "Cerrar la nota y perder lo que no has guardado"
-    : "Recargar desde el disco y perder lo que no has guardado";
+    : "Recargar desde el disco y perder lo que no has guardado");
   reloadBtn.addEventListener("click", () => {
     banner.remove();
     if (state.noteSession !== session) return; // mientras tanto se navegó
@@ -4142,8 +4197,8 @@ function showRemoteBanner({ deleted = false, session, onReload, onDismiss }) {
   const dismissBtn = document.createElement("button");
   dismissBtn.type = "button";
   dismissBtn.className = "btn";
-  dismissBtn.textContent = "Descartar";
-  dismissBtn.title = "Seguir con lo que hay en el editor";
+  dismissBtn.textContent = dismissLabel || "Descartar";
+  dismissBtn.title = dismissTitle || "Seguir con lo que hay en el editor";
   dismissBtn.addEventListener("click", () => {
     banner.remove();
     if (state.noteSession !== session) return;

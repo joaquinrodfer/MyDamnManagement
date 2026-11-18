@@ -465,11 +465,24 @@ def test_una_fila_huerfana_se_avisa_y_no_aborta_el_reindexado(client, vault_path
 # --------------------------------------------------------------------------
 
 
-def test_si_el_fichero_de_la_base_desaparece_es_400_y_no_500(client, vault_path):
-    """El índice dice que hay base; el disco no. Se dice qué hacer, no 500."""
+def test_si_el_documento_de_la_base_desaparece_es_400_y_no_500(
+    client, vault_path, index_path
+):
+    """El índice dice que hay base; su documento no está. Se dice qué hacer, no 500.
+
+    3.0 (hito 2): antes el documento era el fichero y el test lo borraba del
+    disco. Ahora el documento vive en la base (`documents`): se quita de ahí y
+    de la proyección, que es el mismo caso de antes con la verdad en otro sitio.
+    """
+    import sqlite3
+
     client.post("/pages", json={"title": "Otra cosa"})     # el vault no se queda vacío
     base = crear_database(client, title="Contactos", schema_def=CRM_SCHEMA)
     (vault_path / "Bases" / "Contactos.md").unlink()
+    conn = sqlite3.connect(index_path)
+    conn.execute("DELETE FROM documents WHERE path = 'Bases/Contactos.md'")
+    conn.commit()
+    conn.close()
 
     fila = client.post(f"/databases/{base['id']}/rows", json={"title": "Acme"})
     assert fila.status_code == 400, fila.text

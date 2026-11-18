@@ -781,8 +781,13 @@ def _avisar_views_opacas(
             )
 
 
-def read_file(abs_path: str, rel_path: str, st=None) -> Page:
-    st = st if st is not None else os.stat(abs_path)
+def read_disk_text(abs_path: str) -> tuple[str, list[str]]:
+    """El texto de un `.md` del disco, normalizado al contrato ('\n', sin BOM).
+
+    Devuelve (texto, avisos). Es la mitad «disco» de `read_file`; la usan
+    también la migración y la importación de la 3.0 (`app.vault.docfs`), que
+    meten el fichero en la base con la misma normalización que al leerlo.
+    """
     warnings: list[str] = []
     with open(abs_path, "r", encoding="utf-8", newline="") as fh:
         try:
@@ -794,6 +799,10 @@ def read_file(abs_path: str, rel_path: str, st=None) -> Page:
     if warnings:
         with open(abs_path, "r", encoding="utf-8", errors="replace", newline="") as fh:
             text = fh.read()
+    return _normalize(text, warnings), warnings
+
+
+def _normalize(text: str, warnings: list[str]) -> str:
     if "\r" in text:
         # Regla del contrato: saltos '\n'. Un fichero tocado en Windows/Notepad
         # llega con CRLF; si se reescribe sin normalizar, el YAML queda con '\r'
@@ -803,6 +812,24 @@ def read_file(abs_path: str, rel_path: str, st=None) -> Page:
     if text.startswith("\ufeff"):
         text = text[1:]
         warnings.append("BOM UTF-8 eliminado")
+    return text
+
+
+def read_file(abs_path: str, rel_path: str, st=None) -> Page:
+    st = st if st is not None else os.stat(abs_path)
+    text, warnings = read_disk_text(abs_path)
+    return parse_page(text, rel_path, st.st_mtime, st.st_size, warnings)
+
+
+def parse_page(text: str, rel_path: str, mtime: float, size: int,
+               warnings: list[str] | None = None) -> Page:
+    """Un `Page` a partir del texto ya normalizado de un `.md` y su huella.
+
+    Es todo lo que `read_file` hace después de leer: no toca el disco, así que
+    vale igual para un fichero que para un documento de la base (3.0).
+    """
+    warnings = list(warnings or [])
+    text = _normalize(text, warnings)
     try:
         raw, body = fm.split_document(text)
     except fm.FrontmatterError as exc:
@@ -832,8 +859,8 @@ def read_file(abs_path: str, rel_path: str, st=None) -> Page:
         description=data.get("description") or None,
         created=data.get("created") or None,
         updated=data.get("updated") or None,
-        mtime=st.st_mtime,
-        size=st.st_size,
+        mtime=mtime,
+        size=size,
         content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
         body=body,
         frontmatter=data,
@@ -877,7 +904,7 @@ def walk_markdown(root: str) -> list[tuple[str, os.stat_result]]:
     return found
 
 
-def load(root: str, progress=None) -> Vault:
+def load(root: str, progress=None, fs=None) -> Vault:
     """Lee el vault entero en memoria.
 
     `progress(phase, done, total)` es opcional y solo lo usa el arranque
@@ -887,7 +914,11 @@ def load(root: str, progress=None) -> Vault:
     lo que cuesta la llamada no puede notarse en el bucle.
     """
     vault = Vault(root=root)
-    candidates: list[tuple[str, os.stat_result]] = walk_markdown(root)
+    # `fs` (3.0): de dónde salen los `.md`. Sin él, del disco, como siempre;
+    # con el de la base (`docfs.DocsFS`), de la tabla `documents`.
+    candidates: list[tuple[str, os.stat_result]] = (
+        fs.walk_markdown() if fs is not None else walk_markdown(root)
+    )
     total = len(candidates)
     if progress is not None:
         progress("leyendo el vault", 0, total)
@@ -896,7 +927,10 @@ def load(root: str, progress=None) -> Vault:
     for leidos, (rel, st) in enumerate(candidates, 1):
         if progress is not None and leidos % PROGRESS_EVERY == 0:
             progress("leyendo el vault", leidos, total)
-        page = read_file(os.path.join(root, rel), rel, st)
+        page = (
+            fs.read_page(os.path.join(root, rel), rel)
+            if fs is not None else read_file(os.path.join(root, rel), rel, st)
+        )
         for w in page.warnings:
             vault.warnings.append(f"{rel}: {w}")
         page.database_id = None

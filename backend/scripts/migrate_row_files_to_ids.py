@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
 
         conn = open_index(args.index)
         try:
-            stats = VaultStore(vault, conn).rebuild()
+            stats = VaultStore(vault, conn).rebuild(source="disk")
         finally:
             conn.close()
         print(
