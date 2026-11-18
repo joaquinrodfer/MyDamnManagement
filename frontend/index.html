@@ -345,6 +345,33 @@
   .user-chip-caret { width: 14px; height: 14px; color: var(--ink-muted); }
   .user-chip[aria-expanded="true"] .user-chip-caret { transform: rotate(180deg); }
   .user-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-muted); flex: 0 0 auto; }
+  /* ---------- avatares (bloque B) ----------
+     La imagen de cada persona, de las de la app (`/avatars/<id>.svg`). Va
+     donde antes iba su punto de color. */
+  .user-avatar.has-img { background: transparent; border-radius: 50%; overflow: hidden; }
+  .user-avatar.has-img img { width: 100%; height: 100%; display: block; }
+  .avatar-img { flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%; display: inline-block; vertical-align: middle; }
+  .note-meta .avatar-img { width: 18px; height: 18px; margin-right: 6px; }
+  .person-cell .avatar-img, .rel-picker-option .avatar-img { width: 18px; height: 18px; }
+  .sug-reply-author .avatar-img { width: 14px; height: 14px; margin-right: 5px; }
+  .share-dot.has-img { background: transparent; overflow: hidden; }
+  .share-dot.has-img img { width: 100%; height: 100%; display: block; }
+  .user-row .avatar-img { width: 22px; height: 22px; }
+  .field-label { display: block; font-size: 12.5px; font-weight: 500; color: var(--ink-muted); margin-bottom: 6px; }
+  .avatar-picker { display: grid; grid-template-columns: repeat(8, minmax(0, 44px)); gap: 6px; }
+  .avatar-option {
+    width: 44px; height: 44px; padding: 2px;
+    border: 2px solid transparent; border-radius: 50%;
+    background: none; cursor: pointer;
+    transition: transform var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
+  }
+  .avatar-option img { width: 100%; height: 100%; display: block; border-radius: 50%; }
+  .avatar-option:hover { transform: scale(1.06); }
+  .avatar-option[aria-checked="true"] { border-color: var(--accent); }
+  .avatar-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (max-width: 480px) {
+    .avatar-picker { grid-template-columns: repeat(6, minmax(0, 44px)); }
+  }
   .user-menu {
     position: absolute;
     bottom: calc(100% + 4px);
@@ -955,6 +982,8 @@
     transition: opacity 0.12s, transform 0.12s;
   }
   .cm-mdm-peer-caret:hover .cm-mdm-peer-label { opacity: 1; transform: none; }
+  .cm-mdm-peer-label:has(.cm-mdm-peer-avatar) { display: inline-flex; align-items: center; gap: 4px; padding-left: 2px; }
+  .cm-mdm-peer-avatar { width: 14px; height: 14px; border-radius: 50%; background: #fff; }
   .cm-mdm-peer-sel { background: color-mix(in srgb, var(--peer) 22%, transparent); }
   .tree-lock { display: inline-flex; margin-left: 4px; color: var(--ink-muted); opacity: 0.8; flex: none; }
   .tree-lock .svg-icon { width: 11px; height: 11px; }
@@ -5444,6 +5473,13 @@
                es con lo que se entra. -->
           <div class="settings-group">
             <h5>Perfil</h5>
+            <!-- Tu imagen (bloque B): una de las de la app. Se guarda al
+                 elegirla (PATCH /auth/me), sin botón. -->
+            <div class="field">
+              <span class="field-label" id="profile-avatar-label">Tu imagen</span>
+              <div class="avatar-picker" id="profile-avatar" role="radiogroup" aria-labelledby="profile-avatar-label"></div>
+              <p class="form-note" id="profile-avatar-note">Es la que se ve junto a tu nombre: en «Creado por», en las tablas y en la barra lateral.</p>
+            </div>
             <form id="form-profile" novalidate>
               <div class="field">
                 <label for="profile-name">Nombre visible</label>
@@ -5528,11 +5564,15 @@
                 <label for="nu-password">Contraseña</label>
                 <input type="password" id="nu-password" autocomplete="new-password" />
               </div>
+              <div class="field">
+                <span class="field-label" id="nu-avatar-label">Imagen</span>
+                <div class="avatar-picker" id="nu-avatar" role="radiogroup" aria-labelledby="nu-avatar-label"></div>
+              </div>
               <div class="field field-inline">
                 <input type="checkbox" id="nu-admin" />
                 <label for="nu-admin">Administrador</label>
               </div>
-              <p class="form-note" id="nu-note">El color lo asigna la paleta según el nombre de usuario.</p>
+              <p class="form-note" id="nu-note">Elige su imagen (luego la puede cambiar en su cuenta); si no eliges, se le da una.</p>
               <div class="dialog-actions">
                 <button type="submit" class="btn btn-primary" id="btn-create-user">Crear usuario</button>
               </div>

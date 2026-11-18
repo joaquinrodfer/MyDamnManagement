@@ -63,12 +63,12 @@ def _read(repo: Repository, user: auth.User, resource_type: str, resource_id: uu
         found = repo.conn.execute("SELECT title FROM pages WHERE id = ?", (source,)).fetchone()
         source_title = found["title"] if found else None
     users = {
-        r["id"]: (r["display_name"], r["color"])
-        for r in repo.conn.execute("SELECT id, display_name, color FROM users")
+        r["id"]: (r["display_name"], r["color"], auth.avatar_of(r))
+        for r in repo.conn.execute("SELECT id, username, display_name, color, avatar FROM users")
     }
     entries = []
     for e in acl.entries(repo.conn, source) if source else []:
-        name, color = users.get(e.subject_id, (None, None))
+        name, color, avatar = users.get(e.subject_id, (None, None, None))
         if e.subject_type == "workspace":
             name = "Todo el espacio"
         entries.append({
@@ -76,6 +76,7 @@ def _read(repo: Repository, user: auth.User, resource_type: str, resource_id: uu
             "subject_id": e.subject_id,
             "name": name,
             "color": color,
+            "avatar": avatar,
             "level": e.level,
         })
     # Propietarios primero, luego quien edita y quien ve; el espacio, delante

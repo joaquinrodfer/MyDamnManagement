@@ -23,48 +23,48 @@ def test_avatar_por_defecto_estable_y_de_la_lista(client):
 
 def test_alta_con_avatar_y_avatar_no_valido(client):
     r = client.post("/auth/users", json={
-        "username": "ana", "display_name": "Ana", "password": "contrasena-ana", "avatar": "zorro",
+        "username": "ana", "display_name": "Ana", "password": "contrasena-ana", "avatar": "persona03",
     })
     assert r.status_code == 201, r.text
-    assert r.json()["avatar"] == "zorro"
+    assert r.json()["avatar"] == "persona03"
     malo = client.post("/auth/users", json={
         "username": "beto", "display_name": "Beto", "password": "contrasena-beto", "avatar": "../x",
     })
     assert malo.status_code == 400
     # Un admin se lo cambia a otro.
     ana = r.json()
-    r = client.patch(f"/auth/users/{ana['id']}", json={"avatar": "buho"})
-    assert r.json()["avatar"] == "buho"
+    r = client.patch(f"/auth/users/{ana['id']}", json={"avatar": "persona07"})
+    assert r.json()["avatar"] == "persona07"
     # Y está en `/people` (el selector de una celda de persona).
     gente = {p["username"]: p for p in client.get("/people").json()}
-    assert gente["ana"]["avatar"] == "buho"
+    assert gente["ana"]["avatar"] == "persona07"
 
 
 def test_cada_uno_cambia_su_avatar(client):
-    r = client.patch("/auth/me", json={"avatar": "panda"})
+    r = client.patch("/auth/me", json={"avatar": "persona05"})
     assert r.status_code == 200, r.text
-    assert r.json()["avatar"] == "panda"
+    assert r.json()["avatar"] == "persona05"
     nombre = r.json()["display_name"]
     # Cambiar el avatar no toca el nombre (antes el nombre era obligatorio).
     assert client.get("/auth/me").json()["display_name"] == nombre
-    assert client.patch("/auth/me", json={"avatar": "dragon"}).status_code == 400
+    assert client.patch("/auth/me", json={"avatar": "persona99"}).status_code == 400
 
 
 def test_la_autoria_lleva_el_avatar(client):
-    client.patch("/auth/me", json={"avatar": "rana"})
+    client.patch("/auth/me", json={"avatar": "persona09"})
     pagina = client.post("/pages", json={"title": "Mía"}).json()
-    assert pagina["created_by_avatar"] == "rana"
-    assert client.get(f"/pages/{pagina['id']}").json()["created_by_avatar"] == "rana"
+    assert pagina["created_by_avatar"] == "persona09"
+    assert client.get(f"/pages/{pagina['id']}").json()["created_by_avatar"] == "persona09"
 
 
 def test_la_celda_de_persona_lleva_el_avatar(client):
     ana = client.post("/auth/users", json={
-        "username": "ana", "display_name": "Ana", "password": "contrasena-ana", "avatar": "koala",
+        "username": "ana", "display_name": "Ana", "password": "contrasena-ana", "avatar": "persona11",
     }).json()
     base = client.post("/databases", json={"title": "B", "schema_def": [{"name": "Quién", "type": "person"}]}).json()
     clave = base["schema_def"][0]["key"]
     fila = client.post(f"/databases/{base['id']}/rows", json={"title": "F", "properties": {clave: ana["id"]}}).json()
-    assert fila["people"][clave]["avatar"] == "koala"
+    assert fila["people"][clave]["avatar"] == "persona11"
 
 
 def test_una_fila_dice_quien_la_creo(client):
@@ -158,5 +158,5 @@ def test_los_avatares_se_ven_sin_sesion_y_nada_mas(client):
     from app.main import app
 
     with TestClient(app) as anonimo:
-        assert anonimo.get("/avatars/gato.svg").status_code == 200
+        assert anonimo.get("/avatars/persona01.svg").status_code == 200
         assert anonimo.get("/avatars/%2e%2e/app.js").status_code in (401, 404)

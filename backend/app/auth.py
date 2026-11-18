@@ -84,10 +84,7 @@ PALETTE = (
 # uno elige la suya al crearse y la cambia en su cuenta; es lo que se ve junto
 # a su nombre (autoría, celdas de persona, la barra lateral). No se suben
 # imágenes: son estas, y van en la app (sin red de terceros).
-AVATARS = (
-    "gato", "perro", "zorro", "oso", "panda", "conejo", "buho", "pinguino",
-    "rana", "koala", "leon", "mono", "cerdo", "pollito", "ballena", "raton",
-)
+AVATARS = tuple(f"persona{i:02d}" for i in range(1, 17))
 
 MIN_PASSWORD = 8
 MAX_PASSWORD = 200

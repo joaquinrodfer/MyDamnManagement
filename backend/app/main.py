@@ -140,7 +140,7 @@ PUBLIC_PATHS = frozenset(
 ICON_PATH = re.compile(r"/icons/[A-Za-z0-9_-]+\.png")
 # Los avatares de usuario (bloque B), con la misma cautela: se eligen en el
 # alta del primer usuario, que todavía no tiene sesión. Solo el nombre de uno.
-AVATAR_PATH = re.compile(r"/avatars/[a-z]+\.svg")
+AVATAR_PATH = re.compile(r"/avatars/[a-z0-9]+\.svg")
 
 # Direcciones del panel que NO son un fichero (P18). Cada nota y cada base
 # tiene la suya --`/<id>`, el id y no el título, que cambia--, y `/mis-tareas`
