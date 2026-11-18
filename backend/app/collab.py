@@ -54,6 +54,10 @@ LOG_LIMIT = 500           # cambios que se recuerdan para rebasar a un cliente a
 PERSIST_DELAY = 0.5       # segundos entre guardados de una sala con cambios
 MAX_DOC_UNITS = 2_000_000  # tope del documento (unidades UTF-16): ~4 MB
 MAX_UPDATES_PER_MESSAGE = 200
+# Lo que viaja por `meta` (título, descripción, icono): campos sueltos, no
+# texto colaborativo. Gana el último que escribe, como en cualquier campo de
+# una línea; el cuerpo sigue siendo el único documento con rebase.
+META_FIELDS = {"title": 500, "description": 5000, "icon": 64}
 
 
 class BadChange(ValueError):
@@ -146,6 +150,9 @@ class Room:
     persist_task: Optional[asyncio.Task] = None
     closed: bool = False
     last_persist_ms: float = 0.0
+    # Los `meta` se guardan de uno en uno y en el orden en que llegan: dos
+    # títulos seguidos no pueden quedar guardados al revés.
+    meta_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def updates_since(self, version: int) -> Optional[list[dict]]:
         """Los cambios desde `version`, o None si ya no están en el registro."""
@@ -170,9 +177,13 @@ class Rooms:
     las salas no saben de SQLite y los tests pueden sustituirlas.
     """
 
-    def __init__(self, load, store):
+    def __init__(self, load, store, store_meta=None):
         self._load = load
         self._store = store
+        # `store_meta(page_id, fields) -> dict` guarda título/descripción/icono
+        # y devuelve lo que quedó (el título puede salir saneado) con la
+        # versión nueva. Sin él, la sala no acepta `meta`.
+        self._store_meta = store_meta
         self._rooms: dict[str, Room] = {}
         self._guard = asyncio.Lock()
         # Lo que tardan los últimos guardados (ms), para `/status` (hito 5).
@@ -269,6 +280,41 @@ class Rooms:
         for p in otros:
             await _safe_send(p, {"type": "update", "version": desde, "updates": aceptados})
         self._schedule_persist(room)
+
+    async def meta(self, room: Room, peer: Peer, seq: Any, fields: Any) -> None:
+        """Título, descripción o icono nuevos: se guardan y se reparten.
+
+        A quien lo manda le vuelve `meta-ack` con lo que quedó guardado (y la
+        versión); a los demás, `meta` con lo mismo, para que lo vean al momento.
+        """
+        if peer.readonly:
+            await peer.send({"type": "meta-reject", "seq": seq, "reason": "readonly"})
+            return
+        if (
+            self._store_meta is None
+            or not isinstance(fields, dict)
+            or not fields
+            or any(
+                k not in META_FIELDS or not isinstance(v, str) or len(v) > META_FIELDS[k]
+                for k, v in fields.items()
+            )
+        ):
+            await peer.send({"type": "meta-reject", "seq": seq, "reason": "meta mal formado"})
+            return
+        async with room.meta_lock:
+            try:
+                saved = await asyncio.to_thread(self._store_meta, room.page_id, dict(fields))
+            except LookupError:
+                await self._broadcast(room, {"type": "gone"})
+                return
+            except Exception as exc:  # noqa: BLE001 - p. ej. un nombre que el vault no admite
+                log.warning("sala %s: meta no guardado (%s)", room.page_id, exc)
+                await peer.send({"type": "meta-reject", "seq": seq, "reason": str(exc)})
+                return
+        await peer.send({"type": "meta-ack", "seq": seq, "fields": saved})
+        await self._broadcast(
+            room, {"type": "meta", **_peer_info(peer), "fields": saved}, skip=peer
+        )
 
     async def pull(self, room: Room, peer: Peer, version: Any) -> None:
         async with room.lock:

@@ -51,6 +51,7 @@ from app.collab import ExternalChange, Peer, Rooms
 from app.config import settings
 from app.index import open_index
 from app.repository import Repository
+from app.routers.pages import avisar_de_cambio
 
 router = APIRouter(tags=["collab"])
 
@@ -94,7 +95,30 @@ def _store(page_id: str, body: str, expected: str) -> str:
         conn.close()
 
 
-rooms = Rooms(load=_load, store=_store)
+def _store_meta(page_id: str, fields: dict) -> dict:
+    """Guarda título/descripción/icono desde la sala (como un `PATCH`)."""
+    conn = open_index(settings.index_path)
+    try:
+        repo = Repository(conn)
+        antes = repo.get_page(uuid.UUID(page_id))
+        if antes is None:
+            raise LookupError(page_id)
+        page = repo.update_page(uuid.UUID(page_id), **fields)
+        if page is None:
+            raise LookupError(page_id)
+        avisar_de_cambio(antes, page)
+        return {
+            "title": page.title,
+            "description": page.description or "",
+            "icon": page.icon,
+            "version": page.version,
+            "updated_at": page.updated_at.isoformat() if page.updated_at else None,
+        }
+    finally:
+        conn.close()
+
+
+rooms = Rooms(load=_load, store=_store, store_meta=_store_meta)
 
 
 def _same_origin(ws: WebSocket) -> bool:
@@ -179,6 +203,10 @@ async def page_room(websocket: WebSocket, page_id: uuid.UUID):
                     nivel = await asyncio.to_thread(_who, pid, websocket.cookies.get(auth.COOKIE_NAME))
                     peer.readonly = nivel[1] not in ("edit", "owner")
                     await rooms.push(room, peer, msg.get("version"), msg.get("updates"))
+                elif kind == "meta":
+                    nivel = await asyncio.to_thread(_who, pid, websocket.cookies.get(auth.COOKIE_NAME))
+                    peer.readonly = nivel[1] not in ("edit", "owner")
+                    await rooms.meta(room, peer, msg.get("seq"), msg.get("fields"))
                 elif kind == "pull":
                     await rooms.pull(room, peer, msg.get("version"))
                 elif kind == "presence":

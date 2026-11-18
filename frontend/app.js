@@ -2816,6 +2816,9 @@ async function selectNote(id) {
 }
 
 const AUTOSAVE_DELAY_MS = 2000;
+// Con la nota en una sala (bloque C), el título, la descripción y el icono se
+// ven en vivo en las demás pestañas: se mandan casi al momento.
+const LIVE_META_DELAY_MS = 300;
 // Presupuesto de la cola `keepalive` de los navegadores (~64 KB entre todas
 // las peticiones en vuelo): se deja margen para no rozar el límite.
 const KEEPALIVE_MAX_BYTES = 60000;
@@ -3392,11 +3395,49 @@ function renderNote(page, backlinks) {
     setSaveState("dirty");
     clearTimeout(saveTimer);
     if (blocked) return; // hay un cambio en disco sin decidir: no se pisa
-    saveTimer = setTimeout(doSave, AUTOSAVE_DELAY_MS);
+    // En una sala, el título se ve en vivo: se manda casi al momento.
+    saveTimer = setTimeout(doSave, collabLive ? LIVE_META_DELAY_MS : AUTOSAVE_DELAY_MS);
     state.flushPendingSave = () => {
       clearTimeout(saveTimer);
       doSave();
     };
+  }
+
+  /** Lo que otro ha escrito en el título, la descripción o el icono (por la
+   * sala). Si aquí hay cambios sin guardar en ese mismo campo, se quedan los
+   * de aquí: se van a guardar enseguida y ganan (el último que escribe). */
+  function applyRemoteMeta(fields) {
+    if (state.editor !== noteEditor) return;
+    if (typeof fields.title === "string" && fields.title !== titleInput.value) {
+      if (!dirty || document.activeElement !== titleInput) {
+        const enfocado = document.activeElement === titleInput;
+        const [ini, fin] = [titleInput.selectionStart, titleInput.selectionEnd];
+        titleInput.value = fields.title;
+        if (enfocado) titleInput.setSelectionRange(Math.min(ini, fields.title.length), Math.min(fin, fields.title.length));
+        autoResizeTitle();
+        page.title = fields.title;
+        const nodo = state.pagesById.get(String(page.id));
+        if (nodo) nodo.title = fields.title;
+      }
+    }
+    if (typeof fields.description === "string" && fields.description !== descInput.value) {
+      if (!dirty || document.activeElement !== descInput) {
+        const enfocado = document.activeElement === descInput;
+        const [ini, fin] = [descInput.selectionStart, descInput.selectionEnd];
+        descInput.value = fields.description;
+        if (enfocado) descInput.setSelectionRange(Math.min(ini, fields.description.length), Math.min(fin, fields.description.length));
+        autoResizeDesc();
+        page.description = fields.description;
+      }
+    }
+    if (typeof fields.icon === "string" && fields.icon && fields.icon !== page.icon) {
+      page.icon = fields.icon;
+      paintPageIcon(iconBtn, "note", fields.icon, "icon-20");
+    }
+    if (Number.isInteger(fields.version)) {
+      page.version = fields.version;
+      recordVersion({ id: page.id, version: fields.version });
+    }
   }
 
   /** Da el contenido por guardado: no queda nada pendiente ni hay que mandar
@@ -3644,7 +3685,21 @@ function renderNote(page, backlinks) {
       // título y la descripción van sin `If-Match` (el último gana, como
       // cualquier campo suelto); el conflicto del cuerpo lo resuelve la sala.
       if (Number.isInteger(known) && !collabLive) headers["If-Match"] = `"${known}"`;
-      const updated = await api(`/pages/${page.id}`, { method: "PATCH", body, headers });
+      // En una sala (bloque C) el título, la descripción y el icono van por
+      // ella: se guardan igual y los demás los ven al momento. Si la sala no
+      // contesta (se cayó a medias), por `PATCH`, como siempre.
+      let updated = null;
+      const sala = collabLive ? state.collabSession : null;
+      if (sala?.saveMeta && state.editor === noteEditor) {
+        try {
+          updated = await sala.saveMeta(JSON.parse(body));
+          recordVersion({ id: page.id, version: updated.version });
+        } catch (err) {
+          if (err?.readonly) throw err;
+          updated = null;
+        }
+      }
+      if (!updated) updated = await api(`/pages/${page.id}`, { method: "PATCH", body, headers });
       page.updated_at = updated.updated_at;
       page.version = updated.version;
       page.title = updated.title;
@@ -4018,6 +4073,7 @@ function renderNote(page, backlinks) {
     },
     onRemoteReset: () =>
       showError("La nota se ha cambiado por otro camino y se ha recargado: lo último que escribiste no llegó a guardarse."),
+    onMeta: (fields) => applyRemoteMeta(fields),
   });
 
   // El árbol ya está cargado cuando se abre una nota (lo pide el arranque y
@@ -4701,6 +4757,23 @@ function handleDatabaseEvent(data) {
   if (data.action === "rows" || data.action === "updated" || data.action === "deleted") {
     scheduleMyTasksRefresh();
   }
+  // Renombrar o borrar una base cambia el árbol.
+  if (data.action === "updated" || data.action === "deleted") scheduleTreeRefresh();
+
+  // La base abierta en esta pestaña (su tabla, tablero, lista o calendario):
+  // se repinta con lo de ahora, salvo el eco de un cambio propio (ya pintado).
+  if (state.current?.kind === "database" && String(state.current.id) === String(data.database_id)) {
+    if (data.action === "deleted") {
+      showNotice("Esta base se ha borrado.");
+      volverAlInicio();
+      return;
+    }
+    const eco =
+      String(data.database_id) === ultimoCambioPropio.databaseId &&
+      Date.now() - ultimoCambioPropio.ts < 3000;
+    if (!eco) refrescarBaseAbierta();
+    return;
+  }
 
   const session = state.noteSession;
   if (!session) return;
@@ -4738,6 +4811,39 @@ function handleDatabaseEvent(data) {
 }
 let refrescoDeBasesPendiente = false;
 
+/** Repinta la base abierta (aviso de otra pestaña) sin perder el sitio: el
+ * scroll de la página y el de cada tabla. Si se está escribiendo en ella (un
+ * campo con el foco, un menú o un diálogo abiertos), espera a que se suelte. */
+let refrescoDeBaseTimer = null;
+function refrescarBaseAbierta() {
+  clearTimeout(refrescoDeBaseTimer);
+  refrescoDeBaseTimer = setTimeout(async () => {
+    refrescoDeBaseTimer = null;
+    const vista = state.databaseView;
+    if (!vista || state.current?.kind !== "database" || String(state.current.id) !== String(vista.id)) return;
+    const main = document.getElementById("main");
+    const activo = document.activeElement;
+    const ocupado =
+      panelDeColumnaAbierto ||
+      document.querySelector("dialog[open]") ||
+      (activo && main?.contains(activo) && activo.matches("input, select, textarea, [contenteditable=true]"));
+    if (ocupado) {
+      refrescarBaseAbierta(); // se vuelve a mirar en un momento
+      return;
+    }
+    const scroll = main?.scrollTop ?? 0;
+    const tablas = [...(main?.querySelectorAll(".table-wrap, .board, .calendar-wrap") || [])].map(
+      (el) => el.scrollLeft,
+    );
+    await vista.recargar();
+    if (!main) return;
+    main.scrollTop = scroll;
+    [...main.querySelectorAll(".table-wrap, .board, .calendar-wrap")].forEach((el, i) => {
+      if (tablas[i] !== undefined) el.scrollLeft = tablas[i];
+    });
+  }, 250);
+}
+
 function connectVaultEvents() {
   if (typeof EventSource === "undefined") return; // sin SSE, sin avisos en vivo
   try {
@@ -4766,6 +4872,9 @@ function connectVaultEvents() {
     }
     handleSuggestionEvent(data);
   });
+  // `event: tree` (bloque C): una página nueva, borrada o renombrada. Sin el
+  // vigilante del disco (producción) nadie más avisaba al árbol.
+  vaultEvents.addEventListener("tree", () => scheduleTreeRefresh());
   // `event: database` (M2): una base incrustada ha cambiado en otra ventana.
   vaultEvents.addEventListener("database", (ev) => {
     let data;
@@ -5881,6 +5990,10 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
           : (vistas[0]?.id ?? null);
       await renderDatabase(fresca, vistas, activa);
     })().catch((e) => reportError("No se pudo refrescar la base de datos", e));
+
+  // Para el aviso de otra pestaña (`refrescarBaseAbierta`): repintar esta
+  // misma base con lo de ahora.
+  state.databaseView = { id: database.id, recargar: recargarVistas };
 
   const header = document.createElement("div");
   header.className = "db-header";

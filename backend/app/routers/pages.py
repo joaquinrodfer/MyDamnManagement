@@ -8,7 +8,7 @@ from app import auth, export, schemas
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
 from app.enums import PageType
-from app.events import publish_database
+from app.events import bus, publish_database
 from app.repository import Repository
 from app.serializers import serialize_page
 from app.vault import attachments
@@ -20,21 +20,22 @@ router = APIRouter(prefix="/pages", tags=["pages"])
 MAX_HEADER_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB, generoso para una imagen de cabecera
 
 
-def _avisar_a_su_base(antes, page) -> None:
-    """Una fila guardada como página: la tabla de su base se repinta.
+def avisar_de_cambio(antes, page) -> None:
+    """Las demás pestañas se enteran de un cambio que se ve fuera de la nota.
 
-    Desde que las filas se abren como páginas normales, su título y su cuerpo
-    se guardan por `PATCH /pages/{id}` (y su cuerpo, por la sala de edición en
-    vivo). Las tablas abiertas en otras pestañas escuchan el aviso `rows` de
-    su base, no el de la página.
+    - Título o icono nuevos: el árbol de la barra lateral (evento `tree`). En
+      producción el vigilante del disco está apagado, así que sin esto otra
+      pestaña seguía enseñando el nombre viejo hasta recargar.
+    - Si es una fila, además su base (`database`/`rows`), para que la tabla
+      se repinte.
 
-    Solo si cambia algo que la tabla enseña (título, icono): el cuerpo no sale
-    en la tabla, y avisar en cada guardado del cuerpo la haría recargarse
-    mientras alguien escribe.
+    El cuerpo no avisa de nada: no sale ni en el árbol ni en la tabla, y
+    avisar en cada guardado haría repintar mientras alguien escribe.
     """
-    if page.type != PageType.database_row or not page.database_id:
+    if antes is not None and (antes.title, antes.icon) == (page.title, page.icon):
         return
-    if antes is None or (antes.title, antes.icon) != (page.title, page.icon):
+    bus.publish({"type": "tree", "action": "changed", "page_id": str(page.id)})
+    if page.type == PageType.database_row and page.database_id:
         publish_database(page.database_id, "rows")
 
 
@@ -74,6 +75,7 @@ def create_page(
         # Padre inexistente o de un tipo que todavía no vive en ficheros: 400
         # con el motivo, en vez de un 500 desde el fondo del vault.
         raise HTTPException(400, str(exc)) from exc
+    bus.publish({"type": "tree", "action": "created", "page_id": str(page.id)})
     return serialize_page(page, repo.author_colors())
 
 
@@ -131,7 +133,7 @@ def update_page(
         raise HTTPException(400, str(exc)) from exc
     if page is None:
         raise HTTPException(404, "Página no encontrada")
-    _avisar_a_su_base(antes, page)
+    avisar_de_cambio(antes, page)
     response.headers["ETag"] = etag(page.version)
     return serialize_page(page, repo.author_colors())
 
@@ -148,6 +150,7 @@ def delete_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
         # p. ej. una base colgando de la nota: la cascada se la llevaría sin
         # papelera. 400 con el motivo, como el resto de reglas del vault.
         raise HTTPException(400, str(exc)) from exc
+    bus.publish({"type": "tree", "action": "deleted", "page_id": str(page_id)})
 
 
 @router.get("/{page_id}/backlinks", response_model=List[schemas.PageRead])

@@ -151,8 +151,17 @@ const GRACE_MS = 2000;
  * `readonly`, `saving` (hay cambios sin confirmar), `offline` (se cayó y se
  * reintenta), `unavailable` (no hay sala: la app sigue guardando como antes),
  * `gone` (la nota ya no existe).
+ *
+ * El título, la descripción y el icono van por la misma sala, como campos
+ * sueltos (el último que escribe gana): `saveMeta(campos)` los guarda y
+ * resuelve con lo que quedó guardado (el título puede salir saneado, y trae
+ * la versión nueva); `onMeta(campos, quien)` avisa de los que escriben los
+ * demás. Sin sala, `saveMeta` rechaza en el acto y la app guarda por `PATCH`.
  */
-export function startCollab(view, { pageId, onStatus = () => {}, onRemoteReset = () => {} }) {
+export function startCollab(
+  view,
+  { pageId, onStatus = () => {}, onRemoteReset = () => {}, onMeta = () => {} },
+) {
   let ws = null;
   let stopped = false;
   let joined = false;
@@ -174,6 +183,36 @@ export function startCollab(view, { pageId, onStatus = () => {}, onRemoteReset =
 
   function send(msg) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  // `meta` pendientes de respuesta: seq -> {resolve, reject, timer}.
+  const metas = new Map();
+  let metaSeq = 0;
+  const META_TIMEOUT_MS = 6000;
+
+  function settleMeta(seq, error, fields) {
+    const p = metas.get(seq);
+    if (!p) return;
+    metas.delete(seq);
+    clearTimeout(p.timer);
+    if (error) p.reject(error);
+    else p.resolve(fields);
+  }
+
+  function failAllMetas(reason) {
+    for (const seq of [...metas.keys()]) settleMeta(seq, new Error(reason));
+  }
+
+  function saveMeta(fields) {
+    if (!joined || !ws || ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("sin sala"));
+    }
+    const seq = ++metaSeq;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => settleMeta(seq, new Error("la sala no contestó")), META_TIMEOUT_MS);
+      metas.set(seq, { resolve, reject, timer });
+      send({ type: "meta", seq, fields });
+    });
   }
 
   // El documento tal y como lo tiene el servidor en nuestra versión confirmada.
@@ -360,6 +399,22 @@ export function startCollab(view, { pageId, onStatus = () => {}, onRemoteReset =
         if (msg.gone) view.dispatch({ effects: dropPeer.of(msg.peer) });
         else if (Number.isInteger(msg.head)) view.dispatch({ effects: setPeer.of(msg) });
         break;
+      case "meta-ack":
+        settleMeta(msg.seq, null, msg.fields || {});
+        break;
+      case "meta-reject": {
+        const err = new Error(msg.reason || "no se pudo guardar");
+        err.readonly = msg.reason === "readonly";
+        settleMeta(msg.seq, err);
+        break;
+      }
+      case "meta":
+        try {
+          onMeta(msg.fields || {}, msg.user || null);
+        } catch (e) {
+          console.error(e);
+        }
+        break;
       case "gone":
         status("gone");
         stop();
@@ -387,6 +442,9 @@ export function startCollab(view, { pageId, onStatus = () => {}, onRemoteReset =
       joined = false;
       inFlight = false;
       ws = null;
+      // Lo que no llegó a confirmarse se da por no guardado: la app lo
+      // reintenta (por la sala al volver, o por `PATCH`).
+      failAllMetas("la sala se cerró");
       if (stopped) return;
       if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404) {
         // Sin permiso o sin sesión: no hay sala que reintentar.
@@ -457,6 +515,7 @@ export function startCollab(view, { pageId, onStatus = () => {}, onRemoteReset =
   connect();
   return {
     stop,
+    saveMeta,
     /** ¿Queda algo sin confirmar por el servidor? */
     pending: () => joined === false || sendableUpdates(view.state).length > 0,
     get clientID() {
