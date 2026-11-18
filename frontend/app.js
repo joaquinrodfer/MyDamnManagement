@@ -10517,15 +10517,32 @@ function cargarPersonas({ forzar = false } = {}) {
   return personasPromesa;
 }
 
-/** La persona que el servidor resolvió para una fila (`people`), o `null`. */
-function personaDeFila(row, key) {
-  const ref = row?.people?.[key];
-  return ref && ref.id != null && ref.display_name ? ref : null;
+/** ¿La propiedad `person` admite varias personas por celda? (plan H4) */
+function personaMultiple(prop) {
+  return prop?.multiple === true || prop?.multiple === "true";
 }
 
-/** El id de usuario que guarda una celda de persona ('' si está vacía). */
+/** Los ids que guarda una celda de persona (uno o varios; `[]` si está vacía). */
+function personaIdsDeFila(row, key) {
+  const v = row?.properties?.[key];
+  return (Array.isArray(v) ? v : [v]).map((x) => String(x ?? "").trim()).filter(Boolean);
+}
+
+/** Las personas que el servidor resolvió para una fila (`people`). */
+function personasDeFila(row, key) {
+  const r = row?.people?.[key];
+  return (Array.isArray(r) ? r : r ? [r] : []).filter((ref) => ref && ref.id != null && ref.display_name);
+}
+
+/** La persona que el servidor resolvió para una fila (`people`), o `null`. */
+function personaDeFila(row, key) {
+  return personasDeFila(row, key)[0] || null;
+}
+
+/** El id de usuario que guarda una celda de persona ('' si está vacía); con
+ * varias personas, la primera. */
 function personaIdDeFila(row, key) {
-  return String(row?.properties?.[key] ?? "").trim();
+  return personaIdsDeFila(row, key)[0] || "";
 }
 
 /** El nombre visible de un id de usuario: el de la fila, o el del directorio. */
@@ -10538,51 +10555,70 @@ function nombreDePersona(id, row = null, key = null) {
 /** Una celda de persona en HTML plano (la lista, la tarjeta del tablero, la
  * ficha de la fila): el NOMBRE con su color; nunca el id. */
 function htmlDePersona(value, prop, row) {
-  const id = String(value ?? "").trim();
-  if (!id) return "—";
-  const ref = personaDeFila(row, prop.key);
-  if (!ref) {
-    return `<span class="rel-cell"><span class="rel-chip rel-borrada person-gone" title="${escapeHtml(id)}">(ya no está)</span></span>`;
-  }
-  const color = ref.color ? ` style="background:${escapeHtml(ref.color)}"` : "";
-  const marca = avatarHtml(ref.avatar) || `<span class="person-dot"${color} aria-hidden="true"></span>`;
-  return `<span class="person-cell">${marca}<span class="person-name">${escapeHtml(ref.display_name)}</span></span>`;
+  const ids = Array.isArray(value)
+    ? value.map((v) => String(v ?? "").trim()).filter(Boolean)
+    : String(value ?? "").trim()
+      ? [String(value).trim()]
+      : [];
+  if (!ids.length) return "—";
+  const refs = new Map(personasDeFila(row, prop.key).map((r) => [String(r.id), r]));
+  const uno = (id) => {
+    const ref = refs.get(id);
+    if (!ref) {
+      return `<span class="rel-cell"><span class="rel-chip rel-borrada person-gone" title="${escapeHtml(id)}">(ya no está)</span></span>`;
+    }
+    const color = ref.color ? ` style="background:${escapeHtml(ref.color)}"` : "";
+    const marca = avatarHtml(ref.avatar) || `<span class="person-dot"${color} aria-hidden="true"></span>`;
+    return `<span class="person-cell">${marca}<span class="person-name">${escapeHtml(ref.display_name)}</span></span>`;
+  };
+  return ids.length === 1 ? uno(ids[0]) : `<span class="person-cells">${ids.map(uno).join("")}</span>`;
 }
 
 /** Pinta la celda de una persona (tabla y tabla incrustada). El clic abre el
  * selector; el lápiz hace lo mismo sin depender de que haya hueco. */
 function pintarPersonaEnCelda(td, database, row, prop, hooks = null) {
-  const id = personaIdDeFila(row, prop.key);
+  const ids = personaIdsDeFila(row, prop.key);
   td.textContent = "";
-  if (!id) {
+  if (!ids.length) {
     td.textContent = "—";
     return;
   }
-  const ref = personaDeFila(row, prop.key);
-  const caja = document.createElement("span");
-  caja.className = "person-cell";
-  if (!ref) {
-    const roto = document.createElement("span");
-    roto.className = "person-gone";
-    roto.textContent = "(ya no está)";
-    roto.title = id;
-    roto.setAttribute("aria-label", `El usuario ${id} ya no existe`);
-    caja.appendChild(roto);
-  } else {
-    let punto = avatarImg(ref.avatar);
-    if (!punto) {
-      punto = document.createElement("span");
-      punto.className = "person-dot";
-      if (ref.color) punto.style.background = ref.color;
-      punto.setAttribute("aria-hidden", "true");
+  const refs = new Map(personasDeFila(row, prop.key).map((r) => [String(r.id), r]));
+  const cajaDe = (id) => {
+    const ref = refs.get(id);
+    const caja = document.createElement("span");
+    caja.className = "person-cell";
+    if (!ref) {
+      const roto = document.createElement("span");
+      roto.className = "person-gone";
+      roto.textContent = "(ya no está)";
+      roto.title = id;
+      roto.setAttribute("aria-label", `El usuario ${id} ya no existe`);
+      caja.appendChild(roto);
+    } else {
+      let punto = avatarImg(ref.avatar);
+      if (!punto) {
+        punto = document.createElement("span");
+        punto.className = "person-dot";
+        if (ref.color) punto.style.background = ref.color;
+        punto.setAttribute("aria-hidden", "true");
+      }
+      const nombre = document.createElement("span");
+      nombre.className = "person-name";
+      nombre.textContent = ref.display_name;
+      caja.title = ref.username ? `${ref.display_name} (@${ref.username})` : ref.display_name;
+      caja.append(punto, nombre);
     }
-    const nombre = document.createElement("span");
-    nombre.className = "person-name";
-    nombre.textContent = ref.display_name;
-    caja.title = ref.username ? `${ref.display_name} (@${ref.username})` : ref.display_name;
-    caja.append(punto, nombre);
+    return caja;
+  };
+  if (ids.length === 1) {
+    td.appendChild(cajaDe(ids[0]));
+  } else {
+    const varias = document.createElement("span");
+    varias.className = "person-cells";
+    ids.forEach((id) => varias.appendChild(cajaDe(id)));
+    td.appendChild(varias);
   }
-  td.appendChild(caja);
   const lapiz = document.createElement("button");
   lapiz.type = "button";
   lapiz.className = "rel-edit";
@@ -10649,7 +10685,8 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
   nombre.textContent = prop.name;
   const modo = document.createElement("span");
   modo.className = "rel-picker-mode";
-  modo.textContent = "una persona";
+  const multiple = personaMultiple(prop);
+  modo.textContent = multiple ? "varias personas" : "una persona";
   cabecera.append(nombre, modo);
 
   const buscar = document.createElement("input");
@@ -10674,18 +10711,22 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
 
   const estado = { activo: -1, opciones: [] };
   const actual = () => personaIdDeFila(row, prop.key);
+  const actuales = () => personaIdsDeFila(row, prop.key);
 
-  const guardar = async (id) => {
-    const valor = id || null;
+  // `valor` es un id (una persona) o una lista (varias); con varias el selector
+  // se queda abierto para ir marcando y desmarcando.
+  const guardar = async (valor) => {
+    if (!multiple) valor = valor || null;
     if (sameValue(valor, row.properties?.[prop.key] ?? null)) {
-      cerrarSelectorDePersona({ foco: true });
+      if (!multiple) cerrarSelectorDePersona({ foco: true });
       return;
     }
     try {
       await saveRow(database, row, { properties: { [prop.key]: valor } }, hooks);
       nota.textContent = "Guardado.";
       repaintCell(td, database, row, prop, false, hooks);
-      cerrarSelectorDePersona({ foco: true });
+      if (multiple) pintarOpciones();
+      else cerrarSelectorDePersona({ foco: true });
     } catch (e) {
       // Se queda abierto con el motivo dentro: cerrarlo dejaría al usuario con
       // un aviso y sin el sitio donde arreglarlo.
@@ -10722,9 +10763,16 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
       return;
     }
     const elegida = actual();
+    const elegidas = actuales();
     visibles.forEach((persona) => {
       const esVacio = !persona.id;
-      const marcada = esVacio ? !elegida : String(persona.id) === elegida;
+      const marcada = multiple
+        ? esVacio
+          ? !elegidas.length
+          : elegidas.includes(String(persona.id))
+        : esVacio
+          ? !elegida
+          : String(persona.id) === elegida;
       const opcion = document.createElement("button");
       opcion.type = "button";
       opcion.className = "rel-picker-option" + (marcada ? " is-chosen" : "");
@@ -10758,7 +10806,14 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
       }
       opcion.addEventListener("click", (e) => {
         e.stopPropagation();
-        guardar(persona.id || null);
+        if (!multiple) {
+          guardar(persona.id || null);
+          return;
+        }
+        const ya = actuales();
+        const id = String(persona.id || "");
+        const nuevas = !id ? [] : ya.includes(id) ? ya.filter((x) => x !== id) : [...ya, id];
+        guardar(nuevas.length ? nuevas : null);
       });
       estado.opciones.push(opcion);
       lista.appendChild(opcion);
@@ -10883,6 +10938,11 @@ function formatPropValueHtml(value, prop, row = null) {
  * texto): vaciar una celda la quita del `.md`, igual que en las notas. */
 function readPropertyValue(prop, input) {
   if (prop.type === "checkbox") return input.checked;
+  if (prop.type === "person" && personaMultiple(prop)) {
+    // Varias personas: las casillas marcadas, en el orden de la lista.
+    const ids = [...input.querySelectorAll("input:checked")].map((c) => c.value);
+    return ids.length ? ids : null;
+  }
   const raw = String(input.value ?? "").trim();
   if (raw === "") return null;
   if (prop.type === "multiselect") {
@@ -10936,6 +10996,30 @@ function buildPropertyInput(prop, value, ref = null) {
     input = document.createElement("input");
     input.type = "date";
     input.value = value ?? "";
+  } else if (prop.type === "person" && personaMultiple(prop)) {
+    // Varias personas (plan H4): una lista de casillas con las personas; el
+    // contenedor recoge los `change` de sus casillas.
+    input = document.createElement("div");
+    input.className = "person-multi";
+    input.setAttribute("role", "group");
+    const marcadas = new Set((Array.isArray(value) ? value : value ? [value] : []).map(String));
+    const pintarGente = (gente) => {
+      input.replaceChildren();
+      const todas = [...(gente || [])];
+      for (const id of marcadas) if (!todas.some((p) => String(p.id) === id)) todas.push({ id, display_name: nombreDePersona(id) || id });
+      for (const persona of todas) {
+        const etiqueta = document.createElement("label");
+        etiqueta.className = "person-multi-opt";
+        const caja = document.createElement("input");
+        caja.type = "checkbox";
+        caja.value = String(persona.id);
+        caja.checked = marcadas.has(String(persona.id));
+        etiqueta.append(caja, persona.display_name || persona.username || String(persona.id));
+        input.appendChild(etiqueta);
+      }
+    };
+    if (personasCache.size) pintarGente([...personasCache.values()]);
+    else cargarPersonas().then(pintarGente).catch(() => pintarGente([]));
   } else if (prop.type === "person") {
     // Una persona se elige de la lista, no se escribe: el valor es el id de un
     // usuario y el `.md` no admite texto libre. El valor guardado se conserva

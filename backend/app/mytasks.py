@@ -262,7 +262,8 @@ def my_tasks(
             base = bases[row["database_id"]]
             props = json.loads(row["properties_json"] or "{}")
             mine = any(
-                isinstance(props.get(key), str) and props[key].strip() == user_id
+                user_id in [str(v).strip() for v in (props.get(key) if isinstance(props.get(key), list) else [props.get(key)])
+                            if isinstance(v, str)]
                 for key in base["person_keys"]
             )
             if not mine:

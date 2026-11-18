@@ -414,7 +414,7 @@ def set_kind(
     nuevas: list[dict] = []
     for role in s["required"]:
         if role not in roles:
-            col = kind_rules.new_column(role, names)
+            col = kind_rules.new_column(role, names, multiple_people=(kind_type == "tasks"))
             nuevas.append((role, col))
     if "estimate" in s["optional"] and payload.estimate and "estimate" not in roles:
         nuevas.append(("estimate", kind_rules.new_column("estimate", names)))

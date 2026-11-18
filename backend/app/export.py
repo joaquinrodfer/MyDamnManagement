@@ -372,8 +372,12 @@ def _cell(value: Any, prop: dict, users: Optional[dict] = None) -> str:
     prop_type = prop.get("type")
     if prop_type == "person":
         # El nombre visible, no el id; un usuario borrado se dice, no se calla.
-        usuario = (users or {}).get(str(value).strip())
-        return _escape(usuario[0] if usuario else "(ya no está)")
+        valores = value if isinstance(value, list) else [value]
+        nombres = []
+        for v in valores:
+            usuario = (users or {}).get(str(v).strip())
+            nombres.append(usuario[0] if usuario else "(ya no está)")
+        return _escape(", ".join(nombres))
     if prop_type == "checkbox":
         # El mismo vocabulario que la tabla del panel: ✓ marcado, — sin marcar.
         return "✓" if value else "—"

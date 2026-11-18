@@ -688,7 +688,7 @@ TEMPLATES: dict[str, dict] = {
             "Alimentan la carga del equipo; pueden colgar de un proyecto."
         ),
         "schema_def": [
-            {"key": "responsable", "name": "Responsable", "type": "person"},
+            {"key": "responsable", "name": "Responsables", "type": "person", "multiple": True},
             _estado_tipado(["Por hacer", "En curso", "Bloqueada", "En revisión", "Hecha"]),
             {"key": "inicio", "name": "Inicio", "type": "date"},
             {"key": "fin", "name": "Fin", "type": "date"},
