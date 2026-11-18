@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" role="img" aria-label="Noteping">
+<title>Noteping</title>
+<rect x=".5" y=".5" width="63" height="63" rx="15" fill="#1C2142" stroke="#333A6B"/>
+<path d="M20.5 46.5V18.5L43.5 46.5V31" stroke="#9AA2FF" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="43.5" cy="19" r="4.6" fill="#FF6B6B"/>
+</svg>

@@ -44,7 +44,7 @@ log = logging.getLogger("mdm.main")
 
 
 app = FastAPI(
-    title="MyDamnManagement API",
+    title="Noteping API",
     # `DOCS_ENABLED=0` apaga la documentación interactiva: `/docs`, `/redoc`
     # y `/openapi.json` dan 404 (ver `Settings.docs_enabled`). Con el ajuste
     # por defecto (encendido) el comportamiento es el de siempre.
@@ -112,7 +112,7 @@ app.include_router(auth_routes.router, dependencies=GUARDED)
 
 # Rutas que no piden sesión. Las tres de `/auth` son las que permiten entrar
 # (`login`, `setup` y `status`, que solo dice si hay que dar de alta al
-# primero); `/login` es la pantalla y `/logo.png` su favicon (el del panel es el
+# primero); `/login` es la pantalla y `/favicon.ico` su favicon (el del panel es el
 # mismo fichero, así que servirlo sin sesión no enseña nada que no esté ya en la
 # pantalla de entrada). `/agent/...` tiene su propio permiso acotado
 # (`X-Agent-Token`) y no se mezcla con la sesión del dueño.
@@ -127,17 +127,17 @@ PUBLIC_PATHS = frozenset(
         "/auth/setup",
         "/auth/status",
         "/login",
-        "/logo.png",
+        "/favicon.ico",
         "/manifest.webmanifest",
     }
 )
 
-# Los iconos del manifiesto (P13): planos y solo PNG. **No basta con mirar el
+# Los iconos del manifiesto (P13) y de la marca: planos, PNG o el SVG del logo. **No basta con mirar el
 # prefijo** `/icons/`, porque una ruta como `/icons/%2e%2e/app.js` llega aquí
 # ya decodificada, empieza por `/icons/` y `StaticFiles` la resolvería al panel
 # **sin sesión** (comprobado: devolvía el `app.js` con un 200). Validando el
 # nombre, solo se abren los ficheros de esa carpeta.
-ICON_PATH = re.compile(r"/icons/[A-Za-z0-9_-]+\.png")
+ICON_PATH = re.compile(r"/icons/[A-Za-z0-9_-]+\.(?:png|svg)")
 # Los avatares de usuario (bloque B), con la misma cautela: se eligen en el
 # alta del primer usuario, que todavía no tiene sesión. Solo el nombre de uno.
 AVATAR_PATH = re.compile(r"/avatars/[a-z0-9]+\.svg")
@@ -145,7 +145,7 @@ AVATAR_PATH = re.compile(r"/avatars/[a-z0-9]+\.svg")
 # Direcciones del panel que NO son un fichero (P18). Cada nota y cada base
 # tiene la suya --`/<id>`, el id y no el título, que cambia--, y `/mis-tareas`
 # es la vista de esa sección. La regla es estrecha a propósito: **una sola
-# pieza**, sin punto (los ficheros del panel lo llevan: `app.js`, `logo.png`,
+# pieza**, sin punto (los ficheros del panel lo llevan: `app.js`, `favicon.ico`,
 # `manifest.webmanifest`) y con la forma exacta de un id: un UUID en
 # minúsculas, que es lo único que se navega (`pages.id` y
 # `databases.database_id` salen de `uuid4`/`uuid5`). Antes bastaba con «8–64
@@ -214,7 +214,7 @@ async def session_is_required(request: Request, call_next):
     """
     path = request.url.path
     # Los iconos del manifiesto también son públicos (P13): son los mismos
-    # bytes que `/logo.png`, que ya lo era. El navegador los pide al instalar
+    # bytes que `/favicon.ico`, que ya lo era. El navegador los pide al instalar
     # la PWA sin la cookie de la página (la petición del manifiesto y sus
     # iconos no lleva credenciales), así que detrás de la puerta darían 401
     # justo en el momento en que hacen falta.

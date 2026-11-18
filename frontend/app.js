@@ -1,4 +1,4 @@
-// MyDamnManagement — panel visual. Vanilla JS, sin build, sin dependencias
+// Noteping — panel visual. Vanilla JS, sin build, sin dependencias
 // propias -- la única excepción es el editor de notas (CodeMirror 6), que
 // vendorizamos ya compilado en /vendor/editor.bundle.js (ver
 // frontend/editor-src/). Habla directamente con la API del propio origen
@@ -796,6 +796,64 @@ function paintCreatedBy(el, createdBy, createdByColor, createdByAvatar = null) {
 }
 
 // ---------------------------------------------------------------- el chip
+
+// ------------------------------------------------------------- marca: Noteping
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * El símbolo de Noteping (B2), en línea para que use los tokens `--np-*`.
+ *
+ * - `variante: "color"` (por defecto): tile, N y el punto coral.
+ * - `variante: "mono"`: una sola tinta, `currentColor` (lo pinta el `color:`
+ *   de donde va: impresión, deshabilitado, un icono que hereda).
+ * - `sinLeer: true`: el sonar N1 sobre el punto (`data-unread`); se enciende
+ *   y apaga después con `fijarMarcaSinLeer`.
+ *
+ * Es decorativo (`aria-hidden`): el nombre va escrito al lado, y el «sin
+ * leer» se dice con texto (ver `fijarMarcaSinLeer`).
+ */
+function marcaNoteping({ variante = "color", tamano = 28, sinLeer = false } = {}) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 64 64");
+  svg.setAttribute("width", String(tamano));
+  svg.setAttribute("height", String(tamano));
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  svg.classList.add("np-mark");
+  if (variante === "mono") svg.classList.add("np-mark--mono");
+  svg.dataset.unread = sinLeer ? "true" : "false";
+  const pieza = (tag, attrs) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    svg.appendChild(el);
+  };
+  pieza("rect", { class: "np-tile", x: ".5", y: ".5", width: "63", height: "63", rx: "15" });
+  pieza("path", { class: "np-n", d: "M20.5 46.5V18.5L43.5 46.5V31" });
+  pieza("circle", { class: "np-ring np-ring--a", cx: "43.5", cy: "19", r: "4.6" });
+  pieza("circle", { class: "np-ring np-ring--b", cx: "43.5", cy: "19", r: "4.6" });
+  pieza("circle", { class: "np-dot", cx: "43.5", cy: "19", r: "4.6" });
+  return svg;
+}
+
+/** La marca de la cabecera de la barra lateral, a 28 px. */
+function montarMarca() {
+  const hueco = document.getElementById("brand-mark");
+  if (hueco) hueco.replaceWith(marcaNoteping({ tamano: 28 }));
+}
+
+/**
+ * Enciende o apaga el sonar de la marca de la cabecera. `n` es cuántas cosas
+ * hay sin leer (0 lo apaga). Lo llamará el panel de notificaciones cuando
+ * exista; hasta entonces nadie lo enciende.
+ */
+function fijarMarcaSinLeer(n) {
+  const marca = document.querySelector("#sidebar-brand .np-mark");
+  const aviso = document.getElementById("brand-unread");
+  const hay = Number(n) > 0;
+  if (marca) marca.dataset.unread = hay ? "true" : "false";
+  if (aviso) aviso.textContent = hay ? (n === 1 ? "1 aviso sin leer" : `${n} avisos sin leer`) : "";
+}
 
 function paintUserChip() {
   const wrap = document.getElementById("user-chip-wrap");
@@ -17219,6 +17277,7 @@ loadKnownUsers();
 // El directorio de personas (celdas `person`): una vez por sesión, para que el
 // selector y los formularios de alta lo tengan sin esperar.
 cargarPersonas().catch(() => {});
+montarMarca();
 initUserChip();
 loadCurrentUser();
 
