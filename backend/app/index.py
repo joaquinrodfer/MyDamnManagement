@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -307,6 +307,15 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS workspace_members_subject ON workspace_members(subject_type, subject_id)",
         lambda conn: _rebuild_acl_with_groups(conn),
         lambda conn: _name_general_and_enroll(conn),
+    ],
+    # v15 (plan H4): el tipo de una base (Proyectos o Tareas) y qué columna hace
+    # de qué (`kind:` en el frontmatter de la base). Como `database_closed`, es
+    # una copia derivada del fichero: se reescribe al indexar la base.
+    15: [
+        """CREATE TABLE IF NOT EXISTS database_kinds (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    kind_json   TEXT NOT NULL
+)""",
     ],
 }
 
@@ -604,7 +613,13 @@ CREATE TABLE workspace_members (
 );
 CREATE INDEX workspace_members_subject ON workspace_members(subject_type, subject_id);
 
-PRAGMA user_version = 14;
+-- El tipo de una base (v15, plan H4). Ver la migración 15.
+CREATE TABLE database_kinds (
+    database_id TEXT PRIMARY KEY REFERENCES databases(id) ON DELETE CASCADE,
+    kind_json   TEXT NOT NULL
+);
+
+PRAGMA user_version = 15;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")

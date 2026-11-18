@@ -6993,7 +6993,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     }
   };
 
-  header.append(title, botonCompartir("database", database.id, () => database.title));
+  header.append(title, botonDeTipo(database), botonCompartir("database", database.id, () => database.title));
 
   // Debajo del título ya no va la lista «Propiedad (Tipo) · …»: no decía nada
   // que la cabecera de la tabla no diga (cada columna lleva el icono de su tipo).
@@ -12951,13 +12951,22 @@ function abrirMenuDeColumna(anchor, contexto) {
 
   menu.appendChild(separadorDeMenu());
   if (!esTitulo) {
+    const rol = rolDeColumna(database, prop.key);
     menu.appendChild(
       itemDeColumna("Borrar la propiedad", {
         icono: ICONOS_DE_MENU.borrar,
         peligro: true,
-        alElegir: accion(() =>
-          borrarColumna({ database, prop, onChanged: contexto.onChanged }),
-        ),
+        // Plan H4: la columna de un rol del tipo de la base no se borra.
+        motivo: rol
+          ? `Es la columna «${rol}» del tipo ${nombreDeTipo(database)}: se puede renombrar u ocultar, no borrar.`
+          : "",
+        alElegir: rol
+          ? () => {
+              const nota = notaDeMenu(menu);
+              nota.textContent = `Es la columna «${rol}» del tipo ${nombreDeTipo(database)}: se puede renombrar u ocultar, no borrar. Para quitarla, convierte la base en una base normal.`;
+              nota.hidden = false;
+            }
+          : accion(() => borrarColumna({ database, prop, onChanged: contexto.onChanged })),
       }),
     );
   }
@@ -16782,6 +16791,18 @@ function addPropertyRow(prop = null) {
 
   row.append(nameInput, typeSelect, removeBtn);
 
+  // Plan H4: la columna de un rol del tipo de la base se renombra, pero no se
+  // quita ni cambia de tipo (el servidor también lo rechaza).
+  const rolFijo = prop?.key ? rolDeColumna(dbDialogContext?.database, prop.key) : null;
+  if (rolFijo) {
+    removeBtn.disabled = true;
+    removeBtn.title = `Es la columna «${rolFijo}» del tipo ${nombreDeTipo(dbDialogContext.database)}: no se puede quitar`;
+    queueMicrotask(() => {
+      typeSelect.disabled = true;
+      typeSelect.title = `Es la columna «${rolFijo}»: no se puede cambiar su tipo`;
+    });
+  }
+
   const optionsInput = document.createElement("input");
   optionsInput.placeholder = "opciones separadas por coma (Selección / Multiselección)";
   optionsInput.className = "prop-options-input";
@@ -17089,6 +17110,29 @@ async function openTemplateDialog() {
     reportError("No se pudieron cargar las plantillas", e);
     return;
   }
+  // Plan H4: primero los tipos (Proyectos y Tareas), luego «Vacía» y, aparte,
+  // las plantillas de siempre.
+  const tipos = catalogo.filter((p) => p.kind);
+  const otras = catalogo.filter((p) => !p.kind);
+  const vacia = {
+    key: "__vacia__",
+    title: "Vacía",
+    description: "Una base en blanco: tú decides las columnas.",
+    properties: [],
+    views: [],
+  };
+  catalogo = [...tipos, vacia, ...otras];
+  const campoProyecto = document.getElementById("template-project-field");
+  const selectProyecto = document.getElementById("template-project");
+  selectProyecto.replaceChildren(new Option("Sin proyecto", ""));
+  try {
+    const todas = await api("/databases");
+    for (const b of todas) {
+      if (b.kind?.type === "projects") selectProyecto.add(new Option(b.title, b.id));
+    }
+  } catch {
+    /* sin lista de proyectos: las tareas nacen sin enlace */
+  }
 
   let elegida = catalogo[0]?.key || null;
   const pintarSeleccion = () => {
@@ -17099,10 +17143,18 @@ async function openTemplateDialog() {
       );
     });
     crear.disabled = !nombre.value.trim() || !elegida;
+    // «Tareas» pregunta a qué proyectos pertenecen, si hay alguna base de Proyectos.
+    campoProyecto.hidden = !(elegida === "tareas" && selectProyecto.options.length > 1);
   };
 
   lista.innerHTML = "";
-  catalogo.forEach((plantilla) => {
+  catalogo.forEach((plantilla, indice) => {
+    if (otras.length && plantilla === otras[0]) {
+      const sep = document.createElement("div");
+      sep.className = "template-sep";
+      sep.textContent = "Otras plantillas";
+      lista.appendChild(sep);
+    }
     const opcion = document.createElement("button");
     opcion.type = "button";
     opcion.className = "template-option";
@@ -17116,9 +17168,9 @@ async function openTemplateDialog() {
     descripcion.textContent = plantilla.description || "";
     const meta = document.createElement("span");
     meta.className = "template-option-meta";
-    meta.textContent = `${plantilla.properties.length} propiedades · ${(
-      plantilla.views || []
-    ).join(", ")}`;
+    meta.textContent = plantilla.properties.length
+      ? `${plantilla.properties.length} propiedades · ${(plantilla.views || []).join(", ")}`
+      : "Sin columnas";
     opcion.append(titulo, descripcion, meta);
     opcion.addEventListener("click", () => {
       elegida = plantilla.key;
@@ -17163,14 +17215,23 @@ async function openTemplateDialog() {
     crear.disabled = true;
     hint.hidden = true;
     try {
-      const base = await api("/databases/from-template", {
-        method: "POST",
-        body: JSON.stringify({
-          template: elegida,
-          title: titulo,
-          ...(carpeta.value ? { parent_id: carpeta.value } : {}),
-        }),
-      });
+      // En la raíz, una base nueva nace en Compartido (plan H2).
+      const destino = carpeta.value ? { parent_id: carpeta.value } : { section: "shared" };
+      const base =
+        elegida === "__vacia__"
+          ? await api("/databases", {
+              method: "POST",
+              body: JSON.stringify({ title: titulo, schema_def: [], ...destino }),
+            })
+          : await api("/databases/from-template", {
+              method: "POST",
+              body: JSON.stringify({
+                template: elegida,
+                title: titulo,
+                ...destino,
+                ...(elegida === "tareas" && selectProyecto.value ? { project_database: selectProyecto.value } : {}),
+              }),
+            });
       dialog.close();
       await loadTree();
       await goTo("database", base.id);
@@ -17182,6 +17243,106 @@ async function openTemplateDialog() {
   };
   dialog.showModal();
   nombre.focus();
+}
+
+/** El tipo de la base en la cabecera (plan H4): un distintivo que abre sus
+ * opciones (cómo se reparten las horas entre responsables, estimación del
+ * proyecto, volver a ser una base normal) o, en una base normal, ofrece
+ * convertirla en Proyectos o en Tareas. */
+function botonDeTipo(database) {
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = database.kind ? "kind-chip" : "btn btn-ghost";
+  boton.textContent = database.kind ? nombreDeTipo(database) : "Tipo…";
+  boton.setAttribute("aria-haspopup", "menu");
+  boton.setAttribute("aria-expanded", "false");
+  boton.title = database.kind
+    ? `Base de tipo ${nombreDeTipo(database)}: opciones`
+    : "Convertir en una base de Proyectos o de Tareas";
+  boton.addEventListener("click", () => {
+    if (boton.getAttribute("aria-expanded") === "true") {
+      cerrarPanelDeColumna({ foco: true });
+      return;
+    }
+    const menu = document.createElement("div");
+    const aplicar = async (promesa, aviso) => {
+      try {
+        Object.assign(database, await promesa);
+        if (!database.kind) delete database.kind;
+        cerrarPanelDeColumna();
+        await state.databaseView?.recargar?.();
+        showNotice(aviso);
+      } catch (e) {
+        reportError("No se pudo cambiar el tipo de la base", e);
+      }
+    };
+    const poner = (cuerpo, aviso) =>
+      aplicar(api(`/databases/${database.id}/kind`, { method: "PUT", body: JSON.stringify(cuerpo) }), aviso);
+    if (!database.kind) {
+      menu.append(
+        crearEl("div", "db-col-menu-label", "Convertir esta base en…"),
+        itemDeColumna("Proyectos", { alElegir: () => poner({ type: "projects" }, "La base es ahora de Proyectos: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
+        itemDeColumna("Tareas", { alElegir: () => poner({ type: "tasks" }, "La base es ahora de Tareas: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
+      );
+    } else if (database.kind.type === "tasks") {
+      const actual = database.kind.options?.hours_split || "full";
+      menu.append(
+        crearEl("div", "db-col-menu-label", "Horas con varios responsables"),
+        itemDeColumna("Completas a cada uno", {
+          radio: true,
+          marca: actual === "full" ? "✓" : "",
+          alElegir: () => poner({ type: "tasks", options: { hours_split: "full" } }, "Cada responsable cuenta las horas completas."),
+        }),
+        itemDeColumna("A partes iguales", {
+          radio: true,
+          marca: actual === "equal" ? "✓" : "",
+          alElegir: () => poner({ type: "tasks", options: { hours_split: "equal" } }, "Las horas se reparten a partes iguales entre los responsables."),
+        }),
+      );
+    } else if (database.kind.type === "projects" && !database.kind.roles?.estimate) {
+      menu.append(
+        itemDeColumna("Añadir columna de estimación (h)", {
+          alElegir: () => poner({ type: "projects", estimate: true }, "Columna de estimación añadida."),
+        }),
+      );
+    }
+    if (database.kind) {
+      menu.append(
+        separadorDeMenu(),
+        itemDeColumna("Convertir en base normal", {
+          peligro: true,
+          alElegir: () =>
+            aplicar(
+              api(`/databases/${database.id}/kind`, { method: "DELETE" }),
+              "La base vuelve a ser normal: sus columnas ya no están protegidas.",
+            ),
+        }),
+      );
+    }
+    abrirPanelFlotante(boton, menu, { etiqueta: "Tipo de la base" });
+  });
+  return boton;
+}
+
+/** El rol que hace una columna en el tipo de su base (plan H4), en texto, o
+ * `null` si la base es normal o la columna no hace de nada. */
+const ETIQUETAS_DE_ROL = {
+  assignee: "Responsable",
+  status: "Estado",
+  start: "Inicio",
+  end: "Fin",
+  hours: "Horas",
+  project: "Proyecto",
+  estimate: "Estimación",
+};
+function rolDeColumna(database, clave) {
+  const roles = database?.kind?.roles;
+  if (!roles) return null;
+  const rol = Object.keys(roles).find((r) => roles[r] === clave);
+  return rol ? ETIQUETAS_DE_ROL[rol] || rol : null;
+}
+function nombreDeTipo(database) {
+  return { projects: "Proyectos", tasks: "Tareas" }[database?.kind?.type] || "";
 }
 
 /** Un campo de valor por defecto de una plantilla de fila.

@@ -185,6 +185,7 @@ def _validate_closed(template: dict, schema: list[dict], title: str) -> None:
             schema,
             regla.get(closed_rules.PROPERTY_KEY),
             regla.get(closed_rules.VALUES_KEY),
+            regla.get(closed_rules.GROUPS_KEY),
         )
     except HTTPException as exc:
         raise _error(title, str(exc.detail)) from exc
@@ -639,7 +640,87 @@ PRIORIDAD = {
     "sort_order": ["alta", "media", "baja"],
 }
 
+def _estado_tipado(options: list[str]) -> dict:
+    return {"key": "estado", "name": "Estado", "type": "select", "options": options, "sort_order": options}
+
+
 TEMPLATES: dict[str, dict] = {
+    # --- Bases tipadas (plan H4): Proyectos y Tareas. Son plantillas con un
+    # bloque `kind` que dice qué columna hace de qué (`app.kinds`).
+    "proyectos": {
+        "title": "Proyectos",
+        "description": (
+            "Un proyecto por fila: responsable, estado y fechas de inicio y fin. "
+            "Sus horas salen de las tareas que cuelgan de él."
+        ),
+        "schema_def": [
+            {"key": "responsable", "name": "Responsable", "type": "person"},
+            _estado_tipado(["Planificado", "En curso", "En pausa", "Hecho"]),
+            {"key": "inicio", "name": "Inicio", "type": "date"},
+            {"key": "fin", "name": "Fin", "type": "date"},
+        ],
+        "closed": {
+            "property": "estado",
+            "groups": [
+                {"name": "Pendiente", "closed": False, "options": ["Planificado", "En pausa"]},
+                {"name": "En curso", "closed": False, "options": ["En curso"]},
+                {"name": "Hecho", "closed": True, "options": ["Hecho"]},
+            ],
+        },
+        "kind": {
+            "type": "projects",
+            "roles": {"assignee": "responsable", "status": "estado", "start": "inicio", "end": "fin"},
+        },
+        "views": [
+            {"name": "Tabla", "type": "table", "config": {"order": ["estado", "responsable", "inicio", "fin"]}},
+            {"name": "Tablero", "type": "board", "config": {"group_by": "estado"}},
+            {
+                "name": "Calendario",
+                "type": "calendar",
+                "config": {"date_property": "fin", "filters": [{"key": "fin", "op": "is_not_empty"}]},
+            },
+        ],
+    },
+    "tareas": {
+        "title": "Tareas",
+        "description": (
+            "Una tarea por fila: responsable, estado con grupos, fechas y horas. "
+            "Alimentan la carga del equipo; pueden colgar de un proyecto."
+        ),
+        "schema_def": [
+            {"key": "responsable", "name": "Responsable", "type": "person"},
+            _estado_tipado(["Por hacer", "En curso", "Bloqueada", "En revisión", "Hecha"]),
+            {"key": "inicio", "name": "Inicio", "type": "date"},
+            {"key": "fin", "name": "Fin", "type": "date"},
+            {"key": "horas", "name": "Horas", "type": "number"},
+            {"key": "parte_de", "name": "Subtarea de", "type": "parent_row"},
+        ],
+        "closed": {
+            "property": "estado",
+            "groups": [
+                {"name": "Pendiente", "closed": False, "options": ["Por hacer", "Bloqueada", "En revisión"]},
+                {"name": "En curso", "closed": False, "options": ["En curso"]},
+                {"name": "Hecho", "closed": True, "options": ["Hecha"]},
+            ],
+        },
+        "kind": {
+            "type": "tasks",
+            "roles": {
+                "assignee": "responsable", "status": "estado", "start": "inicio",
+                "end": "fin", "hours": "horas",
+            },
+            "options": {"hours_split": "full"},
+        },
+        "views": [
+            {"name": "Tabla", "type": "table", "config": {"order": ["estado", "responsable", "fin", "horas"]}},
+            {"name": "Tablero", "type": "board", "config": {"group_by": "estado"}},
+            {
+                "name": "Calendario",
+                "type": "calendar",
+                "config": {"date_property": "fin", "filters": [{"key": "fin", "op": "is_not_empty"}]},
+            },
+        ],
+    },
     "proyecto": {
         "title": "Proyecto",
         "description": (
@@ -851,7 +932,7 @@ TEMPLATES: dict[str, dict] = {
 
 # Orden en el que se ofrecen en la interfaz: el proyecto es el caso normal y
 # «Tareas sueltas» la versión mínima; CRM y Reuniones van detrás.
-TEMPLATE_ORDER = ("proyecto", "tasks", "crm", "reuniones")
+TEMPLATE_ORDER = ("proyectos", "tareas", "proyecto", "tasks", "crm", "reuniones")
 
 
 def catalog() -> list[dict]:
@@ -869,6 +950,7 @@ def catalog() -> list[dict]:
             "properties": [p["name"] for p in TEMPLATES[key]["schema_def"]],
             "views": [v["name"] for v in TEMPLATES[key]["views"]],
             "closed": TEMPLATES[key].get("closed"),
+            "kind": (TEMPLATES[key].get("kind") or {}).get("type"),
             "row_templates": [
                 t["name"] for t in TEMPLATES[key].get("row_templates", [])
             ],

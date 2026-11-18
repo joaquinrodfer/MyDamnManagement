@@ -253,6 +253,8 @@ def test_borrar_pagina_de_database_arrastra_sus_filas(client):
 def test_plantilla_crm_y_dashboard(client):
     plantillas = client.get("/databases/templates").json()
     assert {p["key"] for p in plantillas} == {
+        "proyectos",
+        "tareas",
         "proyecto",
         "tasks",
         "crm",

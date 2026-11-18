@@ -363,6 +363,8 @@
     text-overflow: ellipsis;
   }
   /* ---------- espacios de trabajo (plan H1) ---------- */
+  .template-sep { margin: 8px 0 2px; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-muted); }
+  .kind-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; font-weight: 500; white-space: nowrap; }
   .estado-grupos { display: grid; gap: 6px; padding: 4px 8px 8px; min-width: 260px; }
   .estado-grupo, .estado-opcion { display: flex; align-items: center; gap: 8px; }
   .estado-grupo-nombre { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; padding: 4px 6px; }
@@ -5448,7 +5450,7 @@
        plantilla de serie. La lista la pinta app.js desde /databases/templates;
        el servidor valida la plantilla entera antes de escribir nada. -->
   <dialog id="dialog-template">
-    <h3>Crear desde plantilla</h3>
+    <h3>Nueva base de datos</h3>
     <div class="field">
       <label for="template-name">Nombre</label>
       <input type="text" id="template-name" placeholder="Mi proyecto" />
@@ -5458,8 +5460,12 @@
       <select id="template-folder"></select>
     </div>
     <div class="field">
-      <label id="template-list-label">Plantilla</label>
+      <label id="template-list-label">Tipo de base</label>
       <div id="template-list" class="template-list" role="radiogroup" aria-labelledby="template-list-label"></div>
+    </div>
+    <div class="field" id="template-project-field" hidden>
+      <label for="template-project">Proyectos a los que pertenecen las tareas (opcional)</label>
+      <select id="template-project"></select>
     </div>
     <p id="template-hint" class="db-save-hint" role="status" hidden></p>
     <div class="dialog-actions">

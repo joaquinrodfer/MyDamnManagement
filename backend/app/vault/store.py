@@ -59,6 +59,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 from app import acl as acl_mod
 from app import index as index_mod
 from app import closed as closed_rules
+from app import kinds as kind_rules
 from app.links import TitleIndex, fold_title, sync_wikilinks
 from app.config import settings
 from app.vault import docfs, fm, names, reader, suggestions, vaultfs, writer
@@ -860,6 +861,17 @@ class VaultStore:
                 "INSERT INTO database_closed (database_id, rule_json) VALUES (?, ?)",
                 (record.id, _dump(declared)),
             )
+        # El tipo de la base (v15, plan H4): igual que la regla de «cerrada», una
+        # copia del bloque `kind:` que se reescribe siempre.
+        self.conn.execute(
+            "DELETE FROM database_kinds WHERE database_id = ?", (record.id,)
+        )
+        declared_kind = kind_rules.from_frontmatter(page.frontmatter)
+        if declared_kind:
+            self.conn.execute(
+                "INSERT INTO database_kinds (database_id, kind_json) VALUES (?, ?)",
+                (record.id, _dump(declared_kind)),
+            )
         # La columna del título va en su tabla (su clave es la reservada
         # `title` y no puede estar en el `schema`). Se escribe una fila siempre
         # —aunque sean los valores por defecto— para que reindexar produzca
@@ -1457,6 +1469,7 @@ class VaultStore:
         title_hidden: bool = False,
         closed: Optional[dict] = None,
         row_templates: Optional[list[dict]] = None,
+        kind: Optional[dict] = None,
     ) -> str:
         """Escribe `Bases/<slug>.md` (y su carpeta de filas) e indexa. Devuelve su id."""
         self.ensure_structure()
@@ -1470,7 +1483,7 @@ class VaultStore:
             self.root, folder, title, schema, entries, fs=self.fs,
             icon=icon, db_id=page_id, description=description, created_by=created_by,
             title_name=title_name, title_hidden=title_hidden, closed=closed,
-            row_templates=row_templates,
+            row_templates=row_templates, kind=kind,
         )
         with self._tx():
             self._index_file(page.path, self._parent_str(parent_id))
@@ -1495,6 +1508,7 @@ class VaultStore:
         title_hidden: Any = UNSET,
         closed: Any = UNSET,
         row_templates: Any = UNSET,
+        kind: Any = UNSET,
         expected_version: Optional[int] = None,
     ) -> None:
         """Reescribe la base (y la renombra con sus filas si toca) y la indexa.
@@ -1588,6 +1602,9 @@ class VaultStore:
             # El bloque `closed:` del frontmatter. `None` lo borra: la base deja
             # de declarar estado y nada se considera cerrado.
             updates["closed"] = closed
+        if kind is not UNSET:
+            # El bloque `kind:` (plan H4). `None` lo borra: la base vuelve a ser normal.
+            updates["kind"] = kind
         if row_templates is not UNSET:
             # `row_templates:` del frontmatter. `None` (o una lista vacía) borra
             # la clave: una base sin plantillas no lleva `row_templates: []`.

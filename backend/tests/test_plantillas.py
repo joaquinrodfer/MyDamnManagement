@@ -46,8 +46,10 @@ def vistas(client, database_id) -> list[dict]:
 
 def test_el_catalogo_ofrece_las_cuatro_plantillas(client):
     catalogo = client.get("/databases/templates").json()
-    assert [p["key"] for p in catalogo] == ["proyecto", "tasks", "crm", "reuniones"]
+    assert [p["key"] for p in catalogo] == ["proyectos", "tareas", "proyecto", "tasks", "crm", "reuniones"]
     assert [p["title"] for p in catalogo] == [
+        "Proyectos",
+        "Tareas",
         "Proyecto",
         "Tareas sueltas",
         "CRM",
