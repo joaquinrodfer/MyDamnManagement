@@ -34,6 +34,7 @@ from app.routers import (
 from app.routers import auth as auth_routes
 from app.routers import export as export_routes
 from app.routers import acl as acl_routes
+from app.routers import collab as collab_routes
 from app.guard import guard
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 from app.vault.watcher import VaultWatcher
@@ -59,6 +60,10 @@ GUARDED = [Depends(guard)]
 app.include_router(pages.router, dependencies=GUARDED)
 # `/acl/{tipo}/{id}` (3.0, hito 3): ver y cambiar quién puede qué.
 app.include_router(acl_routes.router, dependencies=GUARDED)
+# `WS /ws/pages/{id}` (3.0, hito 4): edición en vivo. Sin la guarda HTTP: un
+# WebSocket no pasa por los middlewares, así que comprueba sesión, origen y
+# permiso él mismo al entrar (ver app/routers/collab.py).
+app.include_router(collab_routes.router)
 # `/capture` (P13): el endpoint que llaman los atajos del sistema operativo y
 # `/inbox`, la bandeja que pinta el panel. Los dos piden identidad; un token
 # personal de captura solo vale para `POST /capture` (ver el middleware).
@@ -701,6 +706,15 @@ def _start_watcher() -> None:
         settings.vault_path,
         watcher.interval,
     )
+
+
+@app.on_event("shutdown")
+async def guardar_salas() -> None:
+    """3.0, hito 4: lo que las salas tengan sin guardar va a la base al apagar."""
+    try:
+        await collab_routes.rooms.flush_all()
+    except Exception:  # noqa: BLE001 - apagar no puede fallar por esto
+        log.exception("no se pudieron guardar las salas al apagar")
 
 
 @app.on_event("shutdown")

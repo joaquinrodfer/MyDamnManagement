@@ -7,6 +7,7 @@
 // junto al resto del sistema de diseño, para no duplicar el tema en dos
 // sitios.
 
+import { collabActive, collabBaseExtensions, remoteChange, startCollab } from "./collab-client.js";
 import { ChangeSet, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, isolateHistory } from "@codemirror/commands";
@@ -4156,6 +4157,10 @@ const trimming = new WeakSet();
 function dropOuterBlankLines(update) {
   if (!update.docChanged && !update.selectionSet) return;
   const view = update.view;
+  // En una sala (3.0, hito 4) no se recorta: el bloque vacío del final puede
+  // ser el que otra persona acaba de abrir, y recortarlo aquí se lo borraría a
+  // ella. Lo que se guarda ya sale recortado (`canonical_body` en el servidor).
+  if (view.state.facet(collabActive)) return;
   if (trimming.has(view)) return;
   // Barato primero: si el documento no empieza ni acaba en salto, no hay nada
   // que recortar (esto corre en cada cambio de selección y de texto; no tiene
@@ -4306,9 +4311,14 @@ export function createNoteEditor({
             update.transactions.every(
               (tr) => tr.isUserEvent("trim.outer"),
             );
-          if (update.docChanged && !onlyTrim) onChange(update.state.doc.toString());
+          // `remote`: el cambio llegó de la sala (otra persona). La app no lo
+          // autoguarda (ya lo guardó el servidor), pero sí repinta lo que dependa
+          // del texto (el índice de la página).
+          const remote = update.transactions.some((tr) => tr.annotation(remoteChange));
+          if (update.docChanged && !onlyTrim) onChange(update.state.doc.toString(), { remote });
           dropOuterBlankLines(update);
         }),
+        ...collabBaseExtensions,
       ],
     }),
   });
@@ -4369,6 +4379,11 @@ export function createNoteEditor({
      */
     refreshDatabaseBlocks() {
       view.dispatch({ effects: refreshDatabaseBlocks.of(null) });
+    },
+    /** Une el editor a la sala de la nota (3.0, hito 4; ver collab-client.js).
+     * Devuelve `{stop, pending}`. */
+    startCollab(options) {
+      return startCollab(view, options);
     },
     focus: () => view.focus(),
     /** Cierra el selector de bases si está abierto y borra del documento el
