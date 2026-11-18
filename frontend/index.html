@@ -1002,6 +1002,7 @@
      cabecera de la base; abre el panel de quién puede qué. */
   .share-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 3px 10px; }
   .share-btn .svg-icon { width: 14px; height: 14px; }
+  @media (max-width: 480px) { .share-btn span { display: none; } .share-btn { padding: 3px 9px; } }
   .share-panel { width: 360px; max-width: calc(100vw - 16px); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
   .share-panel h3 { margin: 0; font-size: 14px; font-weight: 600; }
   .share-note { font-size: 12px; color: var(--ink-muted); line-height: 1.4; }
@@ -4819,7 +4820,19 @@
       padding: var(--main-pad-y) var(--main-pad-x) var(--main-pad-bottom);
     }
     .note-topbar { flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-    .note-topbar-right { flex-wrap: wrap; gap: 6px; }
+    /* Compartir y «⋯» suben a la fila de la cabecera (menú, atrás, adelante),
+       arriba a la derecha, en vez de ocupar una fila entera debajo. */
+    .note-topbar-right {
+      position: fixed;
+      top: 0;
+      right: 8px;
+      height: var(--header-height);
+      z-index: 6;
+      flex-wrap: nowrap;
+      gap: 4px;
+    }
+    .note-topbar-right .share-btn { min-height: 40px; }
+    .note-more-btn { min-width: 44px; min-height: 44px; }
     /* El icono se alinea con la PRIMERA línea del título, no con el centro de
        la fila: con `align-items: center` la fila mide 48 (44 del título + 4
        de su margen inferior) y el icono quedaba 2 px por debajo de esa línea;
@@ -4854,7 +4867,7 @@
        los dos. */
     #note-body .cm-editor { min-height: 55dvh; }
     #note-body .cm-content {
-      --mdm-gutter: 108px; /* las dos asas de 44 (44+44) + 4 al texto y el resto de margen */
+      --mdm-gutter: 34px; /* solo los seis puntos (34) en la línea activa: el texto usa el ancho */
       padding: 4px 2px 40vh var(--mdm-gutter);
       font-size: 16px;
       line-height: 1.65;
@@ -4863,16 +4876,20 @@
     /* El asa en el móvil: el «+» y los seis puntos de 44×44. El menú de
        bloque se abre con la pulsación larga sobre los puntos, que es la vía que
        queda cuando el teclado en pantalla no tiene Mayús+Intro ni Supr. */
-    .cm-mdm-block-handle-wrap { left: -92px; width: 88px; height: 44px; gap: 0; }
-    .cm-mdm-block-grip { width: 44px; height: 44px; min-width: 44px; }
-    .cm-mdm-block-add {
-      display: inline-flex;
-      width: 44px;
-      height: 44px;
-      min-width: 44px;
-      min-height: 44px;
-      font-size: 20px;
-    }
+    .cm-mdm-block-handle-wrap { left: -34px; width: 34px; height: 44px; gap: 0; }
+    .cm-mdm-block-grip { width: 34px; height: 44px; min-width: 34px; }
+    /* Las asas ya no se ven siempre (se comían el margen y dejaban el texto
+       pegado a la derecha): solo salen en la línea donde está el cursor, o en
+       un bloque marcado o con foco. Sin «+»: en el móvil se añade un bloque
+       con Intro o escribiendo «/». */
+    #note-body .cm-line .cm-mdm-block-handle-wrap,
+    .cm-mdm-dblock > .cm-mdm-block-handle-wrap { opacity: 0; pointer-events: none; }
+    #note-body .cm-editor.cm-focused .cm-line.cm-activeLine .cm-mdm-block-handle-wrap,
+    #note-body .cm-line.cm-mdm-line-marked .cm-mdm-block-handle-wrap,
+    #note-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
+    .cm-mdm-dblock-marked > .cm-mdm-block-handle-wrap,
+    .cm-mdm-dblock:focus-within > .cm-mdm-block-handle-wrap { opacity: 1; pointer-events: auto; }
+    .cm-mdm-block-add { display: none !important; }
     /* ✓/✗ de las sugerencias dentro del texto: en el móvil se tocan con el
        dedo, así que el widget crece (la línea que lo lleva, también). */
     .cm-sug-btn { width: 44px; height: 44px; font-size: 15px; }
