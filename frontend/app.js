@@ -11486,11 +11486,24 @@ function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
   campoDestino.textContent = "Base a la que apunta";
   const destino = document.createElement("select");
   destino.setAttribute("aria-label", "Base a la que apunta");
+  // «Varias filas»: un interruptor en su propia fila, con lo que significa
+  // debajo (como el «Límite» de una relación en Notion), no una casilla suelta.
   const campoMultiple = document.createElement("label");
-  campoMultiple.className = "db-col-add-check";
+  campoMultiple.className = "db-switch-row";
+  const textoMultiple = document.createElement("span");
+  textoMultiple.className = "db-switch-text";
+  const tituloMultiple = document.createElement("span");
+  tituloMultiple.className = "db-switch-title";
+  tituloMultiple.textContent = "Varias filas";
+  const notaMultiple = document.createElement("span");
+  notaMultiple.className = "db-switch-note";
+  notaMultiple.textContent = "Cada fila puede enlazar más de una fila de esa base.";
+  textoMultiple.append(tituloMultiple, notaMultiple);
   const multiple = document.createElement("input");
   multiple.type = "checkbox";
-  campoMultiple.append(multiple, document.createTextNode(" Permite varias filas"));
+  multiple.className = "db-switch";
+  multiple.setAttribute("role", "switch");
+  campoMultiple.append(textoMultiple, multiple);
   campoDestinoWrap.append(campoDestino, destino, campoMultiple);
 
   const error = document.createElement("p");

@@ -567,12 +567,33 @@ class DatabaseBlockWidget extends WidgetType {
       return wrap;
     }
 
-    // Cargando: dos líneas de esqueleto con altura fija. El hueco ya está
-    // reservado, así que la nota no pega un salto cuando llega la tabla.
-    const skeleton = document.createElement("div");
-    skeleton.className = "cm-mdm-dblock-skeleton";
-    skeleton.setAttribute("aria-hidden", "true");
-    skeleton.append(document.createElement("span"), document.createElement("span"));
+    wrap.dataset.dbId = this.parse.id;
+    wrap.dataset.dbFrom = String(this.from);
+    // Cargando. Si este bloque YA estaba pintado (se rehace porque la base ha
+    // cambiado: un ancho, una columna, un aviso de otra ventana), mientras
+    // llegan los datos se deja a la vista una copia de lo que había -- sin el
+    // esqueleto gris, que hacía parpadear la tabla entera al soltar el asa de
+    // un ancho --. Solo la primera vez se enseñan las dos líneas de esqueleto.
+    const previo =
+      view.dom.querySelector(
+        `.cm-mdm-dblock[data-db-id="${this.parse.id}"][data-db-from="${this.from}"] > .cm-mdm-dblock-body`,
+      ) || view.dom.querySelector(`.cm-mdm-dblock[data-db-id="${this.parse.id}"] > .cm-mdm-dblock-body`);
+    let skeleton;
+    if (previo && previo.childElementCount) {
+      skeleton = previo.cloneNode(true);
+      skeleton.className = "cm-mdm-dblock-stale";
+      skeleton.removeAttribute("aria-busy");
+      skeleton.setAttribute("aria-hidden", "true");
+      skeleton.inert = true;
+      skeleton.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+    } else {
+      // Dos líneas de esqueleto con altura fija. El hueco ya está reservado,
+      // así que la nota no pega un salto cuando llega la tabla.
+      skeleton = document.createElement("div");
+      skeleton.className = "cm-mdm-dblock-skeleton";
+      skeleton.setAttribute("aria-hidden", "true");
+      skeleton.append(document.createElement("span"), document.createElement("span"));
+    }
     const body = document.createElement("div");
     body.className = "cm-mdm-dblock-body";
     body.setAttribute("aria-busy", "true"); // lo que hay ahora es el esqueleto
