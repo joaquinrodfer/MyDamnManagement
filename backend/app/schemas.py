@@ -151,6 +151,21 @@ class PropertyDef(BaseModel):
     # (la celda vale uno de ellos). Lo usa el contador de subtareas. `None` al
     # editar = «no lo toco» (se conserva el que ya tenía).
     done: Optional[Any] = None
+    # Icono de la propiedad (un emoji), como en Notion: sale delante de su
+    # nombre en la cabecera de la tabla. `None` al editar = «no lo toco»;
+    # `""` = quítalo.
+    icon: Optional[str] = None
+
+    @field_validator("icon")
+    @classmethod
+    def icon_is_short(cls, v):
+        """Un icono es un emoji (o un par de caracteres), no un texto."""
+        if v is None:
+            return v
+        v = str(v).strip()
+        if len(v) > 16:
+            raise ValueError("icon es un emoji, no un texto")
+        return v
 
     @field_validator("key")
     @classmethod

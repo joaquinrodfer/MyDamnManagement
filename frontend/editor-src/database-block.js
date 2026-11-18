@@ -18,7 +18,8 @@
 // la identidad de nada.
 //
 // El cuerpo es YAML de juguete: `clave: valor`, sin listas ni anidamiento.
-// Cualquier clave que no sea `id`, `view` o `title` se IGNORA (no es error):
+// `hide_title: true` esconde el nombre de la base encima de la tabla.
+// Cualquier otra clave se IGNORA (no es error):
 // así se puede añadir sintaxis en el futuro sin romper notas viejas.
 //
 // Nada aquí toca el DOM ni la red: son funciones puras, probadas con
@@ -145,7 +146,7 @@ export function parseDatabaseBlock(texto) {
   if (to - 1 >= from && isFenceLine(lines[to - 1])) to -= 1;
 
   const body = lines.slice(from, to);
-  const data = { id: null, view: null, title: null };
+  const data = { id: null, view: null, title: null, hideTitle: false };
   let seen = 0;
 
   for (const raw of body) {
@@ -166,13 +167,18 @@ export function parseDatabaseBlock(texto) {
     if (key === "id") data.id = value;
     else if (key === "view") data.view = value;
     else if (key === "title") data.title = value;
+    // `hide_title: true`: el bloque no enseña el nombre de la base encima de
+    // la tabla (opción «Ocultar el título» del menú del bloque).
+    else if (key === "hide_title") data.hideTitle = /^(true|sí|si|yes|1)$/i.test(String(value ?? ""));
   }
 
   if (seen === 0) return { ok: false, motivo: "valla vacía" };
   if (data.id === null) return { ok: false, motivo: "sin id" };
   if (!UUID_RE.test(data.id)) return { ok: false, motivo: "id no es un uuid" };
 
-  return { ok: true, id: data.id, view: data.view, title: data.title };
+  const out = { ok: true, id: data.id, view: data.view, title: data.title };
+  if (data.hideTitle) out.hideTitle = true;
+  return out;
 }
 
 /**
@@ -183,7 +189,7 @@ export function parseDatabaseBlock(texto) {
  * Lanza `TypeError` sin `id`: un bloque de base sin id no es un bloque.
  */
 export function serializeDatabaseBlock(block = {}) {
-  const { id, view = null, title = null } = block;
+  const { id, view = null, title = null, hideTitle = false } = block;
   if (id === null || id === undefined || String(id) === "") {
     throw new TypeError("serializeDatabaseBlock necesita el id de la base");
   }
@@ -195,6 +201,7 @@ export function serializeDatabaseBlock(block = {}) {
       lines.push(key + ": " + formatScalar(value));
     }
   }
+  if (hideTitle) lines.push("hide_title: true");
   lines.push("```");
   return lines.join("\n");
 }

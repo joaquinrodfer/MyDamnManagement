@@ -206,3 +206,19 @@ test("isDatabaseFence: CRLF e índices que no existen", () => {
 test("isDatabaseFence respeta el recorte detrás de la info string", () => {
   assert.equal(isDatabaseFence(["```mdm-database   "], 0), true);
 });
+
+test("hide_title: true se lee y se vuelve a escribir", () => {
+  const id = "7a3f9c21-4b0e-4c8a-9f31-2d5e6b7a8c90";
+  const parsed = parseDatabaseBlock(["```mdm-database", `id: ${id}`, "title: Contactos", "hide_title: true", "```"].join("\n"));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.hideTitle, true);
+  const texto = serializeDatabaseBlock({ id, title: "Contactos", hideTitle: true });
+  assert.equal(texto, ["```mdm-database", `id: ${id}`, "title: Contactos", "hide_title: true", "```"].join("\n"));
+  assert.equal(parseDatabaseBlock(texto).hideTitle, true);
+});
+
+test("sin hide_title el bloque no lo escribe", () => {
+  const id = "7a3f9c21-4b0e-4c8a-9f31-2d5e6b7a8c90";
+  assert.equal(parseDatabaseBlock(`id: ${id}`).hideTitle, undefined);
+  assert.ok(!serializeDatabaseBlock({ id }).includes("hide_title"));
+});

@@ -2008,20 +2008,45 @@
     min-width: 160px;
   }
   .db-schema-hint { font-size: 12px; color: var(--ink-muted); margin-bottom: 16px; }
-  /* Cabecera de una base incrustada en una nota (P17.2): el título es el
-     botón que abre la base entera, que es donde se edita. */
-  .db-embed-head { display: flex; align-items: center; gap: 8px; min-height: 32px; margin-bottom: 4px; flex-wrap: wrap; }
+  /* Cabecera de una base incrustada en una nota, como en Notion: el nombre de
+     la base es un título (no un enlace) y el «⋯» de la derecha tiene las
+     opciones del bloque (abrir la base, vista, ocultar el título…). */
+  .db-embed-head { display: flex; align-items: center; gap: 10px; min-height: 36px; margin-bottom: 6px; }
   .db-embed-title {
-    font-size: 13px;
-    font-weight: 600;
-    font-family: inherit;
-    border: none;
-    background: none;
-    color: var(--accent-ink);
-    padding: 0;
-    cursor: pointer;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .db-embed-title:hover { text-decoration: underline; }
+  .db-embed-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-std), background-color var(--dur-fast) var(--ease-std);
+  }
+  .db-embed-menu-btn .svg-icon { width: 16px; height: 16px; }
+  .cm-mdm-dblock:hover .db-embed-menu-btn,
+  .db-embed-menu-btn:focus-visible,
+  .db-embed-menu-btn[aria-expanded="true"] { opacity: 1; }
+  .db-embed-menu-btn:hover,
+  .db-embed-menu-btn[aria-expanded="true"] { background: var(--row-hover); color: var(--ink); }
+  @media (hover: none) { .db-embed-menu-btn { opacity: 1; } }
+  /* Con el título oculto, la línea se queda en el recuento y el «⋯». */
+  .db-embed-head.is-title-hidden { min-height: 28px; }
   .db-embed-meta { font-size: 12px; color: var(--ink-muted); }
   /* Las pestañas de vista, como en Notion: icono del tipo y nombre, sin caja.
      La activa se distingue por la tinta, el peso y un fondo apenas marcado;
@@ -2710,6 +2735,88 @@
     font: inherit;
   }
   .db-col-options-add:focus { outline: none; border-style: solid; border-color: var(--accent); }
+  /* El botón del icono de una propiedad (en su menú y en «Nueva propiedad»). */
+  .db-prop-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+  }
+  .db-prop-icon-btn:hover,
+  .db-prop-icon-btn[aria-expanded="true"] { background: var(--row-hover); color: var(--ink); }
+  .db-prop-icon-btn .db-col-type { opacity: 1; }
+  .db-prop-emoji, .db-col-emoji { font-size: 14px; line-height: 1; }
+  .db-icon-picker {
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    gap: 2px;
+    padding: 4px;
+    margin: 0 4px 6px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm);
+  }
+  .db-icon-picker[hidden] { display: none; }
+  .db-icon-option {
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .db-icon-option:hover, .db-icon-option:focus-visible { background: var(--row-hover); }
+  .db-icon-remove {
+    grid-column: 1 / -1;
+    margin-top: 2px;
+    height: 26px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .db-icon-remove:hover { background: var(--row-hover); color: var(--ink); }
+  /* «Nueva propiedad», como el panel de Notion: los tipos en dos columnas,
+     cada uno con su icono; el elegido, marcado. */
+  .db-col-floating.db-prop-new { width: 340px; max-width: min(360px, calc(100vw - 16px)); padding: 6px; }
+  .db-type-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 0 2px 4px; }
+  .db-type-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 30px;
+    padding: 4px 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .db-type-option .db-col-type { opacity: 0.8; }
+  .db-type-option:hover { background: var(--row-hover); }
+  .db-type-option.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+  .db-type-option:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .db-prop-new .db-col-options[hidden],
+  .db-prop-new .db-col-add-field[hidden] { display: none; }
+  .db-prop-new .db-col-add-field { padding: 4px; }
+  .db-prop-new .db-col-add-actions { padding: 6px 4px 2px; }
+  @media (max-width: 768px) {
+    .db-type-option { min-height: 44px; }
+    .db-prop-icon-btn { width: 44px; height: 44px; }
+    .db-icon-option { height: 40px; }
+  }
   @media (max-width: 768px) {
     .db-col-menu-name input, .db-col-options-add { height: 44px; font-size: 16px; }
     .db-col-option-remove { width: 44px; height: 44px; }

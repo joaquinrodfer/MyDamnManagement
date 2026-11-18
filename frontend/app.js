@@ -5607,11 +5607,8 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 
   header.append(title);
 
-  const hint = document.createElement("div");
-  hint.className = "db-schema-hint";
-  hint.textContent =
-    database.schema_def.map((p) => `${p.name} (${tipoVisible(p.type)})`).join(" · ") ||
-    "Sin propiedades definidas.";
+  // Debajo del título ya no va la lista «Propiedad (Tipo) · …»: no decía nada
+  // que la cabecera de la tabla no diga (cada columna lleva el icono de su tipo).
 
   // La línea de las vistas, como en Notion: las pestañas a la izquierda y, a la
   // derecha, el recuento y los tres puntos con todo lo demás (filtrar, ordenar,
@@ -5794,7 +5791,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // guardar una fila, mover una tarjeta o editar el esquema no se anima nada
   // (repintar no es navegar, y el parpadeo se notaría a cada celda).
   content.className = "db-view" + (focus === "viewTab" ? " is-entering" : "");
-  main.append(header, hint, viewbar, content);
+  main.append(header, viewbar, content);
   // En pantalla estrecha las pestañas van en una línea que se desplaza de lado
   // (ver el bloque «móvil» del CSS): la activa tiene que quedar a la vista, o
   // se mira el calendario con «Tabla» en pantalla. Solo se mueve esa línea.
@@ -6985,16 +6982,13 @@ async function renderDatabaseEmbed(block, container) {
   const head = document.createElement("div");
   head.className = "db-embed-head";
 
-  const open = document.createElement("button");
-  open.type = "button";
+  // El nombre de la base es solo un título (como en Notion), no un enlace: la
+  // base se abre desde el menú «⋯» del bloque. Se puede ocultar desde ese mismo
+  // menú (`hide_title: true` en la valla).
+  const open = document.createElement("div");
   open.className = "db-embed-title";
-  // El editor no trata este clic como «entrar en el bloque» (ver entry.js).
-  open.dataset.dbAction = "open";
   open.textContent = database.title || title || "Base de datos";
-  open.title = "Abrir la base";
-  // Mismo camino que el árbol: deja entrada en el historial, así que
-  // «atrás» vuelve a la nota desde la que se abrió.
-  open.addEventListener("click", () => goTo("database", database.id));
+  open.hidden = Boolean(block.hideTitle);
 
   const meta = document.createElement("span");
   meta.className = "db-embed-meta";
@@ -7163,7 +7157,27 @@ async function renderDatabaseEmbed(block, container) {
     },
   });
 
-  head.append(open, meta);
+  // El menú del bloque: abrir la base, elegir su vista, ocultar el título,
+  // copiar el Markdown de la valla y quitar el bloque de la página. Todo lo que
+  // antes se hacía editando la valla a mano.
+  const opciones = document.createElement("button");
+  opciones.type = "button";
+  opciones.className = "db-embed-menu-btn";
+  opciones.dataset.dbAction = "opciones";
+  opciones.innerHTML = svgIcon("i-more");
+  opciones.setAttribute("aria-label", "Opciones de la base");
+  opciones.setAttribute("aria-haspopup", "menu");
+  opciones.setAttribute("aria-expanded", "false");
+  opciones.title = "Opciones de la base";
+  opciones.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+  });
+  opciones.addEventListener("click", (e) => {
+    e.stopPropagation();
+    abrirMenuDeBloqueDeBase(opciones, { block, database, views, activeView });
+  });
+  head.classList.toggle("is-title-hidden", Boolean(block.hideTitle));
+  head.append(open, meta, opciones);
   container.append(
     head,
     body,
@@ -7171,6 +7185,86 @@ async function renderDatabaseEmbed(block, container) {
     // nota ni la página.
     alta,
   );
+}
+
+/** El menú «⋯» de una base incrustada en una nota. Lo que cambia la valla
+ * (`view`, `hide_title`) lo escribe el editor con `block.actualizar`: la nota
+ * se guarda como cualquier otra edición y el bloque se repinta solo. */
+function abrirMenuDeBloqueDeBase(anchor, { block, database, views, activeView }) {
+  const menu = document.createElement("div");
+  menu.className = "db-col-menu db-col-menu-notion";
+  const rotulo = document.createElement("div");
+  rotulo.className = "db-col-menu-label";
+  rotulo.textContent = database.title || "Base de datos";
+  menu.appendChild(rotulo);
+  menu.appendChild(
+    itemDeColumna("Abrir la base de datos", {
+      icono: svgIcon("i-expand"),
+      alElegir: () => {
+        cerrarPanelDeColumna();
+        goTo("database", database.id);
+      },
+    }),
+  );
+  if (views.length > 1) {
+    menu.appendChild(separadorDeMenu());
+    const sub = document.createElement("div");
+    sub.className = "db-col-menu-label";
+    sub.textContent = "Vista";
+    menu.appendChild(sub);
+    views.forEach((v) => {
+      const actual = activeView && v.id === activeView.id;
+      menu.appendChild(
+        itemDeColumna(v.name, {
+          icono: svgIcon(v.type === "board" ? "i-board" : v.type === "calendar" ? "i-calendar" : v.type === "list" ? "i-list" : "i-table"),
+          radio: true,
+          marca: actual ? "✓" : "",
+          alElegir: () => {
+            cerrarPanelDeColumna();
+            if (!actual) block.actualizar?.({ view: v.name });
+          },
+        }),
+      );
+    });
+  }
+  menu.appendChild(separadorDeMenu());
+  menu.appendChild(
+    itemDeColumna(block.hideTitle ? "Mostrar el título" : "Ocultar el título", {
+      icono: ICONOS_DE_MENU.ocultar,
+      alElegir: () => {
+        cerrarPanelDeColumna();
+        block.actualizar?.({ hideTitle: !block.hideTitle });
+      },
+    }),
+  );
+  menu.appendChild(
+    itemDeColumna("Copiar como Markdown", {
+      icono: svgIcon("i-file-text"),
+      alElegir: async () => {
+        const texto = block.markdown?.() || "";
+        try {
+          await navigator.clipboard.writeText(texto);
+          const nota = notaDeMenu(menu);
+          nota.textContent = "Copiado: es el bloque tal y como se guarda en el `.md` de la nota.";
+          nota.hidden = false;
+        } catch (e) {
+          reportError("No se pudo copiar", e);
+        }
+      },
+    }),
+  );
+  menu.appendChild(separadorDeMenu());
+  menu.appendChild(
+    itemDeColumna("Quitar de la página", {
+      icono: ICONOS_DE_MENU.borrar,
+      peligro: true,
+      alElegir: () => {
+        cerrarPanelDeColumna();
+        block.quitar?.();
+      },
+    }),
+  );
+  abrirPanelFlotante(anchor, menu, { etiqueta: "Opciones de la base" });
 }
 
 /** La celda que se está editando dentro de un bloque incrustado, si hay
@@ -10581,9 +10675,14 @@ async function borrarColumna({ database, prop, onChanged }) {
  * (`visible_properties`), la nueva entra también al final de la lista: una
  * columna recién creada que no se ve en la pestaña en la que estás es un
  * misterio, no un resultado. */
-async function crearColumnaEnLaBase(contexto, { nombre, tipo, destino, multiple = false, posicion = null }) {
+async function crearColumnaEnLaBase(
+  contexto,
+  { nombre, tipo, destino, multiple = false, posicion = null, opciones = [], icono = "" },
+) {
   const { database, view, onChanged } = contexto;
   const nueva = { name: nombre, type: tipo };
+  if (opciones.length) nueva.options = opciones.slice();
+  if (icono) nueva.icon = icono;
   if (tipo === "relation") {
     if (destino) nueva.target_database = destino;
     if (multiple) nueva.multiple = true;
@@ -10941,7 +11040,45 @@ function abrirMenuDeColumna(anchor, contexto) {
   // --- el nombre, editable en el sitio
   const filaNombre = document.createElement("div");
   filaNombre.className = "db-col-menu-name";
-  filaNombre.innerHTML = iconoDeTipo(esTitulo ? "title" : prop.type);
+  if (esTitulo) {
+    filaNombre.innerHTML = iconoDeTipo("title");
+  } else {
+    // El icono de la propiedad se cambia aquí mismo, como en Notion.
+    const botonIcono = document.createElement("button");
+    botonIcono.type = "button";
+    botonIcono.className = "db-prop-icon-btn";
+    botonIcono.setAttribute("aria-label", "Cambiar el icono de la propiedad");
+    botonIcono.setAttribute("aria-expanded", "false");
+    botonIcono.title = "Icono de la propiedad";
+    let iconoActual = prop.icon || "";
+    const pintar = () => {
+      botonIcono.innerHTML = iconoActual
+        ? `<span class="db-prop-emoji">${escapeHtml(iconoActual)}</span>`
+        : iconoDeTipo(prop.type);
+    };
+    pintar();
+    const picker = selectorDeIcono(async (emoji) => {
+      picker.hidden = true;
+      botonIcono.setAttribute("aria-expanded", "false");
+      if (emoji === iconoActual) return;
+      try {
+        await guardarEsquemaDeColumnas(database, esquemaConPropiedad(database, prop.key, { icon: emoji }));
+        iconoActual = emoji;
+        pintar();
+        marcarCambio();
+      } catch (e) {
+        reportError("No se pudo cambiar el icono", e);
+      }
+    });
+    picker.hidden = true;
+    botonIcono.addEventListener("click", (e) => {
+      e.stopPropagation();
+      picker.hidden = !picker.hidden;
+      botonIcono.setAttribute("aria-expanded", String(!picker.hidden));
+    });
+    filaNombre.appendChild(botonIcono);
+    queueMicrotask(() => filaNombre.after(picker));
+  }
   const campo = document.createElement("input");
   campo.type = "text";
   campo.value = nombre;
@@ -11165,61 +11302,196 @@ function abrirMenuDeColumna(anchor, contexto) {
 
 // --- el «+» del final de la cabecera -------------------------------------
 
-/** El formulario de una columna nueva, en un panel junto al «+»: nombre, tipo
- * y —si el tipo es Relación— la base destino. */
+/** Los emojis que se ofrecen como icono de una propiedad: los que más se usan
+ * en una base de tareas o de contactos. Escribir uno a mano también vale. */
+const ICONOS_DE_PROPIEDAD = [
+  "📌", "⭐", "🚦", "✅", "⏳", "📅", "🗓️", "⏰", "🔥", "⚡", "🎯", "🏷️",
+  "📝", "📄", "📎", "🔗", "💬", "📞", "✉️", "👤", "👥", "🏢", "📍", "🌍",
+  "💰", "💶", "📈", "📊", "🔢", "#️⃣", "🧩", "🛠️", "🔒", "❗", "❓", "💡",
+];
+
+/** Un selector de icono pequeño (rejilla de emojis + «Quitar»), dentro del
+ * panel que lo abre. `alElegir(icono)` recibe el emoji o "" para quitarlo. */
+function selectorDeIcono(alElegir) {
+  const caja = document.createElement("div");
+  caja.className = "db-icon-picker";
+  caja.setAttribute("role", "listbox");
+  caja.setAttribute("aria-label", "Icono de la propiedad");
+  ICONOS_DE_PROPIEDAD.forEach((emoji) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "db-icon-option";
+    b.textContent = emoji;
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-label", `Icono ${emoji}`);
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      alElegir(emoji);
+    });
+    caja.appendChild(b);
+  });
+  const quitar = document.createElement("button");
+  quitar.type = "button";
+  quitar.className = "db-icon-remove";
+  quitar.textContent = "Sin icono";
+  quitar.addEventListener("click", (e) => {
+    e.stopPropagation();
+    alElegir("");
+  });
+  caja.appendChild(quitar);
+  return caja;
+}
+
+/** «Nueva propiedad», como el panel de Notion: arriba el icono y el nombre;
+ * debajo los tipos en una rejilla con su icono; si es una selección, sus
+ * opciones se crean ahí mismo (etiquetas de color con «×» y un campo para
+ * añadir); si es una relación, la base a la que apunta. Intro en el nombre o
+ * «Crear propiedad» la guarda. `posicion` viene de «Insertar a la izquierda /
+ * derecha» del menú de una columna. */
 function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
   const { database } = contexto;
   const form = document.createElement("form");
-  form.className = "db-col-add-form";
+  form.className = "db-col-add-form db-prop-new";
   form.setAttribute("role", "dialog");
-  form.setAttribute("aria-label", "Nueva columna");
+  form.setAttribute("aria-label", "Nueva propiedad");
+  form.noValidate = true;
+
+  let tipoElegido = "text";
+  let icono = "";
+  const opciones = [];
 
   const titulo = document.createElement("div");
-  titulo.className = "db-col-add-title";
+  titulo.className = "db-col-menu-label";
   titulo.textContent = !posicion
-    ? "Nueva columna"
+    ? "Nueva propiedad"
     : posicion.lado === "izquierda"
-      ? "Nueva columna a la izquierda"
-      : "Nueva columna a la derecha";
+      ? "Nueva propiedad a la izquierda"
+      : "Nueva propiedad a la derecha";
 
-  const campoNombre = document.createElement("label");
-  campoNombre.textContent = "Nombre";
+  // --- icono + nombre
+  const filaNombre = document.createElement("div");
+  filaNombre.className = "db-col-menu-name";
+  const botonIcono = document.createElement("button");
+  botonIcono.type = "button";
+  botonIcono.className = "db-prop-icon-btn";
+  botonIcono.setAttribute("aria-label", "Elegir un icono");
+  botonIcono.title = "Icono de la propiedad";
+  botonIcono.setAttribute("aria-expanded", "false");
+  const pintarIcono = () => {
+    botonIcono.innerHTML = icono
+      ? `<span class="db-prop-emoji">${escapeHtml(icono)}</span>`
+      : iconoDeTipo(tipoElegido);
+  };
   const nombre = document.createElement("input");
   nombre.type = "text";
-  nombre.required = true;
   nombre.autocomplete = "off";
   nombre.className = "db-col-add-name";
+  nombre.placeholder = "Nombre de la propiedad";
+  nombre.setAttribute("aria-label", "Nombre de la propiedad");
+  filaNombre.append(botonIcono, nombre);
 
-  const campoNombreWrap = document.createElement("div");
-  campoNombreWrap.className = "db-col-add-field";
-  campoNombreWrap.append(campoNombre, nombre);
-
-  const campoTipo = document.createElement("label");
-  campoTipo.textContent = "Tipo";
-  const tipo = document.createElement("select");
-  Object.entries(TIPOS_VISIBLES).forEach(([valor, etiqueta]) => {
-    const opt = document.createElement("option");
-    opt.value = valor;
-    opt.textContent = etiqueta;
-    tipo.appendChild(opt);
+  const picker = selectorDeIcono((emoji) => {
+    icono = emoji;
+    picker.hidden = true;
+    botonIcono.setAttribute("aria-expanded", "false");
+    pintarIcono();
+    nombre.focus();
   });
-  const campoTipoWrap = document.createElement("div");
-  campoTipoWrap.className = "db-col-add-field";
-  campoTipoWrap.append(campoTipo, tipo);
+  picker.hidden = true;
+  botonIcono.addEventListener("click", (e) => {
+    e.stopPropagation();
+    picker.hidden = !picker.hidden;
+    botonIcono.setAttribute("aria-expanded", String(!picker.hidden));
+    colocarPanelFlotante(form, anchor);
+  });
 
+  // --- tipos
+  const rotuloTipo = document.createElement("div");
+  rotuloTipo.className = "db-col-menu-label";
+  rotuloTipo.id = `db-prop-new-tipo-${Date.now()}`;
+  rotuloTipo.textContent = "Tipo";
+  const rejilla = document.createElement("div");
+  rejilla.className = "db-type-grid";
+  rejilla.setAttribute("role", "radiogroup");
+  rejilla.setAttribute("aria-labelledby", rotuloTipo.id);
+  const botonesTipo = new Map();
+  Object.entries(TIPOS_VISIBLES).forEach(([valor, etiqueta]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "db-type-option";
+    b.setAttribute("role", "radio");
+    b.innerHTML = `${iconoDeTipo(valor)}<span>${escapeHtml(etiqueta)}</span>`;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      elegirTipo(valor);
+    });
+    botonesTipo.set(valor, b);
+    rejilla.appendChild(b);
+  });
+
+  // --- opciones (selección)
+  const cajaOpciones = document.createElement("div");
+  cajaOpciones.className = "db-col-options";
+  const rotuloOpciones = document.createElement("div");
+  rotuloOpciones.className = "db-col-menu-label";
+  rotuloOpciones.textContent = "Opciones";
+  const lista = document.createElement("ul");
+  lista.className = "db-col-options-list";
+  const nuevaOpcion = document.createElement("input");
+  nuevaOpcion.type = "text";
+  nuevaOpcion.className = "db-col-options-add";
+  nuevaOpcion.placeholder = "Añadir una opción… (Intro)";
+  nuevaOpcion.setAttribute("aria-label", "Añadir una opción");
+  nuevaOpcion.autocomplete = "off";
+  cajaOpciones.append(rotuloOpciones, lista, nuevaOpcion);
+  const pintarOpciones = () => {
+    lista.textContent = "";
+    const falsa = { options: opciones };
+    opciones.forEach((valor) => {
+      const li = document.createElement("li");
+      li.className = "db-col-option";
+      const tag = document.createElement("span");
+      tag.innerHTML = htmlDeEtiqueta(valor, falsa);
+      const quitar = document.createElement("button");
+      quitar.type = "button";
+      quitar.className = "db-col-option-remove";
+      quitar.innerHTML = svgIcon("i-x");
+      quitar.setAttribute("aria-label", `Quitar la opción «${valor}»`);
+      quitar.addEventListener("click", (e) => {
+        e.stopPropagation();
+        opciones.splice(opciones.indexOf(valor), 1);
+        pintarOpciones();
+        nuevaOpcion.focus();
+      });
+      li.append(tag, quitar);
+      lista.appendChild(li);
+    });
+  };
+  nuevaOpcion.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const valor = nuevaOpcion.value.trim();
+    if (!valor) return;
+    if (!opciones.some((v) => v.toLowerCase() === valor.toLowerCase())) opciones.push(valor);
+    nuevaOpcion.value = "";
+    pintarOpciones();
+    colocarPanelFlotante(form, anchor);
+  });
+
+  // --- relación
+  const campoDestinoWrap = document.createElement("div");
+  campoDestinoWrap.className = "db-col-add-field";
   const campoDestino = document.createElement("label");
-  campoDestino.textContent = "Base destino";
+  campoDestino.textContent = "Base a la que apunta";
   const destino = document.createElement("select");
-  // Misma elección que en el diálogo «Propiedades»: una fila o varias.
+  destino.setAttribute("aria-label", "Base a la que apunta");
   const campoMultiple = document.createElement("label");
   campoMultiple.className = "db-col-add-check";
   const multiple = document.createElement("input");
   multiple.type = "checkbox";
   campoMultiple.append(multiple, document.createTextNode(" Permite varias filas"));
-  const campoDestinoWrap = document.createElement("div");
-  campoDestinoWrap.className = "db-col-add-field";
   campoDestinoWrap.append(campoDestino, destino, campoMultiple);
-  campoDestinoWrap.hidden = true;
 
   const error = document.createElement("p");
   error.className = "db-col-add-error";
@@ -11235,10 +11507,10 @@ function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
   const enviar = document.createElement("button");
   enviar.type = "submit";
   enviar.className = "btn btn-primary";
-  enviar.textContent = "Añadir";
+  enviar.textContent = "Crear propiedad";
   acciones.append(cancelar, enviar);
 
-  form.append(titulo, campoNombreWrap, campoTipoWrap, campoDestinoWrap, error, acciones);
+  form.append(titulo, filaNombre, picker, rotuloTipo, rejilla, cajaOpciones, campoDestinoWrap, error, acciones);
 
   let basesPrometidas = null;
   const cargarBases = () => {
@@ -11266,18 +11538,36 @@ function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
     return basesPrometidas;
   };
 
-  tipo.addEventListener("change", () => {
-    const esRelacion = tipo.value === "relation";
-    campoDestinoWrap.hidden = !esRelacion;
-    if (esRelacion) {
+  const elegirTipo = (tipo) => {
+    tipoElegido = tipo;
+    for (const [valor, b] of botonesTipo) {
+      const activo = valor === tipo;
+      b.classList.toggle("is-active", activo);
+      b.setAttribute("aria-checked", String(activo));
+      b.tabIndex = activo ? 0 : -1;
+    }
+    cajaOpciones.hidden = !(tipo === "select" || tipo === "multiselect");
+    campoDestinoWrap.hidden = tipo !== "relation";
+    if (tipo === "relation") {
       cargarBases();
     } else {
-      // Al volver de Relación a otro tipo, el «Añadir» que quedó apagado por
-      // no haber bases destino tiene que volver a estar disponible.
       enviar.disabled = false;
       error.textContent = "";
     }
+    pintarIcono();
     colocarPanelFlotante(form, anchor);
+  };
+  // Flechas dentro de la rejilla de tipos: es un grupo de radios.
+  rejilla.addEventListener("keydown", (e) => {
+    const claves = [...botonesTipo.keys()];
+    const i = claves.indexOf(tipoElegido);
+    const paso = { ArrowRight: 1, ArrowDown: 2, ArrowLeft: -1, ArrowUp: -2 }[e.key];
+    if (!paso) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const siguiente = claves[(i + paso + claves.length) % claves.length];
+    elegirTipo(siguiente);
+    botonesTipo.get(siguiente).focus();
   });
 
   // Dentro de una nota, las teclas del formulario no pueden subir al keymap de
@@ -11289,21 +11579,26 @@ function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
     error.textContent = "";
     const texto = nombre.value.trim();
     if (!texto) {
-      error.textContent = "La columna necesita un nombre.";
+      error.textContent = "La propiedad necesita un nombre.";
       nombre.focus();
       return;
     }
-    if (tipo.value === "relation" && !destino.value) {
+    if (tipoElegido === "relation" && !destino.value) {
       error.textContent = "Elige la base a la que apunta la relación.";
       return;
     }
+    // Una opción escrita y sin Intro también cuenta.
+    const pendiente = nuevaOpcion.value.trim();
+    if (pendiente && !opciones.some((v) => v.toLowerCase() === pendiente.toLowerCase())) opciones.push(pendiente);
     enviar.disabled = true;
     try {
       await crearColumnaEnLaBase(contexto, {
         nombre: texto,
-        tipo: tipo.value,
-        destino: tipo.value === "relation" ? destino.value : null,
-        multiple: tipo.value === "relation" ? multiple.checked : false,
+        tipo: tipoElegido,
+        destino: tipoElegido === "relation" ? destino.value : null,
+        multiple: tipoElegido === "relation" ? multiple.checked : false,
+        opciones: tipoElegido === "select" || tipoElegido === "multiselect" ? opciones : [],
+        icono,
         posicion,
       });
       cerrarPanelDeColumna();
@@ -11313,8 +11608,9 @@ function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
     }
   });
 
+  elegirTipo("text");
   abrirPanelFlotante(anchor, form, {
-    etiqueta: "Nueva columna",
+    etiqueta: "Nueva propiedad",
     foco: "input",
   });
 }
@@ -11374,7 +11670,9 @@ function cabeceraDeColumna(contexto, prop, nombre, paraOrdenar = prop) {
   const boton = document.createElement("button");
   boton.type = "button";
   boton.className = "db-col-head-btn" + (indice >= 0 ? " is-sorted" : "");
-  boton.innerHTML = iconoDeTipo(prop ? prop.type : "title");
+  boton.innerHTML = prop?.icon
+    ? `<span class="db-col-type db-col-emoji" aria-hidden="true">${escapeHtml(prop.icon)}</span>`
+    : iconoDeTipo(prop ? prop.type : "title");
   const etiqueta = document.createElement("span");
   etiqueta.className = "db-col-label";
   etiqueta.textContent = nombre;

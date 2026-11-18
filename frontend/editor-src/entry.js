@@ -52,6 +52,7 @@ import {
 import { insertBlockEdit, moveBlockEdits } from "./block-move.js";
 import { canonicalBody, cursorInOuterBlanks, outerBlankRange, withoutRange } from "./body.js";
 import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./database-embed.js";
+import { serializeDatabaseBlock } from "./database-block.js";
 import {
   databaseBlockInsert,
   databaseChoices,
@@ -510,6 +511,7 @@ class DatabaseBlockWidget extends WidgetType {
       other.parse.id === this.parse.id &&
       other.parse.view === this.parse.view &&
       other.parse.title === this.parse.title &&
+      other.parse.hideTitle === this.parse.hideTitle &&
       other.parse.motivo === this.parse.motivo
     );
   }
@@ -537,17 +539,21 @@ class DatabaseBlockWidget extends WidgetType {
     // también la tenga una valla rota: su tarjeta de error es igual de movible.
     if (this.index >= 0) wrap.appendChild(blockHandleDom(this.index));
 
-    // Un clic en el bloque (menos en lo que ya es un botón, como el
-    // encabezado: eso lleva a la base) pone el cursor en la valla, que
-    // reaparece en crudo. Con ignoreEvent() este clic no lo ve CodeMirror.
-    // Vale también para la tarjeta de error: una valla rota se arregla con el
-    // ratón, no solo con las flechas.
+    // Un clic en el fondo del bloque lo MARCA, como en Notion: la valla no se
+    // enseña nunca en crudo (lo que dice -- la base, la vista, el título -- se
+    // cambia desde el menú «⋯» del bloque). Solo una valla ROTA pone el cursor
+    // dentro, para poder arreglarla. Con ignoreEvent() este clic no lo ve
+    // CodeMirror.
     wrap.addEventListener("mousedown", (event) => {
       // El asa y los controles de la tabla tienen su propio camino (el asa, en
       // `ignoreEvent`; los controles, en `data-db-action`).
       if (event.target.closest("[data-db-action], .cm-mdm-block-handle-wrap")) return;
       event.preventDefault();
-      view.dispatch({ selection: { anchor: this.from } });
+      if (this.parse.ok && this.index >= 0) {
+        selectBlocks(view, new Set([this.index]));
+      } else {
+        view.dispatch({ selection: { anchor: this.from } });
+      }
       view.focus();
     });
 
@@ -572,7 +578,20 @@ class DatabaseBlockWidget extends WidgetType {
     body.setAttribute("aria-busy", "true"); // lo que hay ahora es el esqueleto
     wrap.append(skeleton, body);
 
-    const info = { id: this.parse.id, view: this.parse.view, title: this.parse.title };
+    const info = {
+      id: this.parse.id,
+      view: this.parse.view,
+      title: this.parse.title,
+      hideTitle: Boolean(this.parse.hideTitle),
+      // El menú del bloque (en la app) reescribe la valla con esto: cambiar la
+      // vista, ocultar el título, copiar el Markdown o quitar el bloque.
+      actualizar: (campos) => rewriteDatabaseFence(view, this.from, campos),
+      markdown: () => databaseFenceText(view, this.from),
+      quitar: () => {
+        const idx = view.state.field(blockField).blocks.findIndex((b) => this.from >= b.from && this.from <= b.to);
+        if (idx >= 0) deleteBlocks(view, new Set([idx]));
+      },
+    };
     const settle = () => {
       if (skeleton.isConnected) skeleton.remove();
       if (body.isConnected) body.removeAttribute("aria-busy");
@@ -601,6 +620,32 @@ class DatabaseBlockWidget extends WidgetType {
   }
 }
 
+/** La valla de base que empieza en `from` (o null), con su rango de líneas. */
+function databaseFenceAt(state, from) {
+  const found = scanDatabaseBlocks(state.doc.toString()).find((b) => b.from === from);
+  if (!found || !found.parse.ok) return null;
+  return { ...found, lineFrom: state.doc.lineAt(found.from).from, lineTo: state.doc.lineAt(found.to).to };
+}
+
+/** Reescribe la valla de `from` con `campos` encima de lo que ya decía. */
+function rewriteDatabaseFence(view, from, campos) {
+  const fence = databaseFenceAt(view.state, from);
+  if (!fence) return false;
+  const { id, view: vista, title, hideTitle } = fence.parse;
+  const text = serializeDatabaseBlock({ id, view: vista, title, hideTitle: Boolean(hideTitle), ...campos });
+  view.dispatch({
+    changes: { from: fence.lineFrom, to: fence.lineTo, insert: text },
+    userEvent: "input.database",
+  });
+  return true;
+}
+
+/** El Markdown de la valla de `from`, tal y como está en la nota. */
+function databaseFenceText(view, from) {
+  const fence = databaseFenceAt(view.state, from);
+  return fence ? view.state.doc.sliceString(fence.lineFrom, fence.lineTo) : "";
+}
+
 // M2: «la base ha cambiado en otra ventana, vuelve a pintar los bloques».
 // Un efecto (y no un cambio de texto) porque el documento no se toca: la
 // valla sigue intacta, el cursor no se mueve y no hay autoguardado.
@@ -625,7 +670,10 @@ function databaseBlockDecorations(state, render, epoch = 0) {
       // arrastrarlo -- hacía que la nota se encogiera bajo el puntero y que la
       // línea de inserción bailara. Marcado con el asa, la tabla se queda.
       const marked = index >= 0 && selected.has(index);
-      if (!marked && selectionIntersects(state, block.from, block.to)) continue;
+      // Una valla buena se pinta SIEMPRE como tabla (su texto no se enseña
+      // nunca: se cambia desde el menú del bloque). Solo una rota se abre en
+      // crudo con el cursor dentro, para poder arreglarla.
+      if (!block.parse.ok && !marked && selectionIntersects(state, block.from, block.to)) continue;
       const widget = new DatabaseBlockWidget(block, render, epoch, index, marked);
       ranges.push(
         Decoration.replace({ widget, block: true }).range(
@@ -662,7 +710,11 @@ function databaseBlockField(render) {
       }
       return value;
     },
-    provide: (f) => EditorView.decorations.from(f, (value) => value.decos),
+    provide: (f) => [
+      EditorView.decorations.from(f, (value) => value.decos),
+      // El cursor salta la tabla entera: no puede caer dentro de la valla.
+      EditorView.atomicRanges.of((view) => view.state.field(f).decos),
+    ],
   });
 }
 

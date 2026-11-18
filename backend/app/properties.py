@@ -282,6 +282,12 @@ def plan_schema(
         prop: dict[str, Any] = {"key": key, "name": name, "type": item.get("type")}
         if item.get("options"):
             prop["options"] = list(item["options"])
+        # El icono: el pedido manda (`""` lo quita); sin pedirlo, se conserva.
+        icono = item.get("icon")
+        if icono is None:
+            icono = (origen or {}).get("icon")
+        if icono and str(icono).strip():
+            prop["icon"] = str(icono).strip()
         if item.get("type") == RELATION:
             _plan_relation(prop, item, origen)
         if item.get("type") == PARENT_ROW:
