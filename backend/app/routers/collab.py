@@ -57,13 +57,19 @@ router = APIRouter(tags=["collab"])
 MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 
 
+# Lo que tiene sala: las notas y, desde que se abren como páginas normales, las
+# filas de una base (su cuerpo es un `.md` como el de una nota). Una base no:
+# su «cuerpo» es la definición, que no se escribe a mano.
+EDITABLE = ("note", "database_row")
+
+
 def _load(page_id: str):
     conn = open_index(settings.index_path)
     try:
         row = conn.execute(
             "SELECT type, body FROM pages WHERE id = ?", (page_id,)
         ).fetchone()
-        if row is None or row["type"] != "note":
+        if row is None or row["type"] not in EDITABLE:
             return None
         return row["body"] or ""
     finally:
@@ -107,7 +113,7 @@ def _who(page_id: str, token: str | None):
         if user is None:
             return None, None
         row = conn.execute("SELECT type FROM pages WHERE id = ?", (page_id,)).fetchone()
-        if row is None or row["type"] != "note":
+        if row is None or row["type"] not in EDITABLE:
             return user, None
         return user, acl.level_for(conn, user, page_id)
     finally:

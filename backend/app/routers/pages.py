@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response, UploadF
 from app import auth, export, schemas
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
+from app.enums import PageType
+from app.events import publish_database
 from app.repository import Repository
 from app.serializers import serialize_page
 from app.vault import attachments
@@ -16,6 +18,24 @@ from app.versioning import conflict, etag, parse_if_match
 router = APIRouter(prefix="/pages", tags=["pages"])
 
 MAX_HEADER_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB, generoso para una imagen de cabecera
+
+
+def _avisar_a_su_base(antes, page) -> None:
+    """Una fila guardada como página: la tabla de su base se repinta.
+
+    Desde que las filas se abren como páginas normales, su título y su cuerpo
+    se guardan por `PATCH /pages/{id}` (y su cuerpo, por la sala de edición en
+    vivo). Las tablas abiertas en otras pestañas escuchan el aviso `rows` de
+    su base, no el de la página.
+
+    Solo si cambia algo que la tabla enseña (título, icono): el cuerpo no sale
+    en la tabla, y avisar en cada guardado del cuerpo la haría recargarse
+    mientras alguien escribe.
+    """
+    if page.type != PageType.database_row or not page.database_id:
+        return
+    if antes is None or (antes.title, antes.icon) != (page.title, page.icon):
+        publish_database(page.database_id, "rows")
 
 
 def _get_or_404(repo: Repository, page_id: uuid.UUID):
@@ -89,6 +109,7 @@ def update_page(
     """Guarda los campos que llegan. Con `If-Match: <version>` (3.0, hito 2),
     solo si la página sigue en esa versión; si no, 409 con la de ahora."""
     expected = parse_if_match(if_match)
+    antes = repo.get_page(page_id)
     extra = {}
     if "parent_id" in payload.model_fields_set:
         # Presente en el cuerpo: mover (o `null` para subir a la raíz).
@@ -110,6 +131,7 @@ def update_page(
         raise HTTPException(400, str(exc)) from exc
     if page is None:
         raise HTTPException(404, "Página no encontrada")
+    _avisar_a_su_base(antes, page)
     response.headers["ETag"] = etag(page.version)
     return serialize_page(page, repo.author_colors())
 

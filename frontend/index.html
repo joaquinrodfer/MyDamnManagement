@@ -240,7 +240,6 @@
      recortaba contra su fila y parecía un subrayado roto. */
   .note-title:focus-visible,
   .db-title:focus-visible,
-  .row-page-title:focus-visible,
   .note-description:focus-visible { outline: none; }
 
   /* ---------- movimiento (corto y sin rebotes) ----------
@@ -1267,9 +1266,7 @@
      una sección aparte (estilo Notion) -- incluso ocupa todo el ancho de
      #main, igual que el título. */
   #note-body .cm-editor { outline: none; background: transparent; }
-  #row-page-body .cm-editor { outline: none; background: transparent; }
-  #note-body .cm-content,
-  #row-page-body .cm-content {
+  #note-body .cm-content {
     --mdm-gutter: 78px; /* margen izquierdo del cuerpo: el «+» y los seis puntos del asa (28+2+28 = 58), 4 de aire al texto y el resto de margen */
     padding: 4px 4px 220px var(--mdm-gutter); /* el hueco de abajo es a propósito -- clicar ahí (como en Notion) coloca el cursor al final del documento */
     font-family: var(--font-body); /* prosa con pinta de Notion; el código se fuerza aparte a --font-mono */
@@ -1284,17 +1281,13 @@
     caret-color: var(--ink);
   }
   #note-body .cm-cursor { border-left-color: var(--ink); }
-  #row-page-body .cm-cursor { border-left-color: var(--ink); }
   #note-body .cm-selectionBackground { background: var(--accent-soft) !important; }
-  #row-page-body .cm-selectionBackground { background: var(--accent-soft) !important; }
   #note-body .cm-activeLine { background: transparent; }
-  #row-page-body .cm-activeLine { background: transparent; }
   /* El handle de bloque es un widget dentro de la línea, no un gutter (ver
      el porqué en frontend/editor-src/entry.js) -- por eso la línea necesita
      position:relative, para que el handle se posicione contra ELLA y no
      contra todo el editor. */
   #note-body .cm-line { position: relative; }
-  #row-page-body .cm-line { position: relative; }
 
   /* marcadores de sintaxis (#, **, *): visibles pero discretos. El propio
      parser de Markdown etiqueta "HeaderMark"/"EmphasisMark" con el mismo
@@ -1408,8 +1401,7 @@
      solo el aspecto, con el mismo lenguaje que el resto de menús flotantes.
      La lista la llena entry.js: una opción por página, «Crear «…»» delante
      cuando no hay coincidencia exacta. */
-  #note-body .cm-tooltip-autocomplete,
-  #row-page-body .cm-tooltip-autocomplete {
+  #note-body .cm-tooltip-autocomplete {
     background: var(--surface-elevated);
     border: 1px solid var(--panel-border);
     border-radius: 8px;
@@ -1417,8 +1409,7 @@
     overflow: hidden;
     z-index: 40;
   }
-  #note-body .cm-tooltip-autocomplete > ul,
-  #row-page-body .cm-tooltip-autocomplete > ul {
+  #note-body .cm-tooltip-autocomplete > ul {
     max-height: 240px;
     min-width: 220px;
     padding: 4px;
@@ -1427,8 +1418,7 @@
     font-family: var(--font-body);
     font-size: var(--text-md);
   }
-  #note-body .cm-tooltip-autocomplete > ul > li,
-  #row-page-body .cm-tooltip-autocomplete > ul > li {
+  #note-body .cm-tooltip-autocomplete > ul > li {
     display: flex;
     gap: 12px;
     align-items: baseline;
@@ -1441,22 +1431,18 @@
   }
   /* aria-selected es la opción activa (la que se lleva Enter). El ratón
      también la marca: el paquete escucha mousemove sobre la lista. */
-  #note-body .cm-tooltip-autocomplete > ul > li[aria-selected],
-  #row-page-body .cm-tooltip-autocomplete > ul > li[aria-selected] {
+  #note-body .cm-tooltip-autocomplete > ul > li[aria-selected] {
     background: var(--accent-soft);
     color: var(--ink);
   }
   #note-body .cm-tooltip-autocomplete .cm-completionLabel { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-  #row-page-body .cm-tooltip-autocomplete .cm-completionLabel { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-  #note-body .cm-tooltip-autocomplete .cm-completionMatchedText,
-  #row-page-body .cm-tooltip-autocomplete .cm-completionMatchedText {
+  #note-body .cm-tooltip-autocomplete .cm-completionMatchedText {
     color: var(--accent-ink);
     text-decoration: none;
     font-weight: 600;
   }
   /* El tipo de destino ("nota" / "base de datos") o "nota nueva" en «Crear». */
-  #note-body .cm-tooltip-autocomplete .cm-completionDetail,
-  #row-page-body .cm-tooltip-autocomplete .cm-completionDetail {
+  #note-body .cm-tooltip-autocomplete .cm-completionDetail {
     color: var(--ink-muted);
     font-size: var(--text-sm);
     font-style: normal;
@@ -1464,10 +1450,8 @@
   }
   /* «Crear «…»» (la primera opción cuando no hay coincidencia exacta). */
   #note-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-create .cm-completionLabel { color: var(--accent-ink); }
-  #row-page-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-create .cm-completionLabel { color: var(--accent-ink); }
   /* Sin notas / sin coincidencias: un aviso, no una fila que parezca elegible. */
   #note-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-empty { color: var(--ink-muted); cursor: default; }
-  #row-page-body .cm-tooltip-autocomplete > ul > li.cm-mdm-link-empty { color: var(--ink-muted); cursor: default; }
 
   /* ---------- sugerencias de agentes (P10c) ----------
      El parche se ve en su sitio: el texto viejo tachado y, justo detrás, el
@@ -1518,9 +1502,7 @@
      --font-mono aquí -- .cm-content ya no es monoespaciada (ver más arriba),
      así que sin esto el código se vería con la misma fuente que la prosa. */
   #note-body .cm-mdm-line-code { background: var(--code-bg); font-family: var(--font-mono); }
-  #row-page-body .cm-mdm-line-code { background: var(--code-bg); font-family: var(--font-mono); }
   #note-body .cm-mdm-line-list { padding-left: 4px; }
-  #row-page-body .cm-mdm-line-list { padding-left: 4px; }
 
   /* ---------- citas ("> texto", anidables con "> > texto") ----------
      Fondo gris clarito (el mismo --code-bg que el código) con bordes
@@ -1533,11 +1515,8 @@
      patrón cursor-aware que el resto: en edición se ve el Markdown crudo,
      con el ">" tenue). */
   #note-body .cm-mdm-line-quote { background: var(--code-bg); padding: 3px 12px; }
-  #row-page-body .cm-mdm-line-quote { background: var(--code-bg); padding: 3px 12px; }
   #note-body .cm-mdm-line-quote-first { border-radius: 8px 8px 0 0; padding-top: 8px; }
-  #row-page-body .cm-mdm-line-quote-first { border-radius: 8px 8px 0 0; padding-top: 8px; }
   #note-body .cm-mdm-line-quote-last { border-radius: 0 0 8px 8px; padding-bottom: 8px; }
-  #row-page-body .cm-mdm-line-quote-last { border-radius: 0 0 8px 8px; padding-bottom: 8px; }
   .cm-mdm-quote-bars { display: inline-flex; gap: 4px; margin-right: 10px; vertical-align: middle; }
   .cm-mdm-quote-bar { display: inline-block; width: 3px; height: 1.1em; border-radius: 2px; background: var(--accent); vertical-align: middle; }
 
@@ -1548,8 +1527,7 @@
      más), detrás de un H1 son 18 y dentro de una lista 8; el hueco sigue
      delatando cuántas hay visto que dos líneas seguidas dejan el doble. El
      */
-  #note-body .cm-mdm-blank,
-  #row-page-body .cm-mdm-blank {
+  #note-body .cm-mdm-blank {
     height: var(--mdm-blank-unit, 12px);
     line-height: var(--mdm-blank-unit, 12px);
   }
@@ -1557,13 +1535,11 @@
      lado; ver block-gaps.js) no es aire: es un párrafo sin texto todavía y
      mide una línea entera. Así, escribir en él no mueve nada: la letra cae en
      esa misma línea. El del cursor enseña el texto de ayuda, como en Notion. */
-  #note-body .cm-line.cm-mdm-gap-empty,
-  #row-page-body .cm-line.cm-mdm-gap-empty {
+  #note-body .cm-line.cm-mdm-gap-empty {
     height: var(--mdm-line, 24px);
     line-height: inherit;
   }
-  #note-body .cm-focused .cm-line.cm-mdm-gap-current:not(.cm-mdm-empty-line)::before,
-  #row-page-body .cm-focused .cm-line.cm-mdm-gap-current:not(.cm-mdm-empty-line)::before {
+  #note-body .cm-focused .cm-line.cm-mdm-gap-current:not(.cm-mdm-empty-line)::before {
     content: "Escribe, o «/» para comandos…";
     position: absolute;
     left: 6px;
@@ -1579,8 +1555,7 @@
      bloque que se está escribiendo (lleva el «Escribe algo…»), así que mide una
      línea entera -- con el alto de una línea en blanco el texto de ayuda
      desbordaría su caja y el cursor saldría más corto. */
-  #note-body .cm-line.cm-mdm-empty-line,
-  #row-page-body .cm-line.cm-mdm-empty-line {
+  #note-body .cm-line.cm-mdm-empty-line {
     height: var(--mdm-line, 24px);
     line-height: inherit;
   }
@@ -1592,15 +1567,13 @@
      crea el bloque nuevo -- ver el `mousedown` de blockHandleEventHandlers,
      que intercepta los clics por debajo de la última línea. Si la última línea
      del documento ya está vacía, se esconde: esa ES la línea del final. */
-  #note-body .cm-content::after,
-  #row-page-body .cm-content::after {
+  #note-body .cm-content::after {
     content: "";
     display: block;
     height: var(--mdm-line, 24px);
     cursor: text;
   }
-  #note-body .cm-content:has(.cm-mdm-last-line)::after,
-  #row-page-body .cm-content:has(.cm-mdm-last-line)::after { display: none; }
+  #note-body .cm-content:has(.cm-mdm-last-line)::after { display: none; }
 
   /* ---------- separación entre bloques (al estilo Notion) ----------
      Padding-top en la PRIMERA línea de cada bloque, según su tipo -- ver
@@ -1624,17 +1597,11 @@
      max() y quedaba el aire del tipo cuando era mayor -- un párrafo con una
      línea en blanco delante medía 24 px, el «bloque vacío de más». */
   #note-body .cm-mdm-space-normal { --mdm-space: 6px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
-  #row-page-body .cm-mdm-space-normal { --mdm-space: 6px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
   #note-body .cm-mdm-space-h1 { --mdm-space: 28px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); padding-bottom: 4px; }
-  #row-page-body .cm-mdm-space-h1 { --mdm-space: 28px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); padding-bottom: 4px; }
   #note-body .cm-mdm-space-h2 { --mdm-space: 22px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); padding-bottom: 3px; }
-  #row-page-body .cm-mdm-space-h2 { --mdm-space: 22px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); padding-bottom: 3px; }
   #note-body .cm-mdm-space-h3 { --mdm-space: 18px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
-  #row-page-body .cm-mdm-space-h3 { --mdm-space: 18px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
   #note-body .cm-mdm-space-h4 { --mdm-space: 14px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
-  #row-page-body .cm-mdm-space-h4 { --mdm-space: 14px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
   #note-body .cm-mdm-space-h5 { --mdm-space: 12px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
-  #row-page-body .cm-mdm-space-h5 { --mdm-space: 12px; padding-top: calc(var(--mdm-space) * (1 - var(--mdm-flush, 0))); }
 
   /* ---------- la banda del bloque (marcar/arrastrar) + botón "+" ----------
      Widget dentro de la línea (no gutter), posicionado en el hueco que deja
@@ -1666,9 +1633,7 @@
   /* Al recibir foco por teclado (:focus-within) el contenedor entero pasa a
      opacity: 1, para que el anillo :focus-visible de 2px se pinte al 100 %. */
   #note-body .cm-line:hover .cm-mdm-block-handle-wrap,
-  #row-page-body .cm-line:hover .cm-mdm-block-handle-wrap,
   #note-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
-  #row-page-body .cm-line:focus-within .cm-mdm-block-handle-wrap,
   .cm-mdm-block-handle-wrap:focus-within,
   .cm-line.cm-mdm-line-marked .cm-mdm-block-handle-wrap,
   .cm-mdm-dblock-marked > .cm-mdm-block-handle-wrap {
@@ -1735,8 +1700,7 @@
      ::before de CSS sobre la única línea del documento vacío (la marca
      `cm-mdm-empty-line`, ver blankLineDecorations): abrir una nota nueva no
      escribe ni un carácter en el .md. */
-  #note-body .cm-line.cm-mdm-empty-line::before,
-  #row-page-body .cm-line.cm-mdm-empty-line::before {
+  #note-body .cm-line.cm-mdm-empty-line::before {
     content: "Escribe algo…";
     position: absolute;
     left: 6px;
@@ -1754,8 +1718,7 @@
      bloque -- texto pintado de azul, como si se hubieran seleccionado letras, y
      Ctrl+C se llevaba su contenido cuando el usuario creía haber cogido el
      bloque entero (t_c2c98f7b). */
-  #note-body .cm-line.cm-mdm-line-marked,
-  #row-page-body .cm-line.cm-mdm-line-marked {
+  #note-body .cm-line.cm-mdm-line-marked {
     background: var(--accent-soft);
     box-shadow: inset 3px 0 0 var(--accent);
     border-radius: 0;
@@ -1763,10 +1726,8 @@
   /* Un bloque de varias líneas se ve como UNA caja: solo la primera línea
      redondea arriba y solo la última abajo (antes cada línea era su propia
      cajita y el bloque parecía un montón de líneas sueltas). */
-  #note-body .cm-line.cm-mdm-line-marked-first,
-  #row-page-body .cm-line.cm-mdm-line-marked-first { border-top-left-radius: 4px; border-top-right-radius: 4px; }
-  #note-body .cm-line.cm-mdm-line-marked-last,
-  #row-page-body .cm-line.cm-mdm-line-marked-last { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
+  #note-body .cm-line.cm-mdm-line-marked-first { border-top-left-radius: 4px; border-top-right-radius: 4px; }
+  #note-body .cm-line.cm-mdm-line-marked-last { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
   .cm-mdm-dblock-marked {
     background: var(--accent-soft);
     border-radius: 6px;
@@ -1793,10 +1754,8 @@
   body.cm-mdm-dragging .cm-mdm-block-handle-wrap { opacity: 0 !important; }
   /* El `.cm-content` de la copia solo está para heredar los estilos del
      original: sin el hueco de abajo ni la línea clicable del final. */
-  #note-body .cm-mdm-drag-ghost .cm-content,
-  #row-page-body .cm-mdm-drag-ghost .cm-content { padding-top: 0; padding-bottom: 0; }
-  #note-body .cm-mdm-drag-ghost .cm-content::after,
-  #row-page-body .cm-mdm-drag-ghost .cm-content::after { display: none; }
+  #note-body .cm-mdm-drag-ghost .cm-content { padding-top: 0; padding-bottom: 0; }
+  #note-body .cm-mdm-drag-ghost .cm-content::after { display: none; }
   /* Línea de inserción del arrastre de bloques: marca, entre dos bloques, el
      hueco donde va a caer el que se arrastra (desde los seis puntos o con
      Alt). Va centrada en el aire que separa los dos bloques. */
@@ -2382,14 +2341,6 @@
      se desvanece más rápido de lo que entró. El bloque de
      `prefers-reduced-motion` del final lo apaga entero; el JS que espera a que
      acabe una salida (la barra lateral) no espera nada en ese caso. */
-  /* Abrir una fila como página: sube 6 px mientras aparece. */
-  .row-page-view { animation: mdm-page-in 180ms var(--ease-out); }
-  @keyframes mdm-page-in { from { opacity: 0; transform: translateY(6px); } }
-  /* Volver de la fila: la vista de debajo reaparece con un fundido corto. No
-     es la página la que se desvanece (su editor ya está destruido cuando se
-     cierra), es el sitio al que se vuelve el que entra. */
-  .is-returning { animation: mdm-return-in 140ms var(--ease-out); }
-  @keyframes mdm-return-in { from { opacity: 0.4; } }
   /* Una fila recién creada: aparece con el tinte de acento, que se va solo. */
   .rows-table tr.is-new td,
   .list-row-item.is-new,
@@ -4033,142 +3984,113 @@
     background: var(--panel);
     color: var(--ink);
   }
-  /* ---------- fila abierta como página ---------- */
-  /* Abrir una fila la pinta como una PÁGINA dentro de #main (ver
-     `openRowPage` en app.js): el mismo contenedor y los mismos márgenes que
-     una nota, sin capa ni caja. Lo de debajo se queda en el documento —con su
-     scroll, que es lo que hace que volver sea volver— pero fuera de la vista y
-     `inert`. No es un <dialog> porque sus menús flotantes —el `/`, el del asa,
-     el contextual— cuelgan de <body>: dentro del top layer quedarían debajo. */
-  body.row-page-open { overflow: hidden; }
-  /* #main deja de desplazar: la página de la fila trae su propio scroll, con
-     «Volver» y la miga de pan siempre a la vista arriba. */
-  body.row-page-open #main { overflow: hidden; }
-  .row-page-view {
-    /* Alto: el área de contenido entera. `100%` es la caja de contenido de
-       #main (que en este layout tiene alto definido) y el `+ padding-bottom`
-       la lleva hasta el borde de abajo, que es justo donde empieza lo de
-       debajo: se queda fuera de la vista sin tocar el DOM.
-       El margen derecho negativo saca su barra de desplazamiento al borde de
-       #main, donde la tiene una nota, y el texto vuelve a entrar con el mismo
-       `padding-right` que ella (ver .row-page-scroll): el cuerpo mide lo mismo
-       en los dos (los 15 px de la barra caen en el mismo sitio). */
-    height: calc(100% + var(--main-pad-bottom));
-    margin-right: calc(-1 * var(--main-pad-x));
-    display: flex;
-    flex-direction: column;
-    /* El mismo fondo que tiene #main (el del body): la fila abierta es una
-       página más, no una hoja de otro color con una franja oscura arriba y a
-       la izquierda, que es lo que dejaba --panel sobre los márgenes de #main. */
-    background: var(--bg);
-  }
-  .row-page-view:focus { outline: none; }
-  .row-page-bar {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    padding: 0 var(--main-pad-x) 10px 0;
-  }
-  /* «Volver», con su palabra: la × de la capa no decía a dónde se volvía y en
-     una página entera no hay dónde adivinarlo. */
-  .row-page-back { padding: 4px 10px; font-size: 12.5px; }
-  /* Miga de pan: en una página entera ya no se ve la cabecera de la base, y
-     sin ella no se sabe de qué base es la fila ni cómo volver a su tabla. El
-     primer trozo es un botón; el último es esta fila, y se lee como el sitio
-     actual. */
-  .row-page-crumbs {
-    flex: 1 1 160px;
-    min-width: 0;
-    display: flex;
+  /* ---------- una fila de base, abierta como página ---------- */
+  /* La fila es una página normal (ver `montarPanelDeFila` en app.js). Lo que
+     tiene de más: la miga de pan a su base, arriba, y el panel de propiedades
+     entre la descripción y el cuerpo, como en Notion (nombre a la izquierda,
+     valor a la derecha). */
+  .note-crumbs { display: flex; align-items: center; min-width: 0; }
+  .note-crumbs + .note-savestatus { margin-left: 12px; margin-right: auto; }
+  .note-crumb {
+    display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-family: var(--font-body);
-    font-size: 12.5px;
-    color: var(--ink-muted);
-  }
-  .row-page-crumb {
     min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  button.row-page-crumb {
-    padding: 2px 0;
+    max-width: 260px;
+    padding: 3px 8px;
     border: 0;
+    border-radius: var(--radius-sm);
     background: none;
-    color: var(--accent-ink);
+    color: var(--ink-muted);
     font: inherit;
-    letter-spacing: inherit;
-    text-transform: inherit;
+    font-size: 12.5px;
     cursor: pointer;
   }
-  button.row-page-crumb:hover { text-decoration: underline; }
-  .row-page-crumb-current { color: var(--ink); font-weight: 500; }
-  .row-page-crumb-sep { flex: 0 0 auto; color: var(--ink-muted); }
-  .row-page-savestatus { flex: 0 0 auto; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
-  .row-page-savestatus.is-error { color: var(--down); }
-  .row-page-scroll {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 0 var(--main-pad-x) 48px 0;
-  }
-  .row-page-title {
-    width: 100%;
-    font-family: var(--font-body);
-    font-size: 26px;
-    font-weight: 600;
-    letter-spacing: -0.011em;
-    line-height: 1.25;
-    border: none;
-    background: none;
-    color: var(--ink);
-    padding: 2px 0;
-    margin-bottom: 6px;
-    resize: none;
-    overflow: hidden;
-    display: block;
-  }
-  /* Propiedades: la misma rejilla compacta que el alta, con la etiqueta
-     encima del control (se lee mejor que «Nombre (tipo)» en una fila). */
-  .row-page-props {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-    gap: 10px 18px;
-    padding: 14px 0;
-    margin-bottom: 10px;
+  .note-crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .note-crumb .svg-icon { flex: 0 0 auto; width: 14px; height: 14px; }
+  .note-crumb:hover { background: var(--code-bg); color: var(--ink); }
+  .note-crumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row-props-panel {
+    margin: 6px 0 14px;
+    padding: 10px 0;
     border-top: 1px solid var(--panel-border);
     border-bottom: 1px solid var(--panel-border);
   }
-  .row-page-prop { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-  .row-page-prop label {
-    font-family: var(--font-body);
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--ink-muted);
+  .row-props { display: flex; flex-direction: column; gap: 2px; }
+  .row-prop {
+    display: grid;
+    grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    min-height: 34px;
   }
-  .row-page-prop input,
-  .row-page-prop select {
+  .row-prop-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    padding: 5px 6px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .row-prop-name .db-col-type, .row-prop-name .db-prop-emoji { flex: 0 0 auto; display: inline-flex; }
+  .row-prop-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-prop-name:hover { background: var(--code-bg); color: var(--ink); }
+  .row-prop-name:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row-prop-value { min-width: 0; }
+  /* El control, sin caja hasta que se toca: se lee como el valor (Notion). */
+  .row-prop-value input,
+  .row-prop-value select {
     width: 100%;
     box-sizing: border-box;
     padding: 5px 8px;
     min-height: var(--control-size);
     border-radius: var(--radius-sm);
-    border: 1px solid var(--border-input);
-    background: var(--panel);
+    border: 1px solid transparent;
+    background: transparent;
     color: var(--ink);
+    font: inherit;
+    font-size: 13.5px;
   }
-  .row-page-prop input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
-    min-height: 0;
+  .row-prop-value input:hover,
+  .row-prop-value select:hover { background: var(--code-bg); }
+  .row-prop-value input:focus,
+  .row-prop-value select:focus { border-color: var(--border-input); background: var(--panel); outline: none; }
+  .row-prop-value input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; padding: 0; margin-left: 8px; }
+  .row-prop-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 5px 6px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink-muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .row-prop-add .svg-icon { width: 15px; height: 15px; }
+  .row-prop-add:hover { background: var(--code-bg); color: var(--ink); }
+  .row-prop-add:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row-page-prop-empty { font-size: 12.5px; color: var(--ink-muted); margin: 0; }
+  .row-subtasks-parent-link {
     padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent-ink);
+    font: inherit;
+    cursor: pointer;
   }
-  .row-page-prop-empty { font-size: 12.5px; color: var(--ink-muted); margin: 0; grid-column: 1 / -1; }
-  .row-page-body { min-height: 40vh; }
+  .row-subtasks-parent-link:hover { text-decoration: underline; }
 
   /* ---------- dialogs ---------- */
   /* 520 px (antes 440): con menos ancho la columna del nombre de la
@@ -4825,9 +4747,7 @@
        (--mdm-gutter) es el del punto de bloque, el del asa de 44 y el aire de
        los dos. */
     #note-body .cm-editor { min-height: 55dvh; }
-    #row-page-body .cm-editor { min-height: 55dvh; }
-    #note-body .cm-content,
-    #row-page-body .cm-content {
+    #note-body .cm-content {
       --mdm-gutter: 108px; /* las dos asas de 44 (44+44) + 4 al texto y el resto de margen */
       padding: 4px 2px 40vh var(--mdm-gutter);
       font-size: 16px;
@@ -5010,15 +4930,8 @@
   }
 
   @media (max-width: 768px) {
-    /* La fila abierta sigue siendo una página: el ancho y los márgenes ya son
-       los de una nota (los de #main, arriba); aquí solo se aprieta lo que a
-       375 px no cabe en una línea. */
-    .row-page-bar { gap: 8px; }
-    /* «Volver» y el estado de guardado, sin competir con la miga: los dos se
-       quedan con su ancho y la miga se lleva lo que sobra (y recorta). */
-    .row-page-crumbs { flex: 1 1 100%; order: 3; }
-    .row-page-title { font-size: 24px; }
-    .row-page-props { grid-template-columns: 1fr; }
+    /* La fila en el móvil: el nombre de la propiedad, más estrecho. */
+    .row-prop { grid-template-columns: minmax(96px, 120px) minmax(0, 1fr); gap: 4px; }
     .row-subtasks-row { gap: 6px; padding: 6px 4px; }
   }
 
@@ -5089,7 +5002,7 @@
   /* La fila abierta como página: sus subtareas, una mini-tabla (título,
      estado, fecha) y el alta al final. */
   .row-page-subtasks {
-    margin: 2px 0 16px;
+    margin: 10px 0 0;
     padding-top: 12px;
     border-top: 1px solid var(--panel-border);
     display: grid;
