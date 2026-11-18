@@ -1,6 +1,6 @@
 # Plan: espacios de trabajo, bases de proyectos y tareas, carga del equipo y avisos
 
-Estado: **borrador para revisión** (2026-11-18). No hay nada implementado de este documento todavía.
+Estado: **implementado** (2026-11-18/19, PR #23 a #37). Lo que queda aparte está en «Pendiente» al final.
 
 Sale del planning en cuatro fases que trajo el dueño y de la conversación posterior, donde se cambiaron varias piezas. Aquí está lo **decidido**; lo que todavía es suposición va marcado como tal en «Supuestos a confirmar», al final.
 
@@ -192,3 +192,18 @@ Seguramente en dos tiradas: primero modelo y permisos, después pantallas.
 4. **Invitado en varios espacios.** Ve en el selector solo los espacios donde tiene algo compartido.
 5. **Días laborables:** de lunes a viernes, sin calendario de festivos de momento.
 6. **Horas sin fechas.** Una tarea sin ninguna fecha cuenta en la carga como «sin fecha», en una columna aparte, y no en una semana concreta.
+
+---
+
+## Pendiente (tras implementar los diez hitos)
+
+- Avisar al mover una base con relaciones a otras bases (H2).
+- Arrastrar y soltar entre Compartido y Privado (hoy, menú contextual).
+- Tablero agrupado por **grupo** de estado, y que renombrar o borrar una opción actualice los grupos (H3).
+- Convertir una propiedad `person` existente en «varias personas» (hoy solo al crearla) (H4).
+- Columna calculada de horas en la tabla de proyectos (hoy, en la ficha de cada proyecto).
+- Vistas de la carga por proyecto y por espacio (las piezas ya lo permiten).
+- Autocompletado del `@` en el editor (las menciones funcionan escribiéndolas).
+- «En foco» no silencia los avisos todavía.
+- Una URL de webhook por espacio (el plan lo pedía así); eventos adicionales si hacen falta.
+- Revisar a 375 px: tabla de carga, auditoría, avisos y administración de espacios.
