@@ -33,7 +33,7 @@ ResourceType = Literal["page", "database"]
 
 
 class AclEntryIn(BaseModel):
-    subject_type: Literal["user", "workspace"]
+    subject_type: Literal["user", "workspace", "group"]
     subject_id: str
     level: Literal["view", "edit", "owner"]
 
@@ -45,7 +45,7 @@ class AclPut(BaseModel):
 
 def _resource_or_404(repo: Repository, resource_type: str, resource_id: uuid.UUID):
     row = repo.conn.execute(
-        "SELECT id, type, title, parent_id, acl_source FROM pages WHERE id = ?",
+        "SELECT id, type, title, parent_id, acl_source, workspace_id FROM pages WHERE id = ?",
         (str(resource_id),),
     ).fetchone()
     expected = "database" if resource_type == "database" else "note"
@@ -71,6 +71,9 @@ def _read(repo: Repository, user: auth.User, resource_type: str, resource_id: uu
         name, color, avatar = users.get(e.subject_id, (None, None, None))
         if e.subject_type == "workspace":
             name = "Todo el espacio"
+        elif e.subject_type == "group":
+            found = repo.conn.execute("SELECT name FROM groups WHERE id = ?", (e.subject_id,)).fetchone()
+            name = found["name"] if found else None
         entries.append({
             "subject_type": e.subject_type,
             "subject_id": e.subject_id,
@@ -92,7 +95,7 @@ def _read(repo: Repository, user: auth.User, resource_type: str, resource_id: uu
         "source_id": source,
         "source_title": source_title,
         "entries": entries,
-        "workspace_id": DEFAULT_WORKSPACE_ID,
+        "workspace_id": row["workspace_id"],
         "your_level": acl.level_for(repo.conn, user, resource_id),
     }
 
@@ -127,8 +130,12 @@ def put_acl(
         for e in payload.entries:
             if e.subject_type == "user" and e.subject_id not in known:
                 raise HTTPException(400, f"no existe el usuario {e.subject_id}")
-            if e.subject_type == "workspace" and e.subject_id != DEFAULT_WORKSPACE_ID:
-                raise HTTPException(400, f"no existe el espacio {e.subject_id}")
+            if e.subject_type == "workspace" and e.subject_id != row["workspace_id"]:
+                raise HTTPException(400, f"el espacio de esta página es otro: {e.subject_id}")
+            if e.subject_type == "group" and not repo.conn.execute(
+                "SELECT 1 FROM groups WHERE id = ?", (e.subject_id,)
+            ).fetchone():
+                raise HTTPException(400, f"no existe el grupo {e.subject_id}")
             if (e.subject_type, e.subject_id) in seen:
                 raise HTTPException(400, "cada usuario (o el espacio) va una sola vez")
             seen.add((e.subject_type, e.subject_id))

@@ -33,6 +33,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app import auth, capture_tokens, config
+from app import workspaces as ws_mod
 from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -71,12 +72,16 @@ class UserCreateRequest(BaseModel):
     color: Optional[str] = None
     is_admin: bool = False
     avatar: Optional[str] = None
+    can_view_global_workload: bool = False
+    # Espacios en los que entra, `[{"id", "role"}]`; sin él, en General.
+    workspaces: Optional[list[dict]] = None
 
 
 class UserUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     color: Optional[str] = None
     avatar: Optional[str] = None
+    can_view_global_workload: Optional[bool] = None
 
 
 class MeUpdateRequest(BaseModel):
@@ -85,6 +90,21 @@ class MeUpdateRequest(BaseModel):
 
     display_name: Optional[str] = None
     avatar: Optional[str] = None
+
+
+def _workspaces_of_payload(conn, items):
+    """`[{"id", "role"}]` -> `[(id, role)]`, validado; `None` si no se pidió."""
+    if items is None:
+        return None
+    out = []
+    for item in items:
+        wid, role = str(item.get("id", "")), item.get("role", "editor")
+        if ws_mod.get(conn, wid) is None:
+            raise HTTPException(400, f"no existe el espacio {wid}")
+        if role not in ws_mod.ROLES:
+            raise HTTPException(400, "el rol es admin, editor o viewer")
+        out.append((wid, role))
+    return out
 
 
 # ------------------------------------------------------------------ conexión
@@ -386,7 +406,7 @@ def update_user(
     try:
         actualizado = auth.update_user(
             conn, user_id, display_name=payload.display_name, color=payload.color,
-            avatar=payload.avatar,
+            avatar=payload.avatar, can_view_global_workload=payload.can_view_global_workload,
         )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -413,6 +433,8 @@ def create_user(
             color=payload.color,
             is_admin=payload.is_admin,
             avatar=payload.avatar,
+            can_view_global_workload=payload.can_view_global_workload,
+            workspaces=_workspaces_of_payload(conn, payload.workspaces),
         )
     except auth.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc

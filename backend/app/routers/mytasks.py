@@ -26,5 +26,5 @@ def get_my_tasks(
     «mis» tareas, y sin saber quién eres no hay nada que devolver.
     """
     return schemas.MyTasksRead(
-        **mytasks.my_tasks(repo.conn, user.id, acl.visible_ids(repo.conn, user))
+        **mytasks.my_tasks(repo.conn, user.id, acl.visible_ids(repo.conn, user, repo.workspace_id))
     )

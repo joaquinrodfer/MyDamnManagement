@@ -50,7 +50,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from app import config
 
@@ -114,6 +114,8 @@ class User:
     color: Optional[str]
     is_admin: bool
     avatar: Optional[str] = None
+    # Plan H1: ver la carga del equipo de todos los espacios sin ser admin.
+    can_view_global_workload: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -123,6 +125,7 @@ class User:
             "color": self.color,
             "avatar": self.avatar,
             "is_admin": self.is_admin,
+            "can_view_global_workload": self.can_view_global_workload,
         }
 
 
@@ -195,6 +198,9 @@ def _user(row: sqlite3.Row) -> User:
         color=row["color"],
         is_admin=bool(row["is_admin"]),
         avatar=avatar_of(row),
+        can_view_global_workload=bool(
+            row["can_view_global_workload"] if "can_view_global_workload" in row.keys() else 0
+        ),
     )
 
 
@@ -298,8 +304,13 @@ def create_user(
     color: Optional[str] = None,
     is_admin: bool = False,
     avatar: Optional[str] = None,
+    can_view_global_workload: bool = False,
+    workspaces: Optional[list[tuple[str, str]]] = None,
 ) -> User:
-    """Crea un usuario. `AuthError` si el username ya existe o algo no vale."""
+    """Crea un usuario.
+
+    `workspaces` son los espacios en los que entra, como `(id, rol)`; sin él,
+    en el primero (General) como `editor` (`admin` si es administrador). `AuthError` si el username ya existe o algo no vale."""
     username = validate_username(username)
     display_name = validate_display_name(display_name)
     validate_password(password)
@@ -311,7 +322,8 @@ def create_user(
     try:
         conn.execute(
             "INSERT INTO users (id, username, display_name, password_hash, salt,"
-            " color, created_at, is_admin, avatar) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " color, created_at, is_admin, avatar, can_view_global_workload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 user_id,
                 username,
@@ -322,10 +334,18 @@ def create_user(
                 _iso(_now()),
                 1 if is_admin else 0,
                 avatar,
+                1 if can_view_global_workload else 0,
             ),
         )
     except sqlite3.IntegrityError as exc:
         raise AuthError(f"el username {username!r} ya existe") from exc
+    from app import workspaces as ws_mod  # import tardío: ese módulo no importa este
+
+    if workspaces is None:
+        ws_mod.enroll_user(conn, user_id, None, "admin" if is_admin else ws_mod.DEFAULT_ROLE)
+    else:
+        for workspace_id, role in workspaces:
+            ws_mod.enroll_user(conn, user_id, workspace_id, role)
     created = get_user(conn, user_id)
     assert created is not None
     return created
@@ -347,6 +367,7 @@ def update_user(
     display_name: Optional[str] = None,
     color: Optional[str] = None,
     avatar: Optional[str] = None,
+    can_view_global_workload: Optional[bool] = None,
 ) -> Optional[User]:
     """Cambia el nombre visible, el color y/o el avatar. `None` si no está.
 
@@ -358,7 +379,9 @@ def update_user(
     current = get_user(conn, user_id)
     if current is None:
         return None
-    changes: dict[str, str] = {}
+    changes: dict[str, Any] = {}
+    if can_view_global_workload is not None:
+        changes["can_view_global_workload"] = 1 if can_view_global_workload else 0
     if display_name is not None:
         changes["display_name"] = validate_display_name(display_name)
     if color is not None:

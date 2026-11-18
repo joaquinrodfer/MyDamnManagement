@@ -9,6 +9,7 @@ from typing import Iterator
 from fastapi import HTTPException, Request
 
 from app import auth
+from app import workspaces as ws_mod
 from app.config import settings
 from app.index import open_index
 from app.repository import Repository
@@ -18,9 +19,16 @@ def get_repo(request: Request) -> Iterator[Repository]:
     # El repositorio sabe quién pregunta (3.0, hito 3): con eso filtra los
     # listados a lo que esa persona ve y hace propietario a quien crea una
     # página en la raíz. Sin usuario (rutas sin sesión), lo ve todo.
-    repo = Repository(
-        open_index(settings.index_path), user=getattr(request.state, "user", None)
-    )
+    user = getattr(request.state, "user", None)
+    conn = open_index(settings.index_path)
+    # El espacio activo (plan H1): la cabecera `X-Workspace`. Sin ella, la API
+    # se comporta como siempre (todo lo que el usuario ve).
+    try:
+        active = ws_mod.resolve_active(conn, user, request.headers.get("X-Workspace"))
+    except ws_mod.WorkspaceError as exc:
+        conn.close()
+        raise HTTPException(exc.status, str(exc)) from None
+    repo = Repository(conn, user=user, workspace_id=active)
     try:
         yield repo
     finally:

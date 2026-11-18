@@ -34,6 +34,7 @@ from app.routers import (
 )
 from app.routers import auth as auth_routes
 from app.routers import backups as backups_routes
+from app.routers import workspaces as workspaces_routes
 from app.routers import export as export_routes
 from app.routers import acl as acl_routes
 from app.routers import collab as collab_routes
@@ -82,6 +83,7 @@ app.include_router(about_routes.router, dependencies=GUARDED)
 # `/export` (3.0, hito 1): el vault entero desde el índice, en zip o carpeta.
 app.include_router(export_routes.router, dependencies=GUARDED)
 app.include_router(backups_routes.router, dependencies=GUARDED)
+app.include_router(workspaces_routes.router, dependencies=GUARDED)
 app.include_router(trash.router, dependencies=GUARDED)
 app.include_router(search.router, dependencies=GUARDED)
 app.include_router(dashboard.router, dependencies=GUARDED)

@@ -28,6 +28,7 @@ import json
 from fastapi import HTTPException, Request
 
 from app import acl
+from app import workspaces as ws_mod
 from app.config import settings
 from app.index import open_index
 
@@ -76,6 +77,21 @@ async def guard(request: Request) -> None:
     sid = params.get("suggestion_id")
     conn = open_index(settings.index_path)
     try:
+        if not parent and (method, path.rstrip("/")) in PARENT_IN_BODY:
+            # Una página nueva en la raíz de un espacio: hace falta poder
+            # editar en él (un `viewer` solo lee).
+            wanted = request.headers.get("X-Workspace") or None
+            if wanted is None:
+                first = conn.execute(
+                    "SELECT id FROM workspaces ORDER BY created_at LIMIT 1"
+                ).fetchone()
+                wanted = first[0] if first else None
+            if wanted is not None:
+                role = ws_mod.role_of(conn, user, wanted)
+                if role is None:
+                    raise HTTPException(404, "No existe ese espacio")
+                if role == "viewer":
+                    raise HTTPException(403, "No tienes permiso: en este espacio solo puedes leer")
         if sid is not None:
             page_id = _suggestion_page(conn, str(sid))
             if page_id is None:

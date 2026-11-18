@@ -1,0 +1,204 @@
+"""Espacios de trabajo y grupos (plan H1).
+
+- `GET /workspaces`: los espacios del usuario (todos, si es superadministrador),
+  con su rol y cuántas páginas tienen.
+- `POST /workspaces`, `DELETE /workspaces/{id}`: solo superadministrador.
+- `PATCH /workspaces/{id}`: nombre, icono y ajustes; administrador del espacio.
+- `GET /workspaces/{id}/members`, `PUT`/`DELETE /workspaces/{id}/members/...`:
+  administrador del espacio.
+- `/groups`: crear, renombrar, borrar y fijar sus miembros; superadministrador
+  (listar, cualquiera que sea miembro de algún espacio: para elegirlos).
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from typing import Any, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from app import auth
+from app import workspaces as ws
+from app.dependencies import get_current_user
+from app.routers.auth import get_conn
+
+router = APIRouter(tags=["workspaces"])
+
+
+def _raise(exc: ws.WorkspaceError):
+    raise HTTPException(exc.status, str(exc)) from None
+
+
+def _superadmin(user: auth.User = Depends(get_current_user)) -> auth.User:
+    if not user.is_admin:
+        raise HTTPException(403, "solo un administrador puede hacer esto")
+    return user
+
+
+def _manager(conn: sqlite3.Connection, user: auth.User, workspace_id: str) -> None:
+    """Administrador del espacio (o superadministrador); 404 si no lo ve."""
+    role = ws.role_of(conn, user, workspace_id)
+    if ws.get(conn, workspace_id) is None or role is None:
+        raise HTTPException(404, "no existe ese espacio")
+    if role != "admin":
+        raise HTTPException(403, "solo un administrador del espacio puede hacer esto")
+
+
+class WorkspaceCreate(BaseModel):
+    name: str
+    icon: Optional[str] = None
+
+
+class WorkspaceUpdate(BaseModel):
+    name: Optional[str] = None
+    icon: Optional[str] = None
+    settings: Optional[dict[str, Any]] = None
+
+
+class MemberPut(BaseModel):
+    role: Literal["admin", "editor", "viewer"]
+
+
+class GroupIn(BaseModel):
+    name: str
+
+
+class GroupMembers(BaseModel):
+    user_ids: list[str]
+
+
+# ---------------------------------------------------------------- espacios
+
+
+@router.get("/workspaces")
+def list_workspaces(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)):
+    return ws.list_for(conn, user)
+
+
+@router.post("/workspaces", status_code=201)
+def create_workspace(
+    payload: WorkspaceCreate,
+    user: auth.User = Depends(_superadmin),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    try:
+        created = ws.create(conn, payload.name, payload.icon)
+        # Quien lo crea entra como administrador del espacio nuevo.
+        ws.set_member(conn, created["id"], "user", str(user.id), "admin")
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+    return ws.get_dict(conn, user, created["id"])
+
+
+@router.patch("/workspaces/{workspace_id}")
+def update_workspace(
+    workspace_id: str,
+    payload: WorkspaceUpdate,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    _manager(conn, user, workspace_id)
+    try:
+        ws.update(conn, workspace_id, name=payload.name, icon=payload.icon, settings=payload.settings)
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+    return ws.get_dict(conn, user, workspace_id)
+
+
+@router.delete("/workspaces/{workspace_id}", status_code=204)
+def delete_workspace(
+    workspace_id: str, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)
+):
+    try:
+        ws.delete(conn, workspace_id)
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+
+
+# ---------------------------------------------------------------- miembros
+
+
+@router.get("/workspaces/{workspace_id}/members")
+def list_members(
+    workspace_id: str,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    if ws.role_of(conn, user, workspace_id) is None or ws.get(conn, workspace_id) is None:
+        raise HTTPException(404, "no existe ese espacio")
+    return ws.members(conn, workspace_id)
+
+
+@router.put("/workspaces/{workspace_id}/members/{subject_type}/{subject_id}")
+def put_member(
+    workspace_id: str,
+    subject_type: Literal["user", "group"],
+    subject_id: str,
+    payload: MemberPut,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    _manager(conn, user, workspace_id)
+    try:
+        ws.set_member(conn, workspace_id, subject_type, subject_id, payload.role)
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+    return ws.members(conn, workspace_id)
+
+
+@router.delete("/workspaces/{workspace_id}/members/{subject_type}/{subject_id}")
+def delete_member(
+    workspace_id: str,
+    subject_type: Literal["user", "group"],
+    subject_id: str,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    _manager(conn, user, workspace_id)
+    ws.remove_member(conn, workspace_id, subject_type, subject_id)
+    return ws.members(conn, workspace_id)
+
+
+# ------------------------------------------------------------------ grupos
+
+
+@router.get("/groups")
+def list_groups(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)):
+    # Todo el que está en algún espacio puede ver los grupos (para elegirlos al
+    # compartir); crear y cambiarlos es del superadministrador.
+    return ws.list_groups(conn)
+
+
+@router.post("/groups", status_code=201)
+def create_group(payload: GroupIn, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
+    try:
+        return ws.create_group(conn, payload.name)
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+
+
+@router.patch("/groups/{group_id}")
+def rename_group(group_id: str, payload: GroupIn, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
+    try:
+        ws.rename_group(conn, group_id, payload.name)
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+    return next(g for g in ws.list_groups(conn) if g["id"] == group_id)
+
+
+@router.put("/groups/{group_id}/members")
+def put_group_members(group_id: str, payload: GroupMembers, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
+    try:
+        ws.set_group_members(conn, group_id, payload.user_ids)
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+    return next(g for g in ws.list_groups(conn) if g["id"] == group_id)
+
+
+@router.delete("/groups/{group_id}", status_code=204)
+def delete_group(group_id: str, _: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)):
+    try:
+        ws.delete_group(conn, group_id)
+    except ws.WorkspaceError as exc:
+        _raise(exc)

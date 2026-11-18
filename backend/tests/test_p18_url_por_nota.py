@@ -49,7 +49,7 @@ def test_la_regla_no_se_lleva_una_ruta_de_una_pieza_que_no_es_un_id():
     y el id es un UUID: una dirección que no tiene esa forma sigue su camino
     --su 404, el de la API--.
     """
-    for ruta in ("/database", "/settings", "/workspaces", "/template", "/nada"):
+    for ruta in ("/database", "/settings", "/espacios-de-trabajo", "/template", "/nada"):
         assert not _parece_ruta_de_panel(ruta), ruta
     # Un id con la forma de un UUID sí, aunque no exista: eso lo decide el
     # panel (entra limpio en Inicio), no el servidor.
@@ -151,7 +151,7 @@ def test_un_endpoint_de_una_pieza_que_no_existe_es_un_404_en_json(client):
     Servirles el panel con un 200 convertía un error de cliente en un falso
     éxito: el script creía que había acertado la ruta.
     """
-    for ruta in ("/database", "/settings", "/workspaces", "/template"):
+    for ruta in ("/database", "/settings", "/espacios-de-trabajo", "/template"):
         respuesta = client.get(ruta)
         assert respuesta.status_code == 404, ruta
         assert respuesta.headers["content-type"].startswith("application/json"), ruta
