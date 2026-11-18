@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app import closed, due, hierarchy, schemas
 from app import kinds as kind_rules
-from app import audit, notifications, webhooks
+from app import acl, audit, notifications, projects, webhooks
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -672,6 +672,7 @@ def create_row(
     hierarchy.validate_parent(
         db_def.schema_def, cleaned, row_id=None, rows=repo.list_rows(database_id)
     )
+    projects.check_project_link(repo.conn, db_def, cleaned)
     with _vault_errors():
         row = repo.create_row(
             database_id,
@@ -810,6 +811,7 @@ def update_row(
     if "body_markdown" in payload.model_fields_set and payload.body_markdown is not None:
         body = payload.body_markdown
 
+    projects.check_project_link(repo.conn, db_def, cleaned)
     try:
         with _vault_errors():
             row = repo.update_row(
@@ -836,6 +838,21 @@ def update_row(
             webhooks.emit_task(repo.conn, "task.completed", row_id)
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
+
+
+@router.get("/{database_id}/rows/{row_id}/tasks")
+def project_tasks(
+    database_id: uuid.UUID,
+    row_id: uuid.UUID,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """Las tareas de un proyecto y sus totales (horas y avance), siempre calculados."""
+    db_def = _get_database_or_404(repo, database_id)
+    _get_row_or_404(repo, database_id, row_id)
+    if (db_def.kind or {}).get("type") != "projects":
+        raise HTTPException(400, "esta base no es de Proyectos")
+    return projects.tasks_of(repo.conn, str(row_id), acl.visible_ids(repo.conn, user))
 
 
 @router.delete("/{database_id}/rows/{row_id}", status_code=204)
