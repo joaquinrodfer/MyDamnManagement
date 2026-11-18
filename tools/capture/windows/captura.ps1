@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Apunta algo en MyDamnManagement desde Windows (P13).
+    Apunta algo en Noteping desde Windows (P13).
 
 .DESCRIPTION
     Abre un cuadro de texto (WinForms) con el portapapeles como valor inicial y
@@ -47,7 +47,7 @@ function Show-Aviso {
     if ($Grave) {
         [void][System.Windows.Forms.MessageBox]::Show(
             $Mensaje,
-            'MyDamnManagement',
+            'Noteping',
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Error
         )
@@ -57,7 +57,7 @@ function Show-Aviso {
     try {
         $globo.Icon = [System.Drawing.SystemIcons]::Information
         $globo.Visible = $true
-        $globo.ShowBalloonTip(3000, 'MyDamnManagement', $Mensaje,
+        $globo.ShowBalloonTip(3000, 'Noteping', $Mensaje,
             [System.Windows.Forms.ToolTipIcon]::Info)
         Start-Sleep -Milliseconds 3200
     } finally {
@@ -103,7 +103,7 @@ if (-not [string]::IsNullOrWhiteSpace($Text)) {
     }
 
     $formulario = New-Object System.Windows.Forms.Form
-    $formulario.Text = 'Capturar en MyDamnManagement'
+    $formulario.Text = 'Capturar en Noteping'
     $formulario.ClientSize = New-Object System.Drawing.Size(520, 300)
     $formulario.StartPosition = 'CenterScreen'
     $formulario.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog

@@ -108,7 +108,7 @@ def test_los_estaticos_del_panel_tambien_piden_sesion(client):
     """
     client.cookies.clear()
     assert client.get("/app.js").status_code == 401
-    logo = client.get("/logo.png")
+    logo = client.get("/favicon.ico")
     assert logo.status_code == 200
     assert logo.headers["content-type"].startswith("image/")
 
@@ -116,7 +116,7 @@ def test_los_estaticos_del_panel_tambien_piden_sesion(client):
 def test_con_sesion_la_raiz_sirve_el_panel(client):
     respuesta = client.get("/", headers={"Accept": "text/html"})
     assert respuesta.status_code == 200
-    assert "MyDamnManagement" in respuesta.text
+    assert "Noteping" in respuesta.text
 
 
 def test_el_login_con_sesion_abierta_devuelve_al_panel(client):

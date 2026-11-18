@@ -67,6 +67,13 @@ _CSS = """
   }
   h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
   p.sub { margin: 0 0 22px; color: var(--ink-muted); font-size: 13px; }
+  p.sub:empty { display: none; }
+  h1 + p.sub:empty + p.error + form { margin-top: 18px; }
+  /* La marca (ver `BRAND.md`): símbolo B2 a 28 px y el nombre escrito. */
+  .brand { display: flex; align-items: center; gap: 7px; margin: 0 0 20px; }
+  .brand-name { font-family: Inter, var(--font-body); font-weight: 600;
+    letter-spacing: -0.03em; font-size: 15px; color: var(--ink); }
+  .brand-name span { color: #9AA2FF; }
   label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--ink-muted); }
   input {
     width: 100%;
@@ -132,7 +139,7 @@ def render(*, needs_setup: bool, next_url: str = "/") -> str:
         )
     else:
         titulo = "Entrar"
-        subtitulo = "MyDamnManagement"
+        subtitulo = ""
         extra = ""
 
     return f"""<!doctype html>
@@ -140,12 +147,15 @@ def render(*, needs_setup: bool, next_url: str = "/") -> str:
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{html.escape(titulo)} · MyDamnManagement</title>
-<link rel="icon" href="/logo.png" />
+<title>{html.escape(titulo)} · Noteping</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48" />
+<link rel="icon" href="/icons/noteping-mark.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/icons/noteping-180.png" />
 <style>{_CSS}</style>
 </head>
 <body>
 <main>
+  <div class="brand"><svg viewBox="0 0 64 64" width="28" height="28" fill="none" aria-hidden="true"><rect x=".5" y=".5" width="63" height="63" rx="15" fill="#1C2142" stroke="#333A6B"/><path d="M20.5 46.5V18.5L43.5 46.5V31" stroke="#9AA2FF" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="43.5" cy="19" r="4.6" fill="#FF6B6B"/></svg><span class="brand-name">Note<span>ping</span></span></div>
   <h1>{html.escape(titulo)}</h1>
   <p class="sub">{html.escape(subtitulo)}</p>
   <!-- El aviso va antes del formulario y con `role="alert"`: quien usa lector

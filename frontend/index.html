@@ -3,15 +3,17 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MyDamnManagement</title>
-<link rel="icon" href="/logo.png" />
+<title>Noteping</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48" />
+<link rel="icon" href="/icons/noteping-mark.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/icons/noteping-180.png" />
 <!-- PWA (P13): instalable (en macOS, «Añadir al Dock» desde Chrome) con
      display: standalone. Sin service worker a propósito: la app vive de su
      servidor, así que no se promete funcionar sin conexión. -->
 <link rel="manifest" href="/manifest.webmanifest" />
 <meta name="theme-color" content="#0f1117" />
-<meta name="application-name" content="MyDamnManagement" />
-<meta name="apple-mobile-web-app-title" content="MyDamnManagement" />
+<meta name="application-name" content="Noteping" />
+<meta name="apple-mobile-web-app-title" content="Noteping" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <style>
   :root {
@@ -289,8 +291,79 @@
     padding: 0 12px;
     background: var(--bg);
   }
-  .brand-logo { width: 22px; height: 22px; border-radius: 50%; display: block; }
-  .brand-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* ---------- marca: Noteping ----------
+     Fuente de verdad: el kit de marca (`BRAND.md`). El símbolo es B2 (tile,
+     N y el punto «ping», el único elemento coral) y va en línea, no en un
+     <img>, para que use estos tokens y reaccione a `data-unread` (N1, el
+     sonar). Fondo, panel, bordes y texto son los de la app; de la marca solo
+     son estos cinco, y no cambian con el tema: sobre fondo claro el tile
+     oscuro va tal cual. El componente es `marcaNoteping()` de app.js. */
+  :root {
+    --np-accent: #9AA2FF;        /* Trazo de la N; «ping» del nombre */
+    --np-accent-strong: #5B63F0; /* «ping» del nombre sobre fondo claro */
+    --np-marker: #FF6B6B;        /* Punto «ping» y notificaciones */
+    --np-tile: #1C2142;          /* Relleno del tile */
+    --np-tile-border: #333A6B;   /* Borde del tile */
+  }
+  .np-mark { display: block; flex-shrink: 0; overflow: visible; }
+  .np-tile { fill: var(--np-tile); stroke: var(--np-tile-border); stroke-width: 1; }
+  .np-n {
+    fill: none;
+    stroke: var(--np-accent);
+    stroke-width: 4.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .np-dot { fill: var(--np-marker); }
+  /* N1 · Sonar: dos anillos desde el punto, ciclo 2,4 s, el segundo con
+     1,2 s de desfase. Solo con algo sin leer (`data-unread="true"`). */
+  .np-ring {
+    fill: none;
+    stroke: var(--np-marker);
+    stroke-width: 2.2;
+    transform-box: fill-box;
+    transform-origin: center;
+    opacity: 0;
+  }
+  @keyframes np-sonar {
+    0%   { transform: scale(1); opacity: .75; stroke-width: 2.2; }
+    100% { transform: scale(3); opacity: 0;   stroke-width: .4; }
+  }
+  .np-mark[data-unread="true"] .np-ring--a { animation: np-sonar 2.4s cubic-bezier(.2, .6, .3, 1) infinite; }
+  .np-mark[data-unread="true"] .np-ring--b { animation: np-sonar 2.4s cubic-bezier(.2, .6, .3, 1) 1.2s infinite; }
+  /* Sin movimiento: un halo fijo dice «sin leer». */
+  @media (prefers-reduced-motion: reduce) {
+    .np-mark[data-unread="true"] .np-ring--a,
+    .np-mark[data-unread="true"] .np-ring--b { animation: none; }
+    .np-mark[data-unread="true"] .np-ring--a { opacity: .5; transform: scale(1.9); }
+  }
+  /* Monocromo: una sola tinta (`currentColor`), para impresión, estados
+     deshabilitados y cualquier sitio donde el símbolo herede el color. */
+  .np-mark--mono .np-tile { fill: none; stroke: currentColor; stroke-width: 1.5; x: .75px; y: .75px; width: 62.5px; height: 62.5px; }
+  .np-mark--mono .np-n { stroke: currentColor; }
+  .np-mark--mono .np-dot { fill: currentColor; }
+  .np-mark--mono .np-ring { display: none; }
+  @media print {
+    .np-mark { color: #000; }
+    .np-mark .np-tile { fill: none; stroke: currentColor; stroke-width: 1.5; x: .75px; y: .75px; width: 62.5px; height: 62.5px; }
+    .np-mark .np-n { stroke: currentColor; }
+    .np-mark .np-dot { fill: currentColor; }
+    .np-mark .np-ring { display: none; }
+  }
+  /* El nombre escrito: Inter 600, -0,03 em; «Note» en la tinta del tema y
+     «ping» en el acento (el fuerte sobre fondo claro). Inter no se descarga:
+     si no está en el equipo, sale la letra del sistema. */
+  .brand-name {
+    font-family: Inter, var(--font-body);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .brand-name-ping { color: var(--np-accent); }
+  html[data-theme="light"] .brand-name-ping { color: var(--np-accent-strong); }
 
   /* ---------- quién eres (P11b) ---------- */
   /* Abajo del todo en la barra lateral, como el espacio de trabajo en Notion:
@@ -446,10 +519,10 @@
   .sidebar-brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px; /* 1/4 del lado del símbolo (28 px) */
     min-height: 44px;
     padding: 8px 16px 4px;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--ink);
   }
@@ -5164,7 +5237,7 @@
 
   <div class="layout">
     <aside id="sidebar-aside">
-      <div class="sidebar-brand" title="MyDamnManagement"><img src="/logo.png" alt="" class="brand-logo" /><span class="brand-name">MyDamnManagement</span></div>
+      <div class="sidebar-brand" id="sidebar-brand"><span id="brand-mark"></span><span class="brand-name">Note<span class="brand-name-ping">ping</span></span><span class="sr-only" id="brand-unread"></span></div>
       <div class="sidebar-search">
         <input type="search" id="search-input" placeholder="Buscar…" />
       </div>

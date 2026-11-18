@@ -43,7 +43,7 @@ setx MDM_URL "http://mi-servidor:8000"
    - `-ExecutionPolicy Bypass` es para ese proceso; no cambia la política del
      sistema. Si el `.ps1` vino de otro equipo y Windows lo tiene bloqueado,
      `Unblock-File .\captura.ps1`.
-4. Nombre: **Capturar en MyDamnManagement**.
+4. Nombre: **Capturar en Noteping**.
 
 Puedes darle un atajo desde el propio Windows: clic derecho en el acceso
 directo → **Propiedades** → «Tecla de método abreviado» → pulsa `Ctrl+Alt+N` →

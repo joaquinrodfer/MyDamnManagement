@@ -1,5 +1,5 @@
 #!/bin/sh
-# captura.sh — apuntar algo en MyDamnManagement desde Linux (P13).
+# captura.sh — apuntar algo en Noteping desde Linux (P13).
 #
 # El atajo global lo pone el escritorio (ver `mdm-captura.desktop` y las líneas
 # de `gsettings` del README, sección «Capturar desde fuera»); este script es
@@ -41,31 +41,31 @@ avisar() {
   _grave=${2:-info}
   if command -v notify-send >/dev/null 2>&1; then
     if [ "$_grave" = error ]; then
-      notify-send -u critical "MyDamnManagement" "$_mensaje"
+      notify-send -u critical "Noteping" "$_mensaje"
     else
-      notify-send "MyDamnManagement" "$_mensaje"
+      notify-send "Noteping" "$_mensaje"
     fi
     return 0
   fi
   if command -v zenity >/dev/null 2>&1; then
     if [ "$_grave" = error ]; then
-      zenity --error --title="MyDamnManagement" --text="$_mensaje"
+      zenity --error --title="Noteping" --text="$_mensaje"
     else
-      zenity --info --title="MyDamnManagement" --timeout=3 --text="$_mensaje"
+      zenity --info --title="Noteping" --timeout=3 --text="$_mensaje"
     fi
     return 0
   fi
   if command -v kdialog >/dev/null 2>&1; then
     if [ "$_grave" = error ]; then
-      kdialog --title "MyDamnManagement" --error "$_mensaje"
+      kdialog --title "Noteping" --error "$_mensaje"
     else
-      kdialog --title "MyDamnManagement" --passivepopup "$_mensaje" 3
+      kdialog --title "Noteping" --passivepopup "$_mensaje" 3
     fi
     return 0
   fi
   # Sin escritorio gráfico (o sin ninguno de los tres): a stderr, que al menos
   # queda en el log del sistema.
-  printf 'MyDamnManagement: %s\n' "$_mensaje" >&2
+  printf 'Noteping: %s\n' "$_mensaje" >&2
 }
 
 # ------------------------------------------------------------- cuadro de texto
