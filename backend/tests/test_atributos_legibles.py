@@ -311,6 +311,9 @@ def test_un_rename_que_no_puede_migrar_una_fila_no_deja_nada_a_medias(client, va
         f"---\nid: {rota['id']}\ntitle: Rota\nnota: |\n  linea uno\n  linea dos\n---\n",
         encoding="utf-8",
     )
+    # 3.0 (hito 2): lo escrito a mano en la proyección entra en la base con
+    # `POST /reindex` (antes el rename leía el disco directamente).
+    assert client.post("/reindex").status_code == 200
     antes_buena = texto(fichero_de_fila(vault_path, buena))
     antes_rota = texto(fichero_roto)
 

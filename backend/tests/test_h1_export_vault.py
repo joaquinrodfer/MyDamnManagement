@@ -237,14 +237,22 @@ def test_el_zip_se_lee_sin_la_app(client, vault_path, export_dir):
     assert [p for p in export_dir.iterdir() if p.suffix == ".zip"] == []
 
 
-def test_export_no_pierde_lo_que_el_indice_no_conoce(client, vault_path, export_dir):
-    """Un `.md` que está en disco pero no en el índice se copia y se DICE.
+def test_export_no_pierde_lo_que_el_indice_no_conoce(client, vault_path, index_path, export_dir):
+    """Un documento que la base tiene pero el índice no se exporta y se DICE.
 
-    Es justo lo que el hito 2 perdería (cuando el disco deje de ser la verdad),
-    así que la ida y vuelta exige que la lista esté vacía.
+    Hito 2: la verdad son los documentos de la base (`documents`). Uno que no
+    está en `pages` (no se pudo indexar) sale igual en el export y se cuenta en
+    `unindexed`; la ida y vuelta exige que la lista esté vacía. (En el hito 1
+    este test ponía el `.md` en el disco: el disco era la verdad.)
     """
     _ok(client.post("/pages", json={"title": "Normal", "body_markdown": "x"}))
-    (vault_path / "Notas" / "Fantasma.md").write_text("---\nid: x\n---\n\nno indexada\n", encoding="utf-8")
+    conn = sqlite3.connect(index_path)
+    conn.execute(
+        "INSERT INTO documents (path, text, mtime, size) VALUES (?, ?, 0, 0)",
+        ("Notas/Fantasma.md", "---\nid: x\n---\n\nno indexada\n"),
+    )
+    conn.commit()
+    conn.close()
     stats = _ok(client.post("/export", json={"format": "folder"}))
     assert stats["unindexed"] == ["Notas/Fantasma.md"]
     assert (Path(stats["destination"]) / "Notas" / "Fantasma.md").exists()
@@ -300,9 +308,9 @@ def test_pages_frontmatter_migra_desde_v8(index_path):
     conn.close()
     indice._ready.clear()
     info = indice.ensure_index(str(index_path))
-    assert info.version == indice.SCHEMA_VERSION == 9
+    assert info.version == indice.SCHEMA_VERSION
     columnas = [r[1] for r in _q(index_path, "PRAGMA table_info(pages)")]
-    assert columnas[-1] == "frontmatter"
+    assert "frontmatter" in columnas
 
 
 def test_linea_de_ordenes(client, vault_path, index_path, tmp_path):

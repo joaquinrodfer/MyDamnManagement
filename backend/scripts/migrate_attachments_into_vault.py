@@ -415,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
             # Sin `allow_empty`: el mismo guardia que el arranque y `POST
             # /reindex` (un `--vault` equivocado no vacía el índice). Si el
             # índice ya no tiene notas, el guardia no estorba.
-            stats = VaultStore(str(vault), conn).rebuild()
+            stats = VaultStore(str(vault), conn).rebuild(source="disk")
         except VaultError as exc:
             print(f"  aviso: no se ha reindexado: {exc}", file=sys.stderr)
             print(

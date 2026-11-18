@@ -49,6 +49,9 @@ class PageRead(PageBase):
     created_at: datetime
     updated_at: datetime
     body_markdown: Optional[str] = None
+    # 3.0, hito 2: cuántas veces se ha escrito. Va de vuelta en `If-Match` al
+    # guardar; si ya no es la actual, `PATCH` da 409 con el documento de ahora.
+    version: int = 1
 
 
 # --- Grafo de nodos (P9) ------------------------------------------------
@@ -433,6 +436,8 @@ class RowRead(BaseModel):
     id: uuid.UUID
     database_id: uuid.UUID
     title: str
+    # 3.0, hito 2: la versión de la fila, para `If-Match` (ver `PageRead`).
+    version: int = 1
     icon: Optional[str] = None
     properties: dict[str, Any]
     # El id de su fila madre si la base tiene jerarquía y esta fila es una

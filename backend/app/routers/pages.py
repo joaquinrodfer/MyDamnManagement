@@ -2,7 +2,7 @@ import uuid
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, UploadFile
 
 from app import auth, export, schemas
 from app.config import settings
@@ -10,7 +10,8 @@ from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
 from app.serializers import serialize_page
 from app.vault import attachments
-from app.vault.store import VaultError
+from app.vault.store import VaultError, VersionConflict
+from app.versioning import conflict, etag, parse_if_match
 
 router = APIRouter(prefix="/pages", tags=["pages"])
 
@@ -67,14 +68,27 @@ def get_tree(repo: Repository = Depends(get_repo)):
 
 
 @router.get("/{page_id}", response_model=schemas.PageRead)
-def get_page(page_id: uuid.UUID, repo: Repository = Depends(get_repo)):
-    return serialize_page(_get_or_404(repo, page_id), repo.author_colors())
+def get_page(page_id: uuid.UUID, response: Response, repo: Repository = Depends(get_repo)):
+    page = _get_or_404(repo, page_id)
+    response.headers["ETag"] = etag(page.version)
+    return serialize_page(page, repo.author_colors())
 
 
-@router.patch("/{page_id}", response_model=schemas.PageRead)
+@router.patch(
+    "/{page_id}",
+    response_model=schemas.PageRead,
+    responses={409: {"description": "`If-Match` con una versión que ya no es la actual"}},
+)
 def update_page(
-    page_id: uuid.UUID, payload: schemas.PageUpdate, repo: Repository = Depends(get_repo)
+    page_id: uuid.UUID,
+    payload: schemas.PageUpdate,
+    response: Response,
+    repo: Repository = Depends(get_repo),
+    if_match: str | None = Header(default=None),
 ):
+    """Guarda los campos que llegan. Con `If-Match: <version>` (3.0, hito 2),
+    solo si la página sigue en esa versión; si no, 409 con la de ahora."""
+    expected = parse_if_match(if_match)
     extra = {}
     if "parent_id" in payload.model_fields_set:
         # Presente en el cuerpo: mover (o `null` para subir a la raíz).
@@ -86,12 +100,17 @@ def update_page(
             icon=payload.icon,
             description=payload.description,
             body_markdown=payload.body_markdown,
+            expected_version=expected,
             **extra,
         )
+    except VersionConflict as exc:
+        actual = _get_or_404(repo, page_id)
+        return conflict(serialize_page(actual, repo.author_colors()), exc.current, exc.expected)
     except VaultError as exc:
         raise HTTPException(400, str(exc)) from exc
     if page is None:
         raise HTTPException(404, "Página no encontrada")
+    response.headers["ETag"] = etag(page.version)
     return serialize_page(page, repo.author_colors())
 
 

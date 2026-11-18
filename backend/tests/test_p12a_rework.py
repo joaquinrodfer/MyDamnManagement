@@ -51,37 +51,44 @@ def arrancar_de_nuevo():
 # --------------------------------------------------------------------------
 
 
-def test_el_arranque_recoge_un_guardado_que_quedo_solo_en_el_fichero(
-    client, vault_path, acceso
-):
-    """El caso que justifica escribir el fichero antes que el índice.
+def test_el_arranque_no_relee_el_disco_la_base_manda(client, vault_path, acceso):
+    """3.0 (hito 2): el arranque ya no reindexa; lo tocado en el disco entra con /reindex.
 
-    Proceso muerto entre el `.md` y el commit del índice: el índice sirve el
-    cuerpo viejo, y el panel (que autoguarda lo que tiene en pantalla) lo
-    escribiría encima del fichero. Con el reindexado del arranque, la API ve
-    el fichero antes de servir la primera petición.
+    Antes (2.x) este test se llamaba «el arranque recoge un guardado que quedó
+    solo en el fichero» y fijaba el reindexado en cada arranque: si el proceso
+    moría entre escribir el `.md` y confirmar el índice, el arranque recogía el
+    fichero. Ese hueco ya no existe —el documento y el índice se escriben en la
+    misma transacción de la base— y el ADR-0005 prohíbe releer el vault en cada
+    arranque. Lo que se fija ahora: tras reiniciar se sirve lo que dice la base
+    (no lo que alguien dejó en la proyección), y la salida explícita para meter
+    un `.md` tocado a mano sigue existiendo: `POST /reindex` con la proyección.
     """
     page = crear(client, title="Sobrevive", body_markdown="v1")
     fichero = vault_path / "Notas" / "Sobrevive.md"
-
-    # "muere el proceso" tras escribir el fichero: el .md queda con v2 y el
-    # índice con v1.
-    fichero.write_text(texto(fichero).replace("v1", "v2 TRABAJO GUARDADO"), encoding="utf-8")
-    assert client.get(f"/pages/{page['id']}").json()["body_markdown"] == "v1"
+    fichero.write_text(texto(fichero).replace("v1", "v2 TOCADO A MANO"), encoding="utf-8")
 
     with arrancar_de_nuevo() as otro:
-        acceso(otro)  # cada TestClient estrena índice (P11a)
+        acceso(otro)
+        assert otro.get(f"/pages/{page['id']}").json()["body_markdown"] == "v1"
+        assert otro.post("/reindex").status_code == 200
         leida = otro.get(f"/pages/{page['id']}").json()
-    assert leida["body_markdown"] == "v2 TRABAJO GUARDADO", "el arranque no reindexó"
-    assert "v2 TRABAJO GUARDADO" in texto(fichero)
+    assert leida["body_markdown"] == "v2 TOCADO A MANO"
 
 
-def test_el_arranque_recoge_un_renombrado_hecho_por_fuera(client, vault_path, acceso):
+def test_un_renombrado_hecho_por_fuera_entra_con_reindex(client, vault_path, acceso):
+    """3.0 (hito 2): antes «el arranque recoge un renombrado hecho por fuera».
+
+    Mismo cambio que el de arriba: el arranque ya no mira el disco, así que el
+    renombrado hecho en la proyección no aparece al reiniciar sino al pedir
+    `POST /reindex` (o cuando lo ve el vigilante).
+    """
     page = crear(client, title="Antes")
     (vault_path / "Notas" / "Antes.md").rename(vault_path / "Notas" / "Después.md")
 
     with arrancar_de_nuevo() as otro:
         acceso(otro)
+        assert otro.get(f"/pages/{page['id']}").json()["title"] == "Antes"
+        assert otro.post("/reindex").status_code == 200
         leida = otro.get(f"/pages/{page['id']}").json()
     assert leida["title"] == "Después", "la API serviría un título sin fichero detrás"
 
@@ -109,7 +116,16 @@ def test_mover_una_pagina_dentro_de_su_descendiente_es_400(client, vault_path):
     assert (vault_path / "Notas" / "A" / "B.md").exists()
 
 
-def test_la_cabecera_con_el_fichero_borrado_por_fuera_es_400(client, vault_path):
+def test_la_cabecera_con_el_documento_borrado_es_400(client, vault_path, index_path):
+    """3.0 (hito 2): antes «con el fichero borrado por fuera».
+
+    Borrar el `.md` del disco ya no deja a la nota sin documento (la verdad es
+    la base). El caso que este test protege —el índice tiene la página y su
+    documento no está— se provoca ahora quitando el documento de la base (y su
+    proyección), y sigue siendo un 400 con motivo, no un 500.
+    """
+    import sqlite3
+
     page = crear(client, title="Sin fichero")
     subida = client.post(
         f"/pages/{page['id']}/header-image",
@@ -118,6 +134,10 @@ def test_la_cabecera_con_el_fichero_borrado_por_fuera_es_400(client, vault_path)
     assert subida.status_code == 200
 
     (vault_path / "Notas" / "Sin fichero.md").unlink()
+    conn = sqlite3.connect(index_path)
+    conn.execute("DELETE FROM documents WHERE path = 'Notas/Sin fichero.md'")
+    conn.commit()
+    conn.close()
 
     respuesta = client.post(
         f"/pages/{page['id']}/header-image",
@@ -241,37 +261,40 @@ def _vaciar_los_md(vault_path: Path) -> None:
         fichero.unlink()
 
 
-def test_sin_allow_empty_el_arranque_no_recomienda_un_endpoint_que_no_arranca(
-    client, vault_path
-):
-    """El mensaje del arranque tiene que nombrar una salida practicable.
+def test_vaciar_el_disco_no_vacia_la_base_y_reindex_lo_dice(client, vault_path, acceso):
+    """3.0 (hito 2): antes «sin allow_empty el arranque no recomienda un endpoint
+    que no arranca».
 
-    Antes recomendaba `POST /reindex?force=true`, que es el servicio que no
-    está en pie: el operador solo podía borrar el índice, llevándose las bases.
+    Aquel test fijaba que un arranque con el vault vacío se negaba y que su
+    mensaje nombraba una salida practicable (`VAULT_ALLOW_EMPTY=1`). Con la
+    verdad en la base, un disco vacío ya no puede vaciar nada al arrancar: el
+    arranque no lo lee. Lo que queda de aquella protección vive en
+    `POST /reindex` con la proyección (importar un disco vacío), que se niega con
+    un 409 que nombra SU salida practicable (`?force=true`).
     """
     crear(client, title="Importante")
     _vaciar_los_md(vault_path)
 
-    with pytest.raises(RuntimeError) as excinfo:
-        with arrancar_de_nuevo():
-            pass
+    with arrancar_de_nuevo() as otro:
+        acceso(otro)
+        assert [p["title"] for p in otro.get("/pages").json()] == ["Importante"]
+        respuesta = otro.post("/reindex")
+        assert respuesta.status_code == 409, respuesta.text
+        assert "force=true" in respuesta.json()["detail"]
+        assert [p["title"] for p in otro.get("/pages").json()] == ["Importante"]
 
-    mensaje = str(excinfo.value)
-    assert "VAULT_ALLOW_EMPTY=1" in mensaje
-    assert "/reindex" not in mensaje
 
-
-def test_allow_empty_arranca_con_el_vault_vacio_y_el_indice_queda_vacio(
+def test_el_vaciado_intencionado_es_reindex_con_force(
     client, vault_path, monkeypatch, acceso
 ):
-    """`VAULT_ALLOW_EMPTY=1`: acepta el vaciado intencionado y el índice lo sigue.
+    """3.0 (hito 2): antes «allow_empty arranca con el vault vacío y el índice
+    queda vacío».
 
-    Hasta P2 este test comprobaba lo contrario: las bases y sus filas, que
-    vivían solo en el índice, sobrevivían a un arranque con el vault vacío.
-    Desde P2 también son ficheros, así que el fichero manda y un vault vacío
-    deja el índice a cero. Es el precio de D1 (los ficheros son la verdad) y
-    por eso `VAULT_ALLOW_EMPTY` sigue siendo un escape explícito, no el camino
-    normal.
+    `VAULT_ALLOW_EMPTY` era el escape del ARRANQUE para un vault vaciado a
+    propósito. El arranque ya no lee el disco, así que reiniciar con el disco
+    vacío no borra nada (aunque la variable esté puesta). El vaciado
+    intencionado sigue existiendo y es explícito: `POST /reindex?force=true`
+    con la proyección, que deja la base como el disco.
     """
     nota = crear(client, title="Con base")
     base = client.post(
@@ -286,6 +309,8 @@ def test_allow_empty_arranca_con_el_vault_vacio_y_el_indice_queda_vacio(
 
     with arrancar_de_nuevo() as otro:
         acceso(otro)
+        assert {p["title"] for p in otro.get("/pages").json()} == {"Con base", "Contactos"}
+        assert otro.post("/reindex?force=true").status_code == 200
         assert otro.get("/pages").json() == []
         assert otro.get(f"/databases/{base['id']}").status_code == 404
 

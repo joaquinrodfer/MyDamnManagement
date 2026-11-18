@@ -14,12 +14,15 @@ Qué sale de dónde, dicho claro:
   mismo contrato que el escritor). Los bloques ```` ```mdm-database ```` van tal
   cual en el cuerpo: esto es un vault, no la exportación «para leer» de una
   página (`app.export`), que los sustituye por tablas.
-- **Del disco del vault**: lo que el índice no guarda porque no es una página:
-  `_attachments/` (adjuntos binarios), `.trash/` (papelera) y las carpetas de
-  sugerencias de los agentes (`*.md.sugerencias/`). Si algún `.md` del vault no
-  está en el índice (un fichero que no se pudo indexar), también se copia, pero
-  se cuenta en `unindexed`: la prueba de ida y vuelta exige que sea cero,
-  porque un `.md` que solo existe en disco es justo lo que el hito 2 perdería.
+- **De `documents`** (3.0, hito 2: el vault dentro de la base): los `.md` que
+  no son páginas indexadas, que es la papelera (`.trash/`). Si algún documento
+  fuera de la papelera no está en el índice (no se pudo indexar), también sale,
+  pero se cuenta en `unindexed`: la ida y vuelta exige que sea cero.
+- **Del disco del vault**: solo lo que no es un `.md`: `_attachments/`
+  (adjuntos binarios) y las carpetas de sugerencias de los agentes
+  (`*.md.sugerencias/`). Los `.md` del disco son, como mucho, la proyección: no
+  mandan. (En un índice que todavía no se ha migrado —hito 1— los `.md` del
+  disco sin indexar se copian y cuentan en `unindexed`, como entonces.)
 - **No sale**: `.git/`, `.obsidian/`, `.stversions/` (no son contenido del
   vault), los temporales de escritura (`*.tmp`) y la basura de sistema
   (`.DS_Store`, `Thumbs.db`). Tampoco usuarios, sesiones ni tokens: viven en el
@@ -128,8 +131,29 @@ def _iter_pages(conn: sqlite3.Connection, stats: ExportStats) -> Iterator[_Entry
         yield _Entry(rel=path, mtime=mtime or 0.0, text=page_text(front, body))
 
 
-def _iter_disk_files(vault_root: str, indexed: set[str], stats: ExportStats) -> Iterator[_Entry]:
-    """Lo que no es una página: adjuntos, papelera, sugerencias (y `.md` sin indexar)."""
+def _iter_documents(conn: sqlite3.Connection, indexed: set[str], stats: ExportStats) -> Iterator[_Entry]:
+    """Los documentos que no son páginas indexadas: la papelera (y lo no indexado)."""
+    cur = conn.execute("SELECT path, text, mtime FROM documents ORDER BY path")
+    for path, text, mtime in cur:
+        if path in indexed:
+            continue
+        if path.split("/", 1)[0] != ".trash":
+            stats.unindexed.append(path)
+        yield _Entry(rel=path, mtime=mtime or 0.0, text=text)
+
+
+def _migrated(conn: sqlite3.Connection) -> bool:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'storage'").fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None and row[0] == "db"
+
+
+def _iter_disk_files(
+    vault_root: str, indexed: set[str], stats: ExportStats, skip_markdown: bool = False
+) -> Iterator[_Entry]:
+    """Lo que no es una página: adjuntos, sugerencias (y, sin migrar, los `.md`)."""
     root = os.path.abspath(vault_root)
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = os.path.relpath(dirpath, root)
@@ -145,6 +169,8 @@ def _iter_disk_files(vault_root: str, indexed: set[str], stats: ExportStats) -> 
             rel = f"{rel_dir}/{name}" if rel_dir else name
             if rel in indexed:
                 continue
+            if skip_markdown and name.lower().endswith(".md"):
+                continue
             abs_path = os.path.join(dirpath, name)
             if os.path.islink(abs_path) or not os.path.isfile(abs_path):
                 continue
@@ -159,8 +185,14 @@ def _entries(conn: sqlite3.Connection, vault_root: Optional[str], stats: ExportS
     for entry in _iter_pages(conn, stats):
         indexed.add(entry.rel)
         yield entry
+    migrated = _migrated(conn)
+    if migrated:
+        for entry in _iter_documents(conn, indexed, stats):
+            indexed.add(entry.rel)
+            stats.files += 1
+            yield entry
     if vault_root and os.path.isdir(vault_root):
-        for entry in _iter_disk_files(vault_root, indexed, stats):
+        for entry in _iter_disk_files(vault_root, indexed, stats, skip_markdown=migrated):
             stats.files += 1
             yield entry
 

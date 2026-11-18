@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
 
         conn = open_index(str(index_path))
         try:
-            stats = VaultStore(vault, conn).rebuild()
+            stats = VaultStore(vault, conn).rebuild(source="disk")
         finally:
             conn.close()
         print(f"  reindexado  : {stats.notes} notas, {stats.links} enlaces, "

@@ -2,7 +2,7 @@ import contextlib
 import uuid
 from typing import Iterator, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app import closed, due, hierarchy, schemas
 from app.config import settings
@@ -24,7 +24,8 @@ from app.properties import (
 from app.repository import Database, Page, Repository, View
 from app.serializers import as_utc
 from app import templates as template_defs
-from app.vault.store import UNSET, VaultError
+from app.vault.store import UNSET, VaultError, VersionConflict
+from app.versioning import conflict, parse_if_match
 from app.views import apply_view, sort_keys, validar_rango
 
 router = APIRouter(prefix="/databases", tags=["databases"])
@@ -139,6 +140,7 @@ def _serialize_rows(
             id=row.id,
             database_id=row.database_id,
             title=row.title,
+            version=row.version,
             icon=row.icon,
             properties=props,
             related=related_refs(db_def.schema_def, props, refs),
@@ -622,13 +624,19 @@ def get_row(
     return _serialize_row_page(repo, db_def, _get_row_or_404(repo, database_id, row_id))
 
 
-@router.patch("/{database_id}/rows/{row_id}", response_model=schemas.RowRead)
+@router.patch(
+    "/{database_id}/rows/{row_id}",
+    response_model=schemas.RowRead,
+    responses={409: {"description": "`If-Match` con una versión que ya no es la actual"}},
+)
 def update_row(
     database_id: uuid.UUID,
     row_id: uuid.UUID,
     payload: schemas.RowUpdate,
     repo: Repository = Depends(get_repo),
+    if_match: str | None = Header(default=None),
 ):
+    expected = parse_if_match(if_match)
     db_def = _get_database_or_404(repo, database_id)
     _get_row_or_404(repo, database_id, row_id)
 
@@ -653,15 +661,20 @@ def update_row(
     if "body_markdown" in payload.model_fields_set and payload.body_markdown is not None:
         body = payload.body_markdown
 
-    with _vault_errors():
-        row = repo.update_row(
-            database_id,
-            row_id,
-            title=payload.title,
-            icon=payload.icon,
-            properties=cleaned,
-            body_markdown=body,
-        )
+    try:
+        with _vault_errors():
+            row = repo.update_row(
+                database_id,
+                row_id,
+                title=payload.title,
+                icon=payload.icon,
+                properties=cleaned,
+                body_markdown=body,
+                expected_version=expected,
+            )
+    except VersionConflict as exc:
+        actual = _get_row_or_404(repo, database_id, row_id)
+        return conflict(_serialize_row_page(repo, db_def, actual), exc.current, exc.expected)
     if row is None:
         raise HTTPException(404, "Fila no encontrada")
     publish_database(database_id, "rows")

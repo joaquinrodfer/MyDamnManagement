@@ -43,6 +43,7 @@ se preservan al reescribir.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -58,7 +59,8 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 from app import index as index_mod
 from app import closed as closed_rules
 from app.links import TitleIndex, sync_wikilinks
-from app.vault import fm, names, reader, suggestions, vaultfs, writer
+from app.config import settings
+from app.vault import docfs, fm, names, reader, suggestions, vaultfs, writer
 
 log = logging.getLogger("mdm.vault")
 
@@ -98,6 +100,24 @@ class _Unset:
 
 
 UNSET = _Unset()
+
+
+class VersionConflict(Exception):
+    """`If-Match` con una versión que ya no es la del documento (3.0, hito 2).
+
+    Lleva la versión actual para que la API conteste 409 con ella y con el
+    documento de ahora: el cliente decide (recargar, rehacer su cambio encima,
+    sobrescribir). No es un `VaultError` a propósito: no es un 400.
+    """
+
+    def __init__(self, page_id: Any, current: int, expected: int):
+        super().__init__(
+            f"la página {page_id} va por la versión {current} y el cambio se hizo "
+            f"sobre la {expected}"
+        )
+        self.page_id = str(page_id)
+        self.current = current
+        self.expected = expected
 
 
 class VaultError(ValueError):
@@ -315,6 +335,7 @@ def write_note_file(
     header_image: Optional[str] = None,
     extra: Optional[dict[str, Any]] = None,
     stem: Optional[str] = None,
+    fs: Any = None,
 ) -> tuple[str, list[str]]:
     """Escribe un `.md` nuevo. Devuelve (ruta relativa al vault, avisos).
 
@@ -326,15 +347,16 @@ def write_note_file(
     carpeta de las hijas se calculaba con el título del padre y no con el
     nombre realmente escrito).
     """
+    fs = fs or docfs.DiskFS(root)
     rel_folder = vaultfs.safe_rel(root, folder) if folder else ""
     directory = os.path.join(root, rel_folder) if rel_folder else root
-    os.makedirs(directory, exist_ok=True)
+    fs.makedirs(directory)
 
     notes: list[str] = []
     if stem is None:
         stem, san_notes = names.sanitize(title)
         notes.extend(san_notes)
-        stem, collided = names.unique_stem(directory, stem)
+        stem, collided = names.unique_stem(directory, stem, listdir=fs.listdir)
         if collided:
             notes.append(f"colisión en {rel_folder or '.'}: nombre final {stem!r}")
     else:
@@ -356,7 +378,7 @@ def write_note_file(
         updated=updated,
         extra=extra_keys,
     )
-    vaultfs.atomic_write(os.path.join(root, rel), text)
+    fs.write(os.path.join(root, rel), text)
     return rel, notes
 
 
@@ -428,8 +450,14 @@ ON CONFLICT(id) DO UPDATE SET
     content_hash = excluded.content_hash,
     created_at = excluded.created_at,
     updated_at = excluded.updated_at,
-    frontmatter = excluded.frontmatter
+    frontmatter = excluded.frontmatter,
+    version = pages.version + (excluded.content_hash IS NOT pages.content_hash)
 """
+
+# `version` (v10) sube solo si el contenido cambió: releer una fila porque
+# cambió el schema de su base no es escribirla, y no puede hacer saltar un
+# `If-Match` de quien la está editando. Un guardado de verdad siempre cambia el
+# texto (como poco, `updated`), así que siempre sube.
 
 
 def _has_markdown(root: str) -> bool:
@@ -451,6 +479,7 @@ class RebuildStats:
     seconds: float = 0.0
     warnings: list[str] = field(default_factory=list)
     reindexed_at: str = ""
+    imported: int = 0      # `.md` importados del disco a la base (3.0)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -501,30 +530,59 @@ class TrashEntry:
 # --------------------------------------------------------------------------
 
 
+def _atomic(fn):
+    """La operación entera en una transacción (ver `VaultStore._tx`)."""
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._tx():
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 class VaultStore:
     """Operaciones del vault (notas, bases y filas), con el índice al día."""
 
-    def __init__(self, root: str, conn: sqlite3.Connection):
+    def __init__(self, root: str, conn: sqlite3.Connection, fs: Any = None):
         self.root = os.path.abspath(root)
         self.conn = conn
+        # Dónde viven los `.md` (3.0, hito 2): en la tabla `documents`, y en el
+        # disco solo como proyección si `VAULT_PROJECTION=1`. Ver `app.vault.docfs`.
+        self.fs = fs if fs is not None else docfs.DocsFS(
+            conn, self.root, mirror=settings.vault_projection
+        )
 
     # ------------------------------------------------------------- interno
 
     @contextlib.contextmanager
     def _tx(self) -> Iterator[None]:
+        """Una transacción `IMMEDIATE`; dentro de otra, se suma a ella.
+
+        Desde que los `.md` viven en la base (3.0) cada operación pública del
+        almacén abre la suya al empezar (`_atomic`): el documento y el índice se
+        escriben juntos o no se escribe nada. Los `with self._tx()` de dentro
+        quedan como estaban y se suman a esa. Al confirmar la de fuera se
+        proyecta al disco lo que haya que proyectar; si se deshace, se olvida.
+        """
+        if self.conn.in_transaction:
+            yield
+            return
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             yield
         except BaseException:
             self.conn.rollback()
+            self.fs.discard()
             raise
         else:
             self.conn.commit()
+            self.fs.flush()
 
     def ensure_structure(self) -> None:
         """Crea `Notas/`, `Bases/`, `_attachments/` y `.trash/` si faltan."""
         for rel in (NOTES_DIR, DATABASES_DIR, "_attachments", ".trash"):
-            os.makedirs(os.path.join(self.root, rel), exist_ok=True)
+            self.fs.makedirs(os.path.join(self.root, rel))
 
     def _workspace(self) -> str:
         row = self.conn.execute(
@@ -824,7 +882,7 @@ class VaultStore:
         página en cada renombrado.
         """
         abs_path = os.path.join(self.root, vaultfs.safe_rel(self.root, rel))
-        page = reader.read_file(abs_path, rel)
+        page = self.fs.read_page(abs_path, rel)
         if database_id is None:
             database_id = self._database_of_row(rel)
         if database_id:
@@ -854,6 +912,7 @@ class VaultStore:
 
     # ------------------------------------------------------------- escribir
 
+    @_atomic
     def create(
         self,
         *,
@@ -892,6 +951,7 @@ class VaultStore:
         now = now_iso()
         rel, notes = write_note_file(
             self.root,
+            fs=self.fs,
             folder=folder,
             title=title,
             page_id=page_id,
@@ -909,6 +969,7 @@ class VaultStore:
             log.info("nota %s: %s", rel, "; ".join(notes))
         return page_id
 
+    @_atomic
     def save(
         self,
         page_id: Any,
@@ -919,19 +980,21 @@ class VaultStore:
         body: Any = UNSET,
         parent_id: Any = UNSET,
         header_image: Any = UNSET,
+        expected_version: Optional[int] = None,
     ) -> None:
         """Reescribe la nota (y la renombra/mueve si toca) y actualiza el índice."""
+        self.check_version(page_id, expected_version)
         row = self._note_row(page_id)
         old_rel = row["path"]
         abs_old = os.path.join(self.root, vaultfs.safe_rel(self.root, old_rel))
-        if not os.path.exists(abs_old):
+        if not self.fs.isfile(abs_old):
             # El fichero se borró por fuera y el índice todavía no lo sabe: se
             # dice qué hacer en vez de reventar con un FileNotFoundError.
             raise VaultError(
                 f"el fichero de la nota {page_id} no está en el vault ({old_rel}): "
                 "lanza POST /reindex para reconciliar el índice con el disco"
             )
-        text, _warnings = _read_text(abs_old)
+        text, _warnings = self.fs.read_text(abs_old)
 
         old_folder = os.path.dirname(old_rel)
         target_folder = old_folder
@@ -960,7 +1023,9 @@ class VaultStore:
             final_stem = desired_stem
         else:
             directory = os.path.join(self.root, target_folder) if target_folder else self.root
-            final_stem, _collided = names.unique_stem(directory, desired_stem)
+            final_stem, _collided = names.unique_stem(
+                directory, desired_stem, listdir=self.fs.listdir
+            )
 
         new_rel = f"{target_folder}/{final_stem}.md" if target_folder else f"{final_stem}.md"
 
@@ -968,11 +1033,11 @@ class VaultStore:
         # quedarían en la ruta vieja y el reindexado las dejaría sin padre.
         old_children = old_rel[:-3]
         new_children = new_rel[:-3]
-        folder_moved = new_children != old_children and os.path.isdir(
+        folder_moved = new_children != old_children and self.fs.isdir(
             os.path.join(self.root, old_children)
         )
         if folder_moved:
-            vaultfs.move(
+            self.fs.move(
                 os.path.join(self.root, old_children),
                 os.path.join(self.root, new_children),
             )
@@ -980,7 +1045,7 @@ class VaultStore:
         abs_new = os.path.join(self.root, new_rel)
         if new_rel != old_rel:
             # La nota y sus sugerencias son una sola cosa: se mueven juntas.
-            suggestions.move_with_note(self.root, old_rel, new_rel)
+            self.fs.move_with_note(old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -1002,12 +1067,27 @@ class VaultStore:
         # Mismo formato que `POST` (salto tras el frontmatter y `\n` final).
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)
-        vaultfs.atomic_write(abs_new, new_text)
+        self.fs.write(abs_new, new_text)
 
         with self._tx():
             self._index_file(new_rel, new_parent)
             if folder_moved:
                 self._repath_children(old_children, new_children)
+
+    def check_version(self, page_id: Any, expected: Optional[int]) -> None:
+        """`VersionConflict` si `expected` no es la versión actual de la página.
+
+        Se llama DENTRO de la transacción de escritura (las operaciones del
+        almacén abren la suya con `BEGIN IMMEDIATE` al empezar): entre mirar la
+        versión y escribir no puede colarse nadie.
+        """
+        if expected is None:
+            return
+        row = self.conn.execute(
+            "SELECT version FROM pages WHERE id = ?", (str(page_id),)
+        ).fetchone()
+        if row is not None and int(row[0]) != int(expected):
+            raise VersionConflict(page_id, int(row[0]), int(expected))
 
     def _parent_str(self, parent_id: Any) -> Optional[str]:
         if parent_id is None or parent_id == "":
@@ -1046,6 +1126,7 @@ class VaultStore:
 
     # --------------------------------------------------------------- borrar
 
+    @_atomic
     def delete(self, page_id: Any) -> bool:
         """Mueve la nota (y su carpeta de subpáginas) a la papelera.
 
@@ -1083,24 +1164,19 @@ class VaultStore:
         files = [rel]
         children_folder = rel[:-3]
         abs_folder = os.path.join(self.root, children_folder)
-        if os.path.isdir(abs_folder):
-            for dirpath, _dirs, filenames in os.walk(abs_folder):
-                for name in sorted(filenames):
-                    if name.lower().endswith(".md"):
-                        full = os.path.join(dirpath, name)
-                        files.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
+        for full in self.fs.walk_files(abs_folder):
+            if full.lower().endswith(".md"):
+                files.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
 
-        stamp = vaultfs.trash_dir_for(self.root)
+        stamp = self.fs.trash_dir_for()
         stamp_rel = os.path.relpath(stamp, self.root).replace(os.sep, "/")
         for rel_file in files:
             # El `.md` y sus sugerencias van juntos: también las de las
             # subpáginas que la cascada se lleva por delante. Si se queda el
             # `.json`, `Notas/<madre>/` sobrevive a la poda y una nota nueva
             # con ese título nace como «Madre (2)».
-            suggestions.move_with_note(
-                self.root, rel_file, f"{stamp_rel}/{rel_file}"
-            )
-        _prune_empty_dirs(abs_folder)
+            self.fs.move_with_note(rel_file, f"{stamp_rel}/{rel_file}")
+        self.fs.prune_empty_dirs(abs_folder)
 
         with self._tx():
             self.conn.execute("DELETE FROM pages WHERE id = ?", (str(page_id),))
@@ -1121,10 +1197,8 @@ class VaultStore:
         """
         trash = os.path.join(self.root, ".trash")
         entries: list[TrashEntry] = []
-        for dirpath, dirnames, filenames in os.walk(trash):
-            dirnames.sort()
-            for name in sorted(filenames):
-                full = os.path.join(dirpath, name)
+        for full in self.fs.walk_files(trash):
+            if True:
                 rel = os.path.relpath(full, self.root).replace(os.sep, "/")
                 parts = rel.split("/")
                 if len(parts) < 3:      # `.trash/<sello>/<ruta original...>`
@@ -1132,7 +1206,7 @@ class VaultStore:
                 if suggestions.in_sidecar(rel):
                     continue            # sugerencia: se restaura con su nota
                 try:
-                    size = os.path.getsize(full)
+                    size = self.fs.size(full)
                 except OSError:
                     continue            # desapareció mientras se listaba
                 stamp = vaultfs.parse_trash_stamp(parts[1])
@@ -1150,6 +1224,7 @@ class VaultStore:
         entries.sort(key=lambda e: e.deleted_at or "", reverse=True)
         return entries
 
+    @_atomic
     def restore(self, trash_rel: str) -> str:
         """Devuelve un fichero de la papelera a su sitio. Devuelve su ruta.
 
@@ -1165,7 +1240,7 @@ class VaultStore:
                 f"{trash_rel!r} es una sugerencia, no una nota: no se restaura "
                 "suelta. Restaura la nota a la que pertenece y vuelve con ella."
             )
-        dst = vaultfs.restore(self.root, trash_rel)
+        dst = self.fs.restore(trash_rel)
         rel = os.path.relpath(dst, self.root).replace(os.sep, "/")
         self._restore_sidecar(trash_rel, rel)
         return rel
@@ -1239,6 +1314,7 @@ class VaultStore:
     def _abs(self, rel: str) -> str:
         return os.path.join(self.root, vaultfs.safe_rel(self.root, rel))
 
+    @_atomic
     def create_database(
         self,
         *,
@@ -1263,7 +1339,7 @@ class VaultStore:
             for view in views or []
         ]
         page, notes = writer.create_database(
-            self.root, folder, title, schema, entries,
+            self.root, folder, title, schema, entries, fs=self.fs,
             icon=icon, db_id=page_id, description=description, created_by=created_by,
             title_name=title_name, title_hidden=title_hidden, closed=closed,
             row_templates=row_templates,
@@ -1274,6 +1350,7 @@ class VaultStore:
             log.info("base %s: %s", page.path, "; ".join(notes))
         return page_id
 
+    @_atomic
     def save_database(
         self,
         page_id: Any,
@@ -1290,6 +1367,7 @@ class VaultStore:
         title_hidden: Any = UNSET,
         closed: Any = UNSET,
         row_templates: Any = UNSET,
+        expected_version: Optional[int] = None,
     ) -> None:
         """Reescribe la base (y la renombra con sus filas si toca) y la indexa.
 
@@ -1297,15 +1375,16 @@ class VaultStore:
         quedarían en la carpeta vieja y el reindexado ya no las vería como filas
         de esta base (`Bases/<slug>/` es lo que las define).
         """
+        self.check_version(page_id, expected_version)
         row = self._database_row(page_id)
         old_rel = row["path"]
         abs_old = self._abs(old_rel)
-        if not os.path.exists(abs_old):
+        if not self.fs.isfile(abs_old):
             raise VaultError(
                 f"el fichero de la base {page_id} no está en el vault ({old_rel}): "
                 "lanza POST /reindex para reconciliar el índice con el disco"
             )
-        text, _warnings = _read_text(abs_old)
+        text, _warnings = self.fs.read_text(abs_old)
 
         # Mover de carpeta = mover el fichero y su carpeta de filas (D4).
         target_folder = os.path.dirname(old_rel)
@@ -1327,18 +1406,20 @@ class VaultStore:
             final_stem = desired_stem
         else:
             directory = self._abs(target_folder) if target_folder else self.root
-            final_stem, _collided = names.unique_stem(directory, desired_stem)
+            final_stem, _collided = names.unique_stem(
+                directory, desired_stem, listdir=self.fs.listdir
+            )
         new_rel = f"{target_folder}/{final_stem}.md" if target_folder else f"{final_stem}.md"
 
         old_children, new_children = old_rel[:-3], new_rel[:-3]
-        folder_moved = new_children != old_children and os.path.isdir(
+        folder_moved = new_children != old_children and self.fs.isdir(
             self._abs(old_children)
         )
         if folder_moved:
-            vaultfs.move(self._abs(old_children), self._abs(new_children))
+            self.fs.move(self._abs(old_children), self._abs(new_children))
         if new_rel != old_rel:
             # La base y sus sugerencias, juntas: mismo helper que la nota.
-            suggestions.move_with_note(self.root, old_rel, new_rel)
+            self.fs.move_with_note(old_rel, new_rel)
 
         updates: dict[str, Any] = {"id": str(row["id"]), "updated": now_iso()}
         try:
@@ -1387,13 +1468,14 @@ class VaultStore:
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)
-        vaultfs.atomic_write(self._abs(new_rel), new_text)
+        self.fs.write(self._abs(new_rel), new_text)
 
         with self._tx():
             self._index_file(new_rel, new_parent)
             if folder_moved:
                 self._repath_rows(old_children, new_children)
 
+    @_atomic
     def reindex_rows(self, database_id: Any) -> int:
         """Relee del disco las filas de la base y actualiza su entrada del índice.
 
@@ -1409,12 +1491,13 @@ class VaultStore:
         leidas = 0
         for row in rows:
             rel = row["path"]
-            if not rel or not os.path.exists(self._abs(rel)):
+            if not rel or not self.fs.isfile(self._abs(rel)):
                 continue
             self._index_file(rel, None, database_id=str(database_id))
             leidas += 1
         return leidas
 
+    @_atomic
     def rename_row_properties(
         self,
         database_id: Any,
@@ -1467,13 +1550,13 @@ class VaultStore:
         for row in rows:
             rel = row["path"]
             abs_path = self._abs(rel)
-            if not os.path.exists(abs_path):
+            if not self.fs.isfile(abs_path):
                 raise VaultError(
                     f"no se puede renombrar {etiqueta(next(iter(renames), ''))}: "
                     "falta el fichero de una de las filas en el vault; "
                     "lanza POST /reindex para reconciliar el índice con el disco"
                 )
-            text, _warnings = _read_text(abs_path)
+            text, _warnings = self.fs.read_text(abs_path)
             try:
                 raw, _body = fm.split_document(text)
                 data = fm.parse(raw).data if raw is not None else {}
@@ -1524,12 +1607,13 @@ class VaultStore:
             prepared.append((row_id, rel, new_text))
 
         for _row_id, rel, new_text in prepared:
-            vaultfs.atomic_write(self._abs(rel), new_text)
+            self.fs.write(self._abs(rel), new_text)
             # Una fila no cuelga del árbol (`parent_id` nulo) y su base es la
             # que se está renombrando: el índice de la fila se rehace solo.
             self._index_file(rel, None, database_id=str(database_id))
         return finales
 
+    @_atomic
     def delete_database(self, page_id: Any) -> bool:
         """Mueve la base y todas sus filas a la papelera y limpia el índice."""
         row = self.conn.execute(
@@ -1541,20 +1625,15 @@ class VaultStore:
         if rel:
             files = [rel]
             folder = rel[:-3]
-            if os.path.isdir(self._abs(folder)):
-                for dirpath, _dirs, filenames in os.walk(self._abs(folder)):
-                    for name in sorted(filenames):
-                        if name.lower().endswith(".md"):
-                            full = os.path.join(dirpath, name)
-                            files.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
-            stamp = vaultfs.trash_dir_for(self.root)
+            for full in self.fs.walk_files(self._abs(folder)):
+                if full.lower().endswith(".md"):
+                    files.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
+            stamp = self.fs.trash_dir_for()
             stamp_rel = os.path.relpath(stamp, self.root).replace(os.sep, "/")
             for rel_file in files:
                 # Las sugerencias de la base o de una fila se van con ella.
-                suggestions.move_with_note(
-                    self.root, rel_file, f"{stamp_rel}/{rel_file}"
-                )
-            _prune_empty_dirs(self._abs(folder))
+                self.fs.move_with_note(rel_file, f"{stamp_rel}/{rel_file}")
+            self.fs.prune_empty_dirs(self._abs(folder))
 
         with self._tx():
             # Las filas son páginas, pero no cuelgan de `parent_id`: la cascada
@@ -1598,6 +1677,7 @@ class VaultStore:
             )
         return row
 
+    @_atomic
     def create_row(
         self,
         database_id: Any,
@@ -1612,14 +1692,14 @@ class VaultStore:
         Devuelve el id de la fila.
         """
         db = self._database_row(database_id)
-        if not os.path.exists(self._abs(db["path"])):
+        if not self.fs.isfile(self._abs(db["path"])):
             raise VaultError(
                 f"el fichero de la base {database_id} no está en el vault ({db['path']}): "
                 "lanza POST /reindex para reconciliar el índice con el disco"
             )
         row_id = str(uuid.uuid4())
         page, notes = writer.create_row(
-            self.root, db["path"][:-3], title, properties or {},
+            self.root, db["path"][:-3], title, properties or {}, fs=self.fs,
             body=body, row_id=row_id, icon=icon,
         )
         with self._tx():
@@ -1763,6 +1843,7 @@ class VaultStore:
                 "visto: corrige la línea del .md a mano."
             )
 
+    @_atomic
     def save_row(
         self,
         page_id: Any,
@@ -1773,6 +1854,7 @@ class VaultStore:
         body: Any = UNSET,
         properties: Any = UNSET,
         header_image: Any = UNSET,
+        expected_version: Optional[int] = None,
     ) -> None:
         """Reescribe el frontmatter de la fila y actualiza el índice.
 
@@ -1784,15 +1866,16 @@ class VaultStore:
         índice: B2); un `None` en un valor borra esa clave del frontmatter, como
         en las notas. El resto del fichero lo preserva `fm.rewrite` byte a byte.
         """
+        self.check_version(page_id, expected_version)
         row = self._row_row(page_id)
         old_rel = row["path"]
         abs_old = self._abs(old_rel)
-        if not os.path.exists(abs_old):
+        if not self.fs.isfile(abs_old):
             raise VaultError(
                 f"el fichero de la fila {page_id} no está en el vault ({old_rel}): "
                 "lanza POST /reindex para reconciliar el índice con el disco"
             )
-        text, _warnings = _read_text(abs_old)
+        text, _warnings = self.fs.read_text(abs_old)
 
         # Frontmatter del fichero tal y como está en el disco (no lo que diga el
         # índice): es lo que se va a reescribir y lo que hay que respetar.
@@ -1839,11 +1922,12 @@ class VaultStore:
 
         new_body = stored_body(body) if body is not UNSET and body is not None else None
         new_text, _warnings = fm.rewrite(text, updates, new_body)
-        vaultfs.atomic_write(self._abs(new_rel), new_text)
+        self.fs.write(self._abs(new_rel), new_text)
 
         with self._tx():
             self._index_file(new_rel, None, database_id=str(row["database_id"]))
 
+    @_atomic
     def delete_row(self, page_id: Any) -> bool:
         """Mueve la fila a la papelera y la quita del índice."""
         row = self.conn.execute(
@@ -1852,12 +1936,10 @@ class VaultStore:
         if row is None or row["type"] != "database_row":
             return False
         if row["path"]:
-            stamp = vaultfs.trash_dir_for(self.root)
+            stamp = self.fs.trash_dir_for()
             stamp_rel = os.path.relpath(stamp, self.root).replace(os.sep, "/")
             # El sidecar de la fila se va con ella (y vuelve al restaurarla).
-            suggestions.move_with_note(
-                self.root, row["path"], f"{stamp_rel}/{row['path']}"
-            )
+            self.fs.move_with_note(row["path"], f"{stamp_rel}/{row['path']}")
         with self._tx():
             cur = self.conn.execute("DELETE FROM pages WHERE id = ?", (row["id"],))
         return cur.rowcount > 0
@@ -1903,12 +1985,12 @@ class VaultStore:
         leidas: list[tuple[str, dict]] = []
         for row in rows:
             rel = row["path"]
-            if not rel or not os.path.exists(self._abs(rel)):
+            if not rel or not self.fs.isfile(self._abs(rel)):
                 raise VaultError(
                     "falta el fichero de una de las filas en el vault; lanza "
                     "POST /reindex para reconciliar el índice con el disco"
                 )
-            text, _warnings = _read_text(self._abs(rel))
+            text, _warnings = self.fs.read_text(self._abs(rel))
             try:
                 raw, _body = fm.split_document(text)
                 data = fm.parse(raw).data if raw is not None else {}
@@ -1921,6 +2003,7 @@ class VaultStore:
             leidas.append((rel, data))
         return leidas
 
+    @_atomic
     def rewrite_property_values(
         self, database_id: Any, replacements: dict[str, dict[str, str]]
     ) -> int:
@@ -1944,12 +2027,12 @@ class VaultStore:
         ).fetchall()
         for row in rows:
             rel = row["path"]
-            if not rel or not os.path.exists(self._abs(rel)):
+            if not rel or not self.fs.isfile(self._abs(rel)):
                 raise VaultError(
                     "falta el fichero de una de las filas en el vault; lanza "
                     "POST /reindex para reconciliar el índice con el disco"
                 )
-            text, _warnings = _read_text(self._abs(rel))
+            text, _warnings = self.fs.read_text(self._abs(rel))
             try:
                 raw, _body = fm.split_document(text)
                 data = fm.parse(raw).data if raw is not None else {}
@@ -1978,7 +2061,7 @@ class VaultStore:
             preparadas.append((rel, new_text))
 
         for rel, new_text in preparadas:
-            vaultfs.atomic_write(self._abs(rel), new_text)
+            self.fs.write(self._abs(rel), new_text)
             self._index_file(rel, None, database_id=str(database_id))
         return len(preparadas)
 
@@ -2094,6 +2177,8 @@ class VaultStore:
         if row is None:
             return None
         with self._tx():
+            if self.fs.in_db:
+                self.conn.execute("DELETE FROM documents WHERE path = ?", (rel,))
             self.conn.execute(
                 "UPDATE pages SET parent_id = NULL WHERE parent_id = ?", (row["id"],)
             )
@@ -2120,15 +2205,12 @@ class VaultStore:
     def _markdown_under(self, folder: str) -> list[str]:
         """Rutas (relativas) de los `.md` de una carpeta y sus subcarpetas."""
         base = self._abs(folder)
-        if not os.path.isdir(base):
-            return []
         found: list[str] = []
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames.sort()
-            for name in sorted(filenames):
-                if name.lower().endswith(".md"):
-                    full = os.path.join(dirpath, name)
-                    found.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
+        # El vigilante habla del disco: con la base como verdad (3.0), lo que
+        # hay bajo la carpeta en el disco es lo que hay que importar.
+        for full in docfs.DiskFS(self.root).walk_files(base):
+            if full.lower().endswith(".md"):
+                found.append(os.path.relpath(full, self.root).replace(os.sep, "/"))
         return found
 
     def _reindex_file(self, rel: str) -> Optional[dict[str, str]]:
@@ -2158,6 +2240,10 @@ class VaultStore:
         parent_id = self._parent_of_path(rel)
 
         with self._tx():
+            if self.fs.in_db:
+                # 3.0: lo que cambió por fuera es el fichero de la proyección;
+                # primero entra en la base, que es la que manda, y luego se indexa.
+                self.fs.import_disk_file(rel)
             page_id = self._index_file(rel, parent_id, dedupe=True)
             row = self.conn.execute(
                 "SELECT type, content_hash FROM pages WHERE id = ?", (page_id,)
@@ -2185,7 +2271,7 @@ class VaultStore:
         }
 
     def _refuse_suspicious_vault(
-        self, hint: str = EMPTY_VAULT_HINT_HTTP
+        self, hint: str = EMPTY_VAULT_HINT_HTTP, from_disk: bool = True
     ) -> None:
         """No perder páginas del índice porque el vault no esté donde dice.
 
@@ -2199,7 +2285,12 @@ class VaultStore:
         if indexed == 0:
             return
         motivo = None
-        if not os.path.isdir(self.root):
+        if not from_disk:
+            # 3.0: se reconstruye desde la base. Un `documents` vacío con
+            # páginas en el índice no es «un vault vacío»: es una base rota.
+            if not self.fs.has_markdown():
+                motivo = "la base no tiene ningún documento"
+        elif not os.path.isdir(self.root):
             motivo = f"la raíz del vault {self.root!r} no existe"
         elif not _has_markdown(self.root):
             motivo = f"el vault {self.root!r} no tiene ningún .md"
@@ -2212,8 +2303,22 @@ class VaultStore:
             f"{hint}"
         )
 
+    def migrated(self) -> bool:
+        """¿Ya se volcó el vault de disco a la base? (3.0, hito 2)
+
+        Desde entonces la verdad es la base: el arranque no relee nada y
+        `rebuild` reconstruye el índice desde `documents`.
+        """
+        return index_mod.get_meta(self.conn, index_mod.META_STORAGE) == "db"
+
+    def _reads_disk(self, source: str) -> bool:
+        if not self.fs.in_db:
+            return True
+        return source == "disk" or (source == "auto" and not self.migrated())
+
     def check_can_rebuild(
-        self, *, allow_empty: bool = False, empty_hint: str = EMPTY_VAULT_HINT_HTTP
+        self, *, allow_empty: bool = False, empty_hint: str = EMPTY_VAULT_HINT_HTTP,
+        source: str = "auto",
     ) -> None:
         """La comprobación de `rebuild`, sola y sin tocar el índice (P16).
 
@@ -2223,7 +2328,7 @@ class VaultStore:
         parece un problema de red.
         """
         if not allow_empty:
-            self._refuse_suspicious_vault(empty_hint)
+            self._refuse_suspicious_vault(empty_hint, from_disk=self._reads_disk(source))
 
     def rebuild(
         self,
@@ -2231,6 +2336,7 @@ class VaultStore:
         allow_empty: bool = False,
         empty_hint: str = EMPTY_VAULT_HINT_HTTP,
         progress=None,
+        source: str = "auto",
     ) -> RebuildStats:
         """Reconstruye el índice entero desde el vault (ADR D1).
 
@@ -2255,8 +2361,22 @@ class VaultStore:
         """
         started = time.perf_counter()
         stats = RebuildStats()
+        # De dónde (3.0, hito 2): `source="auto"` lee el disco UNA vez, la
+        # primera (la migración: el vault entra en `documents`), y desde ahí la
+        # base. `"disk"` vuelve a importar el disco (con la proyección
+        # encendida, `POST /reindex`: el disco es un espejo y lo tocado por fuera
+        # entra). `"docs"` solo rehace el índice desde la base.
+        from_disk = self._reads_disk(source)
         if not allow_empty:
-            self._refuse_suspicious_vault(empty_hint)
+            self._refuse_suspicious_vault(empty_hint, from_disk=from_disk)
+        if from_disk and self.fs.in_db:
+            # Sin total a propósito: el porcentaje de `/health` es el de las
+            # cuatro pasadas de abajo, y un 100 % de la importación seguido de
+            # un 0 % de la lectura sería un porcentaje que retrocede.
+            if progress is not None:
+                progress("importando el vault a la base", 0, 0)
+            with self._tx():
+                stats.imported = self.fs.import_disk_vault(stats.warnings)
         # El porcentaje que ve `/health` es del reindexado ENTERO, no de la
         # fase (P16, ronda 2): cada página se toca en cuatro pasadas --leer,
         # preparar, escribir, enlazar-- y cada una se lleva un cuarto de la
@@ -2280,7 +2400,8 @@ class VaultStore:
 
         avance("comprobando el vault", 0)   # sin total: `/health` da percent None
         vault = reader.load(
-            self.root, progress=avance_lectura if progress is not None else None
+            self.root, progress=avance_lectura if progress is not None else None,
+            fs=self.fs if self.fs.in_db else None,
         )
         stats.warnings.extend(vault.warnings)
 
@@ -2345,6 +2466,18 @@ class VaultStore:
         avance("escribiendo el índice", 0, total, 2)
 
         with self._tx():
+            # La `version` de cada página (v10) no está en el `.md`: se guarda
+            # antes de vaciar y se devuelve después, en dos sentencias y sin
+            # bucle por página. Una página nueva para el índice empieza en 1.
+            self.conn.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS _versiones"
+                " (id TEXT PRIMARY KEY, version INTEGER NOT NULL)"
+            )
+            self.conn.execute("DELETE FROM temp._versiones")
+            self.conn.execute(
+                "INSERT INTO temp._versiones (id, version) SELECT id, version FROM pages"
+                " WHERE version > 1"
+            )
             # Todas las páginas están en ficheros: se rehace el árbol entero y
             # las cascadas del esquema se llevan bases, vistas, filas y enlaces.
             self.conn.execute("DELETE FROM pages")
@@ -2359,6 +2492,11 @@ class VaultStore:
                     total,
                     2,
                 )
+            self.conn.execute(
+                "UPDATE pages SET version = (SELECT v.version FROM temp._versiones v"
+                " WHERE v.id = pages.id) WHERE id IN (SELECT id FROM temp._versiones)"
+            )
+            self.conn.execute("DELETE FROM temp._versiones")
             # FTS5 con `content='pages'`: se regenera desde la tabla de
             # contenido para que dos reindexados den el mismo índice.
             self.conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('rebuild')")
@@ -2412,6 +2550,10 @@ class VaultStore:
             # el disco y dice cuánto ha cambiado por fuera desde aquí.
             stats.reindexed_at = now_iso()
             index_mod.set_meta(self.conn, index_mod.META_LAST_REINDEX, stats.reindexed_at)
+            if self.fs.in_db:
+                # Migrado: desde aquí la verdad es la base y el arranque no
+                # vuelve a leer el disco.
+                index_mod.set_meta(self.conn, index_mod.META_STORAGE, "db")
 
         stats.notes = sum(1 for record in records if record.type == "note")
         stats.links = self.conn.execute("SELECT count(*) FROM links").fetchone()[0]

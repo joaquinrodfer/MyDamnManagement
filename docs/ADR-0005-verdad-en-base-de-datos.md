@@ -50,3 +50,9 @@ Cada etapa tiene sentido por sí sola y deja la app funcionando:
 - **26 (presencia / edición simultánea) deja de ser «ver la decisión de arquitectura»**: la decisión está tomada y lo que falta es la etapa 3.
 - **33 (importar/exportar CSV)** y el export a Markdown se vuelven más importantes de lo que parecían: son la puerta de entrada y de salida de los datos.
 - **32 (permisos)** sigue aplazada por producto, no por arquitectura: con una persona no aporta, y con varias ya no es un parche.
+
+## Estado de la implementación (3.0)
+
+- **Etapa 1 — hecha (3.0, hito 1).** `POST /export` reconstruye el vault entero desde la base (zip o carpeta) y `tests/test_h1_export_vault.py` hace la ida y vuelta: export byte a byte igual al vault, y reindexar el export da la misma huella de índice.
+- **Etapa 2 — hecha (3.0, hito 2).** Cada `.md` del vault (papelera incluida) es una fila de `documents` y el almacén lee y escribe ahí en la misma transacción que el índice (`app/vault/docfs.py`). El primer arranque importa el vault de disco una sola vez (`meta.storage = db`); los siguientes no lo leen. El `.md` en disco es una proyección opcional (`VAULT_PROJECTION=1`). Cada documento lleva `version` y `PATCH` acepta `If-Match` (409 con la versión y el documento actuales). Adjuntos y sugerencias de agentes siguen en disco (no son `.md`).
+
