@@ -152,6 +152,12 @@ class Settings(BaseSettings):
     # programadas no existen). Fuera del vault, como el export.
     backup_dir: str = ""
 
+    # --- Webhooks salientes (plan H9) ---------------------------------------
+    # Un webhook solo puede llamar a servidores públicos (anti-SSRF). Con
+    # `WEBHOOK_ALLOW_PRIVATE=1` se permiten direcciones internas: solo para un
+    # despliegue que quiera avisar a un servicio de su propia red (n8n en casa).
+    webhook_allow_private: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -18,7 +18,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app import audit, auth
+from app import audit, auth, webhooks
 from app import workspaces as ws
 from app.dependencies import get_current_user
 from app.routers.auth import get_conn
@@ -122,6 +122,103 @@ def delete_workspace(
         _raise(exc)
     audit.record(conn, user, "workspace.deleted", workspace_id=workspace_id,
                  target_type="workspace", target_id=workspace_id, target_name=nombre)
+
+
+# ----------------------------------------------------------------- webhook
+
+
+class WebhookIn(BaseModel):
+    url: str
+    enabled: bool = True
+    events: list[str] = list(webhooks.EVENTS)
+
+
+def _webhook_view(conn: sqlite3.Connection, workspace_id: str, secret: Optional[str] = None) -> dict:
+    return {
+        "config": webhooks.get_config(conn, workspace_id),
+        "events": list(webhooks.EVENTS),
+        "deliveries": webhooks.recent(conn, workspace_id),
+        # El secreto solo sale cuando se crea o se regenera.
+        **({"secret": secret} if secret else {}),
+    }
+
+
+@router.get("/workspaces/{workspace_id}/webhook")
+def get_webhook(
+    workspace_id: str, user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)
+):
+    _manager(conn, user, workspace_id)
+    return _webhook_view(conn, workspace_id)
+
+
+@router.put("/workspaces/{workspace_id}/webhook")
+def put_webhook(
+    workspace_id: str,
+    payload: WebhookIn,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    _manager(conn, user, workspace_id)
+    try:
+        _cfg, secret = webhooks.set_config(
+            conn, workspace_id, url=payload.url, enabled=payload.enabled, events=payload.events
+        )
+    except webhooks.WebhookError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    audit.record(conn, user, "webhook.configured", workspace_id=workspace_id, target_type="workspace",
+                 target_id=workspace_id, metadata={"enabled": payload.enabled, "events": payload.events})
+    return _webhook_view(conn, workspace_id, secret)
+
+
+@router.post("/workspaces/{workspace_id}/webhook/secret")
+def regenerate_webhook_secret(
+    workspace_id: str, user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)
+):
+    _manager(conn, user, workspace_id)
+    try:
+        secret = webhooks.regenerate_secret(conn, workspace_id)
+    except webhooks.WebhookError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    audit.record(conn, user, "webhook.secret_regenerated", workspace_id=workspace_id,
+                 target_type="workspace", target_id=workspace_id)
+    return _webhook_view(conn, workspace_id, secret)
+
+
+@router.delete("/workspaces/{workspace_id}/webhook", status_code=204)
+def delete_webhook(
+    workspace_id: str, user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)
+):
+    _manager(conn, user, workspace_id)
+    webhooks.delete_config(conn, workspace_id)
+    audit.record(conn, user, "webhook.deleted", workspace_id=workspace_id,
+                 target_type="workspace", target_id=workspace_id)
+
+
+@router.post("/workspaces/{workspace_id}/webhook/test")
+def test_webhook(
+    workspace_id: str, user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)
+):
+    """Manda un `ping` ahora mismo y dice qué contestó el otro lado."""
+    _manager(conn, user, workspace_id)
+    cfg = conn.execute("SELECT url, secret FROM workspace_webhooks WHERE workspace_id = ?", (workspace_id,)).fetchone()
+    if cfg is None:
+        raise HTTPException(404, "este espacio no tiene webhook")
+    ws_get = ws.get(conn, workspace_id)
+    import json as _json
+    import time as _time
+
+    body = _json.dumps(webhooks.build_payload(
+        "ping", {"id": workspace_id, "name": ws_get["name"]}, "Prueba de Noteping: el webhook funciona.", {}
+    ), ensure_ascii=False).encode()
+    ts = str(int(_time.time()))
+    try:
+        status = webhooks.post(cfg["url"], body, {
+            "Content-Type": "application/json", "User-Agent": "Noteping-Webhook/1", "X-Noteping-Event": "ping",
+            "X-Noteping-Timestamp": ts, "X-Noteping-Signature": webhooks._sign(cfg["secret"], ts, body),
+        })
+    except webhooks.WebhookError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": 200 <= status < 300, "status": status}
 
 
 # ---------------------------------------------------------------- miembros

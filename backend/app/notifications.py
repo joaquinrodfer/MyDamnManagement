@@ -231,6 +231,11 @@ def scan_deadlines(conn: sqlite3.Connection) -> int:
             clave = f"{'overdue' if tipo == 'deadline_overdue' else 'soon'}:{task['row_id']}:{hoy}"
             if notify(conn, user["id"], tipo, texto, page_id=task["row_id"], dedupe_key=clave):
                 creados += 1
+            if tipo == "deadline_overdue":
+                # Plan H9: el webhook del espacio, una vez por tarea y día.
+                from app import webhooks
+
+                webhooks.emit_task(conn, "task.overdue", task["row_id"], dedupe_key=f"overdue:{task['row_id']}:{hoy}")
     return creados
 
 

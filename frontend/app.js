@@ -1483,6 +1483,9 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
   anadir.hidden = !esAdminDelEspacio;
   cuerpo.append(anadir);
 
+  // webhook saliente (plan H9): solo el administrador del espacio
+  if (esAdminDelEspacio) cuerpo.append(seccionDeWebhook(w));
+
   // borrar (solo el superadministrador)
   if (sessionUser.me?.is_admin) {
     const borrar = crearEl("button", "btn btn-danger", "Borrar espacio");
@@ -1501,6 +1504,134 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
     cuerpo.append(borrar);
   }
   await pintarMiembros();
+}
+
+const EVENTOS_DE_WEBHOOK = {
+  "task.created": "Tarea creada",
+  "task.completed": "Tarea completada",
+  "task.overdue": "Plazo vencido",
+};
+
+/** El webhook saliente de un espacio (plan H9): URL, eventos, secreto (se enseña
+ * una vez), envío de prueba y los últimos envíos. */
+function seccionDeWebhook(w) {
+  const caja = crearEl("div", "ws-webhook");
+  caja.append(crearEl("strong", "", "Webhook saliente"));
+  const nota = crearEl("p", "form-note", "Manda un JSON a esta URL (Slack, Discord, Mattermost, n8n…) cuando pasa algo en las bases de Tareas del espacio. Solo servidores públicos; va firmado con un secreto.");
+  const cuerpo = crearEl("div", "ws-body");
+  caja.append(nota, cuerpo);
+  const aviso = crearEl("p", "form-note");
+
+  const pintar = async (secreto = null) => {
+    let datos;
+    try {
+      datos = await api(`/workspaces/${w.id}/webhook`);
+    } catch (e) {
+      cuerpo.textContent = e?.message || "No se pudo leer el webhook.";
+      return;
+    }
+    const cfg = datos.config;
+    const url = crearEl("input", "ws-grow");
+    url.type = "url";
+    url.placeholder = "https://hooks.ejemplo.com/…";
+    url.value = cfg?.url || "";
+    url.setAttribute("aria-label", "URL del webhook");
+    const activo = crearEl("label");
+    const chkActivo = crearEl("input");
+    chkActivo.type = "checkbox";
+    chkActivo.checked = cfg ? cfg.enabled : true;
+    activo.append(chkActivo, " Activo");
+    const eventos = crearEl("div", "ws-checks");
+    const marcas = {};
+    for (const ev of datos.events) {
+      const l = crearEl("label");
+      const c = crearEl("input");
+      c.type = "checkbox";
+      c.checked = cfg ? cfg.events.includes(ev) : true;
+      marcas[ev] = c;
+      l.append(c, ` ${EVENTOS_DE_WEBHOOK[ev] || ev}`);
+      eventos.append(l);
+    }
+    const guardar = crearEl("button", "btn btn-primary", cfg ? "Guardar" : "Crear webhook");
+    guardar.type = "button";
+    guardar.addEventListener("click", async () => {
+      try {
+        const r = await api(`/workspaces/${w.id}/webhook`, {
+          method: "PUT",
+          body: JSON.stringify({
+            url: url.value.trim(),
+            enabled: chkActivo.checked,
+            events: Object.keys(marcas).filter((k) => marcas[k].checked),
+          }),
+        });
+        setFormNote(aviso, "Guardado.", "ok");
+        pintar(r.secret || null);
+      } catch (e) {
+        setFormNote(aviso, e?.message || "No se pudo guardar.", "error");
+      }
+    });
+    const fila = crearEl("div", "ws-row");
+    fila.append(url, activo);
+    const botones = crearEl("div", "ws-row");
+    botones.append(guardar);
+    if (cfg) {
+      const prueba = crearEl("button", "btn", "Enviar prueba");
+      prueba.type = "button";
+      prueba.addEventListener("click", async () => {
+        try {
+          const r = await api(`/workspaces/${w.id}/webhook/test`, { method: "POST" });
+          setFormNote(aviso, r.ok ? `La prueba llegó (${r.status}).` : `No llegó: ${r.error || `contestó ${r.status}`}`, r.ok ? "ok" : "error");
+        } catch (e) {
+          setFormNote(aviso, e?.message || "No se pudo probar.", "error");
+        }
+      });
+      const regenerar = crearEl("button", "btn", "Nuevo secreto");
+      regenerar.type = "button";
+      regenerar.addEventListener("click", async () => {
+        if (!confirm("El secreto actual dejará de valer: quien reciba el webhook tendrá que cambiarlo.")) return;
+        try {
+          pintar((await api(`/workspaces/${w.id}/webhook/secret`, { method: "POST" })).secret);
+        } catch (e) {
+          setFormNote(aviso, e?.message || "No se pudo regenerar.", "error");
+        }
+      });
+      const quitar = crearEl("button", "btn btn-danger", "Quitar webhook");
+      quitar.type = "button";
+      quitar.addEventListener("click", async () => {
+        try {
+          await api(`/workspaces/${w.id}/webhook`, { method: "DELETE" });
+          pintar();
+        } catch (e) {
+          setFormNote(aviso, e?.message || "No se pudo quitar.", "error");
+        }
+      });
+      botones.append(prueba, regenerar, quitar);
+    }
+    const partes = [fila, eventos, botones, aviso];
+    if (secreto) {
+      const s = crearEl("p", "form-note form-ok");
+      s.append("Secreto (cópialo ahora, no se vuelve a mostrar): ");
+      const code = crearEl("code", "", secreto);
+      code.style.userSelect = "all";
+      s.append(code);
+      partes.unshift(s);
+    }
+    if (datos.deliveries.length) {
+      const lista = crearEl("ul", "backup-files");
+      for (const d of datos.deliveries) {
+        const li = crearEl("li");
+        li.append(
+          crearEl("span", "", `${EVENTOS_DE_WEBHOOK[d.event] || d.event} · ${d.status === "delivered" ? "entregado" : d.status === "failed" ? "falló" : "pendiente"}`),
+          crearEl("span", "", d.last_error ? d.last_error : fmtFecha(d.created_at)),
+        );
+        lista.append(li);
+      }
+      partes.push(lista);
+    }
+    cuerpo.replaceChildren(...partes);
+  };
+  pintar();
+  return caja;
 }
 
 function formularioDeGrupoNuevo() {
