@@ -373,6 +373,22 @@
   .estado-opcion select { font: inherit; font-size: 12.5px; padding: 3px 4px; max-width: 45%; }
   /* ---------- carga del equipo (plan H5) ---------- */
   #workload-nav[hidden] { display: none; }
+  /* ---------- avisos (plan H6) ---------- */
+  .bell-btn { position: relative; margin-left: auto; }
+  .bell-badge {
+    position: absolute; top: -2px; right: -3px; min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 999px; background: var(--np-marker); color: #fff; font-size: 10.5px; font-weight: 700;
+    line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
+  }
+  .bell-badge[hidden] { display: none; }
+  .avisos-panel { width: min(380px, calc(100vw - 16px)); max-height: min(70vh, 560px); overflow-y: auto; padding: 0; }
+  .avisos-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 8px; border-bottom: 1px solid var(--panel-border); font-weight: 600; font-size: 13.5px; }
+  .avisos-item { display: grid; gap: 2px; width: 100%; text-align: left; padding: 9px 12px; background: none; border: 0; border-bottom: 1px solid var(--panel-border); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
+  .avisos-item:hover, .avisos-item:focus-visible { background: var(--code-bg); }
+  .avisos-item--unread { background: var(--accent-soft); }
+  .avisos-item small { color: var(--ink-muted); font-size: 11.5px; }
+  .avisos-empty { padding: 20px 12px; color: var(--ink-muted); font-size: 13px; text-align: center; }
+  .note-bell { min-width: 36px; }
   .carga { padding: 4px 4px 40px; }
   .carga-tools { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 4px 0 14px; font-size: 13px; color: var(--ink-muted); }
   .carga-wrap { overflow-x: auto; }
@@ -5303,6 +5319,8 @@
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+      <symbol id="i-bell-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8.7 3A6 6 0 0 1 18 8c0 2.7.4 4.7.9 6.2M17 17H3s3-2 3-9c0-.7.1-1.4.3-2"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="m2 2 20 20"/></symbol>
       <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
       <symbol id="i-grip-vertical" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></symbol>
@@ -5321,7 +5339,7 @@
 
   <div class="layout">
     <aside id="sidebar-aside">
-      <div class="sidebar-brand" id="sidebar-brand"><span id="brand-mark"></span><span class="brand-name">Note<span class="brand-name-ping">ping</span></span><span class="sr-only" id="brand-unread"></span></div>
+      <div class="sidebar-brand" id="sidebar-brand"><span id="brand-mark"></span><span class="brand-name">Note<span class="brand-name-ping">ping</span></span><span class="sr-only" id="brand-unread"></span><button type="button" class="icon-btn bell-btn" id="btn-avisos" aria-haspopup="dialog" aria-expanded="false" aria-label="Avisos" title="Avisos"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-bell"/></svg><span class="bell-badge" id="avisos-badge" hidden></span></button></div>
       <div class="workspace-switcher" id="workspace-switcher" hidden></div>
       <div class="sidebar-search">
         <input type="search" id="search-input" placeholder="Buscar…" />
