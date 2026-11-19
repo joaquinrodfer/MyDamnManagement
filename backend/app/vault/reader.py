@@ -601,12 +601,34 @@ def database_schema(page: Page, path: str, warnings: list[str]) -> list[dict]:
             prop = relation_property(prop)
             prop = sort_mode_property(prop, path, warnings)
             prop = sort_order_property(prop, path, warnings)
+            prop = option_colors_property(prop)
         effective.append(prop)
         if not isinstance(prop, dict) or "key" not in prop:
             warnings.append(f"propiedad de schema inválida en {path}: {prop!r}")
         elif prop.get("type") not in TYPES:
             warnings.append(f"tipo desconocido {prop.get('type')!r} en {path}:{prop.get('key')}")
     return effective
+
+
+def option_colors_property(prop: dict) -> dict:
+    """`option_colors` del `.md` (`["red:En curso"]`) como `{valor: color}`."""
+    raw = prop.get("option_colors")
+    if raw is None:
+        return prop
+    out = dict(prop)
+    colores: dict[str, str] = {}
+    if isinstance(raw, dict):
+        colores = {str(v): str(c) for v, c in raw.items()}
+    elif isinstance(raw, list):
+        for item in raw:
+            color, _, valor = str(item).partition(":")
+            if valor.strip() and color.strip():
+                colores[valor.strip()] = color.strip()
+    if colores:
+        out["option_colors"] = colores
+    else:
+        out.pop("option_colors", None)
+    return out
 
 
 def sort_mode_property(prop: dict, path: str, warnings: list[str]) -> dict:

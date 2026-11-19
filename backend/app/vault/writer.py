@@ -243,7 +243,18 @@ def schema_entries(schema: list[dict]) -> list[dict]:
     infiere tipos y `options: null` volvería como la cadena `"null"`, que no es
     una lista de opciones.
     """
-    return [_sin_vacios(prop) for prop in schema if isinstance(prop, dict)]
+    out = []
+    for prop in schema:
+        if not isinstance(prop, dict):
+            continue
+        prop = dict(prop)
+        colores = prop.get("option_colors")
+        if isinstance(colores, dict):
+            # El subconjunto de YAML del vault no admite una clave con espacios
+            # (`En curso: red`): los colores van como una lista `color:valor`.
+            prop["option_colors"] = [f"{c}:{v}" for v, c in colores.items()]
+        out.append(_sin_vacios(prop))
+    return out
 
 
 def row_template_entries(templates: list[dict] | None) -> list[dict]:

@@ -11205,6 +11205,8 @@ function formatPropValue(value, prop) {
  * libre heredado) va en el tono neutro. Los tonos son los `--tag-N` del CSS. */
 const TONOS_DE_ETIQUETA = 7;
 function htmlDeEtiqueta(valor, prop) {
+  const propio = prop.option_colors?.[valor];
+  if (propio) return `<span class="prop-tag opt-${propio}">${escapeHtml(String(valor))}</span>`;
   const posicion = (prop.options || []).indexOf(valor);
   const tono = posicion < 0 ? 1 : (posicion % TONOS_DE_ETIQUETA) + 1;
   return `<span class="prop-tag prop-tag-${tono}">${escapeHtml(String(valor))}</span>`;
@@ -15433,6 +15435,403 @@ async function toggleCheckbox(td, database, row, prop, hooks = null) {
  * (de la fila, o al final de la fila a la primera de la siguiente); Esc cancela
  * y deja la celda como estaba. Así se recorre una fila entera sin ratón.
  */
+// --- el desplegable de una selección (estilo Notion) -----------------------
+
+const COLORES_DE_OPCION = [
+  ["default", "Por defecto"],
+  ["gray", "Gris"],
+  ["brown", "Marrón"],
+  ["orange", "Naranja"],
+  ["yellow", "Amarillo"],
+  ["green", "Verde"],
+  ["blue", "Azul"],
+  ["purple", "Morado"],
+  ["pink", "Rosa"],
+  ["red", "Rojo"],
+];
+// Lo que sale de la posición cuando la opción no tiene color propio (ver
+// `htmlDeEtiqueta`): los siete tonos de siempre, con nombre.
+const COLORES_POR_POSICION = ["gray", "blue", "orange", "green", "purple", "pink", "yellow"];
+
+/** El color con nombre de una opción: el suyo o, sin él, el de su posición. */
+function colorDeOpcion(valor, prop) {
+  const propio = prop?.option_colors?.[valor];
+  if (propio) return propio;
+  const pos = (prop?.options || []).indexOf(valor);
+  return pos < 0 ? "gray" : COLORES_POR_POSICION[pos % COLORES_POR_POSICION.length];
+}
+
+let selectorDeSeleccion = null;
+
+function cerrarSelectorDeSeleccion({ foco = false } = {}) {
+  const abierto = selectorDeSeleccion;
+  if (!abierto) return;
+  selectorDeSeleccion = null;
+  abierto.limpiar();
+  abierto.panel.remove();
+  if (foco && abierto.ancla?.isConnected) abierto.ancla.focus({ preventScroll: true });
+  // El color o el grupo cambiaron el esquema: las demás celdas lo estrenan.
+  if (abierto.cambioEsquema()) state.databaseView?.recargar?.();
+}
+
+/** Una etiqueta (la misma de la tabla) como elemento. */
+function etiquetaDeOpcion(valor, prop) {
+  const e = document.createElement("span");
+  e.className = `prop-tag opt-${colorDeOpcion(valor, prop)}`;
+  e.textContent = valor;
+  return e;
+}
+
+/**
+ * Abre el desplegable de una celda `select` / `multiselect` al primer clic:
+ * buscar o crear opciones, marcar las elegidas, y desde el «⋯» de cada opción
+ * cambiar su color y —si la columna tiene grupos de estado— su grupo.
+ */
+function editarCeldaDeSeleccion(td, database, row, prop, hooks = null) {
+  if (selectorDeSeleccion) return;
+  cerrarSelectorDePersona();
+  cerrarSelectorDeRelacion();
+  const clave = prop.key;
+  const multiple = prop.type === "multiselect";
+  let cambioEsquema = false;
+  const propActual = () => database.schema_def.find((p) => p.key === clave) || prop;
+  const grupos = () =>
+    database.closed?.property === clave && database.closed.groups?.length ? database.closed.groups : null;
+  const valores = () => {
+    const v = row.properties?.[clave];
+    return (Array.isArray(v) ? v : v === undefined || v === null || v === "" ? [] : [v]).map(String);
+  };
+
+  const panel = document.createElement("div");
+  panel.className = "sel-picker";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", `Elegir ${prop.name}`);
+  const top = document.createElement("div");
+  top.className = "sel-top";
+  const buscar = document.createElement("input");
+  buscar.type = "text";
+  buscar.autocomplete = "off";
+  buscar.placeholder = multiple ? "Buscar o crear una opción…" : "Buscar o crear una opción…";
+  buscar.setAttribute("aria-label", "Buscar o crear una opción");
+  const pista = document.createElement("div");
+  pista.className = "sel-hint";
+  pista.textContent = multiple ? "Elige varias opciones o crea una" : "Elige una opción o crea una";
+  const lista = document.createElement("div");
+  lista.className = "sel-list";
+  lista.setAttribute("role", "listbox");
+  const menu = document.createElement("div");
+  menu.className = "sel-menu";
+  menu.hidden = true;
+  panel.append(top, pista, lista, menu);
+
+  const estado = { activo: -1, filas: [] };
+
+  const guardar = async (nuevo) => {
+    const valor = multiple ? (nuevo.length ? nuevo : null) : nuevo[0] ?? null;
+    if (sameValue(valor, row.properties?.[clave] ?? null)) return;
+    try {
+      await saveRow(database, row, { properties: { [clave]: valor } }, hooks);
+      repaintCell(td, database, row, propActual(), false, hooks);
+    } catch (e) {
+      reportError("No se pudo guardar el cambio", e);
+      repaintCell(td, database, row, propActual(), false, hooks);
+    }
+    pintarTodo();
+  };
+
+  const alternar = async (valor) => {
+    const ya = valores();
+    if (multiple) await guardar(ya.includes(valor) ? ya.filter((v) => v !== valor) : [...ya, valor]);
+    else {
+      await guardar([valor]);
+      cerrarSelectorDeSeleccion({ foco: true });
+    }
+  };
+
+  const llamarOpciones = async (cuerpo) => {
+    try {
+      const nueva = await api(`/databases/${database.id}/options`, {
+        method: "POST",
+        body: JSON.stringify({ property: clave, ...cuerpo }),
+      });
+      Object.assign(database, nueva);
+      cambioEsquema = true;
+      return true;
+    } catch (e) {
+      reportError("No se pudo cambiar la opción", e);
+      return false;
+    }
+  };
+
+  const crear = async (texto) => {
+    const nombre = texto.trim();
+    if (!nombre) return;
+    if (!(await llamarOpciones({ add: nombre }))) return;
+    const real = (propActual().options || []).find((o) => o.toLowerCase() === nombre.toLowerCase()) || nombre;
+    buscar.value = "";
+    await alternar(real);
+    pintarTodo();
+  };
+
+  function pintarArriba() {
+    top.querySelectorAll(".prop-tag").forEach((n) => n.remove());
+    const p = propActual();
+    for (const v of valores()) {
+      const e = etiquetaDeOpcion(v, p);
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "sel-x";
+      x.textContent = "×";
+      x.setAttribute("aria-label", `Quitar ${v}`);
+      x.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        guardar(valores().filter((o) => o !== v));
+      });
+      e.append(x);
+      top.insertBefore(e, buscar);
+    }
+  }
+
+  function filaDeOpcion(valor) {
+    const p = propActual();
+    const marcada = valores().includes(valor);
+    const fila = document.createElement("div");
+    fila.className = "sel-row";
+    fila.setAttribute("role", "option");
+    fila.setAttribute("aria-selected", String(marcada));
+    fila.tabIndex = -1;
+    const relleno = document.createElement("span");
+    relleno.className = "sel-fill";
+    relleno.append(etiquetaDeOpcion(valor, p));
+    fila.append(relleno);
+    if (marcada) {
+      const c = document.createElement("span");
+      c.className = "sel-check";
+      c.textContent = "✓";
+      fila.append(c);
+    }
+    const mas = document.createElement("button");
+    mas.type = "button";
+    mas.className = "sel-more";
+    mas.innerHTML = svgIcon("i-more");
+    mas.title = "Color y grupo";
+    mas.setAttribute("aria-label", `Color y grupo de ${valor}`);
+    mas.addEventListener("click", (e) => {
+      e.stopPropagation();
+      abrirMenuDeOpcion(valor);
+    });
+    fila.append(mas);
+    fila.addEventListener("click", () => alternar(valor));
+    return fila;
+  }
+
+  function pintarLista() {
+    lista.textContent = "";
+    estado.filas = [];
+    estado.activo = -1;
+    const p = propActual();
+    const consulta = plegarTexto(buscar.value.trim());
+    const coincide = (o) => !consulta || plegarTexto(o).includes(consulta);
+    const todas = [...(p.options || [])];
+    // Un valor ya guardado que no está entre las opciones (texto libre heredado) se ve y se puede quitar.
+    for (const v of valores()) if (!todas.includes(v)) todas.push(v);
+    const g = grupos();
+    const añadir = (valor) => {
+      const f = filaDeOpcion(valor);
+      estado.filas.push({ el: f, valor });
+      lista.append(f);
+    };
+    if (g) {
+      const enGrupo = new Set(g.flatMap((x) => x.options || []));
+      for (const grupo of g) {
+        const ops = (grupo.options || []).filter(coincide);
+        if (!ops.length) continue;
+        const cab = document.createElement("div");
+        cab.className = "sel-group-head";
+        cab.append(grupo.name);
+        if (grupo.closed) {
+          const em = document.createElement("em");
+          em.textContent = "· cuenta como hecho";
+          cab.append(em);
+        }
+        lista.append(cab);
+        ops.forEach(añadir);
+      }
+      const sueltas = todas.filter((o) => !enGrupo.has(o) && coincide(o));
+      if (sueltas.length) {
+        const cab = document.createElement("div");
+        cab.className = "sel-group-head";
+        cab.textContent = "Sin grupo";
+        lista.append(cab);
+        sueltas.forEach(añadir);
+      }
+    } else {
+      todas.filter(coincide).forEach(añadir);
+    }
+    const texto = buscar.value.trim();
+    if (texto && !todas.some((o) => o.toLowerCase() === texto.toLowerCase())) {
+      const fila = document.createElement("div");
+      fila.className = "sel-row sel-create";
+      fila.setAttribute("role", "option");
+      fila.tabIndex = -1;
+      const relleno = document.createElement("span");
+      relleno.className = "sel-fill";
+      relleno.append("Crear ", Object.assign(document.createElement("span"), { className: "prop-tag opt-gray", textContent: texto }));
+      fila.append(relleno);
+      fila.addEventListener("click", () => crear(texto));
+      estado.filas.push({ el: fila, crear: texto });
+      lista.append(fila);
+    }
+    if (!estado.filas.length) {
+      const n = document.createElement("p");
+      n.className = "sel-note";
+      n.textContent = "No hay opciones. Escribe un nombre para crear la primera.";
+      lista.append(n);
+    }
+  }
+
+  function pintarTodo() {
+    pintarArriba();
+    pintarLista();
+    colocarPanelFlotante(panel, td);
+  }
+
+  function abrirMenuDeOpcion(valor) {
+    lista.hidden = true;
+    pista.hidden = true;
+    top.hidden = true;
+    menu.hidden = false;
+    const pintar = () => {
+      menu.textContent = "";
+      const p = propActual();
+      const cab = document.createElement("div");
+      cab.className = "sel-menu-head";
+      const atras = document.createElement("button");
+      atras.type = "button";
+      atras.className = "sel-back";
+      atras.textContent = "←";
+      atras.setAttribute("aria-label", "Volver a las opciones");
+      atras.addEventListener("click", cerrarMenu);
+      cab.append(atras, etiquetaDeOpcion(valor, p));
+      menu.append(cab);
+      const etiqueta = document.createElement("div");
+      etiqueta.className = "sel-menu-label";
+      etiqueta.textContent = "Color";
+      menu.append(etiqueta);
+      const actual = colorDeOpcion(valor, p);
+      for (const [nombre, texto] of COLORES_DE_OPCION) {
+        const fila = document.createElement("button");
+        fila.type = "button";
+        fila.className = "sel-row";
+        const m = document.createElement("span");
+        m.className = `sel-swatch opt-${nombre}`;
+        const t = document.createElement("span");
+        t.className = "sel-fill";
+        t.textContent = texto;
+        fila.append(m, t);
+        if (nombre === actual) fila.append(Object.assign(document.createElement("span"), { className: "sel-check", textContent: "✓" }));
+        fila.addEventListener("click", async () => {
+          if (await llamarOpciones({ colors: { [valor]: nombre } })) pintar();
+        });
+        menu.append(fila);
+      }
+      const g = grupos();
+      if (g) {
+        const e2 = document.createElement("div");
+        e2.className = "sel-menu-label";
+        e2.textContent = "Grupo";
+        menu.append(e2);
+        const mio = g.find((x) => (x.options || []).includes(valor))?.name;
+        for (const grupo of g) {
+          const fila = document.createElement("button");
+          fila.type = "button";
+          fila.className = "sel-row";
+          const t = document.createElement("span");
+          t.className = "sel-fill";
+          t.textContent = grupo.name + (grupo.closed ? " · cuenta como hecho" : "");
+          fila.append(t);
+          if (grupo.name === mio) fila.append(Object.assign(document.createElement("span"), { className: "sel-check", textContent: "✓" }));
+          fila.addEventListener("click", async () => {
+            if (grupo.name !== mio && (await llamarOpciones({ move: valor, group: grupo.name }))) pintar();
+          });
+          menu.append(fila);
+        }
+      }
+      colocarPanelFlotante(panel, td);
+    };
+    pintar();
+  }
+
+  function cerrarMenu() {
+    menu.hidden = true;
+    lista.hidden = false;
+    pista.hidden = false;
+    top.hidden = false;
+    pintarTodo();
+    buscar.focus({ preventScroll: true });
+  }
+
+  top.append(buscar);
+  buscar.addEventListener("input", () => {
+    pintarLista();
+    colocarPanelFlotante(panel, td);
+  });
+  buscar.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const f = estado.filas[Math.max(estado.activo, 0)];
+      if (f?.crear) crear(f.crear);
+      else if (f) alternar(f.valor);
+      return;
+    }
+    if (e.key === "Backspace" && !buscar.value && multiple && valores().length) {
+      guardar(valores().slice(0, -1));
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if (!estado.filas.length) return;
+    e.preventDefault();
+    const n = estado.filas.length;
+    estado.activo = e.key === "ArrowDown" ? (estado.activo + 1) % n : (estado.activo - 1 + n) % n;
+    estado.filas.forEach((f, i) => f.el.classList.toggle("is-active", i === estado.activo));
+    estado.filas[estado.activo].el.scrollIntoView({ block: "nearest" });
+  });
+
+  document.body.appendChild(panel);
+  const fuera = (e) => {
+    if (panel.contains(e.target) || td.contains(e.target)) return;
+    cerrarSelectorDeSeleccion();
+  };
+  const teclas = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    if (!menu.hidden) cerrarMenu();
+    else cerrarSelectorDeSeleccion({ foco: true });
+  };
+  const recolocar = () => {
+    if (!td.isConnected) cerrarSelectorDeSeleccion();
+    else colocarPanelFlotante(panel, td);
+  };
+  document.addEventListener("mousedown", fuera, true);
+  document.addEventListener("keydown", teclas, true);
+  window.addEventListener("scroll", recolocar, true);
+  window.addEventListener("resize", recolocar);
+  selectorDeSeleccion = {
+    panel,
+    ancla: td,
+    cambioEsquema: () => cambioEsquema,
+    limpiar: () => {
+      document.removeEventListener("mousedown", fuera, true);
+      document.removeEventListener("keydown", teclas, true);
+      window.removeEventListener("scroll", recolocar, true);
+      window.removeEventListener("resize", recolocar);
+    },
+  };
+  pintarTodo();
+  buscar.focus({ preventScroll: true });
+}
+
 function editCell(td, database, row, prop, hooks = null) {
   if (td.querySelector("input, select, textarea")) return;
   // Una relación no se edita escribiendo un id: se elige la fila en un
@@ -15449,6 +15848,11 @@ function editCell(td, database, row, prop, hooks = null) {
     editarCeldaDePersona(td, database, row, prop, hooks).catch((e) =>
       reportError("No se pudo abrir el selector de personas", e),
     );
+    return;
+  }
+  // Una selección tampoco: se abre su desplegable al primer clic.
+  if (prop?.type === "select" || prop?.type === "multiselect") {
+    editarCeldaDeSeleccion(td, database, row, prop, hooks);
     return;
   }
   const isTitle = !prop;
@@ -15866,7 +16270,9 @@ function renderBoardColumn(
   // coincida («(sin valor)», un texto libre) se queda en el tono neutro.
   const propDeGrupo = groupKey ? database.schema_def.find((p) => p.key === groupKey) : null;
   const posicionDeTono = (propDeGrupo?.options || []).indexOf(value);
-  if (posicionDeTono >= 0) {
+  if (propDeGrupo?.option_colors?.[value]) {
+    labelSpan.classList.add(`opt-${propDeGrupo.option_colors[value]}`);
+  } else if (posicionDeTono >= 0) {
     labelSpan.classList.add(`prop-tag-${(posicionDeTono % TONOS_DE_ETIQUETA) + 1}`);
   }
   const countSpan = document.createElement("span");

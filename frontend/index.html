@@ -134,6 +134,9 @@
     --tag-5: #a78bfa;
     --tag-6: #f472b6;
     --tag-7: #2dd4bf;
+    --tag-8: #c08a5d;
+    --tag-9: #e6c84f;
+    --tag-10: #f4676b;
 
     --row-height: 36px;
     --row-hover: color-mix(in srgb, var(--ink) 5%, transparent);
@@ -175,6 +178,9 @@
     --tag-5: #6d3fd1;
     --tag-6: #c02678;
     --tag-7: #0f7f73;
+    --tag-8: #8a5a35;
+    --tag-9: #8a6d0b;
+    --tag-10: #c4313a;
   }
 
   /* Utilidad de accesibilidad para texto solo visible a lectores de pantalla */
@@ -3386,6 +3392,47 @@
   .prop-tag-5 { --tag: var(--tag-5); }
   .prop-tag-6 { --tag: var(--tag-6); }
   .prop-tag-7 { --tag: var(--tag-7); }
+  /* Colores con nombre de las opciones (como los de Notion). */
+  .opt-default { --tag: var(--ink-muted); }
+  .opt-gray { --tag: var(--tag-1); }
+  .opt-brown { --tag: var(--tag-8); }
+  .opt-orange { --tag: var(--tag-3); }
+  .opt-yellow { --tag: var(--tag-9); }
+  .opt-green { --tag: var(--tag-4); }
+  .opt-blue { --tag: var(--tag-2); }
+  .opt-purple { --tag: var(--tag-5); }
+  .opt-pink { --tag: var(--tag-6); }
+  .opt-red { --tag: var(--tag-10); }
+  /* El desplegable de una selección (estilo Notion). */
+  .sel-picker {
+    position: fixed; z-index: 1000; width: min(300px, calc(100vw - 16px)); max-height: min(70vh, 480px);
+    display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 10px; box-shadow: var(--shadow-float); color: var(--ink); font-size: 13.5px; overflow: hidden;
+  }
+  .sel-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); background: var(--bg); }
+  .sel-top input { flex: 1 1 90px; min-width: 60px; border: 0; outline: 0; background: none; color: var(--ink); font: inherit; padding: 3px 0; }
+  .sel-top .prop-tag { display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; }
+  .sel-x { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 2px; font-size: 13px; line-height: 1; opacity: .7; }
+  .sel-x:hover { opacity: 1; }
+  .sel-hint { padding: 8px 12px 4px; font-size: 12px; color: var(--ink-muted); }
+  .sel-list { overflow-y: auto; padding: 2px 4px 6px; }
+  .sel-group-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 3px; font-size: 11.5px; font-weight: 600; letter-spacing: .03em; color: var(--ink-muted); }
+  .sel-group-head em { font-style: normal; font-weight: 400; opacity: .8; }
+  .sel-row { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 6px 4px 8px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; min-height: 30px; }
+  .sel-row:hover, .sel-row.is-active { background: var(--row-hover); }
+  .sel-row .prop-tag { flex: 0 1 auto; }
+  .sel-row .sel-fill { flex: 1; }
+  .sel-check { color: var(--accent-ink); font-size: 13px; }
+  .sel-more { border: 0; background: none; color: var(--ink-muted); cursor: pointer; border-radius: 5px; width: 24px; height: 24px; opacity: 0; display: inline-flex; align-items: center; justify-content: center; }
+  .sel-row:hover .sel-more, .sel-row.is-active .sel-more, .sel-more:focus-visible { opacity: 1; }
+  .sel-more:hover { background: var(--code-bg); color: var(--ink); }
+  .sel-create .prop-tag { margin-left: 2px; }
+  .sel-menu { overflow-y: auto; padding: 6px 4px 8px; }
+  .sel-menu-head { display: flex; align-items: center; gap: 8px; padding: 4px 6px 8px; }
+  .sel-back { border: 0; background: none; color: var(--ink-muted); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .sel-menu-label { padding: 8px 8px 3px; font-size: 11.5px; font-weight: 600; letter-spacing: .03em; color: var(--ink-muted); }
+  .sel-swatch { width: 16px; height: 16px; border-radius: 4px; background: color-mix(in srgb, var(--tag) 35%, transparent); border: 1px solid color-mix(in srgb, var(--tag) 70%, transparent); flex-shrink: 0; }
+  .sel-note { margin: 0; padding: 6px 12px; font-size: 12px; color: var(--ink-muted); }
   /* Una celda de relación enseña los TÍTULOS de las filas enlazadas, y saltan
      de línea dentro del ancho de la celda: un título largo no puede desbordar
      la tabla (el `td` recorta y a 375 px se perdería la mitad). */
