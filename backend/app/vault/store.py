@@ -688,9 +688,13 @@ class VaultStore:
     # repositorio con el espacio activo de la petición. Sin él, el primero.
     active_workspace: Optional[str] = None
 
-    def _workspace_for(self, rel: str, parent_id: Any, database_id: Any) -> str:
+    def _workspace_for(
+        self, rel: str, parent_id: Any, database_id: Any, page_id: Any = None
+    ) -> str:
         """El espacio de una página que se (re)indexa: el de su madre o su base,
-        o el que ya tenía en esa ruta; solo una página nueva va al activo."""
+        el que ya tenía esa misma página (por id: un renombrado cambia la ruta y
+        no puede cambiarle el espacio) o el de esa ruta; solo una página nueva va
+        al espacio activo."""
         for ref in (parent_id, database_id):
             if ref:
                 row = self.conn.execute(
@@ -698,6 +702,12 @@ class VaultStore:
                 ).fetchone()
                 if row is not None:
                     return row[0]
+        if page_id:
+            row = self.conn.execute(
+                "SELECT workspace_id FROM pages WHERE id = ?", (str(page_id),)
+            ).fetchone()
+            if row is not None:
+                return row[0]
         row = self.conn.execute(
             "SELECT workspace_id FROM pages WHERE path = ?", (rel,)
         ).fetchone()
@@ -1024,7 +1034,7 @@ class VaultStore:
             # nombre del fichero (que es su id). `reader.load` hace lo mismo al
             # reindexar; los dos caminos tienen que decir lo mismo.
             reader.apply_row_title(page)
-        workspace_id = self._workspace_for(rel, parent_id, database_id)
+        workspace_id = self._workspace_for(rel, parent_id, database_id, getattr(page, "id", None))
         record = self._record_from_page(
             page, workspace_id, parent_id,
             page_id=self._page_id_for(page) if dedupe else None,
