@@ -414,7 +414,6 @@
   .avisos-item--unread { background: var(--accent-soft); }
   .avisos-item small { color: var(--ink-muted); font-size: 11.5px; }
   .avisos-empty { padding: 20px 12px; color: var(--ink-muted); font-size: 13px; text-align: center; }
-  .note-bell { min-width: 36px; }
   .carga { padding: 4px 4px 40px; }
   .carga-tools { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 4px 0 14px; font-size: 13px; color: var(--ink-muted); }
   .carga-wrap { overflow-x: auto; }
@@ -442,22 +441,24 @@
   /* Espacios en el panel izquierdo: un bloque plegable por espacio. */
   .workspaces-panel { display: flex; flex-direction: column; gap: 4px; }
   .ws-block { border-radius: 8px; }
-  .ws-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 0 4px 0 2px; }
+  .ws-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 0 4px 0 0; }
   .ws-toggle {
-    flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 3px 6px;
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 3px 6px 3px 8px;
     background: none; border: 0; border-radius: 6px; color: var(--ink); font: inherit; font-size: 13.5px;
     font-weight: 600; text-align: left; cursor: pointer;
   }
   .ws-toggle:hover { background: var(--row-hover); }
-  .ws-chevron { display: inline-flex; color: var(--ink-muted); flex-shrink: 0; }
+  .ws-chevron { display: inline-flex; color: var(--ink-muted); flex-shrink: 0; margin-left: auto; }
+  .ws-toggle .tree-guest-ws { margin-left: auto; }
+  .ws-toggle .tree-guest-ws + .ws-chevron { margin-left: 4px; }
   .ws-chevron .svg-icon { width: 14px; height: 14px; transition: transform .15s ease; }
   .ws-plegado .ws-chevron .svg-icon { transform: rotate(-90deg); }
   .ws-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .wsp-body { padding: 0 0 6px 4px; }
+  .wsp-body { padding: 0 0 6px 14px; }
   .ws-sub { border-radius: 6px; }
   .ws-sub-head {
     display: flex; align-items: center; justify-content: space-between; min-height: 24px;
-    padding: 2px 4px 0 30px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted);
+    padding: 2px 4px 0 8px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted);
   }
   .ws-tree { min-height: 10px; padding-bottom: 2px; }
   .ws-block .tree-guest-ws { margin-left: auto; }
@@ -893,6 +894,8 @@
 
   /* ---------- navegación (atrás/adelante/subir), junto al botón de la barra ---------- */
   .header-left { display: flex; align-items: center; gap: 6px; }
+  header { justify-content: space-between; }
+  .header-right { display: flex; align-items: center; gap: 6px; }
   .nav-history-controls { display: flex; gap: 2px; }
 
   .template-btn {
@@ -5052,7 +5055,7 @@
       flex-wrap: nowrap;
       gap: 4px;
     }
-    .note-topbar-right .share-btn { min-height: 40px; }
+    .header-right .share-btn { min-height: 40px; }
     .note-more-btn { min-width: 44px; min-height: 44px; }
     /* El icono se alinea con la PRIMERA línea del título, no con el centro de
        la fila: con `align-items: center` la fila mide 48 (44 del título + 4
@@ -5586,6 +5589,7 @@
             <button class="icon-btn" id="btn-nav-up" title="Subir un nivel" aria-label="Subir un nivel" disabled><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-arrow-up"/></svg></button>
           </div>
         </div>
+        <div class="header-right" id="header-right"></div>
       </header>
       <main id="main">
         <div class="empty-state">Elige una página o crea una nueva.</div>

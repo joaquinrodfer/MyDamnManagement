@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Cabecera, avisos y panel de espacios (ajustes)
+- Administración: al crear un usuario la lista se recarga del servidor; el respaldo local ya no repite un mismo @usuario con nombres antiguos.
+- Panel izquierdo: el logo del espacio va pegado a la izquierda, la flecha de plegar a la derecha y las páginas con más margen.
+- Los avisos de una página son una opción más del «⋯», igual en páginas y bases (ya no hay campana suelta).
+- Compartir está en la cabecera, arriba a la derecha, junto a atrás/adelante/subir.
+
 ## [Sin publicar]
 
 ### Añadido
