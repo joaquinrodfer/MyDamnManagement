@@ -1228,6 +1228,23 @@ class Repository:
         self.vault.save_database(current.page_id, kind=kind, **extra)
         return self.get_database(database_id)
 
+    def save_schema(
+        self,
+        database_id: uuid.UUID,
+        schema: list[dict[str, Any]],
+        closed_rule: Any = UNSET,
+    ) -> Optional[Database]:
+        """Escribe el schema (y, si llega, la regla de «cerrado») en una sola vez."""
+        current = self.get_database(database_id)
+        if current is None:
+            return None
+        extra: dict[str, Any] = {"schema": schema}
+        if closed_rule is not UNSET:
+            extra["schema"] = closed.without_legacy(schema)
+            extra["closed"] = closed_rule
+        self.vault.save_database(current.page_id, **extra)
+        return self.get_database(database_id)
+
     def set_closed(
         self, database_id: uuid.UUID, rule: Optional[dict[str, Any]]
     ) -> Optional[Database]:

@@ -384,6 +384,82 @@ def create_from_template(
     return _serialize_database(db_def, repo.database_ids())
 
 
+@router.post("/{database_id}/options", response_model=schemas.DatabaseRead)
+def edit_options(
+    database_id: uuid.UUID,
+    payload: schemas.OptionsEdit,
+    repo: Repository = Depends(get_repo),
+):
+    """Crear una opción, cambiar su color o moverla de grupo (desplegable de la
+    celda). Toca solo la propiedad pedida y, si la tiene, su regla de «cerrado»."""
+    from app.properties import OPTION_COLORS, SELECT_TYPES, clean_option_colors
+
+    db_def = _get_database_or_404(repo, database_id)
+    schema = [dict(p) for p in db_def.schema_def]
+    prop = next((p for p in schema if p.get("key") == payload.property), None)
+    if prop is None or prop.get("type") not in SELECT_TYPES:
+        raise HTTPException(400, "esa propiedad no es una selección")
+    options = list(prop.get("options") or [])
+    canon = {o.casefold(): o for o in options}
+    rule = db_def.closed if db_def.closed and db_def.closed.get(closed.PROPERTY_KEY) == prop["key"] else None
+    groups = [dict(g) for g in ((rule or {}).get(closed.GROUPS_KEY) or [])]
+    cambia_regla = False
+
+    nueva = None
+    if payload.add is not None:
+        nueva = payload.add.strip()
+        if not nueva or len(nueva) > 60:
+            raise HTTPException(400, "el nombre de una opción tiene de 1 a 60 caracteres")
+        if nueva.casefold() in canon:
+            nueva = canon[nueva.casefold()]
+        else:
+            options.append(nueva)
+            prop["options"] = options
+            canon[nueva.casefold()] = nueva
+            if groups:
+                destino = next((g for g in groups if g["name"] == payload.group), None) or next(
+                    (g for g in groups if not g.get("closed")), groups[0]
+                )
+                destino["options"] = [*destino.get("options", []), nueva]
+                cambia_regla = True
+    if payload.move is not None:
+        real = canon.get(payload.move.casefold())
+        destino = next((g for g in groups if g["name"] == payload.group), None)
+        if real is None or destino is None:
+            raise HTTPException(400, "elige una opción y un grupo que existan")
+        for g in groups:
+            g["options"] = [o for o in g.get("options", []) if o != real]
+        destino["options"] = [*destino.get("options", []), real]
+        cambia_regla = True
+    if payload.colors is not None:
+        colores = dict(prop.get("option_colors") or {})
+        for valor, color in payload.colors.items():
+            real = canon.get(valor.casefold())
+            if real is None:
+                raise HTTPException(400, f"«{valor}» no es una opción de la propiedad")
+            if color is None:
+                colores.pop(real, None)
+            elif color in OPTION_COLORS:
+                colores[real] = color
+            else:
+                raise HTTPException(400, f"color desconocido {color!r}")
+        limpios = clean_option_colors(colores, options)
+        if limpios:
+            prop["option_colors"] = limpios
+        else:
+            prop.pop("option_colors", None)
+
+    regla_nueva = Ellipsis
+    if cambia_regla:
+        regla_nueva = closed.validate(schema, prop["key"], None, groups)
+    with _vault_errors():
+        actualizada = repo.save_schema(
+            database_id, schema, closed_rule=UNSET if regla_nueva is Ellipsis else regla_nueva
+        )
+    publish_database(database_id, "updated")
+    return _serialize_database(actualizada, repo.database_ids())
+
+
 @router.put("/{database_id}/kind", response_model=schemas.DatabaseRead)
 def set_kind(
     database_id: uuid.UUID,

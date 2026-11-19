@@ -288,6 +288,7 @@ def plan_schema(
             icono = (origen or {}).get("icon")
         if icono and str(icono).strip():
             prop["icon"] = str(icono).strip()
+        _plan_option_colors(prop, item, origen)
         if item.get("type") == RELATION:
             _plan_relation(prop, item, origen)
         if item.get("type") == PERSON:
@@ -482,6 +483,35 @@ def _plan_done(prop: dict, item: dict, origen: Optional[dict], name: str) -> Non
         )
         return
     prop["done"] = elegidos
+
+
+# Los colores que puede llevar una opción de selección (los de Notion).
+OPTION_COLORS = ("default", "gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red")
+
+
+def clean_option_colors(raw: Any, options: Iterable[str]) -> dict[str, str]:
+    """`{valor: color}` limpio: solo opciones que existen y colores conocidos."""
+    if not isinstance(raw, dict):
+        return {}
+    canonica = {str(o).casefold(): str(o) for o in options or []}
+    out: dict[str, str] = {}
+    for valor, color in raw.items():
+        real = canonica.get(str(valor).casefold())
+        if real is not None and color in OPTION_COLORS:
+            out[real] = color
+    return out
+
+
+def _plan_option_colors(prop: dict, item: dict, origen: Optional[dict]) -> None:
+    """El color de cada opción de una selección. El pedido manda (`{}` los quita
+    todos); sin pedirlo, se conservan. Una opción que ya no existe pierde su color."""
+    if prop.get("type") not in SELECT_TYPES:
+        return
+    pedido = item.get("option_colors")
+    crudo = pedido if pedido is not None else (origen or {}).get("option_colors")
+    colores = clean_option_colors(crudo, prop.get("options") or [])
+    if colores:
+        prop["option_colors"] = colores
 
 
 def _plan_order(prop: dict, item: dict, origen: Optional[dict], name: str) -> None:

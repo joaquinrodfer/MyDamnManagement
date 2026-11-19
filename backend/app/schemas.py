@@ -25,6 +25,16 @@ class PageCreate(PageBase):
     section: Optional[Literal["shared", "private"]] = None
 
 
+class OptionsEdit(BaseModel):
+    """Editar las opciones de una selección sin tocar el resto del schema."""
+
+    property: str
+    add: Optional[str] = None  # una opción nueva
+    group: Optional[str] = None  # el grupo de la nueva, o el destino de `move`
+    colors: Optional[dict[str, Optional[str]]] = None  # {valor: color | null}
+    move: Optional[str] = None  # un valor que cambia de grupo
+
+
 class PageMove(BaseModel):
     """Arrastrar en el panel izquierdo: madre nueva (o `null`, la raíz de un
     espacio) y sitio entre hermanas (justo antes de `before_id`, o al final)."""
@@ -182,6 +192,21 @@ class PropertyDef(BaseModel):
     # nombre en la cabecera de la tabla. `None` al editar = «no lo toco»;
     # `""` = quítalo.
     icon: Optional[str] = None
+    # Color de cada opción de una selección: `{valor: color}` con los colores de
+    # `properties.OPTION_COLORS`. `None` al editar = «no lo toco»; `{}` = quítalos.
+    option_colors: Optional[dict[str, str]] = None
+
+    @field_validator("option_colors")
+    @classmethod
+    def option_colors_known(cls, v):
+        if v is None:
+            return v
+        from app.properties import OPTION_COLORS
+
+        for valor, color in v.items():
+            if color not in OPTION_COLORS:
+                raise ValueError(f"color desconocido {color!r} (los hay: {', '.join(OPTION_COLORS)})")
+        return v
 
     @field_validator("icon")
     @classmethod
