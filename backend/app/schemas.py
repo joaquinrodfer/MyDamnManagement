@@ -25,6 +25,16 @@ class PageCreate(PageBase):
     section: Optional[Literal["shared", "private"]] = None
 
 
+class PageMove(BaseModel):
+    """Arrastrar en el panel izquierdo: madre nueva (o `null`, la raíz de un
+    espacio) y sitio entre hermanas (justo antes de `before_id`, o al final)."""
+
+    parent_id: Optional[uuid.UUID] = None
+    before_id: Optional[uuid.UUID] = None
+    workspace_id: Optional[uuid.UUID] = None
+    section: Optional[Literal["shared", "private"]] = None
+
+
 class PageUpdate(BaseModel):
     title: Optional[str] = None
     icon: Optional[str] = None

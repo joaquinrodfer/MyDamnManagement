@@ -136,14 +136,55 @@ def _row(conn: sqlite3.Connection, r: sqlite3.Row, role: Optional[str]) -> dict:
 
 
 def list_for(conn: sqlite3.Connection, user: Any) -> list[dict]:
-    """Los espacios que ve `user`: los suyos, o todos si es superadministrador."""
+    """Los espacios que ve `user`: los suyos, o todos si es superadministrador.
+
+    Cada uno trae `member` (¿está en él de verdad, o solo lo ve por ser
+    superadministrador?) y `personal_of` (el id de la persona de quien es el
+    «Espacio de …»). El de la propia persona va el primero.
+    """
     rows = conn.execute("SELECT * FROM workspaces ORDER BY created_at, name").fetchall()
+    uid = str(getattr(user, "id", "") or "")
     out = []
     for r in rows:
         role = role_of(conn, user, r["id"])
         if role is not None:
-            out.append(_row(conn, r, role))
+            d = _row(conn, r, role)
+            d["member"] = member_role(conn, uid, r["id"]) is not None if uid else True
+            d["personal_of"] = d["settings"].get("personal_of")
+            out.append(d)
+    out.sort(key=lambda d: (d["personal_of"] != uid, not d["member"], d["personal_of"] is not None))
     return out
+
+
+def ensure_personal(conn: sqlite3.Connection, user: Any) -> None:
+    """Cada persona tiene su «Espacio de <nombre>» con su Privado y su Compartido.
+
+    Se crea la primera vez que la persona pide sus espacios (o al darla de alta) y
+    se apunta en `meta`: si luego lo borra, no vuelve a aparecer.
+    """
+    uid = str(getattr(user, "id", "") or "")
+    if not uid or getattr(user, "is_system", False):
+        return
+    key = f"personal_ws:{uid}"
+    if conn.execute("SELECT 1 FROM meta WHERE key = ?", (key,)).fetchone():
+        return
+    if conn.execute("SELECT 1 FROM users WHERE id = ?", (uid,)).fetchone() is None:
+        return
+    base = f"Espacio de {getattr(user, 'display_name', None) or getattr(user, 'username', 'usuario')}"
+    created = None
+    for name in (base, f"{base} ({getattr(user, 'username', uid)})", f"{base} ({uid[:6]})"):
+        try:
+            created = create(conn, name)
+            break
+        except WorkspaceError:
+            continue
+    if created is None:
+        return
+    update(conn, created["id"], settings={"personal_of": uid})
+    set_member(conn, created["id"], "user", uid, "admin")
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, created["id"])
+    )
 
 
 def get(conn: sqlite3.Connection, workspace_id: Any) -> Optional[sqlite3.Row]:

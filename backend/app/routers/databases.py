@@ -409,6 +409,11 @@ def set_kind(
     if db_def.kind and db_def.kind.get("type") == kind_type:
         roles.update(db_def.kind.get("roles") or {})
     roles.update(payload.roles or {})
+    # Un rol opcional se quita mandándolo vacío (los obligatorios no: `check_roles`).
+    for role, key in (payload.roles or {}).items():
+        if not key and role in s["optional"]:
+            roles.pop(role, None)
+    roles = {r: k for r, k in roles.items() if k}
     names = {str(p.get("name") or "").casefold() for p in schema}
 
     nuevas: list[dict] = []
@@ -432,6 +437,16 @@ def set_kind(
         for (role, _col), prop in zip(nuevas, nuevo_schema[len(schema):]):
             roles[role] = prop["key"]
     kind_rules.check_roles(kind_type, roles, nuevo_schema)
+    if kind_type == "tasks" and roles.get("project"):
+        col = next(p for p in nuevo_schema if p["key"] == roles["project"])
+        target = col.get("target_database")
+        destino = repo.get_database(uuid.UUID(str(target))) if target else None
+        if destino is None or (destino.kind or {}).get("type") != "projects":
+            raise HTTPException(
+                400,
+                f"«{col.get('name') or col['key']}» no enlaza con una base de Proyectos: "
+                "elige otra columna o crea una nueva enlazada a tu base de Proyectos.",
+            )
 
     # El estado tiene que decir qué es «hecho»: si la base no lo declara, grupos de partida.
     status = next(p for p in nuevo_schema if p["key"] == roles["status"])

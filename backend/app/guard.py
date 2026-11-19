@@ -111,6 +111,8 @@ async def guard(request: Request) -> None:
 async def _parent_from_body(request: Request, method: str, path: str) -> str | None:
     """`parent_id` del cuerpo JSON en las rutas que crean o mueven páginas."""
     wants = (method, path.rstrip("/")) in PARENT_IN_BODY or (
+        method == "POST" and path.startswith("/pages/") and path.rstrip("/").endswith("/move")
+    ) or (
         method == "PATCH" and path.startswith(PARENT_IN_BODY_PATCH_PREFIXES)
         and path.count("/") == 2  # /pages/{id} o /databases/{id}, no subrutas
     )

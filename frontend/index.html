@@ -432,7 +432,36 @@
   .carga-leyenda i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; }
   .person-cells { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; }
   .tree-guest-ws { margin-left: auto; padding-left: 6px; font-size: 11px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
-  .tree-empty-section { padding: 2px 16px 6px; font-size: 12px; color: var(--ink-muted); }
+  .tree-empty-section { padding: 2px 16px 6px; user-select: none; font-size: 12px; color: var(--ink-muted); }
+  /* Espacios en el panel izquierdo: un bloque plegable por espacio. */
+  .workspaces-panel { display: flex; flex-direction: column; gap: 4px; }
+  .ws-block { border-radius: 8px; }
+  .ws-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 0 4px 0 2px; }
+  .ws-toggle {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 3px 6px;
+    background: none; border: 0; border-radius: 6px; color: var(--ink); font: inherit; font-size: 13.5px;
+    font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .ws-toggle:hover { background: var(--row-hover); }
+  .ws-chevron { display: inline-flex; color: var(--ink-muted); flex-shrink: 0; }
+  .ws-chevron .svg-icon { width: 14px; height: 14px; transition: transform .15s ease; }
+  .ws-plegado .ws-chevron .svg-icon { transform: rotate(-90deg); }
+  .ws-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .wsp-body { padding: 0 0 6px 4px; }
+  .ws-sub { border-radius: 6px; }
+  .ws-sub-head {
+    display: flex; align-items: center; justify-content: space-between; min-height: 24px;
+    padding: 2px 4px 0 30px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted);
+  }
+  .ws-tree { min-height: 10px; padding-bottom: 2px; }
+  .ws-block .tree-guest-ws { margin-left: auto; }
+  /* Arrastrar páginas: una raya donde caerá, o la fila entera si se anida. */
+  #workspaces-panel .tree-row[draggable="true"] { cursor: grab; }
+  #workspaces-panel .dragging { opacity: .45; }
+  #workspaces-panel .drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+  #workspaces-panel .drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+  #workspaces-panel .drop-into { background: var(--accent-soft); outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+  #workspaces-panel .drop-zone { background: var(--accent-soft); }
   .workspace-switcher { padding: 2px 8px 6px; }
   .workspace-btn {
     display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px;
@@ -4689,6 +4718,51 @@
   .theme-option span:hover { color: var(--ink); }
   .theme-option input:checked + span { background: var(--code-bg); color: var(--ink); font-weight: 600; }
   .theme-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* ---------- pase de estilo de los diálogos y los ajustes ----------
+     Más aire, rótulos encima de cada campo y las propiedades como tarjetas:
+     antes todo iba en una sola fila apretada, sin decir qué era cada cosa. */
+  dialog { padding: 24px 26px; }
+  dialog h3 { font-size: 18px; letter-spacing: -0.01em; margin: 0 0 6px; }
+  .dialog-note { margin: 0 0 18px; font-size: 13px; line-height: 1.5; }
+  .field { gap: 6px; margin-bottom: 16px; }
+  .field label { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  .field input, .field select, .field textarea { min-height: 38px; padding: 8px 11px; font-size: 14px; border-radius: 8px; }
+  .dialog-actions { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--panel-border); }
+  #dialog-database { width: min(680px, 94vw); }
+  #dialog-database .field > label:first-child { margin-bottom: 2px; }
+  #prop-rows { max-height: 52vh; padding: 2px 6px 2px 0; display: flex; flex-direction: column; gap: 10px; }
+  .prop-row-wrap, .prop-row-wrap:last-child {
+    margin: 0; padding: 12px 14px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--panel);
+  }
+  .prop-row { grid-template-columns: minmax(0, 1fr) 190px 34px; gap: 10px; align-items: end; }
+  .prop-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-weight: 400; }
+  .prop-field[hidden] { display: none; }
+  .field label:has(input[type="checkbox"]) { font-weight: 400; }
+  .prop-field-label { font-size: 11.5px; font-weight: 600; letter-spacing: .02em; color: var(--ink-muted); }
+  .prop-field-hint { font-size: 12px; line-height: 1.4; font-weight: 400; color: var(--ink-muted); }
+  .prop-row input, .prop-row select, .prop-options-input { min-height: 36px; padding: 6px 10px; font-size: 13.5px; border-radius: 8px; }
+  .prop-type-fixed { min-height: 36px; font-size: 13.5px; border-radius: 8px; }
+  .prop-options-input { margin-top: 0; }
+  .prop-options-field { margin-top: 12px; }
+  .prop-sort { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--panel-border); }
+  .prop-relation { margin-top: 12px; }
+  .prop-role-note { margin: 10px 0 0; padding: 7px 10px; border-radius: 8px; background: var(--accent-soft); color: var(--accent-ink); font-size: 12.5px; line-height: 1.4; }
+  #btn-add-prop { margin-top: 10px !important; }
+  .kind-dialog { width: min(560px, 94vw); max-height: 90vh; overflow-y: auto; }
+  .kind-role { margin-bottom: 16px; }
+  .kind-role select { min-height: 38px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border-input); background: var(--panel); color: var(--ink); font-size: 14px; }
+  .kind-role select[hidden] { display: none; }
+  .kind-split { border: 0; padding: 0; margin: 0 0 8px; }
+  .kind-split-opt { display: flex; gap: 10px; align-items: flex-start; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 10px; cursor: pointer; font-size: 13.5px; }
+  .kind-split-opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .kind-split-opt strong { display: block; font-weight: 600; }
+  .settings-body { padding: 28px 36px 32px; }
+  .settings-section h4 { margin-bottom: 22px; padding-bottom: 12px; font-size: 18px; }
+  .settings-group { margin-bottom: 18px; padding: 18px 20px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel); }
+  .settings-group h5 { margin: 0 0 6px; font-size: 15px; }
+  .settings-group > .form-note { margin-bottom: 14px; font-size: 13px; }
+  .settings-group form { max-width: 480px; }
+  .settings-group .dialog-actions { margin-top: 14px; padding-top: 0; border-top: 0; }
   /* En el móvil, la ventana ocupa la pantalla y los apartados van arriba en
      una fila. */
   @media (max-width: 640px) {
@@ -5085,7 +5159,6 @@
 
     /* --- zonas táctiles de los controles de cada día --- */
     #btn-toggle-sidebar,
-    #btn-new-note,
     .note-topbar .icon-btn,
     dialog .icon-btn,
     .note-header-remove,
@@ -5419,38 +5492,10 @@
           <div id="inbox-list" class="inbox-list" role="list" hidden></div>
         </div>
 
-        <div class="sidebar-section">
-          <div class="sidebar-section-head">
-            <span>Compartido</span>
-            <div class="sidebar-head-actions">
-              <button class="icon-btn" id="btn-new-from-template" title="Crear desde plantilla" aria-label="Crear desde plantilla"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-database"/></svg></button>
-              <button class="icon-btn" id="btn-new-note" title="Nueva nota compartida con el espacio" aria-label="Nueva nota compartida con el espacio"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
-            </div>
-          </div>
-          <!-- role="tree": contenedor ARIA del árbol de páginas (SPEC-B §5 #1).
-               Las filas son treeitem y .tree-children es group. -->
-          <div id="tree-container" role="tree" aria-label="Compartido"></div>
-        </div>
-
-        <!-- Plan H2: lo mío, lo que me han compartido de fuera y (solo para el
-             superadministrador) lo privado de otras personas. -->
-        <div class="sidebar-section" id="private-section">
-          <div class="sidebar-section-head">
-            <span>Privado</span>
-            <div class="sidebar-head-actions">
-              <button class="icon-btn" id="btn-new-private" title="Nueva nota privada" aria-label="Nueva nota privada"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
-            </div>
-          </div>
-          <div id="tree-private" role="tree" aria-label="Privado"></div>
-        </div>
-        <div class="sidebar-section" id="with-me-section" hidden>
-          <div class="sidebar-section-head"><span>Compartido conmigo</span></div>
-          <div id="tree-with-me" role="tree" aria-label="Compartido conmigo"></div>
-        </div>
-        <div class="sidebar-section" id="others-section" hidden>
-          <div class="sidebar-section-head"><span>Privado de otras personas</span></div>
-          <div id="tree-others" role="tree" aria-label="Privado de otras personas"></div>
-        </div>
+        <!-- Todos los espacios (plan «Espacios en el panel»): `pintarEspacios`
+             (app.js) pinta un bloque plegable por espacio, con su Compartido y
+             su Privado. -->
+        <div id="workspaces-panel" class="workspaces-panel"></div>
 
       </div>
 
@@ -5503,12 +5548,13 @@
 
   <dialog id="dialog-database">
     <h3 id="db-dialog-title">Nueva base de datos</h3>
+    <p class="dialog-note">Una base de datos es una tabla: cada fila es una página y cada propiedad, una columna. Puedes cambiar todo esto cuando quieras.</p>
     <div class="field">
-      <label for="db-name">Nombre</label>
+      <label for="db-name">Nombre de la base</label>
       <input type="text" id="db-name" placeholder="Contactos" />
     </div>
     <div class="field">
-      <label>Propiedades</label>
+      <label>Propiedades (las columnas)</label>
       <div id="prop-rows"></div>
       <button type="button" class="btn" id="btn-add-prop" style="align-self: flex-start; margin-top: 4px;"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Propiedad</button>
     </div>
