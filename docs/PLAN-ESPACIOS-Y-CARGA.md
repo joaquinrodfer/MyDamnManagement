@@ -198,7 +198,6 @@ Seguramente en dos tiradas: primero modelo y permisos, después pantallas.
 ## Pendiente (tras implementar los diez hitos)
 
 - Avisar al mover una base con relaciones a otras bases (H2).
-- Arrastrar y soltar entre Compartido y Privado (hoy, menú contextual).
 - Tablero agrupado por **grupo** de estado, y que renombrar o borrar una opción actualice los grupos (H3).
 - Convertir una propiedad `person` existente en «varias personas» (hoy solo al crearla) (H4).
 - Columna calculada de horas en la tabla de proyectos (hoy, en la ficha de cada proyecto).

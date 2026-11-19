@@ -76,6 +76,13 @@ def list_workspaces(user: auth.User = Depends(get_current_user), conn: sqlite3.C
     return ws.list_for(conn, user)
 
 
+@router.post("/workspaces/personal")
+def ensure_personal_workspace(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)):
+    """Crea «Espacio de <nombre>» si esta persona aún no lo tiene (idempotente)."""
+    ws.ensure_personal(conn, user)
+    return ws.list_for(conn, user)
+
+
 @router.post("/workspaces", status_code=201)
 def create_workspace(
     payload: WorkspaceCreate,

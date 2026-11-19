@@ -645,15 +645,16 @@ class Repository:
         cond, args = self._visible("p")
         me = str(self.user.id) if self.user is not None else ""
         rows = self.conn.execute(
-            "SELECT p.id, p.title, p.type, p.icon, p.parent_id,"
+            "SELECT p.id, p.title, p.type, p.icon, p.parent_id, p.workspace_id,"
             f" {acl.is_shared_sql('p')} AS shared,"
             # Plan H2: en qué sección de la barra lateral va una página de la raíz.
             " EXISTS (SELECT 1 FROM acl s WHERE s.resource_id = p.acl_source"
             "  AND s.subject_type = 'workspace') AS ws_shared,"
             " EXISTS (SELECT 1 FROM acl s WHERE s.resource_id = p.acl_source"
             "  AND s.subject_type = 'user' AND s.subject_id = ? AND s.level = 'owner') AS mine"
-            f" FROM pages p WHERE p.type != ? AND {cond}"
-            " ORDER BY p.title COLLATE NOCASE, p.title",
+            " FROM pages p LEFT JOIN page_order o ON o.page_id = p.id"
+            f" WHERE p.type != ? AND {cond}"
+            " ORDER BY o.position IS NULL, o.position, p.title COLLATE NOCASE, p.title",
             (me, PageType.database_row.value, *args),
         ).fetchall()
         return self._build_tree(rows, sections=True)
@@ -708,6 +709,7 @@ class Repository:
             if parent and parent in nodes:
                 nodes[parent]["children"].append(node)
                 continue
+            node["workspace_id"] = r["workspace_id"]
             if sections:
                 # Compartido (con todo el espacio), Privado (mío y de nadie más),
                 # «con_migo» (me lo han compartido) u «otros» (solo el superadmin).
@@ -789,6 +791,99 @@ class Repository:
             acl.set_entries(self.conn, kind, page_id, new)
             acl.refresh_sources(self.conn)
         return moved
+
+    # --------------------------------------- orden y jerarquía del panel (v19)
+
+    def _siblings(self, parent_id: Optional[str], workspace_id: str, section: str) -> list[str]:
+        """Los ids de las hermanas, en el orden en que las ve esta persona."""
+        if parent_id:
+            cond, args = self._visible("p")
+            rows = self.conn.execute(
+                "SELECT p.id FROM pages p LEFT JOIN page_order o ON o.page_id = p.id"
+                f" WHERE p.parent_id = ? AND p.type != ? AND {cond}"
+                " ORDER BY o.position IS NULL, o.position, p.title COLLATE NOCASE, p.title",
+                (parent_id, PageType.database_row.value, *args),
+            ).fetchall()
+            return [r["id"] for r in rows]
+        group = "private" if section == "private" else "shared"
+        out = []
+        for n in self.tree():
+            if str(n.get("workspace_id")) != workspace_id:
+                continue
+            mine = "private" if n.get("section") == "private" else "shared"
+            if mine == group:
+                out.append(str(n["id"]))
+        return out
+
+    def move_page(
+        self,
+        page_id: uuid.UUID | str,
+        *,
+        parent_id: Optional[uuid.UUID | str] = None,
+        before_id: Optional[uuid.UUID | str] = None,
+        workspace_id: Optional[str] = None,
+        section: Optional[str] = None,
+    ) -> None:
+        """Arrastrar en el panel: nueva madre (o raíz de un espacio y sección) y
+        el sitio entre sus hermanas (justo antes de `before_id`, o al final)."""
+        pid = str(page_id)
+        row = self.conn.execute(
+            "SELECT type, parent_id, workspace_id FROM pages WHERE id = ?", (pid,)
+        ).fetchone()
+        if row is None:
+            raise VaultError("la página no existe")
+        if row["type"] == "database_row":
+            raise VaultError("una fila se mueve con su base")
+        parent = str(parent_id) if parent_id else None
+        target_ws = str(workspace_id) if workspace_id else row["workspace_id"]
+        if parent:
+            prow = self.conn.execute(
+                "SELECT type, workspace_id FROM pages WHERE id = ?", (parent,)
+            ).fetchone()
+            if prow is None:
+                raise VaultError("la página de destino no existe")
+            if prow["type"] == "database_row":
+                raise VaultError("no se puede colgar una página de una fila")
+            # Ni de sí misma ni de algo que cuelga de ella.
+            cursor: Optional[str] = parent
+            while cursor:
+                if cursor == pid:
+                    raise VaultError("no se puede mover una página dentro de sí misma")
+                up = self.conn.execute(
+                    "SELECT parent_id FROM pages WHERE id = ?", (cursor,)
+                ).fetchone()
+                cursor = up["parent_id"] if up else None
+            target_ws = prow["workspace_id"]
+        with self._tx():
+            if target_ws != row["workspace_id"]:
+                self.move_to_workspace(pid, target_ws, section or "shared")
+                row = self.conn.execute(
+                    "SELECT type, parent_id, workspace_id FROM pages WHERE id = ?", (pid,)
+                ).fetchone()
+            if parent:
+                if row["parent_id"] != parent:
+                    self.update_page(uuid.UUID(pid), parent_id=uuid.UUID(parent))
+            else:
+                if row["parent_id"]:
+                    self.update_page(uuid.UUID(pid), parent_id=None)
+                    self.set_section(pid, section or "shared")
+                elif section:
+                    self.set_section(pid, section)
+            ids = [i for i in self._siblings(parent, target_ws, section or self._section_of(pid)) if i != pid]
+            at = ids.index(str(before_id)) if before_id and str(before_id) in ids else len(ids)
+            ids.insert(at, pid)
+            self.conn.executemany(
+                "INSERT INTO page_order (page_id, position) VALUES (?, ?)"
+                " ON CONFLICT(page_id) DO UPDATE SET position = excluded.position",
+                [(i, n) for n, i in enumerate(ids)],
+            )
+
+    def _section_of(self, page_id: str) -> str:
+        """`shared` o `private` según lo que ve esta raíz ahora mismo."""
+        for n in self.tree():
+            if str(n["id"]) == page_id:
+                return "private" if n.get("section") == "private" else "shared"
+        return "shared"
 
     def backlinks(self, page_id: uuid.UUID) -> list[Page]:
         """Páginas que enlazan a esta: con un wikilink o incrustando una base.

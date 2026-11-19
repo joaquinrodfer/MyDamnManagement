@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -385,6 +385,14 @@ MIGRATIONS: dict[int, list[str]] = {
 )""",
         "CREATE INDEX IF NOT EXISTS webhook_deliveries_pending ON webhook_deliveries(status, next_attempt)",
         "CREATE UNIQUE INDEX IF NOT EXISTS webhook_deliveries_dedupe ON webhook_deliveries(workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+    ],
+    # v19: el orden que cada quien da a las páginas del panel izquierdo al
+    # arrastrarlas. Sin fila, la página va después de las ordenadas, por título.
+    19: [
+        """CREATE TABLE IF NOT EXISTS page_order (
+    page_id  TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL
+)""",
     ],
 }
 
@@ -750,7 +758,13 @@ CREATE TABLE webhook_deliveries (
 CREATE INDEX webhook_deliveries_pending ON webhook_deliveries(status, next_attempt);
 CREATE UNIQUE INDEX webhook_deliveries_dedupe ON webhook_deliveries(workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 
-PRAGMA user_version = 18;
+-- El orden de las páginas en el panel izquierdo (v19). Ver la migración 19.
+CREATE TABLE page_order (
+    page_id  TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL
+);
+
+PRAGMA user_version = 19;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1246,6 +1260,8 @@ DUMP_EXCLUDED = {
     "audit_logs",
     "workspace_webhooks",
     "webhook_deliveries",
+    # El orden del panel (v19): preferencia de la app, no está en el `.md`.
+    "page_order",
 }
 
 

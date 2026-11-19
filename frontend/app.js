@@ -92,9 +92,19 @@ async function api(path, opts = {}) {
     // Con `opts.headers` mandan los suyos (If-Match, multipart…); en cualquier
     // caso viaja el espacio activo.
     const base = opts.headers ? opts.headers : { "Content-Type": "application/json" };
+    // El espacio solo viaja al crear (una página, una base, desde plantilla): ahí
+    // hace falta saber dónde nace. Los listados son de todos mis espacios, que
+    // el panel izquierdo enseña a la vez.
+    const { workspace, ...resto } = opts;
+    const espacio =
+      workspace !== undefined
+        ? workspace
+        : opts.method === "POST" && /^\/(pages|databases|databases\/from-template)$/.test(path.split("?")[0])
+          ? state.workspaceId
+          : null;
     res = await fetch(path, {
-      ...opts,
-      headers: state.workspaceId ? { ...base, "X-Workspace": state.workspaceId } : base,
+      ...resto,
+      headers: espacio ? { ...base, "X-Workspace": espacio } : base,
     });
   } catch (e) {
     // `fetch` solo lanza por red/DNS/servidor inalcanzable -- un 4xx/5xx llega
@@ -832,13 +842,14 @@ function guardarEspacio(id) {
 /** Lee los espacios de esta persona y deja activo el recordado (o el primero). */
 async function cargarEspacios() {
   try {
-    state.workspaces = await api("/workspaces");
+    // También da de alta «Espacio de <nombre>» la primera vez (idempotente).
+    state.workspaces = await api("/workspaces/personal", { method: "POST" });
   } catch (e) {
     if (e?.status === 401) return;
     state.workspaces = [];
   }
-  if (!state.workspaces.some((w) => w.id === state.workspaceId)) {
-    state.workspaceId = state.workspaces[0]?.id ?? null;
+  if (!state.workspaces.some((w) => w.id === state.workspaceId && w.member !== false)) {
+    state.workspaceId = (state.workspaces.find((w) => w.member !== false) || state.workspaces[0])?.id ?? null;
     guardarEspacio(state.workspaceId);
   }
   pintarSelectorDeEspacio();
@@ -859,66 +870,15 @@ function cambiarDeEspacio(id) {
 /** La página abierta es de otro espacio de los míos: pasa a ser el activo. */
 function adoptarEspacio(id) {
   if (!id || id === state.workspaceId || !state.workspaces.some((w) => w.id === id)) return;
-  state.workspaceId = id;
+  state.workspaceId = id; // el espacio donde se crea lo siguiente
   guardarEspacio(id);
-  pintarSelectorDeEspacio();
-  scheduleTreeRefresh();
 }
 
 function pintarSelectorDeEspacio() {
+  // Los espacios viven todos en el panel izquierdo (`pintarEspacios`): el
+  // selector de antes ya no hace falta.
   const caja = document.getElementById("workspace-switcher");
-  if (!caja) return;
-  const actual = state.workspaces.find((w) => w.id === state.workspaceId);
-  // Con un solo espacio no hay nada que elegir; el administrador lo ve siempre
-  // porque desde ahí gestiona los espacios.
-  caja.hidden = !actual || (state.workspaces.length < 2 && !sessionUser.me?.is_admin);
-  if (caja.hidden) return;
-  const boton = document.createElement("button");
-  boton.type = "button";
-  boton.className = "workspace-btn";
-  boton.setAttribute("aria-haspopup", "menu");
-  boton.setAttribute("aria-expanded", "false");
-  boton.setAttribute("aria-label", `Espacio de trabajo: ${actual.name}`);
-  const icono = document.createElement("span");
-  icono.className = "workspace-icon";
-  icono.setAttribute("aria-hidden", "true");
-  icono.textContent = actual.icon || actual.name.trim().charAt(0).toUpperCase();
-  const nombre = document.createElement("span");
-  nombre.className = "workspace-name";
-  nombre.textContent = actual.name;
-  boton.append(icono, nombre);
-  boton.insertAdjacentHTML("beforeend", svgIcon("i-chevron-down"));
-  boton.addEventListener("click", () => {
-    if (boton.getAttribute("aria-expanded") === "true") {
-      cerrarPanelDeColumna({ foco: true });
-      return;
-    }
-    const panel = document.createElement("div");
-    for (const w of state.workspaces) {
-      panel.append(
-        itemDeColumna(w.name, {
-          radio: true,
-          marca: w.id === state.workspaceId ? "✓" : "",
-          alElegir: () => {
-            cerrarPanelDeColumna();
-            cambiarDeEspacio(w.id);
-          },
-        }),
-      );
-    }
-    if (sessionUser.me?.is_admin) {
-      panel.append(
-        itemDeColumna("Gestionar espacios…", {
-          alElegir: () => {
-            cerrarPanelDeColumna();
-            openSettings("admin");
-          },
-        }),
-      );
-    }
-    abrirPanelFlotante(boton, panel, { etiqueta: "Espacios de trabajo" });
-  });
-  caja.replaceChildren(boton);
+  if (caja) caja.hidden = true;
 }
 
 // ------------------------------------------------------------- marca: Noteping
@@ -3683,33 +3643,42 @@ function botonDeCampana(pageId) {
       cerrarPanelDeColumna({ foco: true });
       return;
     }
-    const menu = document.createElement("div");
-    menu.append(crearEl("div", "db-col-menu-label", "Avisos de esta página"));
-    for (const [valor, texto] of [
-      ["all", "Todo: cualquier cambio"],
-      ["mentions_only", "Solo menciones y tareas mías"],
-      ["muted", "Silenciada"],
-    ]) {
-      menu.append(
-        itemDeColumna(texto, {
-          radio: true,
-          marca: modo === valor ? "✓" : "",
-          alElegir: async () => {
-            try {
-              await api(`/notifications/subscriptions/${pageId}`, { method: "PUT", body: JSON.stringify({ mode: valor }) });
-              modo = valor;
-              pintar();
-              cerrarPanelDeColumna();
-            } catch (e) {
-              reportError("No se pudo cambiar el aviso de la página", e);
-            }
-          },
-        }),
-      );
-    }
-    abrirPanelFlotante(boton, menu, { etiqueta: "Avisos de la página" });
+    abrirMenuDeAvisos(boton, pageId, () => modo, (valor) => {
+      modo = valor;
+      pintar();
+    });
   });
   return boton;
+}
+
+/** El menú de los avisos de una página (plan H6): lo abre la campana de una nota
+ * y el «⋯» de una base. `modoActual()` dice el que hay y `alCambiar(valor)`
+ * recibe el nuevo cuando el servidor lo ha guardado. */
+function abrirMenuDeAvisos(ancla, pageId, modoActual, alCambiar) {
+  const menu = document.createElement("div");
+  menu.append(crearEl("div", "db-col-menu-label", "Avisos de esta página"));
+  for (const [valor, texto] of [
+    ["all", "Todo: cualquier cambio"],
+    ["mentions_only", "Solo menciones y tareas mías"],
+    ["muted", "Silenciada"],
+  ]) {
+    menu.append(
+      itemDeColumna(texto, {
+        radio: true,
+        marca: modoActual() === valor ? "✓" : "",
+        alElegir: async () => {
+          try {
+            await api(`/notifications/subscriptions/${pageId}`, { method: "PUT", body: JSON.stringify({ mode: valor }) });
+            alCambiar(valor);
+            cerrarPanelDeColumna();
+          } catch (e) {
+            reportError("No se pudo cambiar el aviso de la página", e);
+          }
+        },
+      }),
+    );
+  }
+  abrirPanelFlotante(ancla, menu, { etiqueta: "Avisos de la página" });
 }
 
 // ----------------------------------------------- carga del equipo (plan H5)
@@ -3901,11 +3870,7 @@ async function loadTree() {
       (n) => !(state.inboxIds.has(n.id) && !n.children?.length),
     );
 
-    // Plan H2: las páginas de la raíz van a su sección (Compartido, Privado,
-    // «Compartido conmigo» u «Otras personas», esta solo para el superadmin).
-    const porSeccion = { shared: [], private: [], with_me: [], others: [] };
-    for (const n of notes) (porSeccion[n.section] || porSeccion.shared).push(n);
-    // Lo que me han compartido de espacios que no son los míos (invitado).
+    // Todos mis espacios, uno bajo otro, cada uno con su Compartido y su Privado.
     let invitado = [];
     try {
       invitado = await api("/pages/shared-with-me");
@@ -3913,37 +3878,14 @@ async function loadTree() {
     } catch {
       invitado = [];
     }
-    const pintarSeccion = (idArbol, idSeccion, nodos, { vacia = "" } = {}) => {
-      const cont = document.getElementById(idArbol);
-      if (!cont) return;
-      cont.innerHTML = "";
-      if (idSeccion) document.getElementById(idSeccion).hidden = nodos.length === 0;
-      if (!nodos.length && vacia) {
-        const v = document.createElement("div");
-        v.className = "tree-empty-section";
-        v.textContent = vacia;
-        cont.appendChild(v);
-      }
-      nodos.forEach((n) => {
-        const el = renderTreeNode(n);
-        if (n.workspace) {
-          const etiqueta = document.createElement("span");
-          etiqueta.className = "tree-guest-ws";
-          etiqueta.textContent = n.workspace.name;
-          el.querySelector(".tree-row")?.appendChild(etiqueta);
-        }
-        cont.appendChild(el);
-      });
-    };
-    const treeContainer = document.getElementById("tree-container");
-    pintarSeccion("tree-container", null, porSeccion.shared);
-    pintarSeccion("tree-private", null, porSeccion.private);
-    pintarSeccion("tree-with-me", "with-me-section", [...porSeccion.with_me, ...invitado]);
-    pintarSeccion("tree-others", "others-section", porSeccion.others);
+    pintarEspacios(notes, invitado);
     if (notes.length === 0 && invitado.length === 0) {
-      treeContainer.innerHTML =
-        '<div class="empty-hint empty-hint--side"><p class="empty-hint-title">Todavía no hay páginas.</p>' +
-        '<p class="empty-hint-note">Pulsa «+» aquí arriba para escribir la primera nota.</p></div>';
+      const vacio = document.createElement("div");
+      vacio.className = "empty-hint empty-hint--side";
+      vacio.innerHTML =
+        '<p class="empty-hint-title">Todavía no hay páginas.</p>' +
+        '<p class="empty-hint-note">Pulsa «+» en un espacio para escribir la primera nota.</p>';
+      document.getElementById("workspaces-panel")?.appendChild(vacio);
     }
 
     if (state.current) markActive(state.current.id);
@@ -3965,6 +3907,314 @@ async function loadTree() {
     reportError("No se pudo cargar el árbol de páginas", e);
     return false;
   }
+}
+
+// ------------------------------------------------- espacios en el panel
+
+const COLAPSADOS_KEY = "np_ws_colapsados";
+
+function leerColapsados() {
+  try {
+    return JSON.parse(localStorage.getItem(COLAPSADOS_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function guardarColapsado(id, colapsado) {
+  try {
+    const m = leerColapsados();
+    m[id] = colapsado;
+    localStorage.setItem(COLAPSADOS_KEY, JSON.stringify(m));
+  } catch {
+    /* sin localStorage se queda como estaba al recargar */
+  }
+}
+
+/** Un icono pequeño con tooltip para las cabeceras del panel. */
+function botonDeCabecera(icono, titulo, alPulsar) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "icon-btn";
+  b.title = titulo;
+  b.setAttribute("aria-label", titulo);
+  b.innerHTML = svgIcon(icono);
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    alPulsar();
+  });
+  return b;
+}
+
+/** Una lista de páginas raíz de un espacio y sección (o de un espacio ajeno). */
+function arbolDeSeccion(nodos, { ws, seccion, etiqueta, soltable, vacia }) {
+  const cont = document.createElement("div");
+  cont.className = "ws-tree";
+  cont.setAttribute("role", "tree");
+  cont.setAttribute("aria-label", etiqueta);
+  cont.dataset.ws = ws;
+  if (seccion) cont.dataset.section = seccion;
+  if (soltable) cont.dataset.soltable = "1";
+  if (!nodos.length) {
+    const v = document.createElement("div");
+    v.className = "tree-empty-section";
+    v.textContent = vacia || "";
+    cont.appendChild(v);
+  }
+  for (const n of nodos) {
+    const el = renderTreeNode(n);
+    if (soltable) {
+      el.querySelectorAll(".tree-row").forEach((r) => {
+        r.draggable = true;
+      });
+    }
+    cont.appendChild(el);
+  }
+  return cont;
+}
+
+function subSeccion(titulo, nodos, opciones, acciones = []) {
+  const caja = document.createElement("div");
+  caja.className = "ws-sub";
+  caja.dataset.ws = opciones.ws;
+  if (opciones.seccion) caja.dataset.section = opciones.seccion;
+  const cab = document.createElement("div");
+  cab.className = "ws-sub-head";
+  const nombre = document.createElement("span");
+  nombre.textContent = titulo;
+  const acc = document.createElement("div");
+  acc.className = "sidebar-head-actions";
+  acc.append(...acciones);
+  cab.append(nombre, acc);
+  caja.append(cab, arbolDeSeccion(nodos, { ...opciones, etiqueta: titulo }));
+  return caja;
+}
+
+/**
+ * El panel izquierdo (plan «Espacios en el panel»): un bloque por espacio, el
+ * mío («Espacio de …») el primero, cada uno con su Compartido y su Privado y
+ * plegable. Lo que me han compartido de un espacio ajeno sale en un bloque de
+ * ese espacio con solo lo compartido. El superadministrador ve, plegados, los
+ * espacios de los que no es miembro.
+ */
+function pintarEspacios(notes, invitado) {
+  const panel = document.getElementById("workspaces-panel");
+  if (!panel) return;
+  panel.replaceChildren();
+  const colapsados = leerColapsados();
+  const esAdmin = Boolean(sessionUser.me?.is_admin);
+  const misEspacios = state.workspaces;
+  const porEspacio = new Map(misEspacios.map((w) => [w.id, []]));
+  for (const n of notes) porEspacio.get(String(n.workspace_id))?.push(n);
+
+  const bloque = (w, { invitado: esInvitado = false, nodos = [], plegadoPorDefecto = false } = {}) => {
+    const plegado = colapsados[w.id] ?? plegadoPorDefecto;
+    const sec = document.createElement("section");
+    sec.className = "ws-block";
+    sec.dataset.ws = w.id;
+    if (w.personal_of) sec.classList.add("ws-personal");
+    const cab = document.createElement("div");
+    cab.className = "ws-head";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ws-toggle";
+    toggle.setAttribute("aria-expanded", String(!plegado));
+    const flecha = document.createElement("span");
+    flecha.className = "ws-chevron";
+    flecha.innerHTML = svgIcon("i-chevron-down");
+    const icono = document.createElement("span");
+    icono.className = "workspace-icon";
+    icono.setAttribute("aria-hidden", "true");
+    icono.textContent = w.icon || (w.name || "?").trim().charAt(0).toUpperCase();
+    const nombre = document.createElement("span");
+    nombre.className = "ws-name";
+    nombre.textContent = w.name;
+    toggle.append(flecha, icono, nombre);
+    if (esInvitado || w.member === false) {
+      const e = document.createElement("span");
+      e.className = "tree-guest-ws";
+      e.textContent = esInvitado ? "invitado" : "no eres miembro";
+      toggle.append(e);
+    }
+    const acciones = document.createElement("div");
+    acciones.className = "sidebar-head-actions";
+    const puedeCrear = !esInvitado && w.member !== false && w.role !== "viewer";
+    if (puedeCrear) {
+      acciones.append(
+        botonDeCabecera("i-database", "Crear desde plantilla", () => {
+          state.workspaceId = w.id;
+          guardarEspacio(w.id);
+          openTemplateDialog().catch((e) => reportError("No se pudo abrir «Crear desde plantilla»", e));
+        }),
+        botonDeCabecera("i-plus", `Nueva página compartida en «${w.name}»`, () => createNote(null, "shared", w.id)),
+      );
+    }
+    cab.append(toggle, acciones);
+    const cuerpo = document.createElement("div");
+    cuerpo.className = "wsp-body";
+    cuerpo.hidden = plegado;
+    toggle.addEventListener("click", () => {
+      const ahora = !cuerpo.hidden;
+      cuerpo.hidden = ahora;
+      toggle.setAttribute("aria-expanded", String(!ahora));
+      sec.classList.toggle("ws-plegado", ahora);
+      guardarColapsado(w.id, ahora);
+    });
+    sec.classList.toggle("ws-plegado", plegado);
+
+    if (esInvitado) {
+      cuerpo.append(arbolDeSeccion(nodos, { ws: w.id, etiqueta: w.name, soltable: false }));
+    } else if (w.member === false) {
+      // Solo lo veo por ser superadministrador: sin Compartido/Privado propios.
+      cuerpo.append(arbolDeSeccion(nodos, { ws: w.id, seccion: "shared", etiqueta: w.name, soltable: true, vacia: "Sin páginas" }));
+    } else {
+      const compartidas = nodos.filter((n) => n.section === "shared" || n.section === "with_me");
+      const privadas = nodos.filter((n) => n.section === "private");
+      const ajenas = nodos.filter((n) => n.section === "others");
+      cuerpo.append(
+        subSeccion("Compartido", compartidas, { ws: w.id, seccion: "shared", soltable: true, vacia: "Suelta aquí páginas para todo el espacio" }),
+        subSeccion(
+          "Privado",
+          privadas,
+          { ws: w.id, seccion: "private", soltable: true, vacia: "Solo las ves tú" },
+          puedeCrear ? [botonDeCabecera("i-plus", "Nueva página privada", () => createNote(null, "private", w.id))] : [],
+        ),
+      );
+      if (ajenas.length) {
+        cuerpo.append(subSeccion("Privado de otras personas", ajenas, { ws: w.id, soltable: false }));
+      }
+    }
+    sec.append(cab, cuerpo);
+    return sec;
+  };
+
+  for (const w of misEspacios.filter((x) => x.member !== false)) {
+    panel.append(bloque(w, { nodos: porEspacio.get(w.id) || [] }));
+  }
+  // De otros espacios, solo lo que me han compartido.
+  const invitadoPor = new Map();
+  for (const n of invitado) {
+    const id = n.workspace?.id;
+    if (!id) continue;
+    if (!invitadoPor.has(id)) invitadoPor.set(id, { w: { id, name: n.workspace.name }, nodos: [] });
+    invitadoPor.get(id).nodos.push(n);
+  }
+  for (const { w, nodos } of invitadoPor.values()) panel.append(bloque(w, { invitado: true, nodos }));
+  if (esAdmin) {
+    for (const w of misEspacios.filter((x) => x.member === false)) {
+      panel.append(bloque(w, { nodos: porEspacio.get(w.id) || [], plegadoPorDefecto: true }));
+    }
+  }
+  panel.querySelectorAll('[role="tree"]').forEach(initTreeRovingTabIndex);
+}
+
+// ------------------------------------------ arrastrar páginas (orden y jerarquía)
+
+const ARRASTRE = { ids: [] };
+
+/** ¿`fila` cuelga de alguna de las páginas que se arrastran (o es una)? */
+function esDeLoArrastrado(fila) {
+  return ARRASTRE.ids.some((id) => {
+    const propia = document.querySelector(`#workspaces-panel .tree-row[data-node-id="${id}"]`);
+    return propia?.closest(".tree-node")?.contains(fila);
+  });
+}
+
+function limpiarMarcasDeArrastre() {
+  document
+    .querySelectorAll("#workspaces-panel .drop-before, #workspaces-panel .drop-after, #workspaces-panel .drop-into, #workspaces-panel .drop-zone, #workspaces-panel .dragging")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after", "drop-into", "drop-zone", "dragging"));
+}
+
+/** Dónde caería lo que se arrastra: la petición de mover y qué marcar. */
+function destinoDeArrastre(e) {
+  const objetivo = e.target instanceof Element ? e.target : null;
+  if (!objetivo) return null;
+  const fila = objetivo.closest("#workspaces-panel .tree-row");
+  if (fila) {
+    const contenedor = fila.closest(".ws-tree");
+    if (!contenedor?.dataset.soltable || esDeLoArrastrado(fila)) return null;
+    const nodo = state.pagesById.get(fila.dataset.nodeId);
+    if (!nodo || nodo.type === "database_row") return null;
+    const r = fila.getBoundingClientRect();
+    const f = (e.clientY - r.top) / Math.max(1, r.height);
+    const raiz = !nodo.parent_id;
+    const base = { workspace_id: contenedor.dataset.ws, ...(raiz ? { section: contenedor.dataset.section } : {}) };
+    if (nodo.type !== "database" && f > 0.28 && f < 0.72) {
+      return { cuerpo: { parent_id: nodo.id }, marca: [fila, "drop-into"] };
+    }
+    if (f <= 0.5) {
+      return { cuerpo: { ...base, parent_id: nodo.parent_id || null, before_id: nodo.id }, marca: [fila, "drop-before"] };
+    }
+    let sig = fila.closest(".tree-node")?.nextElementSibling;
+    while (sig && ARRASTRE.ids.includes(sig.querySelector(":scope > .tree-row")?.dataset.nodeId)) sig = sig.nextElementSibling;
+    const antes = sig?.querySelector(":scope > .tree-row")?.dataset.nodeId || null;
+    return { cuerpo: { ...base, parent_id: nodo.parent_id || null, before_id: antes }, marca: [fila, "drop-after"] };
+  }
+  // En la cabecera o el hueco de una sección: al final de esa sección.
+  const sub = objetivo.closest(".ws-sub");
+  if (sub?.querySelector(".ws-tree[data-soltable]")) {
+    return { cuerpo: { workspace_id: sub.dataset.ws, section: sub.dataset.section, parent_id: null }, marca: [sub, "drop-zone"] };
+  }
+  const bloque = objetivo.closest(".ws-block");
+  const zona = bloque?.querySelector(".ws-tree[data-soltable]");
+  if (zona) {
+    return { cuerpo: { workspace_id: bloque.dataset.ws, section: zona.dataset.section || "shared", parent_id: null }, marca: [bloque, "drop-zone"] };
+  }
+  return null;
+}
+
+async function moverPaginasArrastradas(cuerpo) {
+  const ids = [...ARRASTRE.ids];
+  try {
+    for (const id of ids) {
+      await api(`/pages/${id}/move`, { method: "POST", body: JSON.stringify(cuerpo), workspace: null });
+    }
+  } catch (e) {
+    reportError("No se pudo mover la página", e);
+  }
+  await loadTree();
+  if (state.current && !state.pagesById.has(state.current.id)) await showEmpty();
+}
+
+function initArrastrarPaginas() {
+  const panel = document.getElementById("workspaces-panel");
+  if (!panel || panel.dataset.dndListo) return;
+  panel.dataset.dndListo = "1";
+  panel.addEventListener("dragstart", (e) => {
+    const fila = e.target instanceof Element ? e.target.closest('.tree-row[draggable="true"]') : null;
+    if (!fila) return;
+    const id = fila.dataset.nodeId;
+    ARRASTRE.ids = state.selectedPages.has(id) ? [...state.selectedPages.keys()] : [id];
+    e.dataTransfer.effectAllowed = "move";
+    try {
+      e.dataTransfer.setData("text/plain", id);
+    } catch {
+      /* algunos navegadores no dejan tocar dataTransfer */
+    }
+    fila.classList.add("dragging");
+  });
+  panel.addEventListener("dragend", () => {
+    ARRASTRE.ids = [];
+    limpiarMarcasDeArrastre();
+  });
+  panel.addEventListener("dragover", (e) => {
+    if (!ARRASTRE.ids.length) return;
+    const d = destinoDeArrastre(e);
+    limpiarMarcasDeArrastre();
+    if (!d) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    d.marca[0].classList.add(d.marca[1]);
+  });
+  panel.addEventListener("drop", (e) => {
+    if (!ARRASTRE.ids.length) return;
+    const d = destinoDeArrastre(e);
+    limpiarMarcasDeArrastre();
+    if (!d) return;
+    e.preventDefault();
+    moverPaginasArrastradas(d.cuerpo);
+  });
 }
 
 function indexTree(nodes) {
@@ -4075,7 +4325,7 @@ function renderTreeNode(node, depth = 1) {
         mover.push({ label: "Pasar a Privado", onClick: () => reorganizarPagina(unica, { section: "private" }, "Ahora solo la ves tú.") });
       }
       for (const w of state.workspaces) {
-        if (w.id === state.workspaceId || w.role === "viewer") continue;
+        if (w.id === String(unica.workspace_id) || w.role === "viewer" || w.member === false) continue;
         mover.push({
           label: `Mover al espacio «${w.name}»`,
           onClick: () =>
@@ -7690,12 +7940,9 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     }
   };
 
-  header.append(
-    title,
-    botonDeTipo(database),
-    botonDeCampana(database.page_id || database.id),
-    botonCompartir("database", database.id, () => database.title),
-  );
+  // Solo el título y, a la derecha, Compartir: el tipo y los avisos de la base
+  // están en el «⋯» de la línea de las vistas.
+  header.append(title, botonCompartir("database", database.id, () => database.title));
 
   // Debajo del título ya no va la lista «Propiedad (Tipo) · …»: no decía nada
   // que la cabecera de la tabla no diga (cada columna lleva el icono de su tipo).
@@ -7848,6 +8095,36 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     );
     menu.appendChild(
       itemDeColumna("Nueva vista…", { alElegir: elegir(() => openViewDialog(database)) }),
+    );
+
+    // El tipo de la base (Proyectos / Tareas) y los avisos de la página. Abren su
+    // propio menú en el mismo sitio.
+    menu.appendChild(separadorDeMenu());
+    menu.appendChild(
+      itemDeColumna("Tipo de base…", {
+        marca: database.kind ? nombreDeTipo(database) : "",
+        alElegir: () => {
+          cerrarPanelDeColumna();
+          if (database.kind) abrirDialogoDeTipo(database);
+          else abrirMenuDeTipo(menuBtn, database);
+        },
+      }),
+    );
+    menu.appendChild(
+      itemDeColumna("Avisos de esta página…", {
+        alElegir: async () => {
+          cerrarPanelDeColumna();
+          let modo = "mentions_only";
+          try {
+            modo = (await api(`/notifications/subscriptions/${database.page_id || database.id}`)).mode || modo;
+          } catch {
+            /* se ofrece el de por defecto */
+          }
+          abrirMenuDeAvisos(menuBtn, database.page_id || database.id, () => modo, (v) => {
+            modo = v;
+          });
+        },
+      }),
     );
 
     menu.appendChild(separadorDeMenu());
@@ -17539,6 +17816,17 @@ function actualizarGuardadoDelDialogo() {
  * en el diálogo. Al quitarla, la tabla deja de pintarla; cada fila se sigue
  * llamando por su `id`, que es su fichero.
  */
+/** Un control con su rótulo encima (los diálogos de propiedades). */
+function campoEtiquetado(texto, control, clase = "") {
+  const campo = document.createElement("label");
+  campo.className = "prop-field" + (clase ? " " + clase : "");
+  const rotulo = document.createElement("span");
+  rotulo.className = "prop-field-label";
+  rotulo.textContent = texto;
+  campo.append(rotulo, control);
+  return campo;
+}
+
 function addTitlePropertyRow(database) {
   const wrap = document.createElement("div");
   wrap.className = "prop-row-wrap prop-title-row";
@@ -17581,7 +17869,7 @@ function addTitlePropertyRow(database) {
   });
   aplicar();
 
-  row.append(nameInput, tipo, toggle);
+  row.append(campoEtiquetado("Nombre de la columna del título", nameInput), campoEtiquetado("Tipo", tipo), toggle);
   wrap.appendChild(row);
   propRowsContainer.appendChild(wrap);
 }
@@ -17628,12 +17916,16 @@ function addPropertyRow(prop = null) {
   removeBtn.title = "Quitar esta propiedad";
   removeBtn.setAttribute("aria-label", "Quitar esta propiedad");
 
-  row.append(nameInput, typeSelect, removeBtn);
+  row.append(campoEtiquetado("Nombre", nameInput), campoEtiquetado("Tipo", typeSelect), removeBtn);
 
   // Plan H4: la columna de un rol del tipo de la base se renombra, pero no se
   // quita ni cambia de tipo (el servidor también lo rechaza).
   const rolFijo = prop?.key ? rolDeColumna(dbDialogContext?.database, prop.key) : null;
+  let rolNota = null;
   if (rolFijo) {
+    rolNota = document.createElement("p");
+    rolNota.className = "prop-role-note";
+    rolNota.textContent = `Hace de «${rolFijo}» en la base de ${nombreDeTipo(dbDialogContext.database)}: puedes renombrarla, pero no quitarla ni cambiarle el tipo.`;
     removeBtn.disabled = true;
     removeBtn.title = `Es la columna «${rolFijo}» del tipo ${nombreDeTipo(dbDialogContext.database)}: no se puede quitar`;
     queueMicrotask(() => {
@@ -17643,9 +17935,14 @@ function addPropertyRow(prop = null) {
   }
 
   const optionsInput = document.createElement("input");
-  optionsInput.placeholder = "opciones separadas por coma (Selección / Multiselección)";
+  optionsInput.placeholder = "Pendiente, En curso, Hecho";
   optionsInput.className = "prop-options-input";
-  optionsInput.hidden = true;
+  const optionsField = campoEtiquetado("Opciones", optionsInput, "prop-options-field");
+  optionsField.hidden = true;
+  const optionsHint = document.createElement("span");
+  optionsHint.className = "prop-field-hint";
+  optionsHint.textContent = "Escribe las opciones separadas por comas.";
+  optionsField.append(optionsHint);
 
   // Orden de los valores de una selección: `auto` (alfabético natural) o
   // `manual` (la lista de abajo, que se arrastra). Es la misma decisión que se
@@ -17860,7 +18157,7 @@ function addPropertyRow(prop = null) {
     const esRelacion = tipo === "relation";
     const esSeleccion = ["select", "multiselect"].includes(tipo);
     relWrap.hidden = !esRelacion;
-    optionsInput.hidden = !esSeleccion;
+    optionsField.hidden = !esSeleccion;
     sortWrap.hidden = !esSeleccion;
     if (esRelacion) llenarDestino();
     if (esSeleccion) pintarOrden();
@@ -17870,7 +18167,7 @@ function addPropertyRow(prop = null) {
     nameInput.value = prop.name;
     typeSelect.value = prop.type;
     optionsInput.value = (prop.options || []).join(", ");
-    optionsInput.hidden = !["select", "multiselect"].includes(prop.type);
+    optionsField.hidden = !["select", "multiselect"].includes(prop.type);
     sortModeSelect.value = modoDeOrden(prop);
   }
 
@@ -17895,7 +18192,7 @@ function addPropertyRow(prop = null) {
     pintarOrden();
     actualizarGuardadoDelDialogo();
   });
-  wrap.append(row, optionsInput, sortWrap, relWrap);
+  wrap.append(...[row, rolNota, optionsField, sortWrap, relWrap].filter(Boolean));
   propRowsContainer.appendChild(wrap);
   aplicarVisibilidad();
 }
@@ -18084,83 +18381,245 @@ async function openTemplateDialog() {
   nombre.focus();
 }
 
-/** El tipo de la base en la cabecera (plan H4): un distintivo que abre sus
+/** Los roles de cada tipo de base: tipo de columna que piden, si son
+ * opcionales y qué hacen (plan H4). Espejo de `app/kinds.py`. */
+const ROLES_DE_TIPO = {
+  tasks: ["assignee", "status", "start", "end", "hours", "project"],
+  projects: ["assignee", "status", "start", "end", "estimate"],
+};
+const TIPO_DE_COLUMNA_DE_ROL = {
+  assignee: "person", status: "select", start: "date", end: "date", hours: "number", project: "relation", estimate: "number",
+};
+const OPCIONALES_DE_ROL = new Set(["project", "estimate"]);
+const AYUDA_DE_ROL = {
+  assignee: "Quién hace el trabajo. Con varias personas, las horas se reparten como elijas más abajo.",
+  status: "En qué punto está. Sus grupos (Pendiente, En curso, Hecho…) dicen qué cuenta como terminado.",
+  start: "Cuándo empieza.",
+  end: "Cuándo debe estar acabado. Si solo hay fecha de fin, las horas cuentan en esa semana.",
+  hours: "Cuántas horas cuesta. Se reparten entre los días laborables, de inicio a fin.",
+  project: "A qué proyecto pertenece (opcional). Las horas de sus tareas suman en el proyecto.",
+  estimate: "Las horas que se prevén para el proyecto (opcional); se comparan con la suma de sus tareas.",
+};
+
+/** El diálogo del tipo de una base de Proyectos o de Tareas: qué columna hace de
+ * qué (incluida la de «Proyecto», que antes no se podía elegir) y cómo se
+ * reparten las horas entre varios responsables. */
+async function abrirDialogoDeTipo(database) {
+  const tipo = database.kind.type;
+  const dialog = document.createElement("dialog");
+  dialog.className = "kind-dialog";
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.append(
+    crearEl("h3", "", `Base de ${nombreDeTipo(database)}`),
+    crearEl(
+      "p",
+      "dialog-note",
+      "Noteping usa estas columnas para calcular la carga del equipo. Puedes cambiar cuál hace de qué sin perder ningún dato.",
+    ),
+  );
+  const columnas = database.schema_def || [];
+  const selects = {};
+  const aviso = crearEl("p", "dialog-status");
+  const nuevos = { project_database: null };
+
+  for (const rol of ROLES_DE_TIPO[tipo]) {
+    const compat = columnas.filter((c) => c.type === TIPO_DE_COLUMNA_DE_ROL[rol]);
+    const select = crearEl("select");
+    const opcional = OPCIONALES_DE_ROL.has(rol);
+    const actual = database.kind.roles?.[rol] || "";
+    if (opcional) {
+      const o = crearEl("option", "", "Sin columna");
+      o.value = "";
+      select.append(o);
+    }
+    for (const c of compat) {
+      const o = crearEl("option", "", c.name);
+      o.value = c.key;
+      select.append(o);
+    }
+    if (rol === "project" && !actual) {
+      const o = crearEl("option", "", "Crear una columna nueva enlazada a una base de Proyectos…");
+      o.value = "__crear__";
+      select.append(o);
+    }
+    if (rol === "estimate" && !actual) {
+      const o = crearEl("option", "", "Crear la columna «Estimación (h)»");
+      o.value = "__crear__";
+      select.append(o);
+    }
+    select.value = actual;
+    if (!select.value && !opcional && compat[0]) select.value = compat[0].key;
+    selects[rol] = select;
+    const campo = campoEtiquetado(ETIQUETAS_DE_ROL[rol] + (opcional ? " (opcional)" : ""), select, "kind-role");
+    campo.append(crearEl("span", "prop-field-hint", AYUDA_DE_ROL[rol]));
+    if (rol === "project") {
+      const destino = crearEl("select");
+      destino.hidden = true;
+      campo.append(destino);
+      nuevos.selectDestino = destino;
+      select.addEventListener("change", () => {
+        destino.hidden = select.value !== "__crear__";
+      });
+    }
+    dialog.append(campo);
+  }
+  if (selects.project && nuevos.selectDestino) {
+    // Las bases de Proyectos donde crear la relación.
+    api("/databases")
+      .then((bases) => {
+        const proyectos = (Array.isArray(bases) ? bases : []).filter((b) => b.kind?.type === "projects");
+        nuevos.selectDestino.append(...proyectos.map((b) => Object.assign(crearEl("option", "", b.title || "Sin título"), { value: String(b.id) })));
+        if (!proyectos.length) {
+          const o = crearEl("option", "", "No hay ninguna base de Proyectos");
+          o.value = "";
+          nuevos.selectDestino.append(o);
+        }
+      })
+      .catch(() => {});
+  }
+  let reparto = database.kind.options?.hours_split || "full";
+  if (tipo === "tasks") {
+    const grupo = crearEl("fieldset", "kind-split");
+    grupo.append(crearEl("legend", "prop-field-label", "Horas con varios responsables"));
+    for (const [valor, texto, ayuda] of [
+      ["full", "Completas a cada uno", "Cada responsable cuenta todas las horas de la tarea."],
+      ["equal", "A partes iguales", "Las horas se dividen entre los responsables."],
+    ]) {
+      const etiqueta = crearEl("label", "kind-split-opt");
+      const radio = crearEl("input");
+      radio.type = "radio";
+      radio.name = "kind-split";
+      radio.value = valor;
+      radio.checked = reparto === valor;
+      radio.addEventListener("change", () => {
+        reparto = valor;
+      });
+      const texto2 = crearEl("span");
+      texto2.append(crearEl("strong", "", texto), crearEl("span", "prop-field-hint", ayuda));
+      etiqueta.append(radio, texto2);
+      grupo.append(etiqueta);
+    }
+    dialog.append(grupo);
+  }
+  dialog.append(aviso);
+  const acciones = crearEl("div", "dialog-actions");
+  const aNormal = crearEl("button", "btn btn-danger", "Convertir en base normal");
+  aNormal.type = "button";
+  aNormal.style.marginRight = "auto";
+  const cancelar = crearEl("button", "btn", "Cancelar");
+  cancelar.type = "button";
+  const guardar = crearEl("button", "btn btn-primary", "Guardar");
+  guardar.type = "button";
+  acciones.append(aNormal, cancelar, guardar);
+  dialog.append(acciones);
+  cancelar.addEventListener("click", () => dialog.close());
+  aNormal.addEventListener("click", async () => {
+    try {
+      Object.assign(database, await api(`/databases/${database.id}/kind`, { method: "DELETE" }));
+      delete database.kind;
+      dialog.close();
+      await state.databaseView?.recargar?.();
+      showNotice("La base vuelve a ser normal: sus columnas ya no están protegidas.");
+    } catch (e) {
+      aviso.textContent = describeError(e);
+    }
+  });
+  guardar.addEventListener("click", async () => {
+    const roles = {};
+    const cuerpo = { type: tipo, options: tipo === "tasks" ? { hours_split: reparto } : undefined };
+    for (const rol of ROLES_DE_TIPO[tipo]) {
+      const v = selects[rol].value;
+      if (v === "__crear__") {
+        if (rol === "estimate") cuerpo.estimate = true;
+        if (rol === "project") {
+          if (!nuevos.selectDestino?.value) {
+            aviso.textContent = "Elige la base de Proyectos con la que enlazar la columna nueva.";
+            return;
+          }
+          cuerpo.project_database = nuevos.selectDestino.value;
+        }
+        continue;
+      }
+      roles[rol] = v;
+    }
+    cuerpo.roles = roles;
+    guardar.disabled = true;
+    try {
+      Object.assign(database, await api(`/databases/${database.id}/kind`, { method: "PUT", body: JSON.stringify(cuerpo) }));
+      dialog.close();
+      await state.databaseView?.recargar?.();
+      showNotice("Columnas del tipo guardadas.");
+    } catch (e) {
+      aviso.textContent = describeError(e);
+    } finally {
+      guardar.disabled = false;
+    }
+  });
+  dialog.showModal();
+}
+
+/** El tipo de la base (plan H4), desde el «⋯» de la base: abre sus
  * opciones (cómo se reparten las horas entre responsables, estimación del
  * proyecto, volver a ser una base normal) o, en una base normal, ofrece
  * convertirla en Proyectos o en Tareas. */
-function botonDeTipo(database) {
-  const boton = document.createElement("button");
-  boton.type = "button";
-  boton.className = database.kind ? "kind-chip" : "btn btn-ghost";
-  boton.textContent = database.kind ? nombreDeTipo(database) : "Tipo…";
-  boton.setAttribute("aria-haspopup", "menu");
-  boton.setAttribute("aria-expanded", "false");
-  boton.title = database.kind
-    ? `Base de tipo ${nombreDeTipo(database)}: opciones`
-    : "Convertir en una base de Proyectos o de Tareas";
-  boton.addEventListener("click", () => {
-    if (boton.getAttribute("aria-expanded") === "true") {
-      cerrarPanelDeColumna({ foco: true });
-      return;
+function abrirMenuDeTipo(ancla, database) {
+  const menu = document.createElement("div");
+  const aplicar = async (promesa, aviso) => {
+    try {
+      Object.assign(database, await promesa);
+      if (!database.kind) delete database.kind;
+      cerrarPanelDeColumna();
+      await state.databaseView?.recargar?.();
+      showNotice(aviso);
+    } catch (e) {
+      reportError("No se pudo cambiar el tipo de la base", e);
     }
-    const menu = document.createElement("div");
-    const aplicar = async (promesa, aviso) => {
-      try {
-        Object.assign(database, await promesa);
-        if (!database.kind) delete database.kind;
-        cerrarPanelDeColumna();
-        await state.databaseView?.recargar?.();
-        showNotice(aviso);
-      } catch (e) {
-        reportError("No se pudo cambiar el tipo de la base", e);
-      }
-    };
-    const poner = (cuerpo, aviso) =>
-      aplicar(api(`/databases/${database.id}/kind`, { method: "PUT", body: JSON.stringify(cuerpo) }), aviso);
-    if (!database.kind) {
-      menu.append(
-        crearEl("div", "db-col-menu-label", "Convertir esta base en…"),
-        itemDeColumna("Proyectos", { alElegir: () => poner({ type: "projects" }, "La base es ahora de Proyectos: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
-        itemDeColumna("Tareas", { alElegir: () => poner({ type: "tasks" }, "La base es ahora de Tareas: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
-      );
-    } else if (database.kind.type === "tasks") {
-      const actual = database.kind.options?.hours_split || "full";
-      menu.append(
-        crearEl("div", "db-col-menu-label", "Horas con varios responsables"),
-        itemDeColumna("Completas a cada uno", {
-          radio: true,
-          marca: actual === "full" ? "✓" : "",
-          alElegir: () => poner({ type: "tasks", options: { hours_split: "full" } }, "Cada responsable cuenta las horas completas."),
-        }),
-        itemDeColumna("A partes iguales", {
-          radio: true,
-          marca: actual === "equal" ? "✓" : "",
-          alElegir: () => poner({ type: "tasks", options: { hours_split: "equal" } }, "Las horas se reparten a partes iguales entre los responsables."),
-        }),
-      );
-    } else if (database.kind.type === "projects" && !database.kind.roles?.estimate) {
-      menu.append(
-        itemDeColumna("Añadir columna de estimación (h)", {
-          alElegir: () => poner({ type: "projects", estimate: true }, "Columna de estimación añadida."),
-        }),
-      );
-    }
-    if (database.kind) {
-      menu.append(
-        separadorDeMenu(),
-        itemDeColumna("Convertir en base normal", {
-          peligro: true,
-          alElegir: () =>
-            aplicar(
-              api(`/databases/${database.id}/kind`, { method: "DELETE" }),
-              "La base vuelve a ser normal: sus columnas ya no están protegidas.",
-            ),
-        }),
-      );
-    }
-    abrirPanelFlotante(boton, menu, { etiqueta: "Tipo de la base" });
-  });
-  return boton;
+  };
+  const poner = (cuerpo, aviso) =>
+    aplicar(api(`/databases/${database.id}/kind`, { method: "PUT", body: JSON.stringify(cuerpo) }), aviso);
+  if (!database.kind) {
+    menu.append(
+      crearEl("div", "db-col-menu-label", "Convertir esta base en…"),
+      itemDeColumna("Proyectos", { alElegir: () => poner({ type: "projects" }, "La base es ahora de Proyectos: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
+      itemDeColumna("Tareas", { alElegir: () => poner({ type: "tasks" }, "La base es ahora de Tareas: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
+    );
+  } else if (database.kind.type === "tasks") {
+    const actual = database.kind.options?.hours_split || "full";
+    menu.append(
+      crearEl("div", "db-col-menu-label", "Horas con varios responsables"),
+      itemDeColumna("Completas a cada uno", {
+        radio: true,
+        marca: actual === "full" ? "✓" : "",
+        alElegir: () => poner({ type: "tasks", options: { hours_split: "full" } }, "Cada responsable cuenta las horas completas."),
+      }),
+      itemDeColumna("A partes iguales", {
+        radio: true,
+        marca: actual === "equal" ? "✓" : "",
+        alElegir: () => poner({ type: "tasks", options: { hours_split: "equal" } }, "Las horas se reparten a partes iguales entre los responsables."),
+      }),
+    );
+  } else if (database.kind.type === "projects" && !database.kind.roles?.estimate) {
+    menu.append(
+      itemDeColumna("Añadir columna de estimación (h)", {
+        alElegir: () => poner({ type: "projects", estimate: true }, "Columna de estimación añadida."),
+      }),
+    );
+  }
+  if (database.kind) {
+    menu.append(
+      separadorDeMenu(),
+      itemDeColumna("Convertir en base normal", {
+        peligro: true,
+        alElegir: () =>
+          aplicar(
+            api(`/databases/${database.id}/kind`, { method: "DELETE" }),
+            "La base vuelve a ser normal: sus columnas ya no están protegidas.",
+          ),
+      }),
+    );
+  }
+  abrirPanelFlotante(ancla, menu, { etiqueta: "Tipo de la base" });
 }
 
 /** El rol que hace una columna en el tipo de su base (plan H4), en texto, o
@@ -18461,12 +18920,6 @@ function openRowTemplatesDialog(database, refresh = null) {
   dialog.showModal();
 }
 
-document.getElementById("btn-new-from-template").addEventListener("click", () => {
-  openTemplateDialog().catch((e) =>
-    reportError("No se pudo abrir «Crear desde plantilla»", e),
-  );
-});
-
 /** Abre el diálogo en alta (`database` nulo) o para editar una existente.
  * `refresh` repinta la vista actual cuando el PATCH del schema termina; el
  * diálogo recibe uno que relee las vistas, porque el servidor ha podido
@@ -18716,12 +19169,14 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
 /** Crea una nota y navega a ella, lista para renombrar. Compartida por el
  * "+" de la barra lateral (siempre en la raíz) y "Nueva subpágina" del
  * menú contextual (bajo la página sobre la que se hizo clic derecho). */
-async function createNote(parent_id, section = null) {
+async function createNote(parent_id, section = null, workspaceId = undefined) {
   let page;
   try {
     page = await api("/pages", {
       method: "POST",
       body: JSON.stringify({ title: "Sin título", parent_id, body_markdown: "", ...(parent_id ? {} : { section: section || "shared" }) }),
+      // Una subpágina nace donde su madre; en la raíz, en el espacio que se pulsó.
+      ...(parent_id ? { workspace: null } : workspaceId ? { workspace: workspaceId } : {}),
     });
   } catch (e) {
     // Antes esto dejaba una promesa rechazada sin capturar y cero avisos: el
@@ -18743,8 +19198,7 @@ function createSubpage(node) {
   return createNote(node.id);
 }
 
-document.getElementById("btn-new-note").addEventListener("click", () => createNote(null, "shared"));
-document.getElementById("btn-new-private")?.addEventListener("click", () => createNote(null, "private"));
+initArrastrarPaginas();
 
 // -------------------------------------------------------------------- buscar
 

@@ -160,6 +160,55 @@ def update_page(
     return serialize_page(page, repo.author_colors())
 
 
+@router.post("/{page_id}/move", status_code=204)
+def move_page(
+    page_id: uuid.UUID,
+    payload: schemas.PageMove,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """Arrastrar en el panel izquierdo: cambiar de madre, de sección o de
+    espacio y colocar la página entre sus hermanas."""
+    page = _get_or_404(repo, page_id)
+    destino = str(payload.workspace_id) if payload.workspace_id else str(page.workspace_id)
+    if payload.parent_id:
+        madre = repo.get_page(payload.parent_id)
+        if madre is None:
+            raise HTTPException(404, "La página de destino no existe")
+        destino = str(madre.workspace_id)
+    cambia_de_sitio = destino != str(page.workspace_id) or (
+        not payload.parent_id and payload.section is not None
+    )
+    if cambia_de_sitio:
+        # Como `_reorganizar`: solo la propietaria cambia con quién se comparte,
+        # y en el destino hay que poder editar.
+        try:
+            acl.authorize(repo.conn, user, page_id, "owner")
+        except acl.NotVisible:
+            raise HTTPException(404, "Página no encontrada") from None
+        except acl.Forbidden:
+            raise HTTPException(403, "Solo el propietario puede cambiar con quién se comparte o mover la página") from None
+        role = ws_mod.role_of(repo.conn, user, destino)
+        if ws_mod.get(repo.conn, destino) is None or role is None:
+            raise HTTPException(404, "No existe ese espacio")
+        if role == "viewer":
+            raise HTTPException(403, "En ese espacio solo puedes leer")
+    try:
+        repo.move_page(
+            page_id,
+            parent_id=payload.parent_id,
+            before_id=payload.before_id,
+            workspace_id=destino,
+            section=payload.section,
+        )
+    except VaultError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if cambia_de_sitio:
+        audit.record(repo.conn, user, "page.moved", workspace_id=destino, target_type="page",
+                     target_id=page_id, metadata={"to_workspace": destino, "section": payload.section})
+    bus.publish({"type": "tree", "action": "changed", "page_id": str(page_id)})
+
+
 def _tiene_otros_cambios(payload: schemas.PageUpdate) -> bool:
     return bool(
         {"title", "icon", "description", "body_markdown", "parent_id"} & payload.model_fields_set
