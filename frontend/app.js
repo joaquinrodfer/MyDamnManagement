@@ -353,9 +353,19 @@ function clearMain() {
   closeSlashMenu();
   closeOutline();
   closeSuggestionsPanel();
+  ponerCompartirEnCabecera(null);
   const main = document.getElementById("main");
   main.innerHTML = "";
   return main;
+}
+
+/** Compartir vive arriba a la derecha de la cabecera, junto a atrás/adelante/subir;
+ * cada página o base pone el suyo y al navegar se quita. */
+function ponerCompartirEnCabecera(boton) {
+  const sitio = document.getElementById("header-right");
+  if (!sitio) return;
+  sitio.textContent = "";
+  if (boton) sitio.append(boton);
 }
 
 async function showEmpty() {
@@ -433,6 +443,7 @@ async function renderDashboard(main) {
   // Si mientras cargaba el usuario ya navegó a otra página, no pisarla.
   if (state.current) return;
 
+  ponerCompartirEnCabecera(null);
   main.innerHTML = "";
   const wrap = document.createElement("div");
   wrap.className = "dashboard";
@@ -1196,7 +1207,27 @@ function renderUsers(users) {
 
 /** Respaldo: los que conoce este navegador (si `GET /auth/users` falla). */
 function renderKnownUsers() {
-  return renderUsers([...knownUsers.values()]);
+  // Un mismo @usuario con nombres visibles antiguos no debe salir repetido.
+  const porUsuario = new Map();
+  knownUsers.forEach((u) => porUsuario.set(u.username || u.display_name, u));
+  return renderUsers([...porUsuario.values()]);
+}
+
+/** Pide la lista al servidor y la pinta; si falla, el respaldo local. */
+async function recargarListaDeUsuarios() {
+  try {
+    const fetched = await api("/auth/users");
+    if (Array.isArray(fetched)) {
+      fetched.forEach((u) => rememberUser(u));
+      usersListUnavailable = false;
+      renderUsers(fetched);
+      return;
+    }
+  } catch (e) {
+    if (e?.status === 401) return;
+    usersListUnavailable = true;
+  }
+  renderKnownUsers();
 }
 
 /** El apartado «Administración»: el formulario limpio y la lista del servidor. */
@@ -1959,8 +1990,8 @@ newUserForm?.addEventListener("submit", async (event) => {
     rememberUser(created);
     newUserForm.reset();
     selectorDeAlta.fijar(null);
-    renderKnownUsers();
     setFormNote(newUserNote, `Usuario «${created.display_name}» creado.`, "ok");
+    await recargarListaDeUsuarios();
   } catch (e) {
     if (e?.status === 401) return;
     setFormNote(newUserNote, describeError(e), "error");
@@ -3621,34 +3652,23 @@ function initAvisos() {
   setInterval(cargarAvisos, 60000);
 }
 
-/** La campana de una página: cuánto ruido quiere de ella (plan H6). */
-function botonDeCampana(pageId) {
-  const boton = document.createElement("button");
-  boton.type = "button";
-  boton.className = "icon-btn note-bell";
-  boton.setAttribute("aria-haspopup", "menu");
-  boton.setAttribute("aria-expanded", "false");
-  let modo = "mentions_only";
-  const pintar = () => {
-    boton.innerHTML = svgIcon(modo === "muted" ? "i-bell-off" : "i-bell");
-    const texto = { all: "todo lo que cambie", mentions_only: "solo menciones y asignaciones", muted: "silenciada" }[modo];
-    boton.title = `Avisos de esta página: ${texto}`;
-    boton.setAttribute("aria-label", `Avisos de esta página: ${texto}`);
-    boton.classList.toggle("is-on", modo === "all");
-  };
-  pintar();
-  api(`/notifications/subscriptions/${pageId}`).then((r) => { modo = r.mode; pintar(); }).catch(() => {});
-  boton.addEventListener("click", () => {
-    if (boton.getAttribute("aria-expanded") === "true") {
-      cerrarPanelDeColumna({ foco: true });
-      return;
-    }
-    abrirMenuDeAvisos(boton, pageId, () => modo, (valor) => {
-      modo = valor;
-      pintar();
-    });
+/** «Avisos de esta página…» del «⋯»: lee el modo actual y abre el menú de avisos
+ * en el mismo sitio. Es el mismo ítem para páginas y bases. */
+function itemDeAvisos(ancla, pageId) {
+  return itemDeColumna("Avisos de esta página…", {
+    alElegir: async () => {
+      cerrarPanelDeColumna();
+      let modo = "mentions_only";
+      try {
+        modo = (await api(`/notifications/subscriptions/${pageId}`)).mode || modo;
+      } catch {
+        /* se ofrece el de por defecto */
+      }
+      abrirMenuDeAvisos(ancla, pageId, () => modo, (v) => {
+        modo = v;
+      });
+    },
   });
-  return boton;
 }
 
 /** El menú de los avisos de una página (plan H6): lo abre la campana de una nota
@@ -4029,13 +4049,14 @@ function pintarEspacios(notes, invitado) {
     const nombre = document.createElement("span");
     nombre.className = "ws-name";
     nombre.textContent = w.name;
-    toggle.append(flecha, icono, nombre);
+    toggle.append(icono, nombre);
     if (esInvitado || w.member === false) {
       const e = document.createElement("span");
       e.className = "tree-guest-ws";
       e.textContent = esInvitado ? "invitado" : "no eres miembro";
       toggle.append(e);
     }
+    toggle.append(flecha); // el plegado va a la derecha, el logo pegado a la izquierda
     const acciones = document.createElement("div");
     acciones.className = "sidebar-head-actions";
     const puedeCrear = !esInvitado && w.member !== false && w.role !== "viewer";
@@ -4986,6 +5007,7 @@ function renderNote(page, backlinks) {
           exportPageAsMarkdown(page, state.editor.getValue());
         },
       }),
+      itemDeAvisos(menuBtn, page.id),
       backTitle,
       backList,
     );
@@ -4994,7 +5016,8 @@ function renderNote(page, backlinks) {
 
   const topbarRight = document.createElement("div");
   topbarRight.className = "note-topbar-right";
-  topbarRight.append(botonDeCampana(page.id), botonCompartir("page", page.id, () => page.title), menuBtn);
+  topbarRight.append(menuBtn);
+  ponerCompartirEnCabecera(botonCompartir("page", page.id, () => page.title));
 
   topbar.append(saveStatus, topbarRight);
 
@@ -7942,7 +7965,8 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
 
   // Solo el título y, a la derecha, Compartir: el tipo y los avisos de la base
   // están en el «⋯» de la línea de las vistas.
-  header.append(title, botonCompartir("database", database.id, () => database.title));
+  header.append(title);
+  ponerCompartirEnCabecera(botonCompartir("database", database.id, () => database.title));
 
   // Debajo del título ya no va la lista «Propiedad (Tipo) · …»: no decía nada
   // que la cabecera de la tabla no diga (cada columna lleva el icono de su tipo).
@@ -8110,22 +8134,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
         },
       }),
     );
-    menu.appendChild(
-      itemDeColumna("Avisos de esta página…", {
-        alElegir: async () => {
-          cerrarPanelDeColumna();
-          let modo = "mentions_only";
-          try {
-            modo = (await api(`/notifications/subscriptions/${database.page_id || database.id}`)).mode || modo;
-          } catch {
-            /* se ofrece el de por defecto */
-          }
-          abrirMenuDeAvisos(menuBtn, database.page_id || database.id, () => modo, (v) => {
-            modo = v;
-          });
-        },
-      }),
-    );
+    menu.appendChild(itemDeAvisos(menuBtn, database.page_id || database.id));
 
     menu.appendChild(separadorDeMenu());
     if (activeView) {
