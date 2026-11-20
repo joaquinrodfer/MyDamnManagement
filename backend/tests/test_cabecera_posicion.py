@@ -26,3 +26,26 @@ def test_encuadre_de_la_cabecera(client, vault_path):
     client.delete(f"/pages/{pid}/header-image")
     assert client.get(f"/pages/{pid}").json()["header_position"] is None
     assert "header_position" not in md.read_text(encoding="utf-8")
+
+
+def test_portadas_genericas(client, vault_path):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    page = crear(client, title="Con degradado")
+    pid = page["id"]
+    # Una subida previa se borra al pasar a una portada genérica.
+    client.post(f"/pages/{pid}/header-image", files={"file": ("c.png", PNG, "image/png")})
+    assert list(vault_path.rglob(f"header-{pid}.*"))
+    r = client.put(f"/pages/{pid}/header-image/preset", json={"preset": "aurora"})
+    assert r.status_code == 200 and r.json()["header_image_path"] == "/covers/aurora.svg"
+    assert not list(vault_path.rglob(f"header-{pid}.*"))
+    # Se puede encuadrar igual que una imagen subida.
+    assert client.put(f"/pages/{pid}/header-image/position", json={"position": 20}).json()["header_position"] == 20
+    # Solo las de la lista: nada de rutas inventadas.
+    assert client.put(f"/pages/{pid}/header-image/preset", json={"preset": "../app"}).status_code == 400
+    # Las portadas se sirven sin sesión (no llevan datos de nadie); otra cosa en /covers, no.
+    with TestClient(app) as anon:
+        svg = anon.get("/covers/aurora.svg")
+        assert svg.status_code == 200 and "<svg" in svg.text
+        assert anon.get("/covers/%2e%2e/app.js").status_code in (401, 404)

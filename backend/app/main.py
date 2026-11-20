@@ -159,6 +159,8 @@ AVATAR_PATH = re.compile(r"/avatars/[a-z0-9]+\.svg")
 # La tipografía (Inter, autoalojada): la pantalla de entrada la usa sin sesión.
 # Con la misma cautela, solo el nombre de un `.woff2` de esa carpeta.
 FONT_PATH = re.compile(r"/fonts/[a-z0-9-]+\.woff2")
+# Las portadas genéricas: degradados de marca, sin datos de nadie.
+COVER_PATH = re.compile(r"/covers/[a-z0-9-]+\.svg")
 
 # Direcciones del panel que NO son un fichero (P18). Cada nota y cada base
 # tiene la suya --`/<id>`, el id y no el título, que cambia--, y `/mis-tareas`
@@ -241,6 +243,7 @@ async def session_is_required(request: Request, call_next):
         or ICON_PATH.fullmatch(path)
         or AVATAR_PATH.fullmatch(path)
         or FONT_PATH.fullmatch(path)
+        or COVER_PATH.fullmatch(path)
         or path == "/agent"
         or path.startswith("/agent/")
     ):

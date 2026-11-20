@@ -279,6 +279,11 @@ function svgIcon(id, sizeClass = "") {
 // en el DOM se cambian por el icono vectorial de su tipo (SPEC-B §6.1). Si el
 // usuario eligió otro emoji del selector, se pinta su carácter.
 const DEFAULT_ICON = "📄";
+// Las portadas genéricas: `frontend/covers/<clave>.svg` (y COVER_PRESETS en el servidor).
+const PORTADAS_GENERICAS = [
+  ["indigo", "Índigo"], ["ping", "Ping"], ["noche", "Noche"], ["aurora", "Aurora"],
+  ["coral", "Coral"], ["lavanda", "Lavanda"], ["crepusculo", "Crepúsculo"], ["niebla", "Niebla"],
+];
 const DEFAULT_ICON_BY_TYPE = { note: DEFAULT_ICON, database: "🗄" };
 
 function isDefaultIcon(type, icon) {
@@ -5312,7 +5317,7 @@ function renderNote(page, backlinks) {
       b.addEventListener("click", alPulsar);
       return b;
     };
-    const cambiar = boton("Cambiar portada", () => fileInput.click());
+    const cambiar = boton("Cambiar portada", () => abrirSelectorDePortada(cambiar));
     const quitar = boton("Quitar", async () => {
       const updated = await api(`/pages/${page.id}/header-image`, { method: "DELETE" });
       page.header_image_path = updated.header_image_path;
@@ -5380,6 +5385,50 @@ function renderNote(page, backlinks) {
     headerWrap.append(img, barra);
   }
 
+  // Portadas genéricas (degradados de la marca) o una imagen propia.
+  function abrirSelectorDePortada(ancla) {
+    const panel = crearEl("div", "cover-picker");
+    panel.setAttribute("role", "dialog");
+    panel.append(crearEl("div", "cover-picker-title", "Portadas"));
+    const rejilla = crearEl("div", "cover-picker-grid");
+    for (const [clave, nombre] of PORTADAS_GENERICAS) {
+      const b = crearEl("button", "cover-picker-item");
+      b.type = "button";
+      b.title = nombre;
+      b.setAttribute("aria-label", `Portada ${nombre}`);
+      if (page.header_image_path === `/covers/${clave}.svg`) b.setAttribute("aria-pressed", "true");
+      const img = crearEl("img");
+      img.src = `/covers/${clave}.svg`;
+      img.alt = "";
+      b.append(img, crearEl("span", "", nombre));
+      b.addEventListener("click", async () => {
+        cerrarPanelDeColumna();
+        try {
+          const updated = await api(`/pages/${page.id}/header-image/preset`, {
+            method: "PUT",
+            body: JSON.stringify({ preset: clave }),
+          });
+          page.header_image_path = updated.header_image_path;
+          page.header_position = updated.header_position ?? null;
+          renderHeaderImage();
+        } catch (e) {
+          reportError("No se pudo poner la portada", e);
+        }
+      });
+      rejilla.append(b);
+    }
+    const subir = crearEl("button", "cover-picker-upload");
+    subir.type = "button";
+    subir.innerHTML = svgIcon("i-download");
+    subir.append("Subir una imagen…");
+    subir.addEventListener("click", () => {
+      cerrarPanelDeColumna();
+      fileInput.click();
+    });
+    panel.append(rejilla, subir);
+    abrirPanelFlotante(ancla, panel, { etiqueta: "Elegir portada" });
+  }
+
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files[0];
     fileInput.value = "";
@@ -5430,7 +5479,7 @@ function renderNote(page, backlinks) {
   };
   const anadirIcono = accion("i-file-text", "Añadir icono", () => openEmojiPicker(anadirIcono, ponerIcono));
   const quitarIcono = accion("i-x", "Quitar icono", () => ponerIcono(DEFAULT_ICON));
-  const anadirPortada = accion("i-plus", "Añadir portada", () => fileInput.click());
+  const anadirPortada = accion("i-plus", "Añadir portada", () => abrirSelectorDePortada(anadirPortada));
   const anadirDescripcion = accion("i-pencil", "Añadir descripción", () => {
     head.classList.add("show-description");
     descInput.focus();

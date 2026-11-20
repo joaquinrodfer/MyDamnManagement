@@ -332,6 +332,31 @@ async def upload_header_image(
     return serialize_page(page, repo.author_colors())
 
 
+# Portadas genéricas (degradados con los colores de la marca) que sirve el
+# propio frontend en `/covers/<nombre>.svg`. La cabecera apunta ahí en vez de a
+# un adjunto del vault, así que no hay fichero que copiar ni que borrar.
+COVER_PRESETS = ("indigo", "ping", "noche", "aurora", "coral", "lavanda", "crepusculo", "niebla")
+
+
+class HeaderPreset(BaseModel):
+    preset: str
+
+
+@router.put("/{page_id}/header-image/preset", response_model=schemas.PageRead)
+def put_header_preset(page_id: uuid.UUID, payload: HeaderPreset, repo: Repository = Depends(get_repo)):
+    """Pone una de las portadas genéricas (`COVER_PRESETS`) como cabecera."""
+    _get_or_404(repo, page_id)
+    if payload.preset not in COVER_PRESETS:
+        raise HTTPException(400, f"Portada desconocida: {payload.preset!r}")
+    try:
+        page = repo.set_header_image(page_id, f"/covers/{payload.preset}.svg")
+    except VaultError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # La imagen subida que hubiera deja de usarse: fuera, como al quitarla.
+    attachments.delete_header(settings.vault_path, page_id)
+    return serialize_page(page, repo.author_colors())
+
+
 class HeaderPosition(BaseModel):
     position: int = Field(ge=0, le=100)
 
