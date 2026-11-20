@@ -16,6 +16,24 @@
 <meta name="apple-mobile-web-app-title" content="Noteping" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <style>
+  /* Inter (variable, autoalojada en /fonts; licencia SIL OFL en fonts/LICENSE-Inter.txt).
+     Sin peticiones a terceros: el navegador la pide al mismo servidor. */
+  @font-face {
+    font-family: "Inter";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url(/fonts/inter-latin-wght-normal.woff2) format("woff2-variations");
+    unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+  }
+  @font-face {
+    font-family: "Inter";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url(/fonts/inter-latin-ext-wght-normal.woff2) format("woff2-variations");
+    unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+  }
   :root {
     color-scheme: dark;
 
@@ -52,7 +70,7 @@
        es un defecto, no una decisión: al trabajar horas dentro de la app,
        el texto mono cansa y hace que el título de la página se lea como una
        consola. */
-    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
     --font-mono: "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
     /* --- Escala tipográfica ---
@@ -80,9 +98,9 @@
 
     /* --- Radios --- */
     --radius-xs: 3px;
-    --radius-sm: 4px;
-    --radius-md: 6px;
-    --radius-lg: 8px;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
 
     /* --- Espaciado y dimensiones clave --- */
     --space-1: 4px;
@@ -106,13 +124,13 @@
     --main-pad-bottom: 60px;
 
     /* --- Sombras --- */
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    --shadow-float: 0 16px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.07);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --shadow-float: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 6px 12px -4px rgba(0, 0, 0, 0.45), 0 22px 48px -12px rgba(0, 0, 0, 0.7);
     --shadow-toast: 0 8px 24px rgba(0, 0, 0, 0.45);
 
     /* --- Duraciones y curvas de movimiento --- */
     --dur-fast: 120ms;
-    --dur-normal: 160ms;
+    --dur-normal: 180ms;
     --dur-spin: 700ms;
     --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
     --ease-std: ease;
@@ -141,6 +159,18 @@
     --row-height: 36px;
     --row-hover: color-mix(in srgb, var(--ink) 5%, transparent);
     --cell-ring: color-mix(in srgb, var(--ink-muted) 55%, transparent);
+
+    /* --- Pase visual (nov 2026): campos rellenos, menús y botones --- */
+    --field-bg: #11131a;
+    --field-border: #343a4a;
+    --field-border-hover: #4b5367;
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+    --menu-bg: #1b1e28;
+    --menu-hover: color-mix(in srgb, var(--ink) 7%, transparent);
+    --btn-bg: #1c202b;
+    --btn-bg-hover: #232837;
+    --btn-shadow: 0 1px 1px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23949db3' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   }
 
   html[data-theme="light"] {
@@ -167,8 +197,19 @@
     --down: #c81e1e;             /* L = 0.1330 (5.74:1 sobre --panel, 5.22:1 sobre --bg) */
     --down-bg: rgba(200, 30, 30, 0.10);     /* Compuesto: #fae8e8 sobre --panel (L=0.8386; --down da 4.86:1) */
 
-    --shadow-card: 0 1px 2px rgba(17, 20, 28, 0.06);
-    --shadow-float: 0 12px 32px rgba(17, 20, 28, 0.16);
+    --shadow-card: 0 1px 2px rgba(17, 20, 28, 0.06), 0 0 0 1px rgba(17, 20, 28, 0.02);
+    --shadow-float: 0 0 0 1px rgba(17, 20, 28, 0.07), 0 4px 10px -2px rgba(17, 20, 28, 0.08), 0 18px 40px -10px rgba(17, 20, 28, 0.22);
+
+    --field-bg: #ffffff;
+    --field-border: #d3d8e2;
+    --field-border-hover: #b3bac8;
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+    --menu-bg: #ffffff;
+    --menu-hover: color-mix(in srgb, var(--ink) 6%, transparent);
+    --btn-bg: #ffffff;
+    --btn-bg-hover: #f5f6f9;
+    --btn-shadow: 0 1px 2px rgba(17, 20, 28, 0.06);
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23525a6e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     --shadow-toast: 0 6px 18px rgba(17, 20, 28, 0.14);
 
     --tag-1: #525a6e;
@@ -5433,6 +5474,254 @@
     color: var(--ink);
   }
   .row-subtasks-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  /* =====================================================================
+     PASE VISUAL (nov 2026)
+     Una capa al final que unifica el aspecto: Inter, campos rellenos con
+     anillo de foco suave, botones con relieve, menús y diálogos con más
+     aire y radio, y la barra lateral y la tabla más ligeras de peso.
+     Va al final para ganar a las reglas sueltas de arriba; lo que es solo
+     de escritorio va dentro de `min-width: 769px` para no pisar los
+     tamaños táctiles del móvil. `prefers-reduced-motion` (arriba, con
+     !important) sigue apagando todo el movimiento de aquí.
+     ===================================================================== */
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv11", "ss03";
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  input[type="checkbox"], input[type="radio"], input[type="range"], progress { accent-color: var(--accent); }
+  /* Casillas propias: borde suave, relleno de acento y la marca en blanco.
+     El tamaño va en :where() para que las reglas de cada sitio (móvil, fila)
+     sigan mandando; los interruptores (.db-switch) tienen su propio dibujo. */
+  :where(input[type="checkbox"]) { width: 16px; height: 16px; }
+  input[type="checkbox"]:not(.db-switch) {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: none;
+    display: inline-block;
+    vertical-align: middle;
+    padding: 0;
+    border: 1.5px solid var(--field-border-hover);
+    border-radius: 5px;
+    background: var(--field-bg) center / 75% no-repeat;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std);
+  }
+  input[type="checkbox"]:not(.db-switch):hover { border-color: var(--accent); }
+  input[type="checkbox"]:not(.db-switch):checked,
+  input[type="checkbox"]:not(.db-switch):indeterminate { background-color: var(--accent-btn); border-color: var(--accent-btn); }
+  input[type="checkbox"]:not(.db-switch):checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
+  }
+  input[type="checkbox"]:not(.db-switch):indeterminate {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round'%3E%3Cpath d='M6 12h12'/%3E%3C/svg%3E");
+  }
+  input[type="checkbox"]:not(.db-switch):focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+  input[type="checkbox"]:not(.db-switch):disabled { opacity: .5; cursor: default; }
+
+  /* Barras de desplazamiento finas y redondeadas. */
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink-muted) 35%, transparent) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--ink-muted) 30%, transparent);
+    border-radius: 999px; border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--ink-muted) 55%, transparent); }
+
+  /* ---------- títulos: Inter apretada en los tamaños grandes ---------- */
+  .note-title, .db-title { letter-spacing: -0.022em; font-weight: 700; }
+  dialog h3, .settings-dialog h2, .settings-dialog h3 { letter-spacing: -0.012em; }
+
+  /* ---------- botones ---------- */
+  .btn {
+    min-height: 32px;
+    padding: 5px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--panel-border);
+    background: var(--btn-bg);
+    box-shadow: var(--btn-shadow);
+    font-weight: 500;
+    transition: background-color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std),
+                color var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std),
+                transform var(--dur-fast) var(--ease-std), filter var(--dur-fast) var(--ease-std);
+  }
+  .btn:hover { background: var(--btn-bg-hover); border-color: var(--field-border-hover); }
+  .btn:active { transform: translateY(1px); box-shadow: none; filter: none; }
+  .btn:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+  .btn-primary,
+  .btn-primary:hover {
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent-btn) 86%, #fff), var(--accent-btn));
+    border-color: color-mix(in srgb, var(--accent-btn) 70%, #000);
+    color: var(--accent-contrast);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 1px 2px rgba(0, 0, 0, 0.25);
+    font-weight: 600;
+  }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-danger { background: none; box-shadow: none; }
+  .btn:disabled, .btn[aria-disabled="true"] { opacity: .5; cursor: default; box-shadow: none; transform: none; }
+  .icon-btn { border-radius: 8px; border-color: transparent; }
+  .icon-btn:hover { background: var(--menu-hover); border-color: transparent; }
+  .icon-btn:active { transform: translateY(1px); }
+  .icon-btn[aria-expanded="true"] { background: var(--menu-hover); color: var(--ink); }
+  /* Compartir en la cabecera: discreto, como el resto de la barra. */
+  .header-right .share-btn { background: transparent; box-shadow: none; border-color: transparent; color: var(--ink-muted); }
+  .header-right .share-btn:hover { background: var(--menu-hover); color: var(--ink); border-color: transparent; }
+
+  /* ---------- campos: rellenos, borde suave y anillo de foco ---------- */
+  :is(.field, dialog, .db-col-floating, .share-panel, .settings-dialog, .sidebar-search, .rel-picker, .sel-picker, .kind-dialog)
+    :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]), select, textarea) {
+    background-color: var(--field-bg);
+    border: 1px solid var(--field-border);
+    border-radius: 8px;
+    transition: border-color var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std), background-color var(--dur-fast) var(--ease-std);
+  }
+  :is(.field, dialog, .db-col-floating, .share-panel, .settings-dialog, .sidebar-search, .rel-picker, .sel-picker, .kind-dialog)
+    :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]), select, textarea):hover {
+    border-color: var(--field-border-hover);
+  }
+  :is(.field, dialog, .db-col-floating, .share-panel, .settings-dialog, .sidebar-search, .rel-picker, .sel-picker, .kind-dialog)
+    :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]), select, textarea):focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+  }
+  input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-muted) 80%, transparent); }
+  /* Los <select> nativos con la flecha propia (igual en Windows, Mac y Linux). */
+  select:not([multiple]):not([size]) {
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: var(--select-chevron);
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 12px;
+    padding-right: 30px !important;
+  }
+  select option { background: var(--menu-bg); color: var(--ink); }
+  .sidebar-search input { background-color: var(--field-bg); padding: 7px 10px; }
+
+  /* ---------- menús y paneles flotantes ---------- */
+  .db-col-floating,
+  .user-menu,
+  .mdm-context-menu,
+  .mdm-slash-menu,
+  .rel-picker {
+    background: var(--menu-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-float);
+  }
+  .db-col-floating { padding: 6px; font-size: 13px; min-width: 220px; }
+  .db-col-floating { animation: np-menu-in 160ms var(--ease-out); }
+  .mdm-context-menu,
+  .mdm-slash-menu,
+  .rel-picker,
+  .user-menu:not([hidden]) { animation: np-menu-in 160ms var(--ease-out); }
+  @keyframes np-menu-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  .db-col-menu-item,
+  .user-menu-item,
+  .mdm-context-menu-item,
+  .mdm-slash-menu-item {
+    border-radius: 7px;
+    transition: background-color 90ms var(--ease-std), color 90ms var(--ease-std);
+  }
+  .db-col-menu-item { min-height: 32px; padding: 6px 10px; font-size: 13px; }
+  .db-col-menu-item:hover,
+  .db-col-menu-item:focus-visible,
+  .user-menu-item:hover,
+  .user-menu-item:focus-visible { background: var(--menu-hover); }
+  .db-col-menu-label {
+    padding: 8px 10px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--ink-muted) 85%, transparent);
+  }
+  .db-col-menu-sep { margin: 6px 2px; background: color-mix(in srgb, var(--panel-border) 80%, transparent); }
+  .db-col-menu-mark { color: var(--accent-ink); }
+
+  /* ---------- diálogos ---------- */
+  dialog {
+    border: 1px solid var(--panel-border);
+    border-radius: 16px;
+    background: var(--surface-elevated);
+    box-shadow: var(--shadow-float);
+    transform: translateY(10px) scale(0.98);
+    transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out),
+                overlay 220ms allow-discrete, display 220ms allow-discrete;
+  }
+  dialog[open] { transform: none; }
+  @starting-style { dialog[open] { opacity: 0; transform: translateY(10px) scale(0.98); } }
+  dialog[open]::backdrop {
+    background-color: rgba(6, 8, 12, 0.55);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+  }
+  html[data-theme="light"] dialog[open]::backdrop { background-color: rgba(17, 20, 28, 0.28); }
+  dialog h3 { font-weight: 650; }
+  .dialog-actions { gap: 8px; }
+
+  /* ---------- barra lateral ---------- */
+  .wsp-body { padding-right: 8px; }
+  .tree-row { border-radius: 7px; }
+  .tree-row.active,
+  .tree-row.active:hover { font-weight: 500; }
+  .ws-toggle { font-weight: 600; border-radius: 7px; }
+  .ws-sub-head, .sidebar-mine-label, .sidebar-section-head {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .07em;
+  }
+  .workspace-icon { border-radius: 7px; font-weight: 650; }
+  .ws-personal .workspace-icon {
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 55%, transparent), color-mix(in srgb, #c084fc 45%, transparent));
+    color: #fff;
+  }
+  .tree-empty-section { font-style: normal; color: color-mix(in srgb, var(--ink-muted) 80%, transparent); }
+
+  /* ---------- pestañas de vista y cabecera de base ---------- */
+  .view-tab { border-radius: 7px; }
+  .view-tab.active { font-weight: 550; background: var(--menu-hover); box-shadow: inset 0 0 0 1px var(--panel-border); }
+
+  /* ---------- tabla ---------- */
+  .rows-table th { font-weight: 500; font-size: 12.5px; color: var(--ink-muted); }
+  .rows-table td.cell-title { font-weight: 500; }
+  .prop-tag { border-radius: 6px; font-weight: 500; }
+
+  /* ---------- tablero ---------- */
+  .board-card {
+    border-radius: 10px;
+    transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-std);
+  }
+  .board-card:hover { transform: translateY(-1px); box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.35); border-color: var(--field-border-hover); }
+
+  /* ---------- avisos (toasts) ---------- */
+  .error-toast { border-radius: 10px; box-shadow: var(--shadow-float); animation: np-toast-in 220ms var(--ease-out); }
+  @keyframes np-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  /* ---------- inicio ---------- */
+  .dashboard-greeting { margin: 4px 0 4px; line-height: 1.2; font-size: 26px; font-weight: 700; letter-spacing: -0.022em; color: var(--ink); }
+  .dashboard-greeting-sub { margin: 0; color: var(--ink-muted); font-size: 14px; }
+  .dashboard-item { border-radius: 8px; }
+
+  /* ---------- nota: el título alineado con el texto (escritorio) ----------
+     El cuerpo deja a la izquierda el hueco del asa de bloque (--mdm-gutter, 78 px);
+     antes el título, la descripción y los datos empezaban 78 px más a la
+     izquierda que el texto y la página se veía descuadrada. */
+  @media (min-width: 769px) {
+    main:has(> #note-body) > :is(.note-title-row, .note-meta, .note-description, section),
+    main:has(> #note-body) > .note-header-image-wrap:not(:has(img)) { margin-left: 84px; }
+    /* «Imagen de cabecera» solo aparece al pasar por la página, como en Notion. */
+    main:has(> #note-body) > .note-header-image-wrap:not(:has(img)) .btn {
+      opacity: 0; background: transparent; box-shadow: none; border-color: transparent; color: var(--ink-muted);
+      transition: opacity var(--dur-normal) var(--ease-std), background-color var(--dur-fast) var(--ease-std);
+    }
+    main:has(> #note-body):hover > .note-header-image-wrap:not(:has(img)) .btn,
+    main:has(> #note-body) > .note-header-image-wrap:not(:has(img)) .btn:focus-visible { opacity: 1; }
+    main:has(> #note-body) > .note-header-image-wrap:not(:has(img)) .btn:hover { background: var(--menu-hover); color: var(--ink); }
+  }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>

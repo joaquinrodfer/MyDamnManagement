@@ -447,6 +447,19 @@ async function renderDashboard(main) {
   main.innerHTML = "";
   const wrap = document.createElement("div");
   wrap.className = "dashboard";
+  // Un saludo arriba: la portada dice dónde estás y de quién es.
+  const hora = new Date().getHours();
+  const saludo = hora < 6 ? "Buenas noches" : hora < 14 ? "Buenos días" : hora < 21 ? "Buenas tardes" : "Buenas noches";
+  const nombre = (sessionUser.me?.display_name || "").split(/[\s|]/)[0];
+  const cabecera = document.createElement("div");
+  const h = document.createElement("h1");
+  h.className = "dashboard-greeting";
+  h.textContent = nombre ? `${saludo}, ${nombre}` : saludo;
+  const sub = document.createElement("p");
+  sub.className = "dashboard-greeting-sub";
+  sub.textContent = new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+  cabecera.append(h, sub);
+  wrap.appendChild(cabecera);
 
   const recentSection = document.createElement("div");
   recentSection.className = "dashboard-section";

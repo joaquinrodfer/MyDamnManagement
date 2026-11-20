@@ -2,6 +2,15 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Pase visual general
+- Tipografía Inter autoalojada (`frontend/fonts/`, licencia OFL), también en la pantalla de entrada; `/fonts/*.woff2` se sirve sin sesión.
+- Campos rellenos con borde suave y anillo de foco; `<select>` con flecha propia; casillas propias.
+- Botones con relieve y pulsación; Compartir discreto en la cabecera.
+- Menús y diálogos con más radio, sombra en capas, entrada animada y fondo desenfocado.
+- Barra lateral, pestañas y tabla con pesos más ligeros; tarjetas del tablero que se elevan al pasar.
+- Nota: título, descripción y datos alineados con el texto; «Imagen de cabecera» aparece al pasar el ratón.
+- Inicio con saludo y fecha.
+
 ## Cabecera, avisos y panel de espacios (ajustes)
 - Administración: al crear un usuario la lista se recarga del servidor; el respaldo local ya no repite un mismo @usuario con nombres antiguos.
 - Panel izquierdo: el logo del espacio va pegado a la izquierda, la flecha de plegar a la derecha y las páginas con más margen.
