@@ -51,6 +51,7 @@ import {
   renumberOrderedRun,
 } from "./block-delete.js";
 import { insertBlockEdit, moveBlockEdits } from "./block-move.js";
+import { MARQUEE_SLOP, blocksInMarquee, marqueeMode, mergeMarquee, sameSet } from "./block-marquee.js";
 import { canonicalBody, cursorInOuterBlanks, outerBlankRange, withoutRange } from "./body.js";
 import { databaseErrorText, databaseNotFoundText, scanDatabaseBlocks } from "./database-embed.js";
 import { serializeDatabaseBlock } from "./database-block.js";
@@ -1248,34 +1249,19 @@ function blockHandleEventHandlers(onBlockContextMenu) {
         }
       }
 
-      // Clic en la zona vacía bajo el último bloque (el padding-bottom de
-      // .cm-content, puesto ahí a propósito -- ver el comentario en
-      // index.html) -- en vez de dejar el cursor "colgado" al final del
-      // último bloque existente, genera uno nuevo listo para escribir,
-      // como clicar debajo del contenido en Notion. Solo se activa si el
-      // clic resuelve al final del documento Y está claramente por debajo
-      // de la última línea (si no, sería un clic normal dentro del propio
-      // texto, que debe comportarse como siempre).
-      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-      if (pos === null || pos !== view.state.doc.length) return false;
-      const coords = view.coordsAtPos(pos, -1);
-      if (!coords || event.clientY <= coords.bottom + 4) return false;
-      event.preventDefault();
-
-      const doc = view.state.doc;
-      const lastLine = doc.lineAt(pos);
-      const role = lineGapRole(view.state, lastLine.number);
-      if (role === "empty") {
-        // La última línea ya es un bloque vacío: se escribe ahí.
-        view.dispatch({ selection: { anchor: pos } });
-      } else {
-        // Detrás de un bloque, su separador y el bloque vacío; detrás de un
-        // separador suelto, solo el bloque vacío.
-        const insert = role === "sep" ? "\n" : "\n\n";
-        view.dispatch({ changes: { from: pos, to: pos, insert }, selection: { anchor: pos + insert.length } });
+      // ---- el fondo de la página: rectángulo de selección ----
+      // Pulsar donde no hay texto (el margen del asa, el hueco de abajo, lo que
+      // sobra a la derecha de una línea) y arrastrar marca los bloques que toca
+      // el rectángulo, como en el escritorio de Windows. Si no se arrastra es
+      // un clic de los de siempre, que se resuelve al soltar (`clickOnBackground`).
+      if (event.button === 0 && lastPointerType !== "touch" && !event.altKey && isEditorBackground(view, event)) {
+        event.preventDefault();
+        const x = event.clientX;
+        const y = event.clientY;
+        beginMarquee(view, event, marqueeAreaOf(view), () => clickOnBackground(view, x, y));
+        return true;
       }
-      view.focus();
-      return true;
+      return false;
     },
     // Corrección de un clic mal resuelto cerca de un widget de bloque (la
     // línea horizontal, y en general cualquier línea de continuación de un
@@ -1437,6 +1423,285 @@ function openBlockMenu(view, indices, x, y, onBlockContextMenu) {
     moveUp: () => moveBlockTo(view, first, first - 1),
     moveDown: () => moveBlockTo(view, last, last + 2),
   });
+}
+
+/**
+ * Clic (sin arrastre) en el fondo del editor. Bajo el último bloque -- el
+ * padding-bottom de .cm-content, puesto ahí a propósito (ver index.html) --
+ * crea un bloque nuevo listo para escribir, como clicar debajo del contenido en
+ * Notion; en el resto del fondo (el margen del asa, lo que sobra a la derecha
+ * de una línea) deja el cursor donde caiga, como siempre.
+ */
+function clickOnBackground(view, x, y) {
+  if (!clickBelowContent(view, x, y)) {
+    const pos = view.posAtCoords({ x, y });
+    if (pos !== null && pos !== undefined) view.dispatch({ selection: { anchor: pos } });
+  }
+  view.focus();
+}
+
+/** El clic bajo el último bloque. Solo cuenta si cae al final del documento Y
+ * claramente por debajo de la última línea (si no, es un clic normal). */
+function clickBelowContent(view, x, y) {
+  const pos = view.posAtCoords({ x, y });
+  if (pos === null || pos !== view.state.doc.length) return false;
+  const coords = view.coordsAtPos(pos, -1);
+  if (!coords || y <= coords.bottom + 4) return false;
+
+  const doc = view.state.doc;
+  const lastLine = doc.lineAt(pos);
+  const role = lineGapRole(view.state, lastLine.number);
+  if (role === "empty") {
+    // La última línea ya es un bloque vacío: se escribe ahí.
+    view.dispatch({ selection: { anchor: pos } });
+  } else {
+    // Detrás de un bloque, su separador y el bloque vacío; detrás de un
+    // separador suelto, solo el bloque vacío.
+    const insert = role === "sep" ? "\n" : "\n\n";
+    view.dispatch({ changes: { from: pos, to: pos, insert }, selection: { anchor: pos + insert.length } });
+  }
+  return true;
+}
+
+/** Hueco que tiene que haber a la derecha del texto de una línea para que
+ * pulsar ahí sea «fondo» y no «al final de la línea». */
+const LINE_END_SLACK = 32;
+
+/**
+ * ¿El mousedown cae en el fondo del editor (no en texto ni en un bloque)?
+ *
+ * - El propio .cm-content: su padding, o sea el margen del asa y el hueco de
+ *   debajo del último bloque.
+ * - Lo que sobra a la derecha del texto de una línea, con un margen: pulsar
+ *   justo detrás de la última letra sigue siendo poner el cursor ahí. Con
+ *   Mayús/Ctrl no: ahí el clic es de texto (extender la selección).
+ *
+ * Una línea vacía no es fondo: es un bloque vacío, y ahí se escribe.
+ */
+function isEditorBackground(view, event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return false;
+  if (target === view.contentDOM) return true;
+  if (event.shiftKey || event.ctrlKey || event.metaKey) return false;
+  const line = target.closest(".cm-line");
+  if (!line || line.parentElement !== view.contentDOM) return false;
+  // Una línea con base, tabla o imagen no tiene «hueco» fiable a la derecha.
+  // Lo del asa no cuenta, ni los <img> vacíos que CodeMirror pone junto a
+  // cada widget (`cm-widgetBuffer`).
+  const media = line.querySelectorAll(".cm-mdm-dblock, table, img:not(.cm-widgetBuffer), iframe");
+  if ([...media].some((el) => !el.closest(".cm-mdm-block-handle-wrap"))) return false;
+  const range = document.createRange();
+  range.selectNodeContents(line);
+  const y = event.clientY;
+  let end = -Infinity;
+  for (const r of range.getClientRects()) {
+    if (r.width > 0 && y >= r.top - 2 && y <= r.bottom + 2) end = Math.max(end, r.right);
+  }
+  range.detach?.();
+  if (end === -Infinity) return false;
+  return event.clientX > end + LINE_END_SLACK;
+}
+
+// ---------------------------------------------------- rectángulo de selección
+// El arrastre en sí: dibuja el rectángulo (fijo, colgado del body), marca los
+// bloques que toca y desplaza la página si el ratón llega al borde. Qué bloques
+// toca y cómo se suma a lo marcado está en block-marquee.js (con pruebas).
+
+const marqueeAreas = new WeakMap();
+let marquee = null;
+
+/** Dónde se dibuja y se desplaza el rectángulo: el área de la página (#main),
+ * que la app pasa al crear el editor; si no, el propio editor. */
+function marqueeAreaOf(view) {
+  return marqueeAreas.get(view) || view.scrollDOM;
+}
+
+function beginMarquee(view, event, area, onClick) {
+  endMarquee();
+  marquee = {
+    view,
+    area,
+    onClick,
+    mode: marqueeMode(event),
+    base: new Set(view.state.field(blockField).selected),
+    startX: event.clientX,
+    // El punto de partida en coordenadas del DOCUMENTO: si la página se
+    // desplaza durante el arrastre, el rectángulo sigue anclado donde empezó.
+    startDocY: event.clientY - view.documentTop,
+    x: event.clientX,
+    y: event.clientY,
+    active: false,
+    box: null,
+    raf: 0,
+  };
+  window.addEventListener("mousemove", onMarqueeMove, true);
+  window.addEventListener("mouseup", onMarqueeUp, true);
+  window.addEventListener("keydown", onMarqueeKey, true);
+  // Solo el blur de la VENTANA (cambiar de aplicación): en captura llegaría
+  // también el de cualquier campo que pierde el foco al pulsar, y el
+  // rectángulo moría antes de empezar.
+  window.addEventListener("blur", onMarqueeWindowBlur);
+}
+
+function onMarqueeWindowBlur(event) {
+  if (event.target === window) endMarquee();
+}
+
+function onMarqueeMove(event) {
+  const m = marquee;
+  if (!m) return;
+  m.x = event.clientX;
+  m.y = event.clientY;
+  if (!m.active) {
+    const startY = m.startDocY + m.view.documentTop;
+    if (Math.hypot(m.x - m.startX, m.y - startY) < MARQUEE_SLOP) return;
+    m.active = true;
+    m.box = document.createElement("div");
+    m.box.className = "np-marquee";
+    document.body.appendChild(m.box);
+    document.documentElement.classList.add("np-marquee-on");
+    const tick = () => {
+      if (marquee !== m) return;
+      autoScrollMarquee(m);
+      m.raf = requestAnimationFrame(tick);
+    };
+    m.raf = requestAnimationFrame(tick);
+  }
+  event.preventDefault();
+  clearNativeSelection();
+  paintMarquee(m);
+}
+
+/** Cerca del borde de arriba o de abajo, la página se desplaza sola. */
+function autoScrollMarquee(m) {
+  const r = m.area.getBoundingClientRect();
+  const edge = 40;
+  let dy = 0;
+  if (m.y < r.top + edge) dy = -Math.ceil((r.top + edge - m.y) / 3);
+  else if (m.y > r.bottom - edge) dy = Math.ceil((m.y - (r.bottom - edge)) / 3);
+  if (!dy) return;
+  const before = m.area.scrollTop;
+  m.area.scrollTop += Math.max(-30, Math.min(30, dy));
+  if (m.area.scrollTop !== before) paintMarquee(m);
+}
+
+function paintMarquee(m) {
+  const { view } = m;
+  if (!view.dom.isConnected) {
+    endMarquee();
+    return;
+  }
+  const docTop = view.documentTop;
+  const startY = m.startDocY + docTop;
+  const left = Math.min(m.startX, m.x);
+  const right = Math.max(m.startX, m.x);
+  const top = Math.min(startY, m.y);
+  const bottom = Math.max(startY, m.y);
+
+  // Se dibuja recortado al área de la página: no pisa la barra lateral ni la
+  // cabecera aunque el ratón se salga.
+  const clip = m.area.getBoundingClientRect();
+  const cl = Math.max(left, clip.left);
+  const cr = Math.min(right, clip.right);
+  const ct = Math.max(top, clip.top);
+  const cb = Math.min(bottom, clip.bottom);
+  Object.assign(m.box.style, {
+    left: `${cl}px`,
+    top: `${ct}px`,
+    width: `${Math.max(0, cr - cl)}px`,
+    height: `${Math.max(0, cb - ct)}px`,
+  });
+
+  const { blocks, selected } = view.state.field(blockField);
+  const bands = blocks.map((b) => {
+    try {
+      return { top: view.lineBlockAt(b.from).top, bottom: view.lineBlockAt(b.to).bottom };
+    } catch {
+      return null;
+    }
+  });
+  const content = view.contentDOM.getBoundingClientRect();
+  const gutter = parseFloat(getComputedStyle(view.contentDOM).paddingLeft) || 0;
+  const column = { left: content.left + gutter - 8, right: content.right };
+  const hits = blocksInMarquee(bands, { left, right, top: top - docTop, bottom: bottom - docTop }, column);
+  const next = mergeMarquee(m.base, hits, m.mode);
+  if (!sameSet(next, selected)) selectBlocks(view, next);
+}
+
+function onMarqueeUp(event) {
+  const m = marquee;
+  if (!m) return;
+  endMarquee();
+  if (!m.active) {
+    m.onClick?.();
+    return;
+  }
+  event.preventDefault();
+  // El clic que sigue al soltar no tiene que mover el cursor ni desmarcar.
+  const swallow = (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+  };
+  window.addEventListener("click", swallow, { capture: true, once: true });
+  window.setTimeout(() => window.removeEventListener("click", swallow, true), 120);
+  // Con el foco en el editor, Supr, Ctrl+C o el clic derecho actúan sobre lo
+  // marcado (el título o la descripción podían tenerlo).
+  if (m.view.state.field(blockField).selected.size) m.view.focus();
+}
+
+/** Escape durante el arrastre: se deja lo que había marcado antes. */
+function onMarqueeKey(event) {
+  const m = marquee;
+  if (!m || event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  endMarquee();
+  if (m.active) selectBlocks(m.view, m.base);
+}
+
+function endMarquee() {
+  const m = marquee;
+  if (!m) return;
+  marquee = null;
+  window.removeEventListener("mousemove", onMarqueeMove, true);
+  window.removeEventListener("mouseup", onMarqueeUp, true);
+  window.removeEventListener("keydown", onMarqueeKey, true);
+  window.removeEventListener("blur", onMarqueeWindowBlur);
+  if (m.raf) cancelAnimationFrame(m.raf);
+  m.box?.remove();
+  document.documentElement.classList.remove("np-marquee-on");
+}
+
+/**
+ * El rectángulo también arranca fuera del editor: en el margen de la página,
+ * junto a la cabecera o debajo del cuerpo (#main y lo que no es contenido).
+ * Devuelve la función que lo desengancha.
+ */
+function attachMarqueeArea(view, area) {
+  if (!area) return () => {};
+  marqueeAreas.set(view, area);
+  const onPointerDown = (event) => {
+    if (event.pointerType !== "mouse" || event.button !== 0 || event.altKey) return;
+    const target = event.target;
+    if (!(target instanceof Element) || view.contentDOM.contains(target)) return;
+    const background =
+      target === area ||
+      target === view.dom ||
+      target === view.scrollDOM ||
+      target === view.dom.parentElement ||
+      target.classList.contains("note-head");
+    if (!background) return;
+    // La barra de desplazamiento de la página no es fondo.
+    if (target === area && event.clientX >= area.getBoundingClientRect().left + area.clientWidth) return;
+    beginMarquee(view, event, area, () => {
+      if (view.state.field(blockField).selected.size) selectBlocks(view, new Set());
+    });
+  };
+  area.addEventListener("pointerdown", onPointerDown);
+  return () => {
+    area.removeEventListener("pointerdown", onPointerDown);
+    if (marquee?.view === view) endMarquee();
+  };
 }
 
 export function selectBlocks(view, indices) {
@@ -4216,6 +4481,7 @@ export function createNoteEditor({
   onCreateDatabase,
   linkTargets,
   renderDatabaseBlock,
+  selectionArea,
 }) {
   // El menú "/" y el selector de bases van en una variable y no sueltos en la
   // lista de extensiones: la app tiene que poder cerrarlos desde fuera al
@@ -4342,6 +4608,9 @@ export function createNoteEditor({
     return filtro ? withoutRange(text, filtro) : text;
   }
 
+  // Rectángulo de selección desde el fondo de la página (ver `beginMarquee`).
+  const detachMarquee = attachMarqueeArea(view, selectionArea);
+
   return {
     // Lo que se guarda y lo que se exporta: el cuerpo canónico, sin las líneas
     // en blanco de los extremos ni el filtro del selector de bases. Decisión
@@ -4391,7 +4660,10 @@ export function createNoteEditor({
      * guardado pendiente: ese texto no es contenido de la nota y no puede
      * acabar en el `.md`. Devuelve si borró algo. */
     discardTransientText: () => slashMenu.discardTransientText(),
-    destroy: () => view.destroy(),
+    destroy: () => {
+      detachMarquee();
+      view.destroy();
+    },
     /** Pinta las sugerencias pendientes de esta nota, en su sitio.
      *
      * `list` es `[{id, old_text, new_text, status}]` (lo que devuelve
