@@ -5,7 +5,7 @@ from typing import List
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 
-from app import acl, audit, auth, export, notifications, schemas
+from app import acl, activity, audit, auth, export, notifications, schemas
 from app import workspaces as ws_mod
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
@@ -79,6 +79,7 @@ def create_page(
         raise HTTPException(400, str(exc)) from exc
     if payload.section == "shared" and not payload.parent_id:
         repo.set_section(page.id, "shared")  # plan H2: nace para todo el espacio
+    activity.record(repo.conn, page.id, user.id, "created")
     bus.publish({"type": "tree", "action": "created", "page_id": str(page.id)})
     return serialize_page(page, repo.author_colors())
 
@@ -152,6 +153,7 @@ def update_page(
     if page is None:
         raise HTTPException(404, "Página no encontrada")
     avisar_de_cambio(antes, page)
+    activity.record(repo.conn, page_id, user.id)
     if payload.body_markdown is not None:
         # Plan H6: menciones nuevas y cambios para quien se suscribió a todo.
         notifications.after_body_change(

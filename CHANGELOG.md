@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Inicio nuevo (2/2)
+- **Mi semana**: tus horas de esta semana frente a tu capacidad, con la barra de color de «Carga del equipo» (verde, ámbar, rojo). Quien puede ver la carga del equipo tiene además una fila por persona (las 6 más cargadas) y el enlace a la vista completa.
+- **Actividad reciente**: quién ha creado o editado qué, agrupado por espacio, solo de páginas que puedes ver y nunca lo tuyo.
+- Índice v20: tabla `page_activity`. Se apunta al crear o editar una página, una base o una fila y desde la edición en vivo (quién escribió en la sala). Las ediciones seguidas de la misma persona en la misma página (15 min) son una sola entrada; lo de más de 60 días se poda con la pasada horaria de avisos.
+
 ## Inicio nuevo (1/2)
 - El inicio responde a «qué tengo que hacer, qué me ha llegado y por dónde iba»: saludo con resumen (vencidas · hoy · esta semana · menciones sin leer) y una caja para apuntar algo en la bandeja.
 - **Mis tareas** por urgencia (Vencidas, Hoy, Esta semana, Con fecha pasada, Más adelante y Sin fecha plegado), con casilla para darla por hecha y la fecha editable ahí mismo.

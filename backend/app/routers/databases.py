@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app import closed, due, hierarchy, schemas
 from app import kinds as kind_rules
-from app import acl, audit, notifications, projects, webhooks
+from app import acl, activity, audit, notifications, projects, webhooks
 from app.config import settings
 from app import auth
 from app.dependencies import get_current_user, get_repo
@@ -279,6 +279,7 @@ def create_database(
         )
         if payload.section == "shared" and not payload.parent_id:
             repo.set_section(db_def.page_id, "shared")  # plan H2
+    activity.record(repo.conn, db_def.page_id, user.id, "created")
     return _serialize_database(db_def, repo.database_ids())
 
 
@@ -778,6 +779,7 @@ def create_row(
             repo.conn, db_def.schema_def, row.id, None, cleaned, str(user.id)
         )
         webhooks.emit_task(repo.conn, "task.created", row.id)
+        activity.record(repo.conn, row.id, user.id, "created")
     # M2: la tabla incrustada en una nota se repinta (sin tocar el documento).
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
@@ -927,6 +929,7 @@ def update_row(
         if db_def.closed and not closed.is_closed(db_def.closed, antes_fila.properties or {}) \
                 and closed.is_closed(db_def.closed, row.properties or {}):
             webhooks.emit_task(repo.conn, "task.completed", row_id)
+    activity.record(repo.conn, row_id, user.id)
     publish_database(database_id, "rows")
     return _serialize_row(repo, db_def, row)
 

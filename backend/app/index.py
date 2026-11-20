@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -393,6 +393,21 @@ MIGRATIONS: dict[int, list[str]] = {
     page_id  TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
     position INTEGER NOT NULL
 )""",
+    ],
+    # v20: quién crea y edita cada página, para la «Actividad reciente» del
+    # inicio (`app.activity`). Ediciones seguidas de la misma persona en la
+    # misma página se juntan en una fila. Sin claves foráneas: se poda sola.
+    20: [
+        """CREATE TABLE IF NOT EXISTS page_activity (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    action  TEXT NOT NULL CHECK (action IN ('created', 'edited')),
+    ts      TEXT NOT NULL,
+    edits   INTEGER NOT NULL DEFAULT 1
+)""",
+        "CREATE INDEX IF NOT EXISTS page_activity_ts ON page_activity(ts)",
+        "CREATE INDEX IF NOT EXISTS page_activity_page_user ON page_activity(page_id, user_id, ts)",
     ],
 }
 
@@ -764,7 +779,19 @@ CREATE TABLE page_order (
     position INTEGER NOT NULL
 );
 
-PRAGMA user_version = 19;
+-- Quién crea y edita cada página (v20). Ver la migración 20 y `app.activity`.
+CREATE TABLE page_activity (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    action  TEXT NOT NULL CHECK (action IN ('created', 'edited')),
+    ts      TEXT NOT NULL,
+    edits   INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX page_activity_ts ON page_activity(ts);
+CREATE INDEX page_activity_page_user ON page_activity(page_id, user_id, ts);
+
+PRAGMA user_version = 20;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1262,6 +1289,8 @@ DUMP_EXCLUDED = {
     "webhook_deliveries",
     # El orden del panel (v19): preferencia de la app, no está en el `.md`.
     "page_order",
+    # La actividad del inicio (v20): historia de la app, no está en el `.md`.
+    "page_activity",
 }
 
 

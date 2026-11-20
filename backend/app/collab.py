@@ -165,6 +165,8 @@ class Room:
     # Los `meta` se guardan de uno en uno y en el orden en que llegan: dos
     # títulos seguidos no pueden quedar guardados al revés.
     meta_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Quién ha escrito desde el último guardado (para la actividad del inicio).
+    editors: set = field(default_factory=set)
 
     def updates_since(self, version: int) -> Optional[list[dict]]:
         """Los cambios desde `version`, o None si ya no están en el registro."""
@@ -189,9 +191,12 @@ class Rooms:
     las salas no saben de SQLite y los tests pueden sustituirlas.
     """
 
-    def __init__(self, load, store, store_meta=None):
+    def __init__(self, load, store, store_meta=None, record_activity=None):
         self._load = load
         self._store = store
+        # `record_activity(page_id, user_ids)` apunta quién editó (opcional;
+        # síncrono, se llama en un hilo tras un guardado que ha ido bien).
+        self._record_activity = record_activity
         # `store_meta(page_id, fields) -> dict` guarda título/descripción/icono
         # y devuelve lo que quedó (el título puede salir saneado) con la
         # versión nueva. Sin él, la sala no acepta `meta`.
@@ -288,6 +293,8 @@ class Rooms:
             room.doc = doc
             room.remember(aceptados)
             room.dirty = True
+            if peer.user_id:
+                room.editors.add(peer.user_id)
             otros = [p for p in room.peers.values() if p is not peer]
             await peer.send({"type": "ack", "version": desde, "updates": aceptados})
         for p in otros:
@@ -374,6 +381,7 @@ class Rooms:
                 return
             body, expected = room.doc, room.persisted_body
             room.dirty = False
+            editores, room.editors = room.editors, set()
         t0 = time.perf_counter()
         try:
             stored = await asyncio.to_thread(self._store, room.page_id, body, expected)
@@ -387,10 +395,16 @@ class Rooms:
             log.exception("sala %s: no se pudo guardar", room.page_id)
             async with room.lock:
                 room.dirty = True
+                room.editors |= editores
             self._schedule_persist(room)
             return
         room.persisted_body = stored
         room.last_persist_ms = (time.perf_counter() - t0) * 1000
+        if editores and self._record_activity is not None:
+            try:
+                await asyncio.to_thread(self._record_activity, room.page_id, editores)
+            except Exception:  # noqa: BLE001 - la actividad es un extra
+                log.warning("sala %s: no se pudo apuntar la actividad", room.page_id)
         self.persist_ms.append(room.last_persist_ms)
 
     async def _reset(self, room: Room, body: str) -> None:

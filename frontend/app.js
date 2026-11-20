@@ -731,6 +731,116 @@ function resumenDeInicio(datos) {
   return linea;
 }
 
+/** Horas a texto corto: «12 h», «7,5 h». */
+function horasCortas(h) {
+  const n = Math.round((Number(h) || 0) * 10) / 10;
+  return `${n.toLocaleString("es-ES")} h`;
+}
+
+/** Una barra de carga: horas frente a capacidad, con el tono de «Carga del
+ * equipo» (verde hasta el 85 %, ámbar hasta el 100 %, rojo por encima). */
+function barraDeCarga(horas, capacidad) {
+  const pct = capacidad > 0 ? (horas / capacidad) * 100 : 0;
+  const barra = crearEl("span", "home-load-bar");
+  const relleno = crearEl("span", "home-load-fill");
+  relleno.style.width = `${Math.min(100, pct)}%`;
+  barra.classList.add(pct > 100 ? "is-over" : pct > 85 ? "is-high" : "is-ok");
+  barra.append(relleno);
+  barra.setAttribute("role", "img");
+  barra.setAttribute("aria-label", `${horasCortas(horas)} de ${horasCortas(capacidad)} (${Math.round(pct)} %)`);
+  return barra;
+}
+
+/** «Mi semana»: mis horas de esta semana frente a mi capacidad y, para quien
+ * puede ver la carga del equipo, una fila por persona. */
+function seccionMiSemana(semana) {
+  const seccion = crearEl("section", "home-card home-week");
+  const cabeza = crearEl("div", "home-card-head");
+  cabeza.append(crearEl("h2", "home-card-title", "Mi semana"));
+  if (semana?.team) {
+    const ver = crearEl("button", "home-link", "Carga del equipo");
+    ver.type = "button";
+    ver.addEventListener("click", () => goTo("workload"));
+    cabeza.append(ver);
+  }
+  seccion.append(cabeza);
+  const yo = semana?.me || { hours: 0, capacity: 40, tasks: 0 };
+  const fila = crearEl("div", "home-load-me");
+  const cifras = crearEl("div", "home-load-figures");
+  cifras.append(crearEl("strong", "", horasCortas(yo.hours)), crearEl("span", "", ` de ${horasCortas(yo.capacity)}`));
+  fila.append(cifras, barraDeCarga(yo.hours, yo.capacity));
+  const pie = yo.tasks
+    ? `${yo.tasks} ${yo.tasks === 1 ? "tarea" : "tareas"} con horas${yo.unscheduled ? ` · ${horasCortas(yo.unscheduled)} sin fechas` : ""}`
+    : "Sin horas asignadas esta semana en bases de Proyectos o de Tareas.";
+  fila.append(crearEl("small", "home-load-note", pie));
+  seccion.append(fila);
+
+  const equipo = (semana?.team || []).filter((p) => p.id !== sessionUser.me?.id);
+  if (equipo.length) {
+    const lista = crearEl("div", "home-load-team");
+    lista.append(crearEl("div", "home-task-group-head", "Equipo"));
+    equipo
+      .slice()
+      .sort((a, b) => b.hours / (b.capacity || 1) - a.hours / (a.capacity || 1))
+      .slice(0, 6)
+      .forEach((p) => {
+        const f = crearEl("div", "home-load-person");
+        const av = avatarImg(p.avatar, "home-load-avatar");
+        if (av) f.append(av);
+        f.append(crearEl("span", "home-load-name", p.name));
+        f.append(barraDeCarga(p.hours, p.capacity));
+        f.append(crearEl("span", "home-load-hours", horasCortas(p.hours)));
+        lista.append(f);
+      });
+    seccion.append(lista);
+  }
+  return seccion;
+}
+
+/** «Actividad reciente»: lo que han hecho otros, agrupado por espacio. */
+function seccionDeActividad(actividad) {
+  const seccion = crearEl("section", "home-card home-activity");
+  const cabeza = crearEl("div", "home-card-head");
+  cabeza.append(crearEl("h2", "home-card-title", "Actividad reciente"));
+  seccion.append(cabeza);
+  if (!actividad?.length) {
+    seccion.append(crearEl("p", "home-empty", "Cuando alguien cree o edite páginas que puedes ver, saldrá aquí."));
+    return seccion;
+  }
+  const grupos = new Map();
+  for (const a of actividad) {
+    const clave = a.workspace_name || "Sin espacio";
+    if (!grupos.has(clave)) grupos.set(clave, []);
+    grupos.get(clave).push(a);
+  }
+  for (const [espacio, items] of grupos) {
+    const grupo = crearEl("div", "home-task-group");
+    grupo.append(crearEl("div", "home-task-group-head", espacio));
+    for (const a of items) {
+      const item = crearEl("button", "home-activity-item");
+      item.type = "button";
+      const av = avatarImg(a.user?.avatar, "home-activity-avatar");
+      if (av) item.append(av);
+      else item.append(crearEl("span", "home-activity-avatar is-initial", (a.user?.name || "?").charAt(0).toUpperCase()));
+      const texto = crearEl("span", "home-activity-text");
+      const linea = crearEl("span", "home-activity-line");
+      linea.append(crearEl("strong", "", a.user?.name || "Alguien"));
+      linea.append(document.createTextNode(a.action === "created" ? " creó " : " editó "));
+      const icono = crearEl("span", "home-activity-icon");
+      paintPageIcon(icono, a.page_type === "database" ? "database" : "note", a.icon);
+      linea.append(icono, crearEl("span", "home-activity-page", a.page_title));
+      texto.append(linea, crearEl("small", "", haceCuanto(a.ts)));
+      item.append(texto);
+      item.title = `Abrir «${a.page_title}»`;
+      // `navigateToPage` ya sabe abrir una base por el id de su página.
+      item.addEventListener("click", () => navigateToPage(a.page_id));
+      grupo.append(item);
+    }
+    seccion.append(grupo);
+  }
+  return seccion;
+}
+
 async function renderDashboard(main) {
   let data;
   try {
@@ -766,7 +876,11 @@ async function renderDashboard(main) {
   wrap.append(cabecera);
 
   const columnas = crearEl("div", "home-columns");
-  columnas.append(seccionDeTareasDeInicio(data.tasks, refrescar), seccionParaTi(data.notifications, refrescar));
+  const principal = crearEl("div", "home-col");
+  principal.append(seccionDeTareasDeInicio(data.tasks, refrescar), seccionDeActividad(data.activity));
+  const lateral = crearEl("div", "home-col");
+  lateral.append(seccionParaTi(data.notifications, refrescar), seccionMiSemana(data.week));
+  columnas.append(principal, lateral);
   wrap.append(columnas);
   wrap.append(seccionDeRecientes(data.recent_pages || []));
 

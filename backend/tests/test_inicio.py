@@ -91,3 +91,75 @@ def test_el_inicio_trae_avisos_y_recientes(client):
     assert isinstance(datos["mentions_unread"], int)
     reciente = next(p for p in datos["recent_pages"] if p["title"] == "Plan")
     assert "header_image" in reciente and "header_position" in reciente
+
+
+# --------------------------------------------------------------------------
+# actividad reciente y «Mi semana» (inicio 2/2)
+# --------------------------------------------------------------------------
+
+
+def test_la_actividad_junta_ediciones_seguidas_y_poda_lo_viejo(tmp_path):
+    from datetime import datetime, timezone
+
+    from app import activity
+    from app.index import open_index
+
+    conn = open_index(str(tmp_path / "i.sqlite"))
+    t0 = datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc)
+    activity.record(conn, "p1", "u1", now=t0)
+    activity.record(conn, "p1", "u1", now=t0 + timedelta(minutes=5))
+    activity.record(conn, "p1", "u1", now=t0 + timedelta(minutes=40))
+    filas = conn.execute("SELECT edits FROM page_activity ORDER BY ts").fetchall()
+    assert [f[0] for f in filas] == [2, 1]
+    # Sin usuario no se apunta nada.
+    activity.record(conn, "p1", None, now=t0)
+    assert conn.execute("SELECT count(*) FROM page_activity").fetchone()[0] == 2
+    assert activity.purge_old(conn, days=1, now=t0 + timedelta(days=3)) == 2
+
+
+def _gente(client):
+    from contextlib import contextmanager
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    for nombre in ("ana", "beto"):
+        r = client.post("/auth/users", json={"username": nombre, "display_name": nombre.title(), "password": f"contrasena-{nombre}"})
+        assert r.status_code == 201, r.text
+
+    @contextmanager
+    def como(nombre):
+        with TestClient(app) as c:
+            r = c.post("/auth/login", json={"username": nombre, "password": f"contrasena-{nombre}"})
+            assert r.status_code == 200, r.text
+            yield c
+
+    return como
+
+
+def test_el_inicio_cuenta_lo_que_hacen_otros_y_solo_lo_que_se_ve(client):
+    como = _gente(client)
+    with como("ana") as ana, como("beto") as beto:
+        # Ana crea una nota en la raíz de su espacio: privada, Beto no la ve.
+        privada = ana.post("/pages", json={"title": "Diario de Ana", "type": "note"}).json()
+        ana.patch(f"/pages/{privada['id']}", json={"body_markdown": "hola"})
+
+        # El administrador lo ve todo: le sale lo de Ana, no lo suyo.
+        actividad = client.get("/dashboard").json()["activity"]
+        assert [(a["page_title"], a["user"]["name"]) for a in actividad] == [("Diario de Ana", "Ana")]
+        assert actividad[0]["action"] == "created"
+
+        # Beto no puede ver la nota: no le sale.
+        assert beto.get("/dashboard").json()["activity"] == []
+
+
+def test_mi_semana_y_el_equipo_solo_para_quien_ve_la_carga(client):
+    como = _gente(client)
+    semana = client.get("/dashboard").json()["week"]
+    assert set(semana["me"]) >= {"hours", "capacity", "tasks"}
+    assert isinstance(semana["team"], list)  # el administrador ve el equipo
+    with como("ana") as ana:
+        de_ana = ana.get("/dashboard").json()["week"]
+        assert de_ana["team"] is None
+        assert de_ana["me"]["capacity"] > 0
