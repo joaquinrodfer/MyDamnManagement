@@ -655,12 +655,17 @@ class MyTask(BaseModel):
     date: Optional[MyTaskCell] = None
     # En qué bloque cae la fecha, contado contra el día del **servidor**
     # (`app.due`): `overdue` (ya pasó), `today`, `week` (de mañana al domingo de
-    # esta semana) o `later`. `None` = sin fecha legible, que no es un bloque
-    # sino la ausencia de uno.
+    # esta semana), `later` o `past` (ya pasó, pero en una base que no es de
+    # proyectos ni de tareas: no es un plazo incumplido). `None` = sin fecha
+    # legible, que no es un bloque sino la ausencia de uno.
     due: Optional[str] = None
     # Días de calendario que faltan para la fecha (negativo = ya pasó), con la
     # misma cuenta que `due`. `None` = sin fecha legible.
     days: Optional[int] = None
+    # Qué escribir para darla por hecha (`{"key", "value"}`), según la regla de
+    # cierre de su base; `None` si la base no tiene regla (el inicio no ofrece
+    # entonces la casilla).
+    close: Optional[dict[str, Any]] = None
 
 
 class MyTasksCounts(BaseModel):

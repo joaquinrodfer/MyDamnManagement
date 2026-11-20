@@ -202,8 +202,41 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
             "status": status_property(schema_def),
             "date": _fecha_limite(schema_def, row["kind_json"]),
             "closed": rule,
+            "close": close_with(schema_def, rule),
+            # Proyectos o Tareas: solo ahí una fecha pasada es «vencida».
+            "typed": (json.loads(row["kind_json"] or "null") or {}).get("type") in ("projects", "tasks"),
         }
     return bases
+
+
+def _option_label(option: Any) -> str:
+    if isinstance(option, dict):
+        return str(option.get("name") or option.get("value") or "").strip()
+    return str(option or "").strip()
+
+
+def close_with(schema_def: list[dict], rule: Optional[dict]) -> Optional[dict[str, Any]]:
+    """Qué escribir en la fila para darla por hecha desde el inicio.
+
+    `{"key": propiedad, "value": valor}`: el primer valor que la regla de la
+    base cuenta como cerrado, escrito como la opción real de la propiedad (la
+    regla puede guardarlo en otra caja). En una casilla, `True`. Sin regla no
+    hay forma de cerrar la fila: `None`.
+    """
+    if not rule or not rule.get("property"):
+        return None
+    key = str(rule["property"])
+    prop = next((p for p in schema_def or [] if isinstance(p, dict) and p.get("key") == key), None)
+    if prop is None:
+        return None
+    values = [str(v).strip() for v in (rule.get("values") or []) if str(v).strip()]
+    if not values:
+        return {"key": key, "value": True} if prop.get("type") == "checkbox" else None
+    options = {_option_label(o).casefold(): _option_label(o) for o in prop.get("options") or []}
+    for value in values:
+        if value.casefold() in options:
+            return {"key": key, "value": options[value.casefold()]}
+    return {"key": key, "value": values[0]}
 
 
 def my_tasks(
@@ -282,8 +315,9 @@ def my_tasks(
                     "icon": row["icon"],
                     "status": status,
                     "date": fecha,
-                    "due": due.classify(dia, hoy) if dia else None,
+                    "due": due.classify(dia, hoy, typed=base["typed"]) if dia else None,
                     "days": (dia - hoy).days if dia else None,
+                    "close": base["close"],
                 }
             )
 

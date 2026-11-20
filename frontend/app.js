@@ -437,6 +437,300 @@ function dashboardItem({ icon, iconType, title, sub, meta, metaClass, onClick })
   return item;
 }
 
+// ------------------------------------------------------------------ inicio
+// La portada cuando no hay nada abierto. Responde a tres preguntas: qué tengo
+// que hacer (mis tareas, por urgencia, con «hecha» y cambiar la fecha sin
+// salir de aquí), qué me ha llegado (los últimos avisos sin leer) y por dónde
+// iba (las páginas recientes). Todo sale de una sola petición, `GET
+// /dashboard`, que ya respeta los permisos de quien pregunta.
+//
+// Qué está vencido lo dice el servidor (`due`): solo en bases de Proyectos o de
+// Tareas una fecha pasada es un plazo incumplido (rojo); en una base libre es
+// `past` y va aparte, sin tono de aviso.
+
+const BLOQUES_DEL_INICIO = [
+  { key: "overdue", title: "Vencidas", tono: "is-overdue" },
+  { key: "today", title: "Hoy" },
+  { key: "week", title: "Esta semana" },
+  { key: "past", title: "Con fecha pasada" },
+  { key: "later", title: "Más adelante" },
+  { key: null, title: "Sin fecha", plegado: true },
+];
+const TAREAS_POR_BLOQUE = 6;
+const AVISOS_EN_INICIO = 5;
+
+/** Una tarea del inicio: casilla de hecha, título, base, estado y fecha. */
+function filaDeTareaDeInicio(tarea, alCambiar) {
+  const fila = crearEl("div", "home-task");
+  if (tarea.due === "overdue") fila.classList.add("is-overdue");
+
+  // La casilla solo si la base sabe qué es «hecha» (su regla de cierre).
+  if (tarea.close) {
+    const check = crearEl("button", "home-task-check");
+    check.type = "button";
+    check.title = `Marcar como hecha (${tarea.close.value === true ? "casilla" : tarea.close.value})`;
+    check.setAttribute("aria-label", `Marcar «${tarea.title}» como hecha`);
+    check.innerHTML = svgIcon("i-check");
+    check.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      fila.classList.add("is-done");
+      check.disabled = true;
+      try {
+        await api(`/databases/${tarea.database_id}/rows/${tarea.row_id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ properties: { [tarea.close.key]: tarea.close.value } }),
+        });
+        showError(`«${tarea.title}» hecha`, "info");
+        setTimeout(alCambiar, 320);
+      } catch (err) {
+        fila.classList.remove("is-done");
+        check.disabled = false;
+        reportError("No se pudo marcar la tarea", err);
+      }
+    });
+    fila.append(check);
+  } else {
+    fila.append(crearEl("span", "home-task-check is-empty"));
+  }
+
+  const cuerpo = crearEl("button", "home-task-main");
+  cuerpo.type = "button";
+  cuerpo.title = `Abrir «${tarea.title}»`;
+  const icono = crearEl("span", "home-task-icon");
+  paintPageIcon(icono, "note", tarea.icon);
+  cuerpo.append(icono, crearEl("span", "home-task-title", tarea.title || "Sin título"));
+  cuerpo.append(crearEl("span", "home-task-base", tarea.database_title));
+  cuerpo.addEventListener("click", () => abrirMiTarea(tarea));
+  fila.append(cuerpo);
+
+  if (tarea.status?.value) {
+    const estado = crearEl("span", "home-task-status", tarea.status.value);
+    estado.title = `${tarea.status.name}: ${tarea.status.value}`;
+    fila.append(estado);
+  }
+
+  // La fecha se cambia aquí mismo: un selector de día sobre la etiqueta.
+  if (tarea.date?.key) {
+    const etiqueta = crearEl("label", "home-task-date");
+    etiqueta.title = `${tarea.date.name}: cambiar la fecha`;
+    const fecha = fechaLocalDe(tarea.date.value);
+    const dias = Number.isInteger(tarea.days) ? tarea.days : null;
+    etiqueta.append(crearEl("span", "", etiquetaDeFecha({ fecha, dias })));
+    const input = document.createElement("input");
+    input.type = "date";
+    input.value = tarea.date.value || "";
+    input.setAttribute("aria-label", `${tarea.date.name} de «${tarea.title}»`);
+    input.addEventListener("click", (e) => {
+      e.stopPropagation();
+      input.showPicker?.();
+    });
+    input.addEventListener("change", async () => {
+      if (!input.value || input.value === tarea.date.value) return;
+      try {
+        await api(`/databases/${tarea.database_id}/rows/${tarea.row_id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ properties: { [tarea.date.key]: input.value } }),
+        });
+        alCambiar();
+      } catch (err) {
+        reportError("No se pudo cambiar la fecha", err);
+      }
+    });
+    etiqueta.append(input);
+    fila.append(etiqueta);
+  }
+  return fila;
+}
+
+/** «Mis tareas» del inicio, por urgencia. */
+function seccionDeTareasDeInicio(datos, alCambiar) {
+  const seccion = crearEl("section", "home-card home-tasks");
+  const cabeza = crearEl("div", "home-card-head");
+  cabeza.append(crearEl("h2", "home-card-title", "Mis tareas"));
+  const verTodas = crearEl("button", "home-link", "Ver todas");
+  verTodas.type = "button";
+  verTodas.addEventListener("click", () => showMisTareas());
+  cabeza.append(verTodas);
+  seccion.append(cabeza);
+
+  const tareas = datos?.tasks || [];
+  if (!tareas.length) {
+    seccion.append(
+      crearEl(
+        "p",
+        "home-empty",
+        "No tienes tareas abiertas. Cuando te pongan como responsable en una fila de cualquier base, saldrá aquí.",
+      ),
+    );
+    return seccion;
+  }
+
+  for (const bloque of BLOQUES_DEL_INICIO) {
+    const lista = tareas.filter((t) => (t.due ?? null) === bloque.key);
+    if (!lista.length) continue;
+    const grupo = document.createElement(bloque.plegado ? "details" : "div");
+    grupo.className = "home-task-group" + (bloque.tono ? ` ${bloque.tono}` : "");
+    const titulo = crearEl(bloque.plegado ? "summary" : "div", "home-task-group-head");
+    titulo.append(crearEl("span", "", bloque.title), crearEl("span", "home-count", String(lista.length)));
+    grupo.append(titulo);
+    for (const tarea of lista.slice(0, TAREAS_POR_BLOQUE)) grupo.append(filaDeTareaDeInicio(tarea, alCambiar));
+    if (lista.length > TAREAS_POR_BLOQUE) {
+      const mas = crearEl("button", "home-more", `Ver ${lista.length - TAREAS_POR_BLOQUE} más`);
+      mas.type = "button";
+      mas.addEventListener("click", () => showMisTareas());
+      grupo.append(mas);
+    }
+    seccion.append(grupo);
+  }
+  return seccion;
+}
+
+/** «Para ti»: los últimos avisos sin leer. */
+function seccionParaTi(avisosDelInicio, alCambiar) {
+  const seccion = crearEl("section", "home-card home-foryou");
+  const cabeza = crearEl("div", "home-card-head");
+  cabeza.append(crearEl("h2", "home-card-title", "Para ti"));
+  if (avisosDelInicio?.unread) {
+    const todo = crearEl("button", "home-link", "Marcar todo leído");
+    todo.type = "button";
+    todo.addEventListener("click", async () => {
+      try {
+        await api("/notifications/read", { method: "POST", body: JSON.stringify({ all: true }) });
+        cargarAvisos?.();
+        alCambiar();
+      } catch (e) {
+        reportError("No se pudieron marcar los avisos", e);
+      }
+    });
+    cabeza.append(todo);
+  }
+  seccion.append(cabeza);
+
+  const items = (avisosDelInicio?.items || []).slice(0, AVISOS_EN_INICIO);
+  if (!items.length) {
+    seccion.append(crearEl("p", "home-empty", "Estás al día. Aquí saldrán las menciones, las tareas que te asignen y los plazos."));
+    return seccion;
+  }
+  for (const a of items) {
+    const item = crearEl("button", "home-notice");
+    item.type = "button";
+    const icono = crearEl("span", `avisos-ico avisos-ico--${a.type}`);
+    icono.setAttribute("aria-hidden", "true");
+    icono.innerHTML = svgIcon(ICONOS_DE_AVISO[a.type] || "i-bell");
+    const texto = crearEl("span", "home-notice-text");
+    texto.append(
+      crearEl("span", "home-notice-msg", a.message),
+      crearEl("small", "", `${haceCuanto(a.created_at)}${a.workspace_name ? ` · ${a.workspace_name}` : ""}`),
+    );
+    item.append(icono, texto);
+    item.addEventListener("click", () => {
+      api("/notifications/read", { method: "POST", body: JSON.stringify({ ids: [a.id] }) })
+        .then(() => cargarAvisos?.())
+        .catch(() => {});
+      if (a.page_id) navigateToPage(a.page_id);
+    });
+    seccion.append(item);
+  }
+  if (avisosDelInicio.unread > items.length) {
+    const mas = crearEl("button", "home-more", `Ver los ${avisosDelInicio.unread} avisos`);
+    mas.type = "button";
+    mas.addEventListener("click", () => document.getElementById("btn-avisos")?.click());
+    seccion.append(mas);
+  }
+  return seccion;
+}
+
+/** «Seguir donde lo dejaste»: tarjetas de las páginas recientes. */
+function seccionDeRecientes(paginas) {
+  const seccion = crearEl("section", "home-recent");
+  seccion.append(crearEl("h2", "home-section-title", "Seguir donde lo dejaste"));
+  if (!paginas.length) {
+    seccion.append(
+      crearEl("p", "home-empty", "Aquí saldrán las últimas páginas que toques. Para empezar, crea una con «+» en la barra lateral."),
+    );
+    return seccion;
+  }
+  const rejilla = crearEl("div", "home-recent-grid");
+  for (const p of paginas) {
+    const tarjeta = crearEl("button", "home-recent-card");
+    tarjeta.type = "button";
+    tarjeta.title = p.title || "Sin título";
+    const portada = crearEl("span", "home-recent-cover");
+    if (p.header_image) {
+      portada.style.backgroundImage = `url("${String(p.header_image).replace(/"/g, "%22")}")`;
+      portada.style.backgroundPosition = `center ${Number.isFinite(p.header_position) ? p.header_position : 50}%`;
+      portada.classList.add("has-image");
+    }
+    const icono = crearEl("span", "home-recent-icon");
+    paintPageIcon(icono, p.type === "database" ? "database" : "note", p.icon);
+    const pie = crearEl("span", "home-recent-body");
+    pie.append(icono, crearEl("span", "home-recent-title", p.title || "Sin título"));
+    pie.append(crearEl("small", "home-recent-meta", formatRelativeTime(p.updated_at)));
+    tarjeta.append(portada, pie);
+    tarjeta.addEventListener("click", () => (p.type === "database" ? goTo("database", p.database_id) : goTo("note", p.id)));
+    rejilla.append(tarjeta);
+  }
+  seccion.append(rejilla);
+  return seccion;
+}
+
+/** Captura rápida: lo que escribas va a la bandeja, como los atajos del sistema. */
+function capturaDeInicio() {
+  const form = crearEl("form", "home-capture");
+  const icono = crearEl("span", "home-capture-icon");
+  icono.innerHTML = svgIcon("i-plus");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Apunta algo… (Intro lo guarda en la bandeja)";
+  input.setAttribute("aria-label", "Apuntar algo en la bandeja");
+  input.maxLength = 2000;
+  form.append(icono, input);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const texto = input.value.trim();
+    if (!texto) return;
+    input.disabled = true;
+    try {
+      await api("/capture", { method: "POST", body: JSON.stringify({ text: texto, source: "api" }) });
+      input.value = "";
+      showError("Guardado en la bandeja", "info");
+      loadInbox?.();
+    } catch (err) {
+      reportError("No se pudo guardar en la bandeja", err);
+    } finally {
+      input.disabled = false;
+      input.focus();
+    }
+  });
+  return form;
+}
+
+/** La línea de resumen bajo el saludo: lo que hay que mirar hoy. */
+function resumenDeInicio(datos) {
+  const counts = datos.tasks?.counts || {};
+  const semana = (datos.tasks?.tasks || []).filter((t) => t.due === "week").length;
+  const partes = [];
+  const pieza = (n, uno, varios, clase = "") => {
+    if (!n) return;
+    const s = crearEl("span", "home-summary-item" + (clase ? ` ${clase}` : ""), `${n} ${n === 1 ? uno : varios}`);
+    partes.push(s);
+  };
+  pieza(counts.overdue, "tarea vencida", "tareas vencidas", "is-overdue");
+  pieza(counts.today, "tarea para hoy", "tareas para hoy");
+  pieza(semana, "esta semana", "esta semana");
+  pieza(datos.mentions_unread, "mención sin leer", "menciones sin leer");
+  const linea = crearEl("p", "home-summary");
+  if (!partes.length) {
+    linea.textContent = "Nada urgente por hoy.";
+    return linea;
+  }
+  partes.forEach((p, i) => {
+    if (i) linea.append(crearEl("span", "home-summary-sep", "·"));
+    linea.append(p);
+  });
+  return linea;
+}
+
 async function renderDashboard(main) {
   let data;
   try {
@@ -450,69 +744,31 @@ async function renderDashboard(main) {
 
   ponerCompartirEnCabecera(null);
   main.innerHTML = "";
-  const wrap = document.createElement("div");
-  wrap.className = "dashboard";
-  // Un saludo arriba: la portada dice dónde estás y de quién es.
+  const wrap = crearEl("div", "home");
+
+  // Repintar tras una acción (hecha, fecha, avisos): solo si seguimos aquí.
+  const refrescar = () => {
+    if (state.current) return;
+    loadMyTasks?.();
+    renderDashboard(main);
+  };
+
   const hora = new Date().getHours();
   const saludo = hora < 6 ? "Buenas noches" : hora < 14 ? "Buenos días" : hora < 21 ? "Buenas tardes" : "Buenas noches";
   const nombre = (sessionUser.me?.display_name || "").split(/[\s|]/)[0];
-  const cabecera = document.createElement("div");
-  const h = document.createElement("h1");
-  h.className = "dashboard-greeting";
-  h.textContent = nombre ? `${saludo}, ${nombre}` : saludo;
-  const sub = document.createElement("p");
-  sub.className = "dashboard-greeting-sub";
-  sub.textContent = new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
-  cabecera.append(h, sub);
-  wrap.appendChild(cabecera);
+  const cabecera = crearEl("div", "home-head");
+  const titulos = crearEl("div", "home-head-text");
+  const fecha = new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+  titulos.append(crearEl("p", "home-date", fecha.charAt(0).toUpperCase() + fecha.slice(1)));
+  const h = crearEl("h1", "dashboard-greeting", nombre ? `${saludo}, ${nombre}` : saludo);
+  titulos.append(h, resumenDeInicio(data));
+  cabecera.append(titulos, capturaDeInicio());
+  wrap.append(cabecera);
 
-  const recentSection = document.createElement("div");
-  recentSection.className = "dashboard-section";
-  const recentHead = document.createElement("div");
-  recentHead.className = "dashboard-section-head";
-  recentHead.textContent = "Páginas recientes";
-  recentSection.appendChild(recentHead);
-
-  if (data.recent_pages.length === 0) {
-    recentSection.innerHTML +=
-      '<div class="empty-hint"><p class="empty-hint-title">Aquí saldrán las últimas páginas que toques.</p>' +
-      '<p class="empty-hint-note">Para empezar, crea una nota con «+» en la barra lateral, o una base desde el botón de plantilla que tiene al lado.</p></div>';
-  } else {
-    data.recent_pages.forEach((p) => {
-      recentSection.appendChild(
-        dashboardItem({
-          ...pageIconProps(p.type, p.icon),
-          title: p.title || "Sin título",
-          meta: formatRelativeTime(p.updated_at),
-          onClick: () => (p.type === "database" ? goTo("database", p.database_id) : goTo("note", p.id)),
-        })
-      );
-    });
-  }
-  wrap.appendChild(recentSection);
-
-  if (data.upcoming_dates.length > 0) {
-    const dueSection = document.createElement("div");
-    dueSection.className = "dashboard-section";
-    const dueHead = document.createElement("div");
-    dueHead.className = "dashboard-section-head";
-    dueHead.textContent = "Fechas cercanas";
-    dueSection.appendChild(dueHead);
-
-    data.upcoming_dates.forEach((u) => {
-      dueSection.appendChild(
-        dashboardItem({
-          iconType: "i-calendar",
-          title: u.row_title || "Sin título",
-          sub: `${u.database_title} · ${u.property_name}`,
-          meta: formatDueLabel(u.days_from_today),
-          metaClass: u.days_from_today < 0 ? "overdue" : "",
-          onClick: () => goTo("database", u.database_id),
-        })
-      );
-    });
-    wrap.appendChild(dueSection);
-  }
+  const columnas = crearEl("div", "home-columns");
+  columnas.append(seccionDeTareasDeInicio(data.tasks, refrescar), seccionParaTi(data.notifications, refrescar));
+  wrap.append(columnas);
+  wrap.append(seccionDeRecientes(data.recent_pages || []));
 
   main.appendChild(wrap);
 }
@@ -3138,6 +3394,9 @@ const BLOQUES_DE_MIS_TAREAS = [
   { key: "vencidas", title: "Vencidas" },
   { key: "hoy", title: "Hoy" },
   { key: "semana", title: "Esta semana" },
+  // Fecha pasada en una base libre (no de Proyectos ni de Tareas): no es un
+  // plazo incumplido, así que va aparte y sin rojo.
+  { key: "pasadas", title: "Con fecha pasada" },
   { key: "resto", title: "Resto" },
 ];
 
@@ -3298,6 +3557,7 @@ const BLOQUE_DEL_SERVIDOR = {
   overdue: "vencidas",
   today: "hoy",
   week: "semana",
+  past: "pasadas",
   later: "resto",
 };
 

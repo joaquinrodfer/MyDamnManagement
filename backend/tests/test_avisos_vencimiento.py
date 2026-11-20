@@ -87,9 +87,22 @@ def mis_tareas(client) -> dict:
     return respuesta.json()
 
 
+def tipar(client, base: dict, tipo: str = "projects") -> dict:
+    """La base pasa a ser de Proyectos: solo ahí una fecha pasada es vencida
+    (decisión del dueño, 2026-11-20)."""
+    respuesta = client.put(
+        f"/databases/{base['id']}/kind",
+        json={"type": tipo, "roles": {"assignee": "responsable", "status": "estado", "end": "vence"}},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+    return respuesta.json()
+
+
 @pytest.fixture()
 def proyectos(client, hoy):
-    return crear_base(client, "Proyectos", PROYECTOS, closed=CERRADA_EN_PROYECTOS)
+    base = crear_base(client, "Proyectos", PROYECTOS, closed=CERRADA_EN_PROYECTOS)
+    tipar(client, base)
+    return base
 
 
 def con_fecha(client, base: dict, title: str, **props) -> dict:
@@ -211,15 +224,25 @@ def test_los_recuentos_se_cuentan_sobre_lo_que_se_devuelve(client, proyectos):
     assert sum(1 for t in datos["tasks"] if t["due"] == "today") == 1
 
 
-def test_una_base_sin_regla_de_cierre_cuenta_sus_fechas_pasadas(client, hoy):
-    """Sin regla nada se puede cerrar: la fila sigue abierta, luego está vencida."""
+def test_una_base_libre_con_fecha_pasada_no_cuenta_como_vencida(client, hoy):
+    """Solo una base de Proyectos o de Tareas tiene plazos (decisión del dueño,
+    2026-11-20): en una base libre la fecha pasada es `past`, sin rojo, sin
+    contar en la barra lateral y sin aviso."""
     base = crear_base(client, "Sin regla", SIN_REGLA)
     con_fecha(client, base, "Vieja de una base sin estado", vence="2026-11-01")
 
     datos = mis_tareas(client)
 
     assert datos["closed_values"] == []
-    assert datos["counts"] == {"overdue": 1, "today": 0}
+    assert datos["counts"] == {"overdue": 0, "today": 0}
+    assert [t["due"] for t in datos["tasks"]] == ["past"]
+
+
+def test_una_base_libre_no_marca_fechas_pasadas_en_la_tabla(client, hoy):
+    base = crear_base(client, "Libre", PROYECTOS, closed=CERRADA_EN_PROYECTOS)
+    con_fecha(client, base, "Vieja", estado="Abierto", vence="2026-11-01")
+
+    assert filas(client, base["id"])[0]["overdue_keys"] == []
 
 
 # --------------------------------------------------------------------------
@@ -289,6 +312,10 @@ def test_la_tabla_marca_todas_las_fechas_pasadas_y_no_solo_la_primera(client, ho
         ],
         closed={"property": "estado", "values": ["Hecho"]},
     )
+    client.put(
+        f"/databases/{base['id']}/kind",
+        json={"type": "projects", "roles": {"assignee": "responsable", "status": "estado", "start": "empieza", "end": "acaba"}},
+    ).raise_for_status()
     crear_fila(
         client,
         base["id"],
@@ -353,11 +380,14 @@ def test_una_fila_cerrada_no_marca_ni_sus_otras_fechas():
     rule = {"property": "estado", "values": ["Hecho"]}
     props = {"empieza": "2026-01-01", "acaba": "2026-02-01", "estado": "Hecho"}
 
-    assert due.overdue_date_keys(schema, props, rule, HOY) == []
-    assert due.overdue_date_keys(schema, {**props, "estado": "Abierto"}, rule, HOY) == [
+    tipo = {"type": "tasks"}
+    assert due.overdue_date_keys(schema, props, rule, HOY, tipo) == []
+    assert due.overdue_date_keys(schema, {**props, "estado": "Abierto"}, rule, HOY, tipo) == [
         "empieza",
         "acaba",
     ]
+    # Sin tipo (base libre) no se marca nada.
+    assert due.overdue_date_keys(schema, {**props, "estado": "Abierto"}, rule, HOY) == []
 
 
 def test_sin_regla_no_se_marca_nada():
