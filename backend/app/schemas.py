@@ -76,6 +76,8 @@ class PageRead(PageBase):
     # el color. `null` = el nombre no es de ningún usuario.
     created_by_avatar: Optional[str] = None
     header_image_path: Optional[str] = None
+    # Encuadre vertical de la cabecera, 0 (arriba) a 100 (abajo); null = centro.
+    header_position: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     body_markdown: Optional[str] = None

@@ -97,6 +97,9 @@ class Page:
     description: Optional[str] = None
     created_by: Optional[str] = None
     header_image_path: Optional[str] = None
+    # Dónde se encuadra la imagen de cabecera (0 = arriba, 100 = abajo). Vive en
+    # el frontmatter (`header_position`); sin clave, centrada.
+    header_position: Optional[int] = None
     properties: dict[str, Any] = field(default_factory=dict)
     body_markdown: str = ""
     # Cuántas veces se ha escrito (3.0, hito 2): lo que `If-Match` compara.
@@ -142,7 +145,7 @@ class View:
 
 PAGE_FIELDS = (
     "id, workspace_id, parent_id, type, title, icon, description, created_by,"
-    " header_image_path, body, created_at, updated_at, version"
+    " header_image_path, body, created_at, updated_at, version, frontmatter"
 )
 PAGE_FIELDS_P = ", ".join("p." + name.strip() for name in PAGE_FIELDS.split(","))
 
@@ -162,6 +165,22 @@ class AuthorColors(dict):
     avatars: dict[str, str]
 
 
+def _header_position(row: sqlite3.Row) -> Optional[int]:
+    """`header_position` del frontmatter guardado en el índice (0-100), o None.
+    Solo se mira en las páginas con imagen de cabecera: las demás no lo usan."""
+    raw = row["frontmatter"] if "frontmatter" in row.keys() else None
+    if not raw:
+        return None
+    from app.vault import fm  # import tardío: solo hace falta aquí
+
+    try:
+        value = fm.parse(raw).data.get("header_position")
+        n = int(str(value)) if value is not None else None
+    except (fm.FrontmatterError, ValueError, TypeError):
+        return None
+    return max(0, min(100, n)) if n is not None else None
+
+
 def _page(row: sqlite3.Row) -> Page:
     keys = row.keys()
     return Page(
@@ -177,6 +196,7 @@ def _page(row: sqlite3.Row) -> Page:
         description=row["description"],
         created_by=row["created_by"],
         header_image_path=row["header_image_path"],
+        header_position=_header_position(row) if row["header_image_path"] else None,
         properties=_load(row["properties_json"], {}) if "properties_json" in keys else {},
         body_markdown=row["body"],
         version=row["version"] if "version" in keys else 1,
@@ -602,14 +622,30 @@ class Repository:
         current = self.get_page(page_id)
         if current is None:
             return None
+        # Imagen nueva (o ninguna): el encuadre de la anterior ya no vale.
+        cambios = {"header_image": path, "header_position": None}
         if current.type == PageType.note:
             # La cabecera se guarda también en el frontmatter: si solo viviera
             # en el índice, el primer reindexado se la llevaría por delante.
-            self.vault.save(page_id, header_image=path)
+            self.vault.save(page_id, **cambios)
         elif current.type == PageType.database:
-            self.vault.save_database(page_id, header_image=path)
+            self.vault.save_database(page_id, **cambios)
         else:
-            self.vault.save_row(page_id, header_image=path)
+            self.vault.save_row(page_id, **cambios)
+        return self.get_page(page_id)
+
+    def set_header_position(self, page_id: uuid.UUID, position: int) -> Optional[Page]:
+        """Fija el encuadre vertical de la imagen de cabecera (0-100)."""
+        current = self.get_page(page_id)
+        if current is None:
+            return None
+        position = max(0, min(100, int(position)))
+        if current.type == PageType.note:
+            self.vault.save(page_id, header_position=position)
+        elif current.type == PageType.database:
+            self.vault.save_database(page_id, header_position=position)
+        else:
+            self.vault.save_row(page_id, header_position=position)
         return self.get_page(page_id)
 
     def delete_page(self, page_id: uuid.UUID) -> bool:

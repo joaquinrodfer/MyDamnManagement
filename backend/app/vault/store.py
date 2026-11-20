@@ -1127,6 +1127,7 @@ class VaultStore:
         body: Any = UNSET,
         parent_id: Any = UNSET,
         header_image: Any = UNSET,
+        header_position: Any = UNSET,
         expected_version: Optional[int] = None,
     ) -> None:
         """Reescribe la nota (y la renombra/mueve si toca) y actualiza el índice."""
@@ -1210,6 +1211,8 @@ class VaultStore:
             updates["description"] = description
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
+        if header_position is not UNSET:
+            updates["header_position"] = header_position  # None borra la clave
 
         # Mismo formato que `POST` (salto tras el frontmatter y `\n` final).
         new_body = stored_body(body) if body is not UNSET and body is not None else None
@@ -1513,6 +1516,7 @@ class VaultStore:
         views: Any = UNSET,
         body: Any = UNSET,
         header_image: Any = UNSET,
+        header_position: Any = UNSET,
         parent_id: Any = UNSET,
         title_name: Any = UNSET,
         title_hidden: Any = UNSET,
@@ -1589,6 +1593,8 @@ class VaultStore:
             updates["description"] = description
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
+        if header_position is not UNSET:
+            updates["header_position"] = header_position  # None borra la clave
         if schema is not UNSET and schema is not None:
             updates["schema"] = writer.schema_entries(schema)
         if views is not UNSET and views is not None:
@@ -2012,6 +2018,7 @@ class VaultStore:
         body: Any = UNSET,
         properties: Any = UNSET,
         header_image: Any = UNSET,
+        header_position: Any = UNSET,
         expected_version: Optional[int] = None,
     ) -> None:
         """Reescribe el frontmatter de la fila y actualiza el índice.
@@ -2073,6 +2080,8 @@ class VaultStore:
             updates["description"] = description
         if header_image is not UNSET:
             updates["header_image"] = header_image  # None borra la clave
+        if header_position is not UNSET:
+            updates["header_position"] = header_position  # None borra la clave
         if props is not None:
             # `title` no es una propiedad de la fila: si viniera en el mapa,
             # `sin_reservadas` ya lo ha quitado.
