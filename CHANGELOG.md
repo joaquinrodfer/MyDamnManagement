@@ -2,6 +2,13 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Pase visual (2): espacios, carga, avisos, calendario y grafo
+- Todos los espacios llevan el icono con degradado; cada uno con su tono, sacado de su id (el personal sigue en violeta).
+- Carga del equipo: título como «Mis tareas», selector y capacidad con estilo de campo, leyenda en etiquetas, tabla en tarjeta y horas en fichas de color.
+- Avisos: icono SVG en un círculo de color por tipo, punto de no leído y «Marcar todo como leído» solo si hay algo pendiente.
+- Calendario: rejilla más suave, cabecera de días en versalitas y desplegables con estilo de campo.
+- Grafo: se llama «Grafo» y el encuadre automático no pasa de 1,5× (con pocas páginas el título salía enorme).
+
 ## Pase visual general
 - Tipografía Inter autoalojada (`frontend/fonts/`, licencia OFL), también en la pantalla de entrada; `/fonts/*.woff2` se sirve sin sesión.
 - Campos rellenos con borde suave y anillo de foco; `<select>` con flecha propia; casillas propias.

@@ -1337,11 +1337,26 @@ function formularioDeEspacioNuevo() {
   return form;
 }
 
+/**
+ * Icono de un espacio: la inicial (o el emoji) sobre un degradado. Cada espacio
+ * saca su tono de su id, así se distinguen de un vistazo y no cambian de color.
+ */
+function iconoDeEspacio(w) {
+  const el = crearEl("span", "workspace-icon", w.icon || (w.name || "?").trim().charAt(0).toUpperCase());
+  el.setAttribute("aria-hidden", "true");
+  if (w.icon) { el.classList.add("ws-emoji"); return el; }
+  let h = 0;
+  for (const c of String(w.id || w.name || "")) h = (h * 31 + c.codePointAt(0)) >>> 0;
+  const tonos = [235, 265, 200, 160, 330, 25, 290, 185];
+  el.style.setProperty("--ws-hue", String(tonos[h % tonos.length]));
+  return el;
+}
+
 function tarjetaDeEspacio(w, grupos, usuarios) {
   const det = crearEl("details", "ws-card");
   const resumen = crearEl("summary");
   resumen.append(
-    crearEl("span", "workspace-icon", w.icon || w.name.trim().charAt(0).toUpperCase()),
+    iconoDeEspacio(w),
     crearEl("strong", "", w.name),
     crearEl("span", "ws-meta", `${ROLES_DE_ESPACIO[w.role] || ""} · ${w.pages} páginas`),
   );
@@ -3596,11 +3611,11 @@ function haceCuanto(iso) {
 }
 
 const ICONOS_DE_AVISO = {
-  mention: "@",
-  task_assigned: "✔",
-  deadline_soon: "⏰",
-  deadline_overdue: "⚠",
-  page_update: "✎",
+  mention: "i-at",
+  task_assigned: "i-check",
+  deadline_soon: "i-clock",
+  deadline_overdue: "i-alert",
+  page_update: "i-pencil",
 };
 
 function pintarPanelDeAvisos() {
@@ -3609,9 +3624,9 @@ function pintarPanelDeAvisos() {
   panel.replaceChildren();
   const cabecera = crearEl("div", "avisos-head");
   cabecera.append(crearEl("span", "", "Avisos"));
-  const todo = crearEl("button", "btn", "Marcar todo como leído");
+  const todo = crearEl("button", "avisos-todo", "Marcar todo como leído");
   todo.type = "button";
-  todo.disabled = avisos.unread === 0;
+  todo.hidden = !avisos.unread; // sin nada pendiente, el botón solo estorba
   todo.addEventListener("click", async () => {
     try {
       await api("/notifications/read", { method: "POST", body: JSON.stringify({ all: true }) });
@@ -3629,10 +3644,15 @@ function pintarPanelDeAvisos() {
   for (const a of avisos.items) {
     const item = crearEl("button", "avisos-item" + (a.is_read ? "" : " avisos-item--unread"));
     item.type = "button";
-    item.append(
-      crearEl("span", "", `${ICONOS_DE_AVISO[a.type] || "•"}  ${a.message}`),
+    const texto = crearEl("span", "avisos-texto");
+    texto.append(
+      crearEl("span", "", a.message),
       crearEl("small", "", `${haceCuanto(a.created_at)}${a.workspace_name ? ` · ${a.workspace_name}` : ""}`),
     );
+    const icono = crearEl("span", `avisos-ico avisos-ico--${a.type}`);
+    icono.setAttribute("aria-hidden", "true");
+    icono.innerHTML = svgIcon(ICONOS_DE_AVISO[a.type] || "i-bell");
+    item.append(icono, texto);
     item.addEventListener("click", async () => {
       cerrarPanelDeColumna();
       if (!a.is_read) {
@@ -3731,13 +3751,13 @@ async function showCarga() {
   document.getElementById("btn-workload")?.setAttribute("aria-current", "page");
   const caja = crearEl("div", "carga");
   main.append(caja);
-  caja.append(crearEl("h2", "", "Carga del equipo"));
+  caja.append(crearEl("h1", "my-tasks-title", "Carga del equipo"));
   caja.append(crearEl("p", "form-note", "Cargando…"));
   let datos;
   try {
     datos = await api(`/workload?weeks=${cargaSemanas}`);
   } catch (e) {
-    caja.replaceChildren(crearEl("h2", "", "Carga del equipo"), crearEl("p", "form-note form-error", describeError(e)));
+    caja.replaceChildren(crearEl("h1", "my-tasks-title", "Carga del equipo"), crearEl("p", "form-note form-error", describeError(e)));
     return;
   }
   pintarCarga(caja, datos);
@@ -3747,10 +3767,10 @@ function pintarCarga(caja, datos) {
   const esAdmin = Boolean(sessionUser.me?.is_admin);
   const fmtH = (h) => (h ? `${Math.round(h * 10) / 10} h` : "–");
   const fmtSemana = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", { day: "numeric", month: "short" });
-  caja.replaceChildren(crearEl("h2", "", "Carga del equipo"));
+  caja.replaceChildren(crearEl("h1", "my-tasks-title", "Carga del equipo"));
 
   const herramientas = crearEl("div", "carga-tools");
-  const etiqueta = crearEl("label", "", "Semanas ");
+  const etiqueta = crearEl("label", "carga-semanas", "Semanas ");
   const selector = crearEl("select");
   for (const n of [4, 8, 12, 26]) selector.add(new Option(String(n), String(n), false, n === cargaSemanas));
   selector.addEventListener("change", () => {
@@ -3818,10 +3838,12 @@ function pintarCarga(caja, datos) {
     fila.append(celdaCap);
     for (const w of datos.weeks) {
       const h = p.weeks[w] || 0;
-      const celda = crearEl("td", "", fmtH(h));
+      const celda = crearEl("td", "carga-semana");
       const ratio = h / p.capacity;
-      if (h > 0) celda.classList.add(ratio > 1 ? "carga-celda--over" : ratio >= 0.7 ? "carga-celda--warn" : "carga-celda--ok");
+      const valor = crearEl("span", "carga-pill", fmtH(h));
+      if (h > 0) valor.classList.add(ratio > 1 ? "carga-celda--over" : ratio >= 0.7 ? "carga-celda--warn" : "carga-celda--ok");
       if (h > 0) celda.title = `${Math.round(ratio * 100)} % de ${p.capacity} h`;
+      celda.append(valor);
       fila.append(celda);
     }
     fila.append(crearEl("td", "", fmtH(p.before + p.after)), crearEl("td", "", fmtH(p.unscheduled)));
@@ -3834,6 +3856,7 @@ function pintarCarga(caja, datos) {
     celdaDetalle.colSpan = columnas;
     const sub = crearEl("table");
     const sc = crearEl("tr");
+    sc.className = "carga-detalle-cab";
     for (const t of ["Semana", "Espacio", "Proyecto", "Tarea", "Horas"]) sc.append(crearEl("th", "", t));
     sub.append(sc);
     for (const pz of p.pieces) {
@@ -4055,10 +4078,7 @@ function pintarEspacios(notes, invitado) {
     const flecha = document.createElement("span");
     flecha.className = "ws-chevron";
     flecha.innerHTML = svgIcon("i-chevron-down");
-    const icono = document.createElement("span");
-    icono.className = "workspace-icon";
-    icono.setAttribute("aria-hidden", "true");
-    icono.textContent = w.icon || (w.name || "?").trim().charAt(0).toUpperCase();
+    const icono = iconoDeEspacio(w);
     const nombre = document.createElement("span");
     nombre.className = "ws-name";
     nombre.textContent = w.name;
