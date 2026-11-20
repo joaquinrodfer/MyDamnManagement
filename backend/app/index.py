@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -408,6 +408,16 @@ MIGRATIONS: dict[int, list[str]] = {
 )""",
         "CREATE INDEX IF NOT EXISTS page_activity_ts ON page_activity(ts)",
         "CREATE INDEX IF NOT EXISTS page_activity_page_user ON page_activity(page_id, user_id, ts)",
+    ],
+    # v21: las páginas que cada quien fija arriba del panel izquierdo
+    # («Fijadas»), en el orden que les dé. Se van solas al borrar la página.
+    21: [
+        """CREATE TABLE IF NOT EXISTS page_pins (
+    user_id  TEXT NOT NULL,
+    page_id  TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (user_id, page_id)
+)""",
     ],
 }
 
@@ -791,7 +801,15 @@ CREATE TABLE page_activity (
 CREATE INDEX page_activity_ts ON page_activity(ts);
 CREATE INDEX page_activity_page_user ON page_activity(page_id, user_id, ts);
 
-PRAGMA user_version = 20;
+-- Las páginas fijadas de cada quien (v21). Ver la migración 21.
+CREATE TABLE page_pins (
+    user_id  TEXT NOT NULL,
+    page_id  TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (user_id, page_id)
+);
+
+PRAGMA user_version = 21;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1291,6 +1309,8 @@ DUMP_EXCLUDED = {
     "page_order",
     # La actividad del inicio (v20): historia de la app, no está en el `.md`.
     "page_activity",
+    # Las fijadas (v21): preferencia de cada quien, no está en el `.md`.
+    "page_pins",
 }
 
 

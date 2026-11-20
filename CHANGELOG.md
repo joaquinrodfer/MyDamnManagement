@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Páginas fijadas
+- Nueva sección **Fijadas** en el panel izquierdo, bajo «Mis cosas»: las páginas y bases que más usas, a un clic. Solo aparece si has fijado algo.
+- Se fija y se quita desde el «⋯» de la página o de la base («Fijar en el panel» / «Quitar de Fijadas»), con el clic derecho en el árbol o con la ✕ que sale al pasar el ratón. Se reordenan arrastrando.
+- Son de cada persona y se guardan en el servidor (`/pins`, índice v21): las ves igual en cualquier equipo. Si dejas de poder ver una página, deja de salir.
+
 ## Inicio nuevo (2/2)
 - **Mi semana**: tus horas de esta semana frente a tu capacidad, con la barra de color de «Carga del equipo» (verde, ámbar, rojo). Quien puede ver la carga del equipo tiene además una fila por persona (las 6 más cargadas) y el enlace a la vista completa.
 - **Actividad reciente**: quién ha creado o editado qué, agrupado por espacio, solo de páginas que puedes ver y nunca lo tuyo.
