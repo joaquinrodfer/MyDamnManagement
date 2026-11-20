@@ -7388,6 +7388,19 @@ function renderSlashMenu(menuState) {
       const item = document.createElement("div");
       item.className = "mdm-slash-menu-item" + (i === menuState.selectedIndex ? " active" : "");
 
+      // Página o base que ya existe: icono, título y debajo la ruta entera
+      // empezando por el espacio, para saber a cuál se enlaza.
+      const nodo = nodoDeOpcion(opt);
+      if (nodo) {
+        item.classList.add("mdm-slash-menu-item--page");
+        item.append(filaDeRuta(nodo, opt.label));
+        item.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          opt.onClick();
+        });
+        lista.appendChild(item);
+        return;
+      }
       const label = document.createElement("span");
       label.className = "mdm-slash-menu-label";
       label.textContent = opt.label;
@@ -7448,6 +7461,71 @@ function sameTitle(a, b) {
   return norm(a) === norm(b);
 }
 
+/** El nodo del árbol detrás de una opción del menú «/»: una página de «/page»
+ * (`kind: "link"`, id de página) o una base de «/base» (`kind: "item"`, id de
+ * la fila `databases`). Lo demás (crear, renombrar, tipos de bloque): null. */
+function nodoDeOpcion(opt) {
+  if (opt?.kind === "link") return state.pagesById.get(String(opt.id)) || null;
+  if (opt?.kind === "item" && opt.entry) {
+    for (const n of state.pagesById.values()) {
+      if (n.type === "database" && String(n.database_id) === String(opt.id)) return n;
+    }
+  }
+  return null;
+}
+
+/** Fila rica del selector: icono del tipo, título y la ruta
+ * «espacio › padre › …» con el icono del espacio delante. */
+function filaDeRuta(nodo, titulo) {
+  const frag = document.createDocumentFragment();
+  const tipo = crearEl("span", "mdm-link-type");
+  tipo.innerHTML = svgIcon(nodo.type === "database" ? "i-database" : "i-file-text");
+  const cuerpo = crearEl("span", "mdm-link-body");
+  const nombre = crearEl("span", "mdm-slash-menu-label", titulo);
+  const ruta = crearEl("span", "mdm-link-path");
+  const ws = espacioDeNodo(nodo);
+  if (ws) {
+    const ico = iconoDeEspacio(ws);
+    ico.classList.add("mdm-link-ws-icon");
+    ruta.append(ico, crearEl("span", "mdm-link-ws", ws.name));
+  }
+  const padres = [];
+  let actual = nodo;
+  for (let i = 0; i < 32 && actual?.parent_id; i++) {
+    actual = state.pagesById.get(actual.parent_id);
+    if (!actual) break;
+    padres.unshift(actual.title || "Sin título");
+  }
+  for (const p of padres) {
+    ruta.append(crearEl("span", "mdm-link-sep", "›"), crearEl("span", "mdm-link-seg", p));
+  }
+  if (nodo.section === "private") {
+    const candado = crearEl("span", "mdm-link-lock");
+    candado.innerHTML = svgIcon("i-lock");
+    candado.title = "Privada";
+    ruta.append(candado);
+  }
+  cuerpo.append(nombre, ruta);
+  frag.append(tipo, cuerpo);
+  return frag;
+}
+
+/** El espacio de un nodo. Las hijas no siempre traen `workspace_id`: se sube
+ * hasta el primero que lo tenga (la raíz siempre lo trae). */
+function espacioDeNodo(node) {
+  let actual = node;
+  for (let i = 0; i < 33 && actual; i++) {
+    if (actual.workspace_id) return state.workspaces.find((w) => w.id === String(actual.workspace_id)) || null;
+    actual = actual.parent_id ? state.pagesById.get(actual.parent_id) : null;
+  }
+  return null;
+}
+
+/** Nombre del espacio de un nodo, para poder buscar también por él. */
+function nombreDeEspacio(node) {
+  return espacioDeNodo(node)?.name || "";
+}
+
 /** Carpeta en la que vive una base, deducida del árbol.
  *
  * El árbol no trae rutas: la jerarquía son carpetas (D4), así que la cadena de
@@ -7475,7 +7553,7 @@ function listDatabaseEntries() {
     bases.push({
       id: node.database_id,
       title: node.title || "Sin título",
-      folder: nodeFolderLabel(node),
+      folder: [nombreDeEspacio(node), nodeFolderLabel(node)].filter(Boolean).join(" / "),
     });
   }
   return bases.sort(
@@ -7507,7 +7585,7 @@ function listPageEntries() {
       title: node.title || "Sin título",
       type: node.type || "note",
       parent_id: node.parent_id ?? null,
-      folder: pageFolderLabel(node),
+      folder: [nombreDeEspacio(node), pageFolderLabel(node)].filter(Boolean).join(" / "),
     });
   }
   return paginas;
@@ -17658,17 +17736,30 @@ function renderList(database, rows, view, refresh, { barraEn = null } = {}) {
     }
     const title = document.createElement("span");
     title.className = "list-row-title";
-    title.textContent = row.title || "Sin título";
+    title.insertAdjacentHTML("beforeend", svgIcon("i-file-text"));
+    title.append(row.title || "Sin título");
     item.appendChild(title);
     // Las mismas columnas que la tabla: el orden de la vista y las ocultas fuera.
+    // Van a la derecha, sin el «Nombre:» delante (sale al pasar el ratón).
+    const props = document.createElement("span");
+    props.className = "list-row-props";
     columnasDeVista(database, view).forEach((p) => {
       const v = row.properties?.[p.key];
       if (v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) return;
       const span = document.createElement("span");
-      span.className = "list-row-prop";
-      span.innerHTML = `${escapeHtml(p.name)}: ${formatPropValueHtml(v, p, row)}`;
-      item.appendChild(span);
+      span.className = `list-row-prop list-row-prop--${p.type}`;
+      span.title = p.name;
+      if (p.type === "date" && typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+        span.innerHTML = svgIcon("i-calendar");
+        span.append(fechaCorta(v.slice(0, 10)));
+      } else if (p.type === "number") {
+        span.textContent = `${p.name} ${v}`;
+      } else {
+        span.innerHTML = formatPropValueHtml(v, p, row);
+      }
+      props.appendChild(span);
     });
+    if (props.childElementCount) item.appendChild(props);
     const cuenta = contadorDeSubtareas(row);
     if (cuenta) {
       const badge = document.createElement("span");
