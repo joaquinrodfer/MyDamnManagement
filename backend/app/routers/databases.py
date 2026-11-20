@@ -162,7 +162,7 @@ def _serialize_rows(
             # cerrado» y la de «solo donde la base declara estado» viven en
             # `app.due`: el cliente pinta la celda, no decide.
             overdue_keys=due.overdue_date_keys(
-                db_def.schema_def, props, db_def.closed, hoy
+                db_def.schema_def, props, db_def.closed, hoy, db_def.kind
             ),
             people=people_of(db_def.schema_def, props, users),
             created_at=as_utc(row.created_at),

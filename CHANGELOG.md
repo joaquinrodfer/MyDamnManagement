@@ -2,6 +2,14 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Inicio nuevo (1/2)
+- El inicio responde a «qué tengo que hacer, qué me ha llegado y por dónde iba»: saludo con resumen (vencidas · hoy · esta semana · menciones sin leer) y una caja para apuntar algo en la bandeja.
+- **Mis tareas** por urgencia (Vencidas, Hoy, Esta semana, Con fecha pasada, Más adelante y Sin fecha plegado), con casilla para darla por hecha y la fecha editable ahí mismo.
+- **Para ti**: los últimos avisos sin leer, con «Marcar todo leído».
+- **Seguir donde lo dejaste**: las páginas recientes en tarjetas con su portada. Sustituye a «Fechas cercanas».
+- Todo llega en un solo `GET /dashboard` (ahora con `tasks`, `notifications` y `mentions_unread`); cada tarea trae `close`, el valor que la cierra.
+- **Vencidas solo en bases de Proyectos o de Tareas.** En una base libre, una fecha pasada ya no sale en rojo ni en la tabla ni en «Mis tareas», no cuenta en la barra lateral ni avisa: va en «Con fecha pasada» (`due: "past"`).
+
 ## Selección por rectángulo
 - Pulsar en el fondo de una página (el margen, el hueco bajo el último bloque, lo que sobra a la derecha de una línea o fuera del cuerpo) y arrastrar dibuja un rectángulo que marca los bloques que toca, como en el escritorio de Windows. Con Mayús se suma a lo marcado y con Ctrl/⌘ cambia el estado de lo que toca; Escape lo cancela.
 - La página se desplaza sola al llegar al borde. Al soltar, el foco va al editor: Supr, Ctrl+C o el clic derecho actúan sobre los bloques marcados.

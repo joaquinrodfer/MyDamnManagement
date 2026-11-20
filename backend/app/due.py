@@ -49,6 +49,10 @@ OVERDUE = "overdue"   # la fecha ya pasó
 TODAY = "today"       # vence hoy
 WEEK = "week"         # de mañana al domingo de esta semana
 LATER = "later"       # más adelante
+# Fecha pasada en una base que NO es de proyectos ni de tareas: ya pasó, pero no
+# es un plazo incumplido (decisión del dueño, 2026-11-20: el rojo de «vencida»
+# solo para bases tipadas). No cuenta en `counts.overdue` ni avisa.
+PAST = "past"
 
 DATE = "date"
 
@@ -96,10 +100,13 @@ def week_end(today: date) -> date:
     return date.fromordinal(today.toordinal() + (7 - today.isoweekday()))
 
 
-def classify(day: date, today: date) -> str:
-    """En qué bloque cae `day` mirándolo desde `today`."""
+def classify(day: date, today: date, *, typed: bool = True) -> str:
+    """En qué bloque cae `day` mirándolo desde `today`.
+
+    `typed=False` (base que no es de proyectos ni de tareas): una fecha pasada es
+    `PAST`, no `OVERDUE`."""
     if day < today:
-        return OVERDUE
+        return OVERDUE if typed else PAST
     if day == today:
         return TODAY
     if day <= week_end(today):
@@ -124,6 +131,7 @@ def overdue_date_keys(
     properties: dict,
     rule: Optional[dict],
     today: date,
+    kind: Optional[dict] = None,
 ) -> list[str]:
     """Claves de las fechas pasadas que la tabla tiene que marcar.
 
@@ -133,6 +141,10 @@ def overdue_date_keys(
     hecha tarde no está vencida). Se devuelven todas las propiedades de fecha
     pasadas, no solo la primera: la tabla pinta celdas, no la fecha «oficial».
     """
+    # Solo en bases de proyectos o de tareas (`kind`): en una base libre una
+    # fecha pasada no es un plazo (decisión del dueño, 2026-11-20).
+    if not kind or kind.get("type") not in ("projects", "tasks"):
+        return []
     if not rule:
         return []
     if closed.is_closed(rule, properties or {}):

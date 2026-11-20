@@ -2,7 +2,8 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, Depends
 
-from app.dependencies import get_repo
+from app import acl, auth, mytasks, notifications
+from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
 from app.serializers import as_utc
 
@@ -15,11 +16,12 @@ NEAR_PAST_DAYS = 7
 NEAR_FUTURE_DAYS = 30
 
 RECENT_PAGES_LIMIT = 8
+NOTIFICATIONS_LIMIT = 5
 UPCOMING_DATES_LIMIT = 10
 
 
 @router.get("/dashboard")
-def get_dashboard(repo: Repository = Depends(get_repo)):
+def get_dashboard(repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)):
     """Datos de la landing del panel (se muestra cuando no hay ninguna
     página abierta): páginas con cambios recientes, y filas de cualquier
     database que tenga una propiedad de tipo `date` con un valor cercano a
@@ -76,8 +78,18 @@ def get_dashboard(repo: Repository = Depends(get_repo)):
                 "type": p.type,
                 "database_id": database_id_by_page_id.get(p.id),
                 "updated_at": as_utc(p.updated_at),
+                "header_image": p.header_image_path,
+                "header_position": p.header_position,
             }
             for p in recent_pages
         ],
         "upcoming_dates": upcoming[:UPCOMING_DATES_LIMIT],
+        # Inicio 2.0: mis tareas abiertas (lo mismo que `GET /my-tasks`, con la
+        # regla de vencidas del servidor) y lo último que me ha llegado.
+        "tasks": mytasks.my_tasks(repo.conn, user.id, acl.visible_ids(repo.conn, user, repo.workspace_id)),
+        "notifications": notifications.list_for(repo.conn, str(user.id), unread_only=True, limit=NOTIFICATIONS_LIMIT),
+        "mentions_unread": repo.conn.execute(
+            "SELECT count(*) FROM notifications WHERE user_id = ? AND is_read = 0 AND type = 'mention'",
+            (str(user.id),),
+        ).fetchone()[0],
     }
