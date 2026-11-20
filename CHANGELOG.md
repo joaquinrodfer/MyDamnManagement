@@ -2,6 +2,14 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Cabecera de página y Ajustes
+- Cabecera de las páginas rehecha: icono grande encima del título (solo si tiene uno), título más grande, «Creado por · Editado hace…» en una línea y descripción debajo; todo alineado con el texto del cuerpo.
+- «Añadir icono», «Añadir portada», «Añadir descripción» y «Quitar icono» aparecen al pasar el ratón por la cabecera; la descripción vacía ya no ocupa sitio.
+- Portada a todo el ancho con «Cambiar portada», «Recolocar» y «Quitar». Recolocar es arrastrar la imagen y guardar: el encuadre se guarda en el frontmatter (`header_position`, 0-100) con `PUT /pages/{id}/header-image/position`, y se reinicia al cambiar o quitar la imagen.
+- Desplegables: con ratón, la lista ya no es la del sistema sino un menú con el estilo de la app (teclado: Espacio/Enter/Alt+↓ lo abren, flechas, Enter, Esc). En pantallas táctiles sigue la nativa.
+- Ajustes: todos los campos y desplegables con el mismo tamaño y estilo; tarjetas de espacio más aireadas.
+- El logo de los espacios ya no se puede cambiar: siempre es la inicial sobre su color.
+
 ## Panel de miembros (derecha, estilo Discord)
 - Nuevo panel a la derecha con la gente de cada espacio compartido, agrupada por espacio (plegable), conectados primero, con su estado y la página que miran; los desconectados, atenuados. Pulsar a alguien que mira una página la abre.
 - Abajo del panel, tú: tu avatar con el punto de estado, tu estado actual y el menú con Disponible / En foco / En reunión / Otro estado, Ajustes y Cerrar sesión (antes estaba abajo a la izquierda).

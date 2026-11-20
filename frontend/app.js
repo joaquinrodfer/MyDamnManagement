@@ -1338,13 +1338,13 @@ function formularioDeEspacioNuevo() {
 }
 
 /**
- * Icono de un espacio: la inicial (o el emoji) sobre un degradado. Cada espacio
+ * Icono de un espacio: la inicial sobre un degradado. Cada espacio
  * saca su tono de su id, así se distinguen de un vistazo y no cambian de color.
  */
 function iconoDeEspacio(w) {
-  const el = crearEl("span", "workspace-icon", w.icon || (w.name || "?").trim().charAt(0).toUpperCase());
+  // Siempre la inicial: el logo de un espacio ya no se cambia a mano.
+  const el = crearEl("span", "workspace-icon", (w.name || "?").trim().charAt(0).toUpperCase());
   el.setAttribute("aria-hidden", "true");
-  if (w.icon) { el.classList.add("ws-emoji"); return el; }
   let h = 0;
   for (const c of String(w.id || w.name || "")) h = (h * 31 + c.codePointAt(0)) >>> 0;
   const tonos = [235, 265, 200, 160, 330, 25, 290, 185];
@@ -1354,6 +1354,7 @@ function iconoDeEspacio(w) {
 
 function tarjetaDeEspacio(w, grupos, usuarios) {
   const det = crearEl("details", "ws-card");
+  if (w.personal_of) det.classList.add("ws-personal"); // el mismo violeta que en la barra
   const resumen = crearEl("summary");
   resumen.append(
     iconoDeEspacio(w),
@@ -1375,7 +1376,7 @@ function tarjetaDeEspacio(w, grupos, usuarios) {
 async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
   cuerpo.replaceChildren();
   const esAdminDelEspacio = w.role === "admin";
-  // nombre e icono
+  // nombre (el icono ya no se elige: es la inicial sobre el color del espacio)
   const fila = crearEl("div", "ws-row");
   const nombre = crearEl("input", "ws-grow");
   nombre.type = "text";
@@ -1383,14 +1384,6 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
   nombre.maxLength = 80;
   nombre.setAttribute("aria-label", "Nombre del espacio");
   nombre.disabled = !esAdminDelEspacio;
-  const icono = crearEl("input");
-  icono.type = "text";
-  icono.value = w.icon || "";
-  icono.maxLength = 8;
-  icono.size = 3;
-  icono.placeholder = "🙂";
-  icono.setAttribute("aria-label", "Icono del espacio");
-  icono.disabled = !esAdminDelEspacio;
   const guardar = crearEl("button", "btn", "Guardar");
   guardar.type = "button";
   guardar.disabled = !esAdminDelEspacio;
@@ -1398,7 +1391,7 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
     try {
       await api(`/workspaces/${w.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ name: nombre.value, icon: icono.value }),
+        body: JSON.stringify({ name: nombre.value }),
       });
       setFormNote(wsNota, "Guardado.", "ok");
       await cargarAdministracionDeEspacios();
@@ -1406,7 +1399,7 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
       setFormNote(wsNota, e?.message || "No se pudo guardar.", "error");
     }
   });
-  fila.append(icono, nombre, guardar);
+  fila.append(nombre, guardar);
   cuerpo.append(fila);
 
   // miembros
@@ -3462,6 +3455,155 @@ async function showMisTareas() {
   renderMisTareas(main);
 }
 
+
+// ------------------------------------------------ desplegables con menú propio
+// La lista que abre un <select> nativo la pinta el sistema (fondo blanco,
+// resalte azul) y no se puede estilar. Con ratón, el clic abre en su lugar un
+// menú con el estilo de los demás; el <select> sigue siendo el que guarda el
+// valor y el que avisa (`input` y `change`), así que nadie más cambia. En
+// pantallas táctiles se deja el del sistema, que ahí es el mejor.
+const conRatonFino = window.matchMedia("(hover: hover) and (pointer: fine)");
+let menuDeSelect = null;
+
+function cerrarMenuDeSelect({ foco = false } = {}) {
+  if (!menuDeSelect) return;
+  const { menu, select, limpiar } = menuDeSelect;
+  menuDeSelect = null;
+  limpiar();
+  menu.remove();
+  select.removeAttribute("aria-expanded");
+  if (foco) select.focus();
+}
+
+function abrirMenuDeSelect(select) {
+  cerrarMenuDeSelect();
+  const opciones = [...select.options];
+  if (!opciones.length) return;
+  const menu = crearEl("div", "np-select-menu");
+  menu.setAttribute("role", "listbox");
+  const items = [];
+  let activo = Math.max(0, select.selectedIndex);
+  const marcar = (i) => {
+    activo = i;
+    items.forEach((it, j) => it.classList.toggle("is-active", j === i));
+    items[i]?.scrollIntoView({ block: "nearest" });
+  };
+  const elegir = (i) => {
+    const op = opciones[i];
+    if (!op || op.disabled) return;
+    const cambia = select.selectedIndex !== i;
+    select.selectedIndex = i;
+    cerrarMenuDeSelect({ foco: true });
+    if (cambia) {
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  };
+  let grupo = null;
+  opciones.forEach((op, i) => {
+    const g = op.parentElement?.tagName === "OPTGROUP" ? op.parentElement : null;
+    if (g && g !== grupo) menu.append(crearEl("div", "np-select-group", g.label));
+    grupo = g;
+    const it = crearEl("div", "np-select-item");
+    it.setAttribute("role", "option");
+    it.setAttribute("aria-selected", String(i === select.selectedIndex));
+    if (op.disabled) it.setAttribute("aria-disabled", "true");
+    it.append(crearEl("span", "np-select-text", op.textContent || op.label || "\u00a0"));
+    if (i === select.selectedIndex) it.insertAdjacentHTML("beforeend", svgIcon("i-check"));
+    it.addEventListener("mousedown", (e) => e.preventDefault());
+    it.addEventListener("click", () => elegir(i));
+    it.addEventListener("mousemove", () => activo !== i && marcar(i));
+    items.push(it);
+    menu.append(it);
+  });
+
+  // Dentro de un <dialog> modal el menú tiene que ir en el propio diálogo:
+  // fuera quedaría por debajo de la capa superior.
+  const contenedor = select.closest("dialog[open]") || document.body;
+  contenedor.append(menu);
+  const r = select.getBoundingClientRect();
+  let dx = 0;
+  let dy = 0;
+  if (contenedor !== document.body && getComputedStyle(contenedor).transform !== "none") {
+    const c = contenedor.getBoundingClientRect();
+    dx = c.left;
+    dy = c.top;
+  }
+  menu.style.minWidth = `${Math.max(r.width, 160)}px`;
+  const alto = Math.min(menu.scrollHeight, 320);
+  const abajo = window.innerHeight - r.bottom - 8;
+  const arriba = r.top >= alto + 8 && abajo < alto;
+  menu.style.left = `${Math.min(r.left, window.innerWidth - menu.offsetWidth - 8) - dx}px`;
+  menu.style.top = `${(arriba ? r.top - alto - 4 : r.bottom + 4) - dy}px`;
+  menu.style.maxHeight = `${Math.max(120, arriba ? r.top - 12 : abajo)}px`;
+  select.setAttribute("aria-expanded", "true");
+  marcar(activo);
+
+  const fuera = (e) => {
+    if (!menu.contains(e.target) && e.target !== select) cerrarMenuDeSelect();
+  };
+  const teclas = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cerrarMenuDeSelect({ foco: true });
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const paso = e.key === "ArrowDown" ? 1 : -1;
+      let i = activo;
+      do i = (i + paso + items.length) % items.length;
+      while (opciones[i].disabled && i !== activo);
+      marcar(i);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      elegir(activo);
+    } else if (e.key === "Tab") {
+      cerrarMenuDeSelect();
+    }
+  };
+  const alMover = (e) => {
+    if (!menu.contains(e.target)) cerrarMenuDeSelect();
+  };
+  document.addEventListener("mousedown", fuera, true);
+  document.addEventListener("keydown", teclas, true);
+  window.addEventListener("scroll", alMover, true);
+  window.addEventListener("resize", cerrarMenuDeSelect);
+  menuDeSelect = {
+    menu,
+    select,
+    limpiar: () => {
+      document.removeEventListener("mousedown", fuera, true);
+      document.removeEventListener("keydown", teclas, true);
+      window.removeEventListener("scroll", alMover, true);
+      window.removeEventListener("resize", cerrarMenuDeSelect);
+    },
+  };
+}
+
+function esSelectSencillo(el) {
+  return el instanceof HTMLSelectElement && !el.multiple && el.size <= 1 && !el.disabled;
+}
+
+document.addEventListener("mousedown", (e) => {
+  const select = e.target;
+  if (!conRatonFino.matches || !esSelectSencillo(select) || e.button !== 0) return;
+  e.preventDefault();
+  if (menuDeSelect?.select === select) {
+    cerrarMenuDeSelect({ foco: true });
+    return;
+  }
+  select.focus();
+  abrirMenuDeSelect(select);
+});
+document.addEventListener("keydown", (e) => {
+  const select = e.target;
+  if (!conRatonFino.matches || !esSelectSencillo(select) || menuDeSelect) return;
+  if (e.key === " " || e.key === "Enter" || (e.altKey && e.key === "ArrowDown")) {
+    e.preventDefault();
+    abrirMenuDeSelect(select);
+  }
+});
+
 // ---------------------------------------------------- presencia (plan H7)
 
 const ESTADOS_DE_PRESENCIA = {
@@ -5142,35 +5284,100 @@ function renderNote(page, backlinks) {
   fileInput.accept = "image/*";
   fileInput.hidden = true;
 
+  // La portada ocupa todo el ancho de la página. Al pasar el ratón salen
+  // «Cambiar», «Recolocar» y «Quitar»; recolocar es arrastrar la imagen arriba
+  // o abajo y guardar: el encuadre (0-100) queda en el frontmatter.
   function renderHeaderImage() {
     headerWrap.innerHTML = "";
-    if (page.header_image_path) {
-      const img = document.createElement("img");
-      img.className = "note-header-image";
-      // ?t= rompe caché aparte del Cache-Control: no-cache del backend --
-      // el nombre de archivo es fijo por página (header.<ext>), así que sin
-      // esto quitar una cabecera y subir otra en el momento podía seguir
-      // enseñando la vieja hasta recargar.
-      img.src = `${page.header_image_path}?t=${Date.now()}`;
-      img.alt = "";
+    headerWrap.classList.toggle("has-image", Boolean(page.header_image_path));
+    head?.classList.toggle("has-cover", Boolean(page.header_image_path));
+    pintarAccionesDeCabecera?.();
+    if (!page.header_image_path) return;
+    const img = document.createElement("img");
+    img.className = "note-header-image";
+    // ?t= rompe caché aparte del Cache-Control: no-cache del backend --
+    // el nombre de archivo es fijo por página (header.<ext>), así que sin
+    // esto quitar una cabecera y subir otra en el momento podía seguir
+    // enseñando la vieja hasta recargar.
+    img.src = `${page.header_image_path}?t=${Date.now()}`;
+    img.alt = "";
+    img.draggable = false;
+    let posicion = Number.isInteger(page.header_position) ? page.header_position : 50;
+    img.style.objectPosition = `center ${posicion}%`;
 
-      const removeBtn = document.createElement("button");
-      removeBtn.className = "note-header-remove";
-      removeBtn.innerHTML = `${svgIcon("i-x")}Quitar cabecera`;
-      removeBtn.addEventListener("click", async () => {
-        const updated = await api(`/pages/${page.id}/header-image`, { method: "DELETE" });
-        page.header_image_path = updated.header_image_path;
-        renderHeaderImage();
+    const barra = crearEl("div", "note-cover-actions");
+    const boton = (texto, alPulsar) => {
+      const b = crearEl("button", "note-cover-btn", texto);
+      b.type = "button";
+      b.addEventListener("click", alPulsar);
+      return b;
+    };
+    const cambiar = boton("Cambiar portada", () => fileInput.click());
+    const quitar = boton("Quitar", async () => {
+      const updated = await api(`/pages/${page.id}/header-image`, { method: "DELETE" });
+      page.header_image_path = updated.header_image_path;
+      page.header_position = null;
+      renderHeaderImage();
+    });
+    const recolocar = boton("Recolocar", () => empezarARecolocar());
+    barra.append(cambiar, recolocar, quitar);
+
+    function empezarARecolocar() {
+      const inicial = posicion;
+      headerWrap.classList.add("is-repositioning");
+      const aviso = crearEl("div", "note-cover-hint", "Arrastra la imagen para encuadrarla");
+      const guardar = boton("Guardar posición", async () => {
+        terminar();
+        try {
+          const updated = await api(`/pages/${page.id}/header-image/position`, {
+            method: "PUT",
+            body: JSON.stringify({ position: Math.round(posicion) }),
+          });
+          page.header_position = updated.header_position;
+        } catch (e) {
+          reportError("No se pudo guardar la posición de la portada", e);
+        }
       });
-
-      headerWrap.append(img, removeBtn);
-    } else {
-      const addBtn = document.createElement("button");
-      addBtn.className = "btn";
-      addBtn.innerHTML = `${svgIcon("i-plus")}Imagen de cabecera`;
-      addBtn.addEventListener("click", () => fileInput.click());
-      headerWrap.appendChild(addBtn);
+      guardar.classList.add("is-primary");
+      const cancelar = boton("Cancelar", () => {
+        posicion = inicial;
+        img.style.objectPosition = `center ${posicion}%`;
+        terminar();
+      });
+      barra.replaceChildren(cancelar, guardar);
+      headerWrap.append(aviso);
+      let arrastre = null;
+      const abajo = (e) => {
+        arrastre = { y: e.clientY, pos: posicion };
+        img.setPointerCapture?.(e.pointerId);
+        e.preventDefault();
+      };
+      const mover = (e) => {
+        if (!arrastre) return;
+        // Arrastrar hacia abajo enseña la parte de arriba (como en Notion).
+        const alto = img.naturalHeight && img.naturalWidth
+          ? Math.max(1, (img.clientWidth / img.naturalWidth) * img.naturalHeight - img.clientHeight)
+          : img.clientHeight;
+        posicion = Math.max(0, Math.min(100, arrastre.pos - ((e.clientY - arrastre.y) / alto) * 100));
+        img.style.objectPosition = `center ${posicion}%`;
+      };
+      const arriba = () => { arrastre = null; };
+      img.addEventListener("pointerdown", abajo);
+      img.addEventListener("pointermove", mover);
+      img.addEventListener("pointerup", arriba);
+      img.addEventListener("pointercancel", arriba);
+      function terminar() {
+        img.removeEventListener("pointerdown", abajo);
+        img.removeEventListener("pointermove", mover);
+        img.removeEventListener("pointerup", arriba);
+        img.removeEventListener("pointercancel", arriba);
+        aviso.remove();
+        headerWrap.classList.remove("is-repositioning");
+        barra.replaceChildren(cambiar, recolocar, quitar);
+      }
     }
+
+    headerWrap.append(img, barra);
   }
 
   fileInput.addEventListener("change", async () => {
@@ -5185,31 +5392,63 @@ function renderNote(page, backlinks) {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
       page.header_image_path = data.header_image_path;
+      page.header_position = data.header_position ?? null;
       renderHeaderImage();
     } catch (e) {
       alert("Error al subir la imagen: " + e.message);
     }
   });
 
-  renderHeaderImage();
-
-  // ---- icono + título ----
+  // ---- bloque de cabecera: acciones, icono, título, autor y descripción ----
+  // Todo va en una columna que empieza donde empieza el texto del cuerpo.
+  const head = document.createElement("div");
+  head.className = "note-head";
   const titleRow = document.createElement("div");
   titleRow.className = "note-title-row";
 
   const iconBtn = document.createElement("button");
   iconBtn.type = "button";
   iconBtn.className = "note-icon-btn";
-  paintPageIcon(iconBtn, "note", page.icon, "icon-20");
   iconBtn.title = "Cambiar icono";
   iconBtn.setAttribute("aria-label", "Cambiar icono de la página");
-  iconBtn.addEventListener("click", () => {
-    openEmojiPicker(iconBtn, (emoji) => {
-      page.icon = emoji;
-      paintPageIcon(iconBtn, "note", emoji, "icon-20");
-      scheduleSave();
-    });
+  const ponerIcono = (emoji) => {
+    page.icon = emoji;
+    pintarIconoDeNota();
+    scheduleSave();
+  };
+  iconBtn.addEventListener("click", () => openEmojiPicker(iconBtn, ponerIcono));
+
+  // Lo que se puede añadir, encima del título y solo al pasar el ratón.
+  const accionesCabecera = crearEl("div", "note-head-actions");
+  const accion = (icono, texto, alPulsar) => {
+    const b = crearEl("button", "note-head-action");
+    b.type = "button";
+    b.innerHTML = svgIcon(icono);
+    b.append(texto);
+    b.addEventListener("click", alPulsar);
+    return b;
+  };
+  const anadirIcono = accion("i-file-text", "Añadir icono", () => openEmojiPicker(anadirIcono, ponerIcono));
+  const quitarIcono = accion("i-x", "Quitar icono", () => ponerIcono(DEFAULT_ICON));
+  const anadirPortada = accion("i-plus", "Añadir portada", () => fileInput.click());
+  const anadirDescripcion = accion("i-pencil", "Añadir descripción", () => {
+    head.classList.add("show-description");
+    descInput.focus();
   });
+  accionesCabecera.append(anadirIcono, anadirPortada, anadirDescripcion, quitarIcono);
+
+  function pintarIconoDeNota() {
+    const porDefecto = isDefaultIcon("note", page.icon);
+    iconBtn.hidden = porDefecto;
+    if (!porDefecto) iconBtn.textContent = page.icon;
+    head.classList.toggle("has-icon", !porDefecto);
+    anadirIcono.hidden = !porDefecto;
+    quitarIcono.hidden = porDefecto;
+  }
+  function pintarAccionesDeCabecera() {
+    anadirPortada.hidden = Boolean(page.header_image_path);
+    anadirDescripcion.hidden = Boolean(descInput?.value) || head.classList.contains("show-description");
+  }
 
   // El título es un <textarea> de una sola línea lógica y no un <input>
   // (P14): en un móvil de 375 px un título normal no cabe y el <input> lo
@@ -5232,7 +5471,7 @@ function renderNote(page, backlinks) {
     titleInput.style.height = `${titleInput.scrollHeight}px`;
   }
 
-  titleRow.append(iconBtn, titleInput);
+  titleRow.append(titleInput);
 
   // ---- meta (creador, obligatorio y de solo lectura -- se fija al crear) ----
   // El punto lleva el color de quien la creó, que viene resuelto en la página
@@ -5372,7 +5611,7 @@ function renderNote(page, backlinks) {
     }
     if (typeof fields.icon === "string" && fields.icon && fields.icon !== page.icon) {
       page.icon = fields.icon;
-      paintPageIcon(iconBtn, "note", fields.icon, "icon-20");
+      pintarIconoDeNota();
     }
     if (Number.isInteger(fields.version)) {
       page.version = fields.version;
@@ -5768,8 +6007,28 @@ function renderNote(page, backlinks) {
     topbar.prepend(miga);
   }
 
+  // Autor y última edición en la misma línea, discretos.
+  const editado = crearEl("span", "note-meta-edited");
+  const pintarEditado = () => {
+    editado.textContent = page.updated_at ? `Editado ${haceCuanto(page.updated_at)}` : "";
+  };
+  pintarEditado();
+  state.repaintAuthor = () => {
+    paintCreatedBy(meta, page.created_by, page.created_by_color, page.created_by_avatar);
+    meta.append(editado);
+  };
+  state.repaintAuthor();
+  descInput.addEventListener("input", pintarAccionesDeCabecera);
+  descInput.addEventListener("blur", () => {
+    if (!descInput.value) head.classList.remove("show-description");
+    pintarAccionesDeCabecera();
+  });
+  head.append(accionesCabecera, iconBtn, titleRow, meta, descInput);
+  pintarIconoDeNota();
+  renderHeaderImage();
+
   main.append(
-    topbar, headerWrap, fileInput, titleRow, meta, descInput,
+    topbar, headerWrap, fileInput, head,
     ...(panelFilaEl ? [panelFilaEl] : []),
     bodyMount,
   );

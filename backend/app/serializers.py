@@ -53,6 +53,7 @@ def serialize_page(
         created_by_color=_color_of(page.created_by, author_colors),
         created_by_avatar=(getattr(author_colors, "avatars", None) or {}).get(page.created_by or ""),
         header_image_path=page.header_image_path,
+        header_position=page.header_position,
         created_at=as_utc(page.created_at),
         updated_at=as_utc(page.updated_at),
         body_markdown=page.body_markdown,

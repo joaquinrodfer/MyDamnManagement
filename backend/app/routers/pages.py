@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, UploadFile
+from pydantic import BaseModel, Field
 
 from app import acl, audit, auth, export, notifications, schemas
 from app import workspaces as ws_mod
@@ -327,6 +328,23 @@ async def upload_header_image(
         # Sin `.md` (borrado por fuera) no hay dónde apuntar la cabecera: se
         # retira la imagen recién subida para no dejar un huérfano y se explica.
         (Path(settings.vault_path) / rel).unlink(missing_ok=True)
+        raise HTTPException(400, str(exc)) from exc
+    return serialize_page(page, repo.author_colors())
+
+
+class HeaderPosition(BaseModel):
+    position: int = Field(ge=0, le=100)
+
+
+@router.put("/{page_id}/header-image/position", response_model=schemas.PageRead)
+def put_header_position(page_id: uuid.UUID, payload: HeaderPosition, repo: Repository = Depends(get_repo)):
+    """Encuadre vertical de la imagen de cabecera (0 arriba, 100 abajo)."""
+    page = _get_or_404(repo, page_id)
+    if not page.header_image_path:
+        raise HTTPException(400, "La página no tiene imagen de cabecera")
+    try:
+        page = repo.set_header_position(page_id, payload.position)
+    except VaultError as exc:
         raise HTTPException(400, str(exc)) from exc
     return serialize_page(page, repo.author_colors())
 
