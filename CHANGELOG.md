@@ -2,6 +2,10 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Portadas genéricas
+- «Añadir portada» y «Cambiar portada» abren un selector con ocho portadas de degradado en los colores de la marca (Índigo, Ping, Noche, Aurora, Coral, Lavanda, Crepúsculo y Niebla) y, debajo, «Subir una imagen…».
+- Se sirven desde `frontend/covers/` (`/covers/<nombre>.svg`, sin sesión) y se ponen con `PUT /pages/{id}/header-image/preset`; elegir una borra la imagen subida que hubiera. Se pueden recolocar igual que una imagen.
+
 ## Cabecera de página y Ajustes
 - Cabecera de las páginas rehecha: icono grande encima del título (solo si tiene uno), título más grande, «Creado por · Editado hace…» en una línea y descripción debajo; todo alineado con el texto del cuerpo.
 - «Añadir icono», «Añadir portada», «Añadir descripción» y «Quitar icono» aparecen al pasar el ratón por la cabecera; la descripción vacía ya no ocupa sitio.

@@ -6124,6 +6124,32 @@
   dialog.settings-dialog .ws-card > summary { padding: 10px 0; }
   dialog.settings-dialog .ws-card[open] > summary { margin-bottom: 4px; }
   dialog.settings-dialog .ws-body { gap: 12px; padding: 10px 0 14px; }
+
+  /* ---------- selector de portada ---------- */
+  .cover-picker { width: min(420px, calc(100vw - 24px)); padding: 10px; }
+  .cover-picker-title { padding: 2px 4px 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); }
+  .cover-picker-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .cover-picker-item {
+    display: flex; flex-direction: column; gap: 4px; padding: 0; border: 0; background: none;
+    color: var(--ink-muted); font: inherit; font-size: 11.5px; cursor: pointer; text-align: left;
+  }
+  .cover-picker-item img {
+    width: 100%; height: 52px; object-fit: cover; border-radius: var(--radius-md); display: block;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+    outline: 2px solid transparent; outline-offset: 2px;
+    transition: transform var(--dur-fast) ease, outline-color var(--dur-fast) ease;
+  }
+  .cover-picker-item:hover img { transform: translateY(-1px); }
+  .cover-picker-item:hover span { color: var(--ink); }
+  .cover-picker-item[aria-pressed="true"] img, .cover-picker-item:focus-visible img { outline-color: var(--accent); }
+  .cover-picker-item:focus-visible { outline: none; }
+  .cover-picker-upload {
+    display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 10px; padding: 8px 10px;
+    border: 0; border-top: 1px solid var(--panel-border); border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    background: none; color: var(--ink); font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .cover-picker-upload:hover { background: var(--menu-hover); }
+  .cover-picker-upload .svg-icon { width: 14px; height: 14px; transform: rotate(180deg); color: var(--ink-muted); }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
