@@ -41,9 +41,15 @@ _CSS = """
     --accent-contrast: #ffffff;
     --down: #f26464;
     --down-bg: rgba(242, 100, 100, 0.15);
-    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
       "Helvetica Neue", Arial, sans-serif;
   }
+  @font-face { font-family: "Inter"; font-style: normal; font-display: swap; font-weight: 100 900;
+    src: url(/fonts/inter-latin-wght-normal.woff2) format("woff2-variations");
+    unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+2000-206F,U+20AC,U+2122; }
+  @font-face { font-family: "Inter"; font-style: normal; font-display: swap; font-weight: 100 900;
+    src: url(/fonts/inter-latin-ext-wght-normal.woff2) format("woff2-variations");
+    unicode-range: U+0100-02BA,U+1E00-1E9F,U+A720-A7FF; }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
@@ -62,8 +68,9 @@ _CSS = """
     max-width: 380px;
     background: var(--panel);
     border: 1px solid var(--panel-border);
-    border-radius: 12px;
-    padding: 28px;
+    border-radius: 16px;
+    padding: 32px;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 24px 60px -20px rgba(0, 0, 0, 0.7);
   }
   h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
   p.sub { margin: 0 0 22px; color: var(--ink-muted); font-size: 13px; }
@@ -79,23 +86,31 @@ _CSS = """
     width: 100%;
     margin-bottom: 16px;
     padding: 9px 11px;
-    background: var(--surface-elevated);
-    border: 1px solid var(--border-input);
-    border-radius: 7px;
+    background: #11131a;
+    border: 1px solid #343a4a;
+    border-radius: 8px;
     color: var(--ink);
     font: inherit;
+    transition: border-color .12s ease, box-shadow .12s ease;
   }
-  input:focus-visible, button:focus-visible {
+  input:hover { border-color: #4b5367; }
+  input:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.35);
+  }
+  button:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
   button {
     width: 100%;
     padding: 10px 12px;
-    background: var(--accent-btn);
+    background: linear-gradient(180deg, #6872d6, var(--accent-btn));
     color: var(--accent-contrast);
-    border: 0;
-    border-radius: 7px;
+    border: 1px solid #3d4699;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 1px 2px rgba(0, 0, 0, 0.25);
+    border-radius: 8px;
     font: inherit;
     font-weight: 600;
     cursor: pointer;
