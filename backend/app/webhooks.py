@@ -15,7 +15,7 @@ usuario: sin cuidado, sirve para tocar la red interna (SSRF). Por eso:
   o la de metadatos de la nube (`169.254.169.254`); y se conecta a la dirección
   ya comprobada (no se vuelve a resolver: no hay rebinding de DNS);
 - no se siguen redirecciones;
-- el cuerpo va **firmado**: `X-Noteping-Signature: sha256=` + HMAC-SHA256 de
+- el cuerpo va **firmado**: `X-Notemil-Signature: sha256=` + HMAC-SHA256 de
   `<marca de tiempo>.<cuerpo>` con el secreto del espacio, que se enseña **una
   sola vez** al crearlo y no se vuelve a leer.
 
@@ -184,6 +184,14 @@ def recent(conn: sqlite3.Connection, workspace_id: str, limit: int = 10) -> list
 # ------------------------------------------------------------------ encolar
 
 
+def cabeceras_antiguas(headers: dict) -> dict:
+    """Las mismas `X-Notemil-*` con el nombre de antes (`X-Noteping-*`).
+
+    Se mandan también para que los receptores configurados antes del cambio de
+    nombre sigan validando la firma sin tocar nada."""
+    return {k.replace("X-Notemil-", "X-Noteping-"): v for k, v in headers.items() if k.startswith("X-Notemil-")}
+
+
 def _sign(secret: str, timestamp: str, body: bytes) -> str:
     mac = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256)
     return "sha256=" + mac.hexdigest()
@@ -331,12 +339,13 @@ def deliver(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     ts = str(int(time.time()))
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "Noteping-Webhook/1",
-        "X-Noteping-Event": row["event"],
-        "X-Noteping-Delivery": row["id"],
-        "X-Noteping-Timestamp": ts,
-        "X-Noteping-Signature": _sign(cfg["secret"], ts, body),
+        "User-Agent": "Notemil-Webhook/1",
+        "X-Notemil-Event": row["event"],
+        "X-Notemil-Delivery": row["id"],
+        "X-Notemil-Timestamp": ts,
+        "X-Notemil-Signature": _sign(cfg["secret"], ts, body),
     }
+    headers.update(cabeceras_antiguas(headers))
     error = None
     try:
         status = post(cfg["url"], body, headers)

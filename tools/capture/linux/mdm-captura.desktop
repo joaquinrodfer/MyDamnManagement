@@ -11,16 +11,16 @@
 #
 # El atajo de teclado lo pone el escritorio, no la app. En GNOME:
 #   gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/']"
-#   gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ name 'Capturar en Noteping'
+#   gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ name 'Capturar en Notemil'
 #   gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ command "$HOME/.local/bin/captura.sh"
 #   gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/captura/ binding '<Control><Alt>n'
 # (los tres últimos van sobre el mismo esquema; si ya tenías atajos propios,
 #  añade la ruta a la lista del primero en vez de sustituirla).
 Type=Application
-Name=Capturar en Noteping
-Name[en]=Capture into Noteping
-Comment=Apunta algo en la bandeja de Noteping
-Comment[en]=Send a note to the Noteping inbox
+Name=Capturar en Notemil
+Name[en]=Capture into Notemil
+Comment=Apunta algo en la bandeja de Notemil
+Comment[en]=Send a note to the Notemil inbox
 Exec=/home/TU_USUARIO/.local/bin/captura.sh
 Icon=accessories-text-editor
 # El token no lo hereda un lanzador gráfico: expórtalo en ~/.profile (lo leen las

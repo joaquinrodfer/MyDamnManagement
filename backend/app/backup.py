@@ -42,7 +42,8 @@ log = logging.getLogger("app.backup")
 
 # Nombre de las copias programadas y descargadas. Es lo único que se sirve
 # desde `BACKUP_DIR`: el nombre se valida entero, nunca se une una ruta de fuera.
-FILE_RE = re.compile(r"noteping-copia-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar\.gz")
+# También se aceptan las de antes del cambio de nombre (`noteping-copia-…`).
+FILE_RE = re.compile(r"(?:notemil|noteping)-copia-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar\.gz")
 
 META_FREQUENCY = "backup_frequency"  # off | daily | weekly
 META_KEEP = "backup_keep"
@@ -61,7 +62,7 @@ def _now() -> datetime:
 
 
 def file_name(when: datetime | None = None) -> str:
-    return "noteping-copia-" + (when or _now()).strftime("%Y-%m-%dT%H-%M-%SZ") + ".tar.gz"
+    return "notemil-copia-" + (when or _now()).strftime("%Y-%m-%dT%H-%M-%SZ") + ".tar.gz"
 
 
 # --------------------------------------------------------------------------
@@ -119,7 +120,7 @@ def make_backup(dest_file: str, *, kind: str = "manual") -> dict:
                         tar.add(full, arcname="vault/" + os.path.relpath(full, vault))
                         files += 1
             manifest = {
-                "app": "Noteping",
+                "app": "Notemil",
                 "kind": kind,
                 "created_at": _now().isoformat(),
                 "vault_files": files,

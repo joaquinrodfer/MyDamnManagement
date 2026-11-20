@@ -116,7 +116,7 @@ def test_los_estaticos_del_panel_tambien_piden_sesion(client):
 def test_con_sesion_la_raiz_sirve_el_panel(client):
     respuesta = client.get("/", headers={"Accept": "text/html"})
     assert respuesta.status_code == 200
-    assert "Noteping" in respuesta.text
+    assert "Notemil" in respuesta.text
 
 
 def test_el_login_con_sesion_abierta_devuelve_al_panel(client):

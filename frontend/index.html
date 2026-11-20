@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Noteping</title>
+<title>Notemil</title>
 <link rel="icon" href="/favicon.ico" sizes="48x48" />
-<link rel="icon" href="/icons/noteping-mark.svg" type="image/svg+xml" />
-<link rel="apple-touch-icon" href="/icons/noteping-180.png" />
+<link rel="icon" href="/icons/notemil-mark.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/icons/notemil-180.png" />
 <!-- PWA (P13): instalable (en macOS, «Añadir al Dock» desde Chrome) con
      display: standalone. Sin service worker a propósito: la app vive de su
      servidor, así que no se promete funcionar sin conexión. -->
 <link rel="manifest" href="/manifest.webmanifest" />
 <meta name="theme-color" content="#0f1117" />
-<meta name="application-name" content="Noteping" />
-<meta name="apple-mobile-web-app-title" content="Noteping" />
+<meta name="application-name" content="Notemil" />
+<meta name="apple-mobile-web-app-title" content="Notemil" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <style>
   /* Inter (variable, autoalojada en /fonts; licencia SIL OFL en fonts/LICENSE-Inter.txt).
@@ -338,13 +338,13 @@
     padding: 0 12px;
     background: var(--bg);
   }
-  /* ---------- marca: Noteping ----------
+  /* ---------- marca: Notemil ----------
      Fuente de verdad: el kit de marca (`BRAND.md`). El símbolo es B2 (tile,
      N y el punto «ping», el único elemento coral) y va en línea, no en un
      <img>, para que use estos tokens y reaccione a `data-unread` (N1, el
      sonar). Fondo, panel, bordes y texto son los de la app; de la marca solo
      son estos cinco, y no cambian con el tema: sobre fondo claro el tile
-     oscuro va tal cual. El componente es `marcaNoteping()` de app.js. */
+     oscuro va tal cual. El componente es `marcaNotemil()` de app.js. */
   :root {
     --np-accent: #9AA2FF;        /* Trazo de la N; «ping» del nombre */
     --np-accent-strong: #5B63F0; /* «ping» del nombre sobre fondo claro */
@@ -543,8 +543,8 @@
   .backup-files li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--panel-border); }
   .backup-files a { color: var(--accent-ink); }
   .dialog-actions-start { justify-content: flex-start; flex-wrap: wrap; }
-  .brand-name-ping { color: var(--np-accent); }
-  html[data-theme="light"] .brand-name-ping { color: var(--np-accent-strong); }
+  .brand-name-acento { color: var(--np-accent); }
+  html[data-theme="light"] .brand-name-acento { color: var(--np-accent-strong); }
 
   /* ---------- quién eres (P11b) ---------- */
   /* Abajo del todo en la barra lateral, como el espacio de trabajo en Notion:
@@ -6203,7 +6203,7 @@
 
   <div class="layout">
     <aside id="sidebar-aside">
-      <div class="sidebar-brand" id="sidebar-brand"><span id="brand-mark"></span><span class="brand-name">Note<span class="brand-name-ping">ping</span></span><span class="sr-only" id="brand-unread"></span><button type="button" class="icon-btn bell-btn" id="btn-avisos" aria-haspopup="dialog" aria-expanded="false" aria-label="Avisos" title="Avisos"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-bell"/></svg><span class="bell-badge" id="avisos-badge" hidden></span></button></div>
+      <div class="sidebar-brand" id="sidebar-brand"><span id="brand-mark"></span><span class="brand-name">Note<span class="brand-name-acento">mil</span></span><span class="sr-only" id="brand-unread"></span><button type="button" class="icon-btn bell-btn" id="btn-avisos" aria-haspopup="dialog" aria-expanded="false" aria-label="Avisos" title="Avisos"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-bell"/></svg><span class="bell-badge" id="avisos-badge" hidden></span></button></div>
       <div class="workspace-switcher" id="workspace-switcher" hidden></div>
       <div class="sidebar-search">
         <input type="search" id="search-input" placeholder="Buscar…" />

@@ -1,4 +1,4 @@
-# Noteping (antes MyDamnManagement)
+# Notemil (antes Noteping y MyDamnManagement)
 
 ![Logo MyDamnManagement](public/MDMLogo.png)
 
@@ -696,7 +696,7 @@ Además del log de uvicorn está el de la app, con sus propios loggers `mdm.*` (
 
 ```bash
 docker compose -f docker-compose.prod.yml down            # sin -v
-mkdir restaurar && tar xzf noteping-copia-AAAA-MM-DDThh-mm-ssZ.tar.gz -C restaurar
+mkdir restaurar && tar xzf notemil-copia-AAAA-MM-DDThh-mm-ssZ.tar.gz -C restaurar
 cat restaurar/manifest.json                                # versión de esquema y recuentos
 # volcar restaurar/index.sqlite en el volumen mdm_data (como /data/index.sqlite, sin -wal ni -shm)
 # y restaurar/vault/ en el volumen mdm_vault (/data/vault)

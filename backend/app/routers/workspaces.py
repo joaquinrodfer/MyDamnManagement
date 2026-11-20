@@ -215,14 +215,16 @@ def test_webhook(
     import time as _time
 
     body = _json.dumps(webhooks.build_payload(
-        "ping", {"id": workspace_id, "name": ws_get["name"]}, "Prueba de Noteping: el webhook funciona.", {}
+        "ping", {"id": workspace_id, "name": ws_get["name"]}, "Prueba de Notemil: el webhook funciona.", {}
     ), ensure_ascii=False).encode()
     ts = str(int(_time.time()))
+    cabeceras = {
+        "Content-Type": "application/json", "User-Agent": "Notemil-Webhook/1", "X-Notemil-Event": "ping",
+        "X-Notemil-Timestamp": ts, "X-Notemil-Signature": webhooks._sign(cfg["secret"], ts, body),
+    }
+    cabeceras.update(webhooks.cabeceras_antiguas(cabeceras))
     try:
-        status = webhooks.post(cfg["url"], body, {
-            "Content-Type": "application/json", "User-Agent": "Noteping-Webhook/1", "X-Noteping-Event": "ping",
-            "X-Noteping-Timestamp": ts, "X-Noteping-Signature": webhooks._sign(cfg["secret"], ts, body),
-        })
+        status = webhooks.post(cfg["url"], body, cabeceras)
     except webhooks.WebhookError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": 200 <= status < 300, "status": status}
