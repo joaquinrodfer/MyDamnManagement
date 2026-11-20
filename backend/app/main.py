@@ -53,7 +53,7 @@ log = logging.getLogger("mdm.main")
 
 
 app = FastAPI(
-    title="Noteping API",
+    title="Notemil API",
     # `DOCS_ENABLED=0` apaga la documentación interactiva: `/docs`, `/redoc`
     # y `/openapi.json` dan 404 (ver `Settings.docs_enabled`). Con el ajuste
     # por defecto (encendido) el comportamiento es el de siempre.

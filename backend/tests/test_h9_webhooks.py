@@ -154,10 +154,13 @@ def test_una_tarea_nueva_se_entrega_firmada(client, receptor):
     finally:
         conn.close()
     ruta, cabeceras, cuerpo = receptor.recibidos[0]
-    assert ruta == "/hook" and cabeceras["X-Noteping-Event"] == "task.created"
+    assert ruta == "/hook" and cabeceras["X-Notemil-Event"] == "task.created"
     # La firma es la del secreto: HMAC(marca de tiempo + "." + cuerpo).
-    esperado = hmac.new(secreto.encode(), cabeceras["X-Noteping-Timestamp"].encode() + b"." + cuerpo, hashlib.sha256).hexdigest()
-    assert cabeceras["X-Noteping-Signature"] == f"sha256={esperado}"
+    esperado = hmac.new(secreto.encode(), cabeceras["X-Notemil-Timestamp"].encode() + b"." + cuerpo, hashlib.sha256).hexdigest()
+    assert cabeceras["X-Notemil-Signature"] == f"sha256={esperado}"
+    # compatibilidad con los receptores de antes del cambio de nombre
+    assert cabeceras["X-Noteping-Signature"] == cabeceras["X-Notemil-Signature"]
+    assert cabeceras["X-Noteping-Event"] == "task.created"
     datos = json.loads(cuerpo)
     # Compatible con Slack/Mattermost (text), Discord (content) y n8n (estructurado).
     assert datos["text"] == datos["content"] and "Maquetar" in datos["text"] and yo["display_name"] in datos["text"]

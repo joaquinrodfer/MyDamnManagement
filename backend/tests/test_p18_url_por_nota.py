@@ -77,7 +77,7 @@ def test_recargar_en_la_direccion_de_una_nota_sirve_el_panel(client):
     assert respuesta.status_code == 200
     assert respuesta.headers["content-type"].startswith("text/html")
     # El panel de verdad, no un 404 con el mismo tipo.
-    assert "Noteping" in respuesta.text
+    assert "Notemil" in respuesta.text
     assert 'id="main"' in respuesta.text
     # Y sin caché: la app que se carga es la de ahora, no la de hace un rato.
     assert respuesta.headers["cache-control"] == "no-cache"
@@ -96,7 +96,7 @@ def test_recargar_con_barra_final_tambien_sirve_el_panel(client):
 def test_mis_tareas_tambien_es_una_direccion_del_panel(client):
     respuesta = client.get("/mis-tareas", headers={"Accept": "text/html"})
     assert respuesta.status_code == 200
-    assert "Noteping" in respuesta.text
+    assert "Notemil" in respuesta.text
 
 
 def test_los_ficheros_del_panel_siguen_siendo_ficheros(client):

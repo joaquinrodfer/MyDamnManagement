@@ -1,4 +1,4 @@
-// Noteping — panel visual. Vanilla JS, sin build, sin dependencias
+// Notemil — panel visual. Vanilla JS, sin build, sin dependencias
 // propias -- la única excepción es el editor de notas (CodeMirror 6), que
 // vendorizamos ya compilado en /vendor/editor.bundle.js (ver
 // frontend/editor-src/). Habla directamente con la API del propio origen
@@ -910,12 +910,12 @@ function pintarSelectorDeEspacio() {
   if (caja) caja.hidden = true;
 }
 
-// ------------------------------------------------------------- marca: Noteping
+// ------------------------------------------------------------- marca: Notemil
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 /**
- * El símbolo de Noteping (B2), en línea para que use los tokens `--np-*`.
+ * El símbolo de Notemil (B2), en línea para que use los tokens `--np-*`.
  *
  * - `variante: "color"` (por defecto): tile, N y el punto coral.
  * - `variante: "mono"`: una sola tinta, `currentColor` (lo pinta el `color:`
@@ -926,7 +926,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  * Es decorativo (`aria-hidden`): el nombre va escrito al lado, y el «sin
  * leer» se dice con texto (ver `fijarMarcaSinLeer`).
  */
-function marcaNoteping({ variante = "color", tamano = 28, sinLeer = false } = {}) {
+function marcaNotemil({ variante = "color", tamano = 28, sinLeer = false } = {}) {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 64 64");
   svg.setAttribute("width", String(tamano));
@@ -952,7 +952,7 @@ function marcaNoteping({ variante = "color", tamano = 28, sinLeer = false } = {}
 /** La marca de la cabecera de la barra lateral, a 28 px. */
 function montarMarca() {
   const hueco = document.getElementById("brand-mark");
-  if (hueco) hueco.replaceWith(marcaNoteping({ tamano: 28 }));
+  if (hueco) hueco.replaceWith(marcaNotemil({ tamano: 28 }));
 }
 
 /**
@@ -1927,7 +1927,7 @@ document.getElementById("btn-backup-download")?.addEventListener("click", async 
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = /filename="?([^";]+)/.exec(res.headers.get("content-disposition") || "")?.[1] || "noteping-copia.tar.gz";
+    a.download = /filename="?([^";]+)/.exec(res.headers.get("content-disposition") || "")?.[1] || "notemil-copia.tar.gz";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -19341,7 +19341,7 @@ async function abrirDialogoDeTipo(database) {
     crearEl(
       "p",
       "dialog-note",
-      "Noteping usa estas columnas para calcular la carga del equipo. Puedes cambiar cuál hace de qué sin perder ningún dato.",
+      "Notemil usa estas columnas para calcular la carga del equipo. Puedes cambiar cuál hace de qué sin perder ningún dato.",
     ),
   );
   const columnas = database.schema_def || [];

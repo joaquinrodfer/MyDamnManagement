@@ -21,7 +21,7 @@ revócalo y crea otro.
 ## 1. Crear el atajo
 
 1. Abre **Atajos** (*Shortcuts*) → **+** (Nuevo atajo).
-2. Ponle nombre: **Capturar en Noteping**.
+2. Ponle nombre: **Capturar en Notemil**.
 3. Panel derecho → pestaña **Detalles del atajo** (el icono ⓘ / *Shortcut
    Details*):
    - **Recibir** (*Receive*): elige **Texto** (*Text*).
@@ -65,7 +65,7 @@ revócalo y crea otro.
 
 ### Acción 3 — «Mostrar notificación» (*Show Notification*)
 
-- Título: `Noteping`
+- Título: `Notemil`
 - Texto: `Capturado: ` y, a continuación, la variable **Valor del diccionario**
   de la acción 2 (así se ve el título real, con el sufijo ` (2)` si ya había
   una nota con ese nombre).

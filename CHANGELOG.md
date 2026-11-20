@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Notemil
+- La app pasa a llamarse **Notemil**: nombre en la barra lateral y la pantalla de entrada («Note» + «mil» en el acento), título, manifiesto e iconos (`/icons/notemil-*`), herramientas de captura, README y API.
+- Las copias nuevas se llaman `notemil-copia-…`; las `noteping-copia-…` anteriores se siguen listando y descargando.
+- Los webhooks mandan `X-Notemil-Event/Delivery/Timestamp/Signature` y, por compatibilidad, las mismas con el nombre de antes (`X-Noteping-*`).
+
 ## Portadas genéricas
 - «Añadir portada» y «Cambiar portada» abren un selector con ocho portadas de degradado en los colores de la marca (Índigo, Ping, Noche, Aurora, Coral, Lavanda, Crepúsculo y Niebla) y, debajo, «Subir una imagen…».
 - Se sirven desde `frontend/covers/` (`/covers/<nombre>.svg`, sin sesión) y se ponen con `PUT /pages/{id}/header-image/preset`; elegir una borra la imagen subida que hubiera. Se pueden recolocar igual que una imagen.
