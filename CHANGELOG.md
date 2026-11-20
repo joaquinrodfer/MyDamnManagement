@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Selección por rectángulo
+- Pulsar en el fondo de una página (el margen, el hueco bajo el último bloque, lo que sobra a la derecha de una línea o fuera del cuerpo) y arrastrar dibuja un rectángulo que marca los bloques que toca, como en el escritorio de Windows. Con Mayús se suma a lo marcado y con Ctrl/⌘ cambia el estado de lo que toca; Escape lo cancela.
+- La página se desplaza sola al llegar al borde. Al soltar, el foco va al editor: Supr, Ctrl+C o el clic derecho actúan sobre los bloques marcados.
+- Un clic sin arrastrar se comporta como antes (bajo el último bloque crea uno nuevo; en el resto deja el cursor).
+
 ## Notemil
 - La app pasa a llamarse **Notemil**: nombre en la barra lateral y la pantalla de entrada («Note» + «mil» en el acento), título, manifiesto e iconos (`/icons/notemil-*`), herramientas de captura, README y API.
 - Las copias nuevas se llaman `notemil-copia-…`; las `noteping-copia-…` anteriores se siguen listando y descargando.

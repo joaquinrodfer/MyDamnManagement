@@ -1998,6 +1998,21 @@
     user-select: none;
     white-space: nowrap;
   }
+  /* ---------- rectángulo de selección ----------
+     Arrastrar desde el fondo de la página (donde no hay texto) dibuja este
+     rectángulo y marca los bloques que toca (ver `beginMarquee` en
+     editor-src/entry.js). Mientras dura, nada se selecciona como texto. */
+  .np-marquee {
+    position: fixed;
+    z-index: 60;
+    pointer-events: none;
+    border: 1px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-radius: 3px;
+  }
+  html.np-marquee-on, html.np-marquee-on * { user-select: none !important; -webkit-user-select: none !important; }
+  html.np-marquee-on #main { cursor: default; }
+
   /* ---------- el bloque marcado ----------
      La marca es del BLOQUE, no del texto: fondo suave + barra en el margen
      izquierdo. Antes esto era una selección de CodeMirror sobre el rango del

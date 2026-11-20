@@ -6291,6 +6291,8 @@ function renderNote(page, backlinks) {
         }
       : createDatabaseInNote,
     renderDatabaseBlock: renderDatabaseEmbed,
+    // Arrastrar desde el fondo de la página marca bloques (rectángulo de selección).
+    selectionArea: document.getElementById("main"),
   });
   noteEditor = state.editor;
 
