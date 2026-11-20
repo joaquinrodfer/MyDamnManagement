@@ -146,3 +146,60 @@ def listing(conn: sqlite3.Connection, user: Any) -> list[dict[str, Any]]:
         })
     out.sort(key=lambda p: (not p["you"], p["display_name"].casefold()))
     return out
+
+
+def by_workspace(conn: sqlite3.Connection, user: Any, online_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """El panel de miembros (estilo Discord): los espacios que ve `user`, cada
+    uno con sus miembros —directos y por grupo— y si están en línea.
+
+    Los «Espacio de …» personales no salen: solo tienen a su dueño. Lo que se
+    sabe de cada conectado (estado, página que mira) sale de `online_list`, que
+    ya está filtrado por lo que `user` puede leer.
+    """
+    from app import auth  # import tardío
+
+    vivos = {p["id"]: p for p in online_list}
+    statuses = _statuses(conn)
+    out = []
+    for w in ws_mod.list_for(conn, user):
+        if w.get("personal_of"):
+            continue
+        ids = {
+            r[0]
+            for r in conn.execute(
+                "SELECT m.subject_id FROM workspace_members m WHERE m.workspace_id = ? AND m.subject_type = 'user'"
+                " UNION SELECT gm.user_id FROM workspace_members m JOIN group_members gm ON gm.group_id = m.subject_id"
+                " WHERE m.workspace_id = ? AND m.subject_type = 'group'",
+                (w["id"], w["id"]),
+            )
+        }
+        miembros = []
+        for uid in ids:
+            if uid in vivos:
+                p = dict(vivos[uid])
+                p["online"] = True
+                p["role"] = ws_mod.member_role(conn, uid, w["id"])
+                miembros.append(p)
+                continue
+            row = conn.execute(
+                "SELECT id, username, display_name, color, avatar FROM users WHERE id = ?", (uid,)
+            ).fetchone()
+            if row is None:
+                continue
+            st = statuses.get(uid) or {}
+            miembros.append({
+                "id": uid,
+                "display_name": row["display_name"],
+                "username": row["username"],
+                "color": row["color"],
+                "avatar": auth.avatar_of(row),
+                "status": st.get("status", "available"),
+                "status_text": st.get("text", ""),
+                "viewing": None,
+                "you": uid == str(user.id),
+                "online": False,
+                "role": ws_mod.member_role(conn, uid, w["id"]),
+            })
+        miembros.sort(key=lambda p: (not p["online"], p["display_name"].casefold()))
+        out.append({"id": w["id"], "name": w["name"], "icon": w["icon"], "members": miembros})
+    return out

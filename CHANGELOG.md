@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Panel de miembros (derecha, estilo Discord)
+- Nuevo panel a la derecha con la gente de cada espacio compartido, agrupada por espacio (plegable), conectados primero, con su estado y la página que miran; los desconectados, atenuados. Pulsar a alguien que mira una página la abre.
+- Abajo del panel, tú: tu avatar con el punto de estado, tu estado actual y el menú con Disponible / En foco / En reunión / Otro estado, Ajustes y Cerrar sesión (antes estaba abajo a la izquierda).
+- Se muestra u oculta con el botón de la cabecera, arriba a la derecha (se recuerda); en pantallas de menos de 1100 px flota encima y se cierra al pulsar fuera o con Esc.
+- `GET /presence` devuelve además `workspaces`: cada espacio que ves (sin los personales) con sus miembros, directos y por grupo, y si están en línea.
+
 ## Enlaces con ruta y vista de lista
 - Selector de «/page» y «/base»: cada página sale con su icono, su título y debajo la ruta completa empezando por el espacio (con su icono), más un candado si es privada. También se puede buscar por el nombre del espacio.
 - Vista de lista: título con icono a la izquierda y propiedades a la derecha sin el «Nombre:» delante; las fechas como «24 nov» en fichas.

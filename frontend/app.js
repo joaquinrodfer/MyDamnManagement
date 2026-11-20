@@ -3503,35 +3503,114 @@ function textoDePresencia(p) {
   return partes.join(" · ");
 }
 
+const GRUPOS_DE_MIEMBROS_KEY = "mdm_members_groups";
+
+function gruposPlegados() {
+  try {
+    return JSON.parse(localStorage.getItem(GRUPOS_DE_MIEMBROS_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+/** Lo que se lee bajo el nombre de alguien: su estado (si no es «disponible»),
+ * la página que mira (si se puede ver) o «Desconectado». */
+function subtituloDeMiembro(p) {
+  if (!p.online) return "Desconectado";
+  if (p.status === "custom" && p.status_text) return p.status_text;
+  if (p.status !== "available") return ESTADOS_DE_PRESENCIA[p.status] || "";
+  if (p.you) return "Disponible";
+  return p.viewing ? `Viendo ${p.viewing.title}` : "En línea";
+}
+
+function filaDeMiembro(p) {
+  const fila = crearEl(p.viewing && !p.you ? "button" : "div", `member${p.online ? "" : " is-offline"}`);
+  if (fila.tagName === "BUTTON") {
+    fila.type = "button";
+    fila.addEventListener("click", () => navigateToPage(p.viewing.page_id));
+  }
+  fila.setAttribute("role", "listitem");
+  const envoltorio = crearEl("span", "member-av-wrap");
+  const av = crearEl("span", "user-avatar");
+  const img = avatarImg(p.avatar, "");
+  if (img) {
+    av.classList.add("has-img");
+    av.append(img);
+  } else {
+    av.style.background = p.color || "var(--ink-muted)";
+    av.textContent = (p.display_name || "?").trim().charAt(0).toUpperCase();
+  }
+  const punto = crearEl("span", "member-dot");
+  punto.dataset.status = p.online ? p.status : "offline";
+  envoltorio.append(av, punto);
+  const texto = crearEl("span", "member-text");
+  const nombre = crearEl("span", "member-name", p.display_name);
+  if (p.you) nombre.append(crearEl("small", "", "tú"));
+  const sub = subtituloDeMiembro(p);
+  texto.append(nombre, crearEl("span", "member-sub", sub));
+  fila.append(envoltorio, texto);
+  fila.title = `${p.display_name} (@${p.username}) · ${sub}`;
+  return fila;
+}
+
 function pintarPresencia(datos) {
-  const caja = document.getElementById("presence-strip");
-  if (!caja) return;
-  const otros = (datos.online || []).filter((p) => !p.you);
-  caja.hidden = otros.length === 0;
-  caja.replaceChildren(
-    ...otros.slice(0, 10).map((p) => {
-      const av = crearEl("span", `presence-av presence-av--${p.status}`);
-      av.setAttribute("role", "listitem");
-      av.tabIndex = 0;
-      const texto = textoDePresencia(p);
-      av.title = texto;
-      av.setAttribute("aria-label", texto);
-      const img = avatarImg(p.avatar, "");
-      if (img) av.append(img);
-      else av.append(p.display_name.slice(0, 1).toUpperCase());
-      return av;
-    }),
-  );
-  // Mi estado, marcado en el menú de la cuenta.
+  const lista = document.getElementById("members-list");
+  if (lista) {
+    const plegados = gruposPlegados();
+    const espacios = datos.workspaces || [];
+    const conectados = new Set(espacios.flatMap((w) => w.members.filter((m) => m.online && !m.you).map((m) => m.id)));
+    const total = document.getElementById("members-online");
+    if (total) total.textContent = conectados.size ? `${conectados.size} más en línea` : "";
+    lista.replaceChildren();
+    if (!espacios.length) {
+      lista.append(crearEl("p", "members-empty", "Aquí saldrá la gente de tus espacios compartidos y quién está conectado."));
+    }
+    for (const w of espacios) {
+      const grupo = crearEl("section", "members-group");
+      const cab = crearEl("button", "members-group-head");
+      cab.type = "button";
+      const abierto = !plegados[w.id];
+      cab.setAttribute("aria-expanded", String(abierto));
+      cab.insertAdjacentHTML("beforeend", svgIcon("i-chevron-down"));
+      const enLinea = w.members.filter((m) => m.online).length;
+      cab.append(
+        iconoDeEspacio(w),
+        crearEl("span", "members-group-name", w.name),
+        crearEl("span", "members-group-count", `${enLinea}/${w.members.length}`),
+      );
+      cab.title = `${w.name}: ${enLinea} de ${w.members.length} en línea`;
+      const cuerpo = crearEl("div", "members-group-body");
+      cuerpo.setAttribute("role", "list");
+      cuerpo.hidden = !abierto;
+      for (const m of w.members) cuerpo.append(filaDeMiembro(m));
+      cab.addEventListener("click", () => {
+        const p = gruposPlegados();
+        cuerpo.hidden = !cuerpo.hidden;
+        cab.setAttribute("aria-expanded", String(!cuerpo.hidden));
+        if (cuerpo.hidden) p[w.id] = 1;
+        else delete p[w.id];
+        try {
+          localStorage.setItem(GRUPOS_DE_MIEMBROS_KEY, JSON.stringify(p));
+        } catch {
+          /* sin almacenamiento: solo dura esta visita */
+        }
+      });
+      grupo.append(cab, cuerpo);
+      lista.append(grupo);
+    }
+  }
+  // Mi estado: en el menú de la cuenta y bajo mi nombre.
   const mio = datos.me?.status || "available";
+  const textoMio = mio === "custom" ? datos.me.text : ESTADOS_DE_PRESENCIA[mio] || "Disponible";
   document.querySelectorAll("#user-menu [data-status]").forEach((b) => {
     b.setAttribute("aria-checked", String(b.dataset.status === mio));
   });
   const etiqueta = document.getElementById("user-status-label");
-  if (etiqueta) {
-    etiqueta.textContent =
-      mio === "custom" ? `Tu estado: ${datos.me.text}` : `Tu estado: ${ESTADOS_DE_PRESENCIA[mio] || "Disponible"}`;
-  }
+  if (etiqueta) etiqueta.textContent = "Tu estado";
+  const punto = document.getElementById("user-chip-dot");
+  if (punto) punto.dataset.status = mio;
+  const linea = document.getElementById("user-chip-status");
+  if (linea) linea.textContent = textoMio;
 }
 
 async function cargarPresencia() {
@@ -19883,6 +19962,68 @@ function sidebarOculta() {
 document.getElementById("btn-toggle-sidebar").addEventListener("click", () => {
   if (esMovil()) return setCajonAbierto(!cajonAbierto());
   setSidebarCollapsed(!sidebarOculta(), { animar: true });
+});
+
+// ------------------------------------------ panel de miembros (derecha)
+// Se pliega y despliega con el botón de la cabecera, igual que la barra
+// izquierda. En pantalla ancha se recuerda; en estrecha flota encima y empieza
+// cerrado (no hay sitio para tres columnas).
+const MEMBERS_COLLAPSED_KEY = "mdm_members_collapsed";
+const panelEstrecho = window.matchMedia("(max-width: 1100px)");
+const botonDeMiembros = document.getElementById("btn-toggle-members");
+let miembrosSaliendo = null;
+
+function miembrosOcultos() {
+  return layoutEl.classList.contains("members-collapsed") || layoutEl.classList.contains("members-leaving");
+}
+
+function setMiembrosOcultos(ocultos, { animar = false, recordar = true } = {}) {
+  if (recordar && !panelEstrecho.matches) {
+    try {
+      localStorage.setItem(MEMBERS_COLLAPSED_KEY, ocultos ? "1" : "0");
+    } catch {
+      /* sin almacenamiento */
+    }
+  }
+  clearTimeout(miembrosSaliendo);
+  layoutEl.classList.remove("members-entering", "members-leaving");
+  botonDeMiembros?.setAttribute("aria-expanded", String(!ocultos));
+  const scrim = document.getElementById("members-scrim");
+  if (scrim) scrim.hidden = ocultos || !panelEstrecho.matches;
+  if (!animar || sinMovimiento.matches) {
+    layoutEl.classList.toggle("members-collapsed", ocultos);
+    return;
+  }
+  if (!ocultos) {
+    layoutEl.classList.remove("members-collapsed");
+    layoutEl.classList.add("members-entering");
+    miembrosSaliendo = setTimeout(() => layoutEl.classList.remove("members-entering"), 220);
+    return;
+  }
+  layoutEl.classList.add("members-leaving");
+  miembrosSaliendo = setTimeout(() => {
+    layoutEl.classList.remove("members-leaving");
+    layoutEl.classList.add("members-collapsed");
+  }, 130);
+}
+
+function estadoInicialDeMiembros() {
+  let guardado = null;
+  try {
+    guardado = localStorage.getItem(MEMBERS_COLLAPSED_KEY);
+  } catch {
+    /* nada */
+  }
+  setMiembrosOcultos(panelEstrecho.matches ? true : guardado === "1", { recordar: false });
+}
+estadoInicialDeMiembros();
+panelEstrecho.addEventListener("change", estadoInicialDeMiembros);
+botonDeMiembros?.addEventListener("click", () => setMiembrosOcultos(!miembrosOcultos(), { animar: true }));
+document.getElementById("members-scrim")?.addEventListener("click", () => setMiembrosOcultos(true, { animar: true }));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && panelEstrecho.matches && !miembrosOcultos() && document.getElementById("user-menu")?.hidden !== false) {
+    setMiembrosOcultos(true, { animar: true });
+  }
 });
 
 // ------------------------------------- asomar la barra plegada (como Notion)

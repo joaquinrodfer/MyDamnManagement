@@ -66,3 +66,24 @@ def test_estado_manual(client, cierra):
     # Y salir quita a alguien de la lista.
     ana.post("/presence/leave")
     assert ana.get("/presence").json()["online"] == []
+
+
+def test_panel_de_miembros_por_espacio(client, cierra):
+    ws = client.post("/workspaces", json={"name": "Otro"}).json()["id"]
+    ana, u = _sesion(client, "anita")
+    solo, v = _sesion(client, "solitario", workspaces=[{"id": ws, "role": "editor"}])
+    cierra += [ana, solo]
+    ana.post("/presence/heartbeat", json={})
+    ana.put("/presence/status", json={"status": "meeting"})
+    # Anita ve sus espacios compartidos (no los personales) con sus miembros,
+    # conectados o no; al solitario no lo ve porque no comparten espacio.
+    espacios = ana.get("/presence").json()["workspaces"]
+    assert all(not e["name"].startswith("Espacio de") for e in espacios)
+    general = next(e for e in espacios if e["name"] == "General")
+    miembros = {m["id"]: m for m in general["members"]}
+    assert miembros[u["id"]]["online"] is True and miembros[u["id"]]["status"] == "meeting" and miembros[u["id"]]["you"]
+    assert v["id"] not in miembros
+    assert all(e["name"] != "Otro" for e in espacios)
+    # El administrador sí ve «Otro», con el solitario desconectado.
+    otro = next(e for e in client.get("/presence").json()["workspaces"] if e["name"] == "Otro")
+    assert {m["id"]: m["online"] for m in otro["members"]}[v["id"]] is False
