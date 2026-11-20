@@ -43,6 +43,7 @@ const state = {
   inbox: { dir: "Bandeja", count: 0, pages: [] }, // bandeja de capturas (P13), de GET /inbox
   inboxIds: new Set(), // ids de esa bandeja: el árbol no las repite
   myTasks: { count: 0, today: null, counts: { overdue: 0, today: 0 }, tasks: [], closed_values: [] }, // «Mis tareas», de GET /my-tasks
+  pins: [], // las páginas fijadas de quien usa la app, de GET /pins
 };
 
 // ---------------------------------------------------------------- helpers
@@ -2421,6 +2422,134 @@ async function loadInbox() {
   paintInbox();
 }
 
+// ------------------------------------------------------------- fijadas
+// Las páginas que cada quien fija arriba del panel izquierdo. Viven en el
+// servidor (`/pins`, índice v21), no en este navegador: se ven igual en
+// cualquier equipo. Solo salen las que sigues pudiendo ver.
+
+/** Pide las fijadas y repinta la sección. La llama `loadTree()`. */
+async function loadPins() {
+  try {
+    state.pins = await api("/pins");
+  } catch (e) {
+    if (e?.status === 401) return;
+    state.pins = state.pins || [];
+  }
+  paintPins();
+}
+
+function estaFijada(pageId) {
+  return (state.pins || []).some((p) => p.id === String(pageId));
+}
+
+/** Fija o quita una página y repinta. */
+async function alternarFijada(pageId) {
+  const fijada = estaFijada(pageId);
+  try {
+    state.pins = await api(`/pins/${pageId}`, { method: fijada ? "DELETE" : "PUT" });
+    paintPins();
+    showError(fijada ? "Quitada de Fijadas" : "Fijada en el panel", "info");
+  } catch (e) {
+    reportError(fijada ? "No se pudo quitar de Fijadas" : "No se pudo fijar la página", e);
+  }
+}
+
+/** Ítem del menú «⋯» de una página o base. */
+function itemDeFijar(pageId) {
+  const fijada = estaFijada(pageId);
+  return itemDeColumna(fijada ? "Quitar de Fijadas" : "Fijar en el panel", {
+    icono: svgIcon("i-pin"),
+    alElegir: () => {
+      cerrarPanelDeColumna();
+      alternarFijada(pageId);
+    },
+  });
+}
+
+let pinArrastrada = null;
+
+function paintPins() {
+  const section = document.getElementById("pins-section");
+  const list = document.getElementById("pins-list");
+  if (!section || !list) return;
+  const pins = state.pins || [];
+  section.hidden = pins.length === 0;
+  list.textContent = "";
+  for (const pin of pins) {
+    const navId = pin.type === "database" ? pin.database_id : pin.id;
+    const row = crearEl("div", "tree-row pin-row");
+    row.dataset.id = navId;
+    row.dataset.pinId = pin.id;
+    row.setAttribute("role", "listitem");
+    row.tabIndex = 0;
+    row.title = pin.title;
+    if (state.current && String(state.current.id) === String(navId)) row.classList.add("active");
+    const icon = crearEl("span", "type-icon");
+    paintPageIcon(icon, pin.type, pin.icon);
+    row.append(icon, crearEl("span", "tree-label", pin.title || "Sin título"));
+    const off = crearEl("button", "pin-off");
+    off.type = "button";
+    off.title = "Quitar de Fijadas";
+    off.setAttribute("aria-label", `Quitar «${pin.title}» de Fijadas`);
+    off.innerHTML = svgIcon("i-x");
+    off.addEventListener("click", (e) => {
+      e.stopPropagation();
+      alternarFijada(pin.id);
+    });
+    row.append(off);
+    const abrir = () => (pin.type === "database" ? goTo("database", pin.database_id) : goTo("note", pin.id));
+    row.addEventListener("click", abrir);
+    row.addEventListener("keydown", (e) => {
+      if (e.target === row && (e.key === "Enter" || e.key === " ")) {
+        e.preventDefault();
+        abrir();
+      }
+    });
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      alternarFijada(pin.id);
+    });
+    // Reordenar arrastrando dentro de la sección.
+    row.draggable = true;
+    row.addEventListener("dragstart", (e) => {
+      pinArrastrada = pin.id;
+      row.classList.add("is-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", pin.id);
+    });
+    row.addEventListener("dragend", () => {
+      pinArrastrada = null;
+      row.classList.remove("is-dragging");
+      list.querySelectorAll(".drop-before,.drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+    });
+    row.addEventListener("dragover", (e) => {
+      if (!pinArrastrada || pinArrastrada === pin.id) return;
+      e.preventDefault();
+      const r = row.getBoundingClientRect();
+      const antes = e.clientY < r.top + r.height / 2;
+      row.classList.toggle("drop-before", antes);
+      row.classList.toggle("drop-after", !antes);
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after"));
+    row.addEventListener("drop", async (e) => {
+      if (!pinArrastrada || pinArrastrada === pin.id) return;
+      e.preventDefault();
+      const antes = row.classList.contains("drop-before");
+      row.classList.remove("drop-before", "drop-after");
+      const ids = (state.pins || []).map((p) => p.id).filter((id) => id !== pinArrastrada);
+      const i = ids.indexOf(pin.id) + (antes ? 0 : 1);
+      ids.splice(i, 0, pinArrastrada);
+      try {
+        state.pins = await api("/pins", { method: "PUT", body: JSON.stringify({ ids }) });
+        paintPins();
+      } catch (err) {
+        reportError("No se pudo reordenar Fijadas", err);
+      }
+    });
+    list.append(row);
+  }
+}
+
 function paintInbox() {
   const section = document.getElementById("inbox-section");
   const list = document.getElementById("inbox-list");
@@ -4510,6 +4639,7 @@ async function loadTree() {
     // llega por aquí y el contador de la barra tiene que decir la verdad.
     await loadInbox();
     await loadMyTasks();
+    await loadPins();
     const tree = await api("/pages/tree");
     state.pagesById.clear();
     indexTree(tree);
@@ -4966,7 +5096,13 @@ function renderTreeNode(node, depth = 1) {
     // varias páginas seleccionadas a la vez sería ambiguo bajo cuál crearla.
     if (items.length === 1) {
       sections.push({
-        items: [{ label: "Nueva subpágina", onClick: () => createSubpage(items[0]) }],
+        items: [
+          { label: "Nueva subpágina", onClick: () => createSubpage(items[0]) },
+          {
+            label: estaFijada(items[0].id) ? "Quitar de Fijadas" : "Fijar en el panel",
+            onClick: () => alternarFijada(items[0].id),
+          },
+        ],
       });
     }
     if (items.length === 1) {
@@ -5641,6 +5777,7 @@ function renderNote(page, backlinks) {
         },
       }),
       itemDeAvisos(menuBtn, page.id),
+      itemDeFijar(page.id),
       backTitle,
       backList,
     );
@@ -9009,6 +9146,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       }),
     );
     menu.appendChild(itemDeAvisos(menuBtn, database.page_id || database.id));
+    menu.appendChild(itemDeFijar(database.page_id || database.id));
 
     menu.appendChild(separadorDeMenu());
     if (activeView) {
