@@ -42,9 +42,11 @@ def leave(user: auth.User = Depends(get_current_user)):
 
 @router.get("/presence")
 def get_presence(repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)):
+    online = presence.listing(repo.conn, user)
     return {
         "me": presence.get_status(repo.conn, str(user.id)),
-        "online": presence.listing(repo.conn, user),
+        "online": online,
+        "workspaces": presence.by_workspace(repo.conn, user, online),
     }
 
 
