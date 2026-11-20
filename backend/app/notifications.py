@@ -335,6 +335,9 @@ class DeadlineWorker(threading.Thread):
             try:
                 creados = scan_deadlines(conn)
                 purge_old(conn)
+                from app import activity  # la actividad del inicio se poda con lo mismo
+
+                activity.purge_old(conn)
                 return creados
             finally:
                 conn.close()

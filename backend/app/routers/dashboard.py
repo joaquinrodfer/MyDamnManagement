@@ -2,7 +2,8 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, Depends
 
-from app import acl, auth, mytasks, notifications
+from app import acl, activity, auth, mytasks, notifications, workload
+from app.due import server_today
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
 from app.serializers import as_utc
@@ -17,6 +18,7 @@ NEAR_FUTURE_DAYS = 30
 
 RECENT_PAGES_LIMIT = 8
 NOTIFICATIONS_LIMIT = 5
+ACTIVITY_LIMIT = 12
 UPCOMING_DATES_LIMIT = 10
 
 
@@ -88,8 +90,49 @@ def get_dashboard(repo: Repository = Depends(get_repo), user: auth.User = Depend
         # regla de vencidas del servidor) y lo último que me ha llegado.
         "tasks": mytasks.my_tasks(repo.conn, user.id, acl.visible_ids(repo.conn, user, repo.workspace_id)),
         "notifications": notifications.list_for(repo.conn, str(user.id), unread_only=True, limit=NOTIFICATIONS_LIMIT),
+        # Inicio 2.0 (2/2): lo que han hecho otros en mis espacios y mi semana.
+        "activity": activity.recent(repo.conn, user.id, acl.visible_ids(repo.conn, user), ACTIVITY_LIMIT),
+        "week": _mi_semana(repo, user),
         "mentions_unread": repo.conn.execute(
             "SELECT count(*) FROM notifications WHERE user_id = ? AND is_read = 0 AND type = 'mention'",
             (str(user.id),),
         ).fetchone()[0],
     }
+
+
+def _mi_semana(repo: Repository, user: auth.User) -> dict:
+    """Mis horas de esta semana frente a mi capacidad (de las bases de Proyectos
+    y de Tareas, con el mismo cálculo que «Carga del equipo»).
+
+    `team` solo para quien puede ver la carga del equipo (administrador o
+    `can_view_global_workload`): una fila por persona, sin detalle de tareas.
+    Lo que quien pregunta no puede ver sale enmascarado, como en `/workload`.
+    """
+    informe = workload.report(
+        repo.conn, visible=acl.visible_ids(repo.conn, user), today=server_today(), weeks=1
+    )
+    semana = informe["weeks"][0]
+    yo = next((p for p in informe["people"] if p["id"] == str(user.id)), None)
+    salida = {
+        "week": semana,
+        "me": {
+            "hours": (yo or {}).get("weeks", {}).get(semana, 0.0),
+            "capacity": (yo or {}).get("capacity") or workload.capacities(repo.conn).get(str(user.id), workload.DEFAULT_CAPACITY),
+            "tasks": (yo or {}).get("tasks", 0),
+            "unscheduled": (yo or {}).get("unscheduled", 0.0),
+        },
+        "team": None,
+    }
+    if user.is_admin or user.can_view_global_workload:
+        salida["team"] = [
+            {
+                "id": p["id"],
+                "name": p["display_name"] or p["username"] or "Sin nombre",
+                "color": p["color"],
+                "avatar": p["avatar"],
+                "hours": p["weeks"].get(semana, 0.0),
+                "capacity": p["capacity"],
+            }
+            for p in informe["people"]
+        ]
+    return salida

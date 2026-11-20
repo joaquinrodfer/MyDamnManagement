@@ -46,7 +46,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app import acl, auth, notifications
+from app import acl, activity, auth, notifications
 from app.collab import ExternalChange, Peer, Rooms, user_info
 from app.config import settings
 from app.index import open_index
@@ -120,7 +120,16 @@ def _store_meta(page_id: str, fields: dict) -> dict:
         conn.close()
 
 
-rooms = Rooms(load=_load, store=_store, store_meta=_store_meta)
+def _record_activity(page_id: str, user_ids: set) -> None:
+    """Quién escribió en la sala desde el último guardado (inicio: actividad)."""
+    conn = open_index(settings.index_path)
+    try:
+        activity.record_many(conn, page_id, user_ids)
+    finally:
+        conn.close()
+
+
+rooms = Rooms(load=_load, store=_store, store_meta=_store_meta, record_activity=_record_activity)
 
 
 def _same_origin(ws: WebSocket) -> bool:
