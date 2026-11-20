@@ -26,6 +26,9 @@
 //   puede traer más de mil nodos y un O(n²) por tick se arrastra.
 
 const MAX_ZOOM = 4;
+// El encuadre automático no pasa de aquí: con dos o tres nodos subía a 4× y el
+// título salía enorme. El usuario sí puede acercarse más con la rueda.
+const FIT_MAX_ZOOM = 1.5;
 const MIN_ZOOM = 0.12;
 const ALPHA_MIN = 0.002;
 const ALPHA_DECAY = 0.022;
@@ -86,7 +89,7 @@ function createView({ pageId, onOpenPage }) {
     <div class="graph-bar">
       <div class="graph-title">
         <svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-graph"/></svg>
-        <span>Grafo del vault</span>
+        <span>Grafo</span>
       </div>
       <div class="graph-modes" role="group" aria-label="Modo del grafo">
         <button type="button" class="graph-tab" data-mode="local">Local</button>
@@ -103,7 +106,7 @@ function createView({ pageId, onOpenPage }) {
         <button type="button" class="icon-btn" id="graph-close" title="Cerrar el grafo (Esc)" aria-label="Cerrar el grafo"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
       </div>
     </div>
-    <canvas id="graph-canvas" role="img" aria-label="Grafo de enlaces del vault"></canvas>
+    <canvas id="graph-canvas" role="img" aria-label="Grafo de enlaces entre páginas"></canvas>
     <div class="graph-empty" id="graph-empty" hidden></div>
     <div class="graph-legend">
       <span><i class="graph-dot" data-type="note"></i>nota</span>
@@ -474,7 +477,7 @@ function createView({ pageId, onOpenPage }) {
     const ancho = Math.max(1, maxX - minX);
     const alto = Math.max(1, maxY - minY);
     const k = Math.min(
-      MAX_ZOOM,
+      FIT_MAX_ZOOM,
       Math.max(MIN_ZOOM, Math.min(
         (rect.width - pad * 2) / ancho,
         (rect.height - pad * 2) / alto

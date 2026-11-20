@@ -5674,10 +5674,21 @@
   .ws-sub-head, .sidebar-mine-label, .sidebar-section-head {
     font-size: 10.5px; font-weight: 600; letter-spacing: .07em;
   }
-  .workspace-icon { border-radius: 7px; font-weight: 650; }
+  .workspace-icon {
+    --ws-hue: 235;
+    border-radius: 7px; font-weight: 650; color: #fff;
+    background: linear-gradient(135deg, hsl(var(--ws-hue) 62% 58% / .75), hsl(calc(var(--ws-hue) + 40) 70% 62% / .6));
+  }
   .ws-personal .workspace-icon {
     background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 55%, transparent), color-mix(in srgb, #c084fc 45%, transparent));
-    color: #fff;
+  }
+  html[data-theme="light"] .ws-personal .workspace-icon:not(.ws-emoji) {
+    background: linear-gradient(135deg, var(--accent), #a855f7);
+  }
+  .workspace-icon.ws-emoji { background: var(--menu-hover); }
+  html[data-theme="light"] .ws-block:not(.ws-personal) .workspace-icon:not(.ws-emoji),
+  html[data-theme="light"] .ws-card .workspace-icon:not(.ws-emoji) {
+    background: linear-gradient(135deg, hsl(var(--ws-hue) 60% 52%), hsl(calc(var(--ws-hue) + 40) 65% 58%));
   }
   .tree-empty-section { font-style: normal; color: color-mix(in srgb, var(--ink-muted) 80%, transparent); }
 
@@ -5722,6 +5733,113 @@
     main:has(> #note-body) > .note-header-image-wrap:not(:has(img)) .btn:focus-visible { opacity: 1; }
     main:has(> #note-body) > .note-header-image-wrap:not(:has(img)) .btn:hover { background: var(--menu-hover); color: var(--ink); }
   }
+
+  /* ================================================================
+     PASE VISUAL 2 (nov 2026): carga del equipo, avisos, calendario
+     ================================================================ */
+  /* ---------- carga del equipo ---------- */
+  .carga { padding: 0 0 40px; display: flex; flex-direction: column; gap: 14px; }
+  .carga > .my-tasks-title { margin: 0; }
+  .carga-tools { margin: 0; gap: 10px 14px; font-size: 12.5px; }
+  .carga-semanas { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-muted); }
+  .carga-semanas select,
+  .carga-cap,
+  .cal-date-select {
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background-color: var(--field-bg);
+    border: 1px solid var(--field-border);
+    border-radius: var(--radius-md);
+    min-height: 30px;
+    padding: 4px 8px;
+    transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+  }
+  .cal-date-select { font-size: 12.5px; min-height: 28px; }
+  .carga-cap { width: 64px; min-height: 28px; padding: 3px 8px; }
+  .carga-semanas select:hover, .carga-cap:hover, .cal-date-select:hover { border-color: var(--field-border-hover); }
+  .carga-semanas select:focus, .carga-cap:focus, .cal-date-select:focus {
+    outline: none; border-color: var(--accent); box-shadow: var(--focus-ring);
+  }
+  .carga-leyenda { gap: 6px; }
+  .carga-leyenda > span {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border: 1px solid var(--panel-border); border-radius: 999px; white-space: nowrap;
+  }
+  .carga-leyenda { flex-wrap: wrap; }
+  .carga-leyenda i { width: 8px; height: 8px; border-radius: 50%; margin-right: 0; }
+  .carga-wrap {
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    box-shadow: var(--shadow-card);
+  }
+  .carga-table th { padding: 10px 12px; background: var(--surface-elevated); font-size: 11.5px; }
+  .carga-table thead th:first-child { border-top-left-radius: var(--radius-lg); }
+  .carga-table thead th:last-child { border-top-right-radius: var(--radius-lg); }
+  .carga-table td { padding: 8px 12px; }
+  .carga-table > tbody > tr:not(.carga-detalle):hover > td { background: var(--row-hover); }
+  .carga-table > tbody > tr:last-child > td { border-bottom: 0; }
+  .carga-persona { font-weight: 500; border-radius: var(--radius-sm); padding: 2px 4px 2px 0; }
+  .carga-persona .svg-icon { color: var(--ink-muted); transition: transform var(--dur-normal) var(--ease-out); }
+  .carga-semana { padding: 6px 6px !important; }
+  .carga-pill {
+    display: inline-block; min-width: 52px; padding: 3px 8px; border-radius: var(--radius-sm);
+    color: var(--ink-muted);
+  }
+  .carga-pill.carga-celda--ok { color: var(--ink); background: color-mix(in srgb, var(--ok) 18%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 30%, transparent); }
+  .carga-pill.carga-celda--warn { color: var(--ink); background: color-mix(in srgb, var(--warn) 20%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent); }
+  .carga-pill.carga-celda--over { color: var(--ink); background: color-mix(in srgb, var(--down) 22%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--down) 40%, transparent); }
+  .carga-detalle > td { padding: 4px 12px 10px 40px !important; background: color-mix(in srgb, var(--bg) 55%, var(--panel)); }
+  .carga-detalle-cab th { color: var(--ink-muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding-top: 8px !important; background: none; }
+  .carga-detalle td td { background: none; }
+  .carga-detalle td { padding: 4px 8px !important; border-top: 1px solid color-mix(in srgb, var(--panel-border) 60%, transparent) !important; }
+
+  /* ---------- panel de avisos ---------- */
+  .avisos-head { padding: 12px 14px 10px; font-size: 14px; }
+  .avisos-todo {
+    background: none; border: 0; padding: 4px 8px; border-radius: var(--radius-sm);
+    color: var(--accent-ink); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  }
+  .avisos-todo:hover { background: var(--menu-hover); }
+  .avisos-todo:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .avisos-item {
+    grid-template-columns: 28px 1fr auto; align-items: start; gap: 10px;
+    padding: 10px 14px; border-bottom: 1px solid color-mix(in srgb, var(--panel-border) 70%, transparent);
+    transition: background var(--dur-fast) ease;
+  }
+  .avisos-item:last-child { border-bottom: 0; }
+  .avisos-item:hover, .avisos-item:focus-visible { background: var(--menu-hover); outline: none; }
+  .avisos-item--unread { background: none; }
+  .avisos-item--unread::after {
+    content: ""; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--accent);
+  }
+  .avisos-item--unread .avisos-texto > span { font-weight: 500; }
+  .avisos-ico {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent-ink);
+  }
+  .avisos-ico .svg-icon { width: 14px; height: 14px; }
+  .avisos-ico--deadline_overdue { background: var(--down-bg); color: var(--down); }
+  .avisos-ico--deadline_soon { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .avisos-ico--task_assigned { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .avisos-texto { display: grid; gap: 3px; min-width: 0; line-height: 1.4; }
+  .avisos-empty { padding: 28px 24px; line-height: 1.5; }
+
+  /* ---------- calendario ---------- */
+  .calendar-wrap { box-shadow: var(--shadow-card); }
+  .calendar-toolbar { padding: 10px 14px; }
+  .calendar-grid { background: color-mix(in srgb, var(--panel-border) 65%, var(--panel)); }
+  .cal-dow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding: 8px 0; }
+  .cal-day { padding: 6px 6px 8px; transition: background var(--dur-fast) ease; }
+  .cal-day:not(.is-out):hover { background: color-mix(in srgb, var(--ink) 3%, var(--panel)); }
+  .cal-day.is-today { background: var(--panel); }
+  .cal-daynum { font-weight: 500; }
+  .cal-event {
+    padding: 3px 8px; border-radius: var(--radius-sm); font-weight: 500;
+    transition: background var(--dur-fast) ease, transform var(--dur-fast) ease;
+  }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
@@ -5752,6 +5870,9 @@
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+      <symbol id="i-at" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
       <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
       <symbol id="i-bell-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8.7 3A6 6 0 0 1 18 8c0 2.7.4 4.7.9 6.2M17 17H3s3-2 3-9c0-.7.1-1.4.3-2"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="m2 2 20 20"/></symbol>
       <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
