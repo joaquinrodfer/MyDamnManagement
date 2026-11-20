@@ -2,6 +2,10 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Enlaces con ruta y vista de lista
+- Selector de «/page» y «/base»: cada página sale con su icono, su título y debajo la ruta completa empezando por el espacio (con su icono), más un candado si es privada. También se puede buscar por el nombre del espacio.
+- Vista de lista: título con icono a la izquierda y propiedades a la derecha sin el «Nombre:» delante; las fechas como «24 nov» en fichas.
+
 ## Pase visual (2): espacios, carga, avisos, calendario y grafo
 - Todos los espacios llevan el icono con degradado; cada uno con su tono, sacado de su id (el personal sigue en violeta).
 - Carga del equipo: título como «Mis tareas», selector y capacidad con estilo de campo, leyenda en etiquetas, tabla en tarjeta y horas en fichas de color.
