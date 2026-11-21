@@ -5025,7 +5025,9 @@ async function abrirFestivos(workspaceId = null, nombreDelEspacio = "") {
       texto.append(crearEl("strong", "", fechaLargaDeJornada(h.day)), ` · ${h.name}`);
       if (h.source_name) texto.append(crearEl("span", "wt-item-note", ` — ${h.source_name}`));
       li.append(texto);
-      if (datos.can_edit) {
+      // Uno importado se quita con su calendario (abajo): borrado suelto,
+      // volvería en la siguiente actualización.
+      if (datos.can_edit && !h.source_id) {
         const borrar = crearEl("button", "icon-btn wt-del");
         borrar.type = "button";
         borrar.innerHTML = svgIcon("i-x");
@@ -5081,12 +5083,192 @@ async function abrirFestivos(workspaceId = null, nombreDelEspacio = "") {
       }
     });
     caja.append(form);
+    caja.append(await seccionDeImportarFestivos(workspaceId, d.nota, pintar));
   };
   selector.addEventListener("change", () => {
     anio = Number(selector.value);
     pintar();
   });
   pintar();
+}
+
+// Las comunidades autónomas (ISO 3166-2:ES), para no enseñar «ES-MD».
+const REGIONES_ES = {
+  "ES-AN": "Andalucía", "ES-AR": "Aragón", "ES-AS": "Asturias", "ES-CB": "Cantabria",
+  "ES-CE": "Ceuta", "ES-CL": "Castilla y León", "ES-CM": "Castilla-La Mancha", "ES-CN": "Canarias",
+  "ES-CT": "Cataluña", "ES-EX": "Extremadura", "ES-GA": "Galicia", "ES-IB": "Islas Baleares",
+  "ES-MC": "Región de Murcia", "ES-MD": "Comunidad de Madrid", "ES-ML": "Melilla", "ES-NC": "Navarra",
+  "ES-PV": "País Vasco", "ES-RI": "La Rioja", "ES-VC": "Comunidad Valenciana",
+};
+
+function nombreDePais(code, porDefecto = code) {
+  try {
+    return new Intl.DisplayNames(["es"], { type: "region" }).of(code) || porDefecto;
+  } catch {
+    return porDefecto;
+  }
+}
+
+/** «Importar»: las fuentes que ya hay (actualizar, quitar) y las tres formas
+ * de traer festivos: archivo .ics, URL suscrita y festivos oficiales. */
+async function seccionDeImportarFestivos(workspaceId, nota, repintar) {
+  const sec = crearEl("section", "wt-section wt-import");
+  sec.append(crearEl("h4", "", "Importar un calendario"));
+  const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+  const ws = workspaceId ? { workspace_id: workspaceId } : {};
+  const enviar = async (ruta, cuerpo, ok) => {
+    try {
+      const f = await api(ruta, { method: "POST", body: JSON.stringify({ ...ws, ...cuerpo }) });
+      setFormNote(nota, ok(f), "ok");
+      repintar();
+    } catch (e) {
+      setFormNote(nota, describeError(e), "error");
+    }
+  };
+
+  // Lo que ya está importado.
+  let fuentes = [];
+  try {
+    fuentes = await api(`/holidays/sources${q}`);
+  } catch {
+    fuentes = [];
+  }
+  if (fuentes.length) {
+    const lista = crearEl("ul", "wt-list");
+    for (const f of fuentes) {
+      const li = crearEl("li", "wt-item");
+      const texto = crearEl("span", "wt-item-text");
+      const tipo = f.kind === "url" ? "suscripción" : f.kind === "country" ? "oficiales" : "archivo";
+      texto.append(crearEl("strong", "", f.name), ` · ${f.count === 1 ? "1 día" : `${f.count} días`} · ${tipo}`);
+      if (f.error) texto.append(crearEl("span", "wt-item-note form-error", ` — ${f.error}`));
+      li.append(texto);
+      if (f.kind !== "file") {
+        const act = crearEl("button", "btn wt-mini", "Actualizar");
+        act.type = "button";
+        act.addEventListener("click", () => enviar(`/holidays/sources/${f.id}/sync`, {}, (r) => `Actualizado: ${r.count} días.`));
+        li.append(act);
+      }
+      const quitar = crearEl("button", "icon-btn wt-del");
+      quitar.type = "button";
+      quitar.innerHTML = svgIcon("i-x");
+      quitar.title = "Quitar este calendario y sus festivos";
+      quitar.setAttribute("aria-label", `Quitar ${f.name}`);
+      quitar.addEventListener("click", async () => {
+        try {
+          await api(`/holidays/sources/${f.id}`, { method: "DELETE" });
+          setFormNote(nota, `«${f.name}» quitado, con sus festivos.`, "ok");
+          repintar();
+        } catch (e) {
+          setFormNote(nota, describeError(e), "error");
+        }
+      });
+      li.append(quitar);
+      lista.append(li);
+    }
+    sec.append(lista);
+  }
+
+  // 1) Festivos oficiales de un país (y región).
+  const oficial = crearEl("form", "wt-form");
+  oficial.noValidate = true;
+  const pais = crearEl("select");
+  pais.setAttribute("aria-label", "País");
+  pais.add(new Option("País…", ""));
+  const region = crearEl("select");
+  region.setAttribute("aria-label", "Región");
+  region.add(new Option("Solo nacionales", ""));
+  region.disabled = true;
+  const anadirOficial = crearEl("button", "btn", "Añadir festivos oficiales");
+  anadirOficial.type = "submit";
+  oficial.append(crearEl("span", "wt-lbl wt-import-lbl", "Oficiales"), pais, region, anadirOficial);
+  api("/holidays/countries")
+    .then((lista) => {
+      lista
+        .map((c) => ({ code: c.code, name: nombreDePais(c.code, c.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name, "es"))
+        .forEach((c) => pais.add(new Option(c.name, c.code, false, false)));
+      const propio = (navigator.language || "es-ES").split("-")[1]?.toUpperCase();
+      if (propio && [...pais.options].some((o) => o.value === propio)) {
+        pais.value = propio;
+        pais.dispatchEvent(new Event("change"));
+      }
+    })
+    .catch(() => {
+      pais.disabled = true;
+      anadirOficial.disabled = true;
+      anadirOficial.title = "El servidor no puede consultar los festivos oficiales (sin conexión a internet).";
+    });
+  pais.addEventListener("change", async () => {
+    region.replaceChildren(new Option("Solo nacionales", ""));
+    region.disabled = true;
+    if (!pais.value) return;
+    try {
+      const regiones = await api(`/holidays/regions?country=${pais.value}`);
+      regiones
+        .map((r) => ({ code: r, name: (pais.value === "ES" && REGIONES_ES[r]) || r }))
+        .sort((a, b) => a.name.localeCompare(b.name, "es"))
+        .forEach((r) => region.add(new Option(`Nacionales + ${r.name}`, r.code)));
+      region.disabled = regiones.length === 0;
+    } catch {
+      // Sin regiones: se quedan los nacionales.
+    }
+  });
+  oficial.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    if (!pais.value) return setFormNote(nota, "Elige un país.", "error");
+    const nombre = region.value
+      ? `Festivos oficiales · ${(pais.value === "ES" && REGIONES_ES[region.value]) || region.value}`
+      : `Festivos oficiales · ${nombreDePais(pais.value)}`;
+    enviar(
+      "/holidays/sources",
+      { kind: "country", country: pais.value, region: region.value || null, name: nombre },
+      (f) => `«${f.name}»: ${f.count === 1 ? "1 día" : `${f.count} días`}. Se actualiza solo cada día.`,
+    );
+  });
+
+  // 2) Suscripción a una URL .ics / webcal.
+  const url = crearEl("form", "wt-form");
+  url.noValidate = true;
+  const campoUrl = crearEl("input", "wt-note");
+  campoUrl.type = "url";
+  campoUrl.placeholder = "https://… o webcal://… (.ics)";
+  campoUrl.setAttribute("aria-label", "Dirección del calendario");
+  const suscribir = crearEl("button", "btn", "Suscribirse");
+  suscribir.type = "submit";
+  url.append(crearEl("span", "wt-lbl wt-import-lbl", "Desde una URL"), campoUrl, suscribir);
+  url.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    if (!campoUrl.value.trim()) return setFormNote(nota, "Pega la dirección del calendario.", "error");
+    enviar("/holidays/sources", { kind: "url", url: campoUrl.value.trim() }, (f) => `«${f.name}»: ${f.count === 1 ? "1 día" : `${f.count} días`}. Se actualiza solo cada día.`);
+  });
+
+  // 3) Archivo .ics.
+  const archivo = crearEl("form", "wt-form");
+  const input = crearEl("input");
+  input.type = "file";
+  input.accept = ".ics,text/calendar";
+  input.setAttribute("aria-label", "Archivo de calendario (.ics)");
+  archivo.append(crearEl("span", "wt-lbl wt-import-lbl", "Desde un archivo"), input);
+  input.addEventListener("change", async () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    if (f.size > 3 * 1024 * 1024) return setFormNote(nota, "El archivo pasa de 3 MB: no parece un calendario de festivos.", "error");
+    const texto = await f.text();
+    await enviar("/holidays/import", { name: f.name.replace(/\.ics$/i, ""), content: texto }, (r) => `«${r.name}»: ${r.count === 1 ? "1 día importado" : `${r.count} días importados`}.`);
+    input.value = "";
+  });
+
+  sec.append(
+    oficial,
+    url,
+    archivo,
+    crearEl(
+      "p",
+      "form-note",
+      "Google Calendar, Outlook y Apple Calendar exportan o publican sus calendarios en formato .ics (ojo: el calendario público de festivos de Google incluye también días señalados que no son fiesta, como Nochevieja). Los oficiales (nacionales y autonómicos) vienen de date.nager.at; los locales, súbelos con un .ics o añádelos a mano. Un festivo importado se quita quitando su calendario.",
+    ),
+  );
+  return sec;
 }
 
 function initCarga() {

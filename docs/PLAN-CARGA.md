@@ -51,7 +51,7 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
 - El reparto de las horas de una tarea usa los días que **esa persona**
   trabaja, no «de lunes a viernes».
 
-### C1b — Importar calendarios de festivos
+### C1b — Importar calendarios de festivos (hecho)
 - Subir un archivo **iCalendar (.ics)**, el formato que exportan Google
   Calendar, Outlook, Apple Calendar y casi cualquier calendario.
 - **Suscribirse a una URL .ics** (también `webcal://`): los calendarios

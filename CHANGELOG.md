@@ -2,6 +2,15 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Importar calendarios de festivos
+- En «Festivos comunes…» y «Festivos del espacio…» hay tres formas de traer los festivos en vez de teclearlos:
+  - **Oficiales por país y región** (date.nager.at): los nacionales y, si eliges comunidad, los autonómicos.
+  - **Suscripción a una URL** `.ics` o `webcal://` (un calendario publicado desde Google, Outlook, Apple…).
+  - **Archivo `.ics`** exportado de cualquier calendario.
+- Las suscripciones y los oficiales se vuelven a leer solos cada día; si una lectura falla, se conserva lo que había y la fuente muestra el error. «Actualizar» las relee al momento.
+- Cada calendario importado aparece como una fuente: quitarla se lleva sus festivos y deja los puestos a mano.
+- Por seguridad, una URL que apunta a la red interna (localhost, 10.x, 192.168.x…) se rechaza, también tras una redirección.
+
 ## Jornada, festivos y ausencias en la carga
 - Cada persona tiene su **jornada**: horas por día de la semana (40, 37,5, 35, 30 h, viernes corto, turnos de fin de semana…). La cambia un administrador desde «Carga del equipo» (icono de calendario junto a la capacidad) o desde Ajustes → Administración → «Jornada…».
 - **Dedicación a cada espacio** (en %): la parte de su capacidad que cuenta en cada espacio. Sin rellenar, el 100 % en cada uno; la suma no puede pasar del 100 %.

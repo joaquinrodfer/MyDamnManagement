@@ -338,6 +338,13 @@ class DeadlineWorker(threading.Thread):
                 from app import activity  # la actividad del inicio se poda con lo mismo
 
                 activity.purge_old(conn)
+                # Las suscripciones de festivos (URL y país) se releen a diario.
+                from app import holiday_import
+
+                try:
+                    holiday_import.sync_due(conn)
+                except Exception:  # noqa: BLE001 - sin red no se paran los plazos
+                    log.exception("falló la actualización de los festivos")
                 return creados
             finally:
                 conn.close()
