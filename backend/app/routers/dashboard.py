@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, Depends
 
-from app import acl, activity, auth, mytasks, notifications, workload
+from app import acl, activity, auth, mytasks, notifications, workload, worktime
 from app.due import server_today
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
@@ -117,7 +117,11 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
         "week": semana,
         "me": {
             "hours": (yo or {}).get("weeks", {}).get(semana, 0.0),
-            "capacity": (yo or {}).get("capacity") or workload.capacities(repo.conn).get(str(user.id), workload.DEFAULT_CAPACITY),
+            # Lo que de verdad tengo esta semana: mi jornada, sin festivos ni
+            # ausencias (una semana de vacaciones es capacidad 0).
+            "capacity": (yo or {}).get("capacity_weeks", {}).get(semana)
+            if yo
+            else worktime.Calendar(repo.conn).week(str(user.id), date.fromisoformat(semana))["capacity"],
             "tasks": (yo or {}).get("tasks", 0),
             "unscheduled": (yo or {}).get("unscheduled", 0.0),
         },
@@ -131,7 +135,7 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
                 "color": p["color"],
                 "avatar": p["avatar"],
                 "hours": p["weeks"].get(semana, 0.0),
-                "capacity": p["capacity"],
+                "capacity": p["capacity_weeks"].get(semana, p["capacity"]),
             }
             for p in informe["people"]
         ]

@@ -17,7 +17,15 @@ lo que no se toca sigue funcionando como hoy.
    y **por espacio**. Quien ve la carga de, por ejemplo, dos espacios ve a cada
    persona de esos espacios **combinada** (todo lo suyo junto) y **desglosada
    por espacio y por proyecto**.
-5. **Nueva vista de la carga**, más clara y con más cortes: por **día, semana
+5. **Dedicación por espacio:** cada persona puede tener un % de dedicación a
+   cada espacio (60/40…). Sin declarar, cuenta toda su capacidad en cada uno.
+6. **La jornada la cambia solo un administrador** (por ahora).
+7. **Festivos:** un calendario común para toda la empresa que cada espacio
+   puede ampliar con los suyos. Además, **importar calendarios** para que la
+   empresa traiga el suyo (fase C1b).
+8. **«Grupo»** en el permiso de carga = los grupos de personas creados en
+   Administración (Ajustes).
+9. **Nueva vista de la carga**, más clara y con más cortes: por **día, semana
    y mes**, y **general, por espacio, por proyecto** y por persona.
 
 ## Modelo: niveles de configuración
@@ -33,7 +41,7 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
 
 ## Fases
 
-### C1 — Jornada, festivos y ausencias
+### C1 — Jornada, festivos y ausencias (hecho: jornada, dedicación, ausencias y festivos a mano)
 - Jornada de cada persona por día de la semana (L–V 8 h por defecto; 35 h,
   30 h, viernes corto, turnos con fin de semana…). Sustituye a la capacidad
   semanal fija, que pasa a calcularse.
@@ -42,6 +50,16 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   capacidad en los días que tocan.
 - El reparto de las horas de una tarea usa los días que **esa persona**
   trabaja, no «de lunes a viernes».
+
+### C1b — Importar calendarios de festivos
+- Subir un archivo **iCalendar (.ics)**, el formato que exportan Google
+  Calendar, Outlook, Apple Calendar y casi cualquier calendario.
+- **Suscribirse a una URL .ics** (también `webcal://`): los calendarios
+  públicos de festivos de Google o un calendario publicado desde Outlook. Se
+  vuelve a leer cada día.
+- **Festivos oficiales por país y región** desde Nager.Date (servicio público
+  y gratuito, sin clave): nacionales y autonómicos. Los locales, por .ics o a
+  mano.
 
 ### C2 — Permiso «Ver carga»
 - Se concede a un usuario o a un grupo, para uno o varios espacios (o todos:

@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -418,6 +418,51 @@ MIGRATIONS: dict[int, list[str]] = {
     position INTEGER NOT NULL,
     PRIMARY KEY (user_id, page_id)
 )""",
+    ],
+    # La jornada de cada persona, su dedicación a cada espacio, los festivos
+    # (comunes y de cada espacio, a mano o importados) y las ausencias: lo que
+    # decide cuántas horas tiene cada persona cada día (plan de la carga, C1).
+    22: [
+        """CREATE TABLE IF NOT EXISTS work_schedules (
+    user_id    TEXT PRIMARY KEY,
+    hours_json TEXT NOT NULL
+)""",
+        """CREATE TABLE IF NOT EXISTS workspace_dedication (
+    user_id      TEXT NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    percent      REAL NOT NULL,
+    PRIMARY KEY (user_id, workspace_id)
+)""",
+        """CREATE TABLE IF NOT EXISTS holiday_sources (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    url          TEXT,
+    params_json  TEXT NOT NULL DEFAULT '{}',
+    synced_at    TEXT,
+    error        TEXT
+)""",
+        """CREATE TABLE IF NOT EXISTS holidays (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    day          TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    source_id    INTEGER REFERENCES holiday_sources(id) ON DELETE CASCADE
+)""",
+        "CREATE INDEX IF NOT EXISTS holidays_day ON holidays(day)",
+        """CREATE TABLE IF NOT EXISTS absences (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL,
+    start      TEXT NOT NULL,
+    end        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    hours      REAL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_by TEXT,
+    created_at TEXT NOT NULL
+)""",
+        "CREATE INDEX IF NOT EXISTS absences_user ON absences(user_id, start)",
     ],
 }
 
@@ -809,7 +854,55 @@ CREATE TABLE page_pins (
     PRIMARY KEY (user_id, page_id)
 );
 
-PRAGMA user_version = 21;
+-- Jornada, dedicación, festivos y ausencias (v22). Ver la migración 22.
+CREATE TABLE work_schedules (
+    user_id    TEXT PRIMARY KEY,
+    hours_json TEXT NOT NULL
+);
+
+CREATE TABLE workspace_dedication (
+    user_id      TEXT NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    percent      REAL NOT NULL,
+    PRIMARY KEY (user_id, workspace_id)
+);
+
+CREATE TABLE holiday_sources (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    url          TEXT,
+    params_json  TEXT NOT NULL DEFAULT '{}',
+    synced_at    TEXT,
+    error        TEXT
+);
+
+CREATE TABLE holidays (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    day          TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    source_id    INTEGER REFERENCES holiday_sources(id) ON DELETE CASCADE
+);
+
+CREATE INDEX holidays_day ON holidays(day);
+
+CREATE TABLE absences (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL,
+    start      TEXT NOT NULL,
+    end        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    hours      REAL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_by TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX absences_user ON absences(user_id, start);
+
+PRAGMA user_version = 22;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1311,6 +1404,12 @@ DUMP_EXCLUDED = {
     "page_activity",
     # Las fijadas (v21): preferencia de cada quien, no está en el `.md`.
     "page_pins",
+    # Jornada, festivos y ausencias (v22): estado de la app, no está en el `.md`.
+    "work_schedules",
+    "workspace_dedication",
+    "holiday_sources",
+    "holidays",
+    "absences",
 }
 
 
