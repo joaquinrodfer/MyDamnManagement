@@ -74,6 +74,7 @@ from typing import Any, Mapping, Optional
 from app import closed, hierarchy
 from app.properties import option_key
 from app.repository import Page
+from app.vault.reader import relation_multiple
 
 # Operadores que no llevan `value`: la condición es sobre el estado del valor.
 SIN_VALOR = frozenset({"is_empty", "is_not_empty", "checked", "unchecked"})
@@ -142,6 +143,52 @@ def validar_rango(
             "«{0}» ya es el inicio.".format(next(iter(elegidas.values())))
         )
     return None
+
+# Tipos que no agrupan: una fila con varios valores caería en varios grupos a
+# la vez (multiselección, relación múltiple) y `parent_row` ya es la jerarquía.
+NO_AGRUPAN = frozenset({"multiselect", "parent_row"})
+
+
+def validar_agrupacion(
+    config: Mapping[str, Any] | None,
+    schema_def: list[dict],
+    anterior: Mapping[str, Any] | None = None,
+) -> Optional[str]:
+    """Motivo por el que el `group_by` de una vista no vale, o `None`.
+
+    Se mira solo cuando la agrupación **cambia** respecto a `anterior` (la
+    vista guardada): una vista vieja que agrupaba por algo que hoy no se
+    permitiría sigue pudiendo guardar sus anchos o su filtro sin un 400 por un
+    campo que nadie ha tocado. Una agrupación nueva tiene que nombrar una
+    propiedad que existe y que puede agrupar.
+    """
+    valor = (config or {}).get("group_by")
+    if valor is None or (isinstance(valor, str) and not valor.strip()):
+        return None
+    if anterior is not None and (anterior or {}).get("group_by") == valor:
+        return None
+    if not isinstance(valor, str):
+        return "«group_by» tiene que ser la clave de una propiedad."
+    props = {
+        str(p.get("key")): p
+        for p in (schema_def or [])
+        if isinstance(p, dict) and p.get("key")
+    }
+    prop = props.get(valor.strip())
+    if prop is None:
+        return (
+            f"La vista agrupa por «{valor}», pero esa propiedad no existe en "
+            "la base. Elige otra propiedad para agrupar."
+        )
+    tipo = prop.get("type")
+    multiple = tipo == "relation" and relation_multiple(prop)
+    if tipo in NO_AGRUPAN or multiple:
+        return (
+            f"«{prop.get('name') or valor}» no puede agrupar: una fila con "
+            "varios valores caería en varios grupos a la vez."
+        )
+    return None
+
 
 # Operadores que pregunta por la semántica de «cerrada» de la base. No llevan
 # `value` ni `key`: la respuesta la da la regla de la base, no una celda.

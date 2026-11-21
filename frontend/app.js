@@ -9119,6 +9119,28 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
           : elegir(() => openSortDialog(database, activeView, aplicarConfig)),
       }),
     );
+    // «Agrupar» vale en tabla, lista y tablero (en el tablero, cambia qué
+    // reparte las columnas). El calendario coloca por fecha: no agrupa.
+    if (!activeView || activeView.type !== "calendar") {
+      const agrupada = activeView?.config?.group_by;
+      const motivoDeAgrupar =
+        motivoDeVista ||
+        (database.schema_def.some((p) => agrupaPor(p, activeView.type))
+          ? ""
+          : "Ninguna propiedad de esta base puede agrupar: hace falta una selección, una persona, una casilla, una fecha, un texto o una relación simple.");
+      menu.appendChild(
+        itemDeColumna("Agrupar", {
+          marca: agrupada ? nombreDePropiedad(database, agrupada) : "",
+          motivo: motivoDeAgrupar,
+          alElegir: motivoDeAgrupar
+            ? () => avisar(motivoDeAgrupar)
+            : () => {
+                cerrarPanelDeColumna();
+                abrirMenuDeAgrupar(menuBtn, database, activeView, aplicarConfig);
+              },
+        }),
+      );
+    }
     // El nivel de filas es de la vista y solo existe si la base tiene
     // jerarquía: una base sin subtareas no enseña algo que no haría nada.
     if (activeView && claveDeJerarquia(database)) {
@@ -15986,7 +16008,44 @@ function renderTable(
     // barra de selección, que sale encima de la tabla (donde la vista deja).
     return tr;
   };
-  rows.forEach((row) => tbody.appendChild(pintarFila(row)));
+  // Agrupada, la tabla sigue siendo UNA (una selección, un teclado, unas
+  // columnas): cada grupo es una fila-cabecera que ocupa todo el ancho y sus
+  // filas debajo. Plegar esconde las filas del grupo, no las quita.
+  const grupos = view?.config?.group_by && rows.length ? gruposDeFilas(database, rows, view.config.group_by) : null;
+  if (grupos) {
+    const plegados = view?.id ? gruposPlegadosDeVista(view.id) : new Set();
+    const columnasTotales = () => headRow.children.length || 1;
+    // El orden de lectura (abrir una fila y pasar a la siguiente) es el de los
+    // grupos, no el que traía el servidor.
+    rows.splice(0, rows.length, ...grupos.flatMap((g) => g.filas));
+    grupos.forEach((grupo) => {
+      const cabeza = document.createElement("tr");
+      cabeza.className = "db-group-row";
+      const td = document.createElement("td");
+      td.colSpan = columnasTotales();
+      const filasDelGrupo = grupo.filas.map((row) => pintarFila(row));
+      const plegado = plegados.has(grupo.clave);
+      td.appendChild(
+        cabeceraDeGrupo(grupo, {
+          plegado,
+          alPlegar: (ahora) => {
+            filasDelGrupo.forEach((tr) => (tr.hidden = ahora));
+            if (ahora) plegados.add(grupo.clave);
+            else plegados.delete(grupo.clave);
+            if (view?.id) guardarGruposPlegadosDeVista(view.id, plegados);
+          },
+        }),
+      );
+      cabeza.appendChild(td);
+      tbody.appendChild(cabeza);
+      filasDelGrupo.forEach((tr) => {
+        tr.hidden = plegado;
+        tbody.appendChild(tr);
+      });
+    });
+  } else {
+    rows.forEach((row) => tbody.appendChild(pintarFila(row)));
+  }
 
   // Ctrl/Cmd+Enter en cualquier celda de la fila abre la fila como página. En
   // captura: el `keydown` de la celda (Enter edita) no llega a ver la
@@ -16025,7 +16084,7 @@ function renderTable(
   table.append(colgroup, thead, tbody);
   // Una sola parada de Tab en toda la tabla: la primera celda editable. Las
   // flechas mueven el foco (y el tabIndex=0) entre celdas -- ver paintCell.
-  const firstCell = tbody.querySelector('td[data-editable="1"]');
+  const firstCell = tbody.querySelector('tr:not([hidden]) > td[data-editable="1"]');
   if (firstCell) setRovingCell(firstCell);
 
   // Teclado de la selección, en captura: llega antes que el `keydown` de la
@@ -16393,7 +16452,11 @@ function paintCell(td, database, row, prop, hooks = null) {
     if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(e.key)) return;
     const tr = td.parentElement;
     const tbody = tr.parentElement;
-    const allRows = [...tbody.querySelectorAll("tr")];
+    // Las cabeceras de grupo y las filas de un grupo plegado no son paradas:
+    // la flecha salta a la siguiente fila que tenga celdas a la vista.
+    const allRows = [...tbody.querySelectorAll("tr")].filter(
+      (r) => r === tr || (!r.hidden && celdasEditables(r).length > 0),
+    );
     const rIdx = allRows.indexOf(tr);
     const cells = celdasEditables(tr);
     const cIdx = cells.indexOf(td);
@@ -16431,7 +16494,9 @@ function celdasEditables(tr) {
 function celdaVecina(td, paso) {
   const table = td.closest("table");
   if (!table) return null;
-  const celdas = [...table.querySelectorAll('tbody td[data-editable="1"]')];
+  const celdas = [...table.querySelectorAll('tbody td[data-editable="1"]')].filter(
+    (c) => c === td || !c.parentElement?.hidden,
+  );
   const i = celdas.indexOf(td);
   return i === -1 ? null : celdas[i + paso] || null;
 }
@@ -16446,6 +16511,7 @@ function celdaDeAbajo(td) {
   const filas = [...tbody.querySelectorAll("tr")];
   const col = celdasEditables(tr).indexOf(td);
   for (let i = filas.indexOf(tr) + 1; i < filas.length; i += 1) {
+    if (filas[i].hidden) continue;
     const abajo = celdasEditables(filas[i])[col];
     if (abajo) return abajo;
   }
@@ -17295,6 +17361,183 @@ function claveDeColumna(valor) {
  * el `.md` lo escribe una persona y `Alta` y `alta` son la misma opción. */
 function mismoValorDeColumna(a, b) {
   return String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+}
+
+// ------------------------------------------------ agrupar tabla y lista
+// «Agrupar por» reparte las filas de una tabla o una lista en bloques con su
+// cabecera (el valor y cuántas filas tiene), como el tablero las reparte en
+// columnas. La propiedad se guarda en la vista (`group_by`, la misma clave que
+// usa el tablero), así que cambiar una tabla agrupada a tablero conserva la
+// agrupación.
+
+/** Si una propiedad puede agrupar una vista de ese tipo.
+ *
+ * Una multiselección y una relación múltiple no agrupan: una fila con dos
+ * valores caería en dos grupos a la vez. El tablero, además, solo agrupa por
+ * lo que sabe convertir en columna a la que soltar una tarjeta (una casilla o
+ * una fecha no son una columna de arrastre: «Agrupar» ya lo hace la tabla). */
+function agrupaPor(prop, tipoDeVista) {
+  if (!prop) return false;
+  if (prop.type === "multiselect" || prop.type === "parent_row") return false;
+  if (prop.type === "relation" && relacionMultiple(prop)) return false;
+  if (tipoDeVista === "board") return ["select", "person", "relation", "text", "number"].includes(prop.type);
+  if (tipoDeVista === "calendar") return false;
+  return ["select", "person", "relation", "text", "number", "checkbox", "date", "url"].includes(prop.type);
+}
+
+/** La clase del tono de un valor de selección, la misma que el tablero pone
+ * en la cabecera de su columna. */
+function claseDeTonoDeGrupo(prop, valor) {
+  if (!prop || valor === null || valor === undefined) return "";
+  if (prop.option_colors?.[valor]) return `opt-${prop.option_colors[valor]}`;
+  const pos = (prop.options || []).indexOf(valor);
+  return pos >= 0 ? `prop-tag-${(pos % TONOS_DE_ETIQUETA) + 1}` : "";
+}
+
+/** Las filas de una vista repartidas por `groupKey`, en el orden de lectura
+ * de los grupos: `[{ clave, etiqueta, tono, filas }]`. Dentro de cada grupo
+ * las filas mantienen el orden que mandó el servidor (el de la vista).
+ *
+ * - Selección, texto y número: el orden del tablero (`sort_order`, luego
+ *   `options`, luego lo que solo está en filas), sin mayúsculas ni espacios.
+ * - Persona y relación: por la persona o la fila enlazada (su nombre visible).
+ * - Casilla: «Marcada» y «Sin marcar».
+ * - Fecha: por mes, del más antiguo al más nuevo.
+ * - Lo que no tiene valor va al final, en «Sin valor» («Sin fecha»).
+ *
+ * Solo salen los grupos que tienen alguna fila: un grupo vacío en una tabla es
+ * una cabecera sin nada debajo. `null` si la propiedad no agrupa. */
+function gruposDeFilas(database, rows, groupKey) {
+  const prop = (database.schema_def || []).find((p) => p.key === groupKey);
+  if (!agrupaPor(prop, "table")) return null;
+  const grupos = new Map();
+  const sueltas = [];
+  const meter = (clave, etiqueta, fila, tono = "", orden = 0) => {
+    if (!grupos.has(clave)) grupos.set(clave, { clave, etiqueta, tono, orden, filas: [] });
+    grupos.get(clave).filas.push(fila);
+  };
+
+  if (prop.type === "person") {
+    rows.forEach((r) => {
+      const id = personaIdDeFila(r, groupKey);
+      if (id) meter(`p:${id}`, nombreDePersona(id, r, groupKey) || "(ya no está)", r);
+      else sueltas.push(r);
+    });
+  } else if (prop.type === "relation") {
+    rows.forEach((r) => {
+      const id = idsDeRelacion(r.properties?.[groupKey])[0] || null;
+      if (!id) {
+        sueltas.push(r);
+        return;
+      }
+      const titulo = refsDeRelacion(r, groupKey).get(id)?.title || "(borrada)";
+      meter(`r:${id}`, titulo, r);
+    });
+  } else if (prop.type === "checkbox") {
+    rows.forEach((r) => {
+      const v = r.properties?.[groupKey];
+      const marcada = v === true || v === "true";
+      meter(marcada ? "c:1" : "c:0", marcada ? "Marcada" : "Sin marcar", r, "", marcada ? 0 : 1);
+    });
+  } else if (prop.type === "date") {
+    rows.forEach((r) => {
+      const v = r.properties?.[groupKey];
+      const m = typeof v === "string" ? /^(\d{4})-(\d{2})/.exec(v) : null;
+      const mes = m ? Number(m[2]) : 0;
+      if (!m || mes < 1 || mes > 12) {
+        sueltas.push(r);
+        return;
+      }
+      const nombre = MESES[mes - 1];
+      meter(`d:${m[1]}-${m[2]}`, `${nombre[0].toUpperCase()}${nombre.slice(1)} de ${m[1]}`, r, "", Number(m[1]) * 100 + mes);
+    });
+  } else {
+    // Selección, texto, número, enlace: las columnas del tablero, en su orden.
+    const columnas = columnasDelTablero(prop, rows, groupKey);
+    const posicion = new Map(columnas.map((c, i) => [claveDeColumna(c.valor), i]));
+    const etiquetaDe = new Map(columnas.map((c) => [claveDeColumna(c.valor), c.valor]));
+    rows.forEach((r) => {
+      const clave = claveDeColumna(r.properties?.[groupKey]);
+      if (!clave || !posicion.has(clave)) {
+        sueltas.push(r);
+        return;
+      }
+      const valor = etiquetaDe.get(clave);
+      meter(`v:${clave}`, String(valor), r, claseDeTonoDeGrupo(prop, valor), posicion.get(clave));
+    });
+  }
+
+  const salida = [...grupos.values()];
+  // Persona y relación: por nombre (natural, sin tildes). El resto ya trae su
+  // posición (`orden`), y a igual orden se queda el de aparición.
+  if (prop.type === "person" || prop.type === "relation") {
+    salida.sort((a, b) => a.etiqueta.localeCompare(b.etiqueta, "es", { numeric: true, sensitivity: "base" }));
+  } else {
+    salida.sort((a, b) => a.orden - b.orden);
+  }
+  if (sueltas.length) {
+    salida.push({
+      clave: "-",
+      etiqueta: prop.type === "date" ? "Sin fecha" : "Sin valor",
+      tono: "",
+      vacio: true,
+      filas: sueltas,
+    });
+  }
+  return salida;
+}
+
+// Qué grupos tiene plegados quien mira, por vista. Es una comodidad de esta
+// persona en este navegador (no cambia el `.md` ni lo que ven los demás), así
+// que vive en localStorage y se olvida sin consecuencias.
+const GRUPOS_PLEGADOS_KEY = "notemil:grupos-plegados";
+
+function gruposPlegadosDeVista(viewId) {
+  try {
+    const todo = JSON.parse(localStorage.getItem(GRUPOS_PLEGADOS_KEY) || "{}");
+    return new Set(Array.isArray(todo?.[viewId]) ? todo[viewId] : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function guardarGruposPlegadosDeVista(viewId, plegados) {
+  try {
+    const todo = JSON.parse(localStorage.getItem(GRUPOS_PLEGADOS_KEY) || "{}") || {};
+    if (plegados.size) todo[viewId] = [...plegados];
+    else delete todo[viewId];
+    localStorage.setItem(GRUPOS_PLEGADOS_KEY, JSON.stringify(todo));
+  } catch {
+    // Sin almacenamiento (ventana privada, bloqueado): se pliega igual, solo
+    // que no se recuerda al volver.
+  }
+}
+
+/** La cabecera de un grupo: el botón que lo pliega, su valor y cuántas filas
+ * tiene. `alPlegar(plegado)` esconde o enseña sus filas. */
+function cabeceraDeGrupo(grupo, { plegado, alPlegar }) {
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "db-group-toggle";
+  boton.setAttribute("aria-expanded", plegado ? "false" : "true");
+  const flecha = document.createElement("span");
+  flecha.className = "db-group-caret";
+  flecha.setAttribute("aria-hidden", "true");
+  const etiqueta = document.createElement("span");
+  etiqueta.className = `board-col-label db-group-label${grupo.tono ? ` ${grupo.tono}` : ""}${grupo.vacio ? " is-empty" : ""}`;
+  etiqueta.textContent = grupo.etiqueta;
+  const cuenta = document.createElement("span");
+  cuenta.className = "board-col-count";
+  cuenta.textContent = String(grupo.filas.length);
+  boton.append(flecha, etiqueta, cuenta);
+  boton.title = plegado ? "Desplegar el grupo" : "Plegar el grupo";
+  boton.addEventListener("click", () => {
+    const ahora = boton.getAttribute("aria-expanded") === "true";
+    boton.setAttribute("aria-expanded", ahora ? "false" : "true");
+    boton.title = ahora ? "Desplegar el grupo" : "Plegar el grupo";
+    alPlegar(ahora);
+  });
+  return boton;
 }
 
 function renderBoardColumn(
@@ -18731,7 +18974,43 @@ function renderList(database, rows, view, refresh, { barraEn = null } = {}) {
       "Aquí no hay filas todavía.",
       "Añade una con «Nueva fila», aquí debajo. Si la base ya tiene filas, las está dejando fuera el filtro de la vista.",
     );
-  rows.forEach((row) => wrap.appendChild(lineaDeFila(row)));
+  // Agrupada, cada grupo es una cabecera (que lo pliega) y sus líneas debajo.
+  // Se usa también al rehacer la lista tras crear una fila.
+  const plegados = view?.id ? gruposPlegadosDeVista(view.id) : new Set();
+  const pintarFilas = (filas, antesDe = null) => {
+    const poner = (nodo) => (antesDe ? wrap.insertBefore(nodo, antesDe) : wrap.appendChild(nodo));
+    const grupos = view?.config?.group_by && filas.length
+      ? gruposDeFilas(database, filas, view.config.group_by)
+      : null;
+    if (!grupos) {
+      filas.forEach((row) => poner(lineaDeFila(row)));
+      return;
+    }
+    filas.splice(0, filas.length, ...grupos.flatMap((g) => g.filas));
+    grupos.forEach((grupo) => {
+      const cabeza = document.createElement("div");
+      cabeza.className = "db-group-row db-group-row--list";
+      const lineas = grupo.filas.map((row) => lineaDeFila(row));
+      const plegado = plegados.has(grupo.clave);
+      cabeza.appendChild(
+        cabeceraDeGrupo(grupo, {
+          plegado,
+          alPlegar: (ahora) => {
+            lineas.forEach((el) => (el.hidden = ahora));
+            if (ahora) plegados.add(grupo.clave);
+            else plegados.delete(grupo.clave);
+            if (view?.id) guardarGruposPlegadosDeVista(view.id, plegados);
+          },
+        }),
+      );
+      poner(cabeza);
+      lineas.forEach((el) => {
+        el.hidden = plegado;
+        poner(el);
+      });
+    });
+  };
+  pintarFilas(rows);
   if (rows.length === 0) wrap.appendChild(avisoVacio());
 
   // «+ Nueva fila» al final de la lista, como una línea más. Al crear, la
@@ -18756,7 +19035,7 @@ function renderList(database, rows, view, refresh, { barraEn = null } = {}) {
         if (hijo !== addRow && hijo !== cabeza) hijo.remove();
       }
       if (res.filas.length === 0) wrap.insertBefore(avisoVacio(), addRow);
-      res.filas.forEach((fila) => wrap.insertBefore(lineaDeFila(fila), addRow));
+      pintarFilas(res.filas, addRow);
       sel.fijarVisibles(res.filas);
       refrescarRecuentoDeVista(wrap, res.filas.length, res.total);
       if (res.visible) enfocarFila(wrap, res.fila.id);
@@ -20029,6 +20308,33 @@ async function abrirDialogoDeTipo(database) {
  * opciones (cómo se reparten las horas entre responsables, estimación del
  * proyecto, volver a ser una base normal) o, en una base normal, ofrece
  * convertirla en Proyectos o en Tareas. */
+/** El menú de «Agrupar»: «Sin agrupar» y las propiedades que pueden agrupar
+ * esta vista, con la actual marcada. En un tablero no hay «Sin agrupar»: un
+ * tablero sin columnas es una tabla, y para eso está la vista de tabla. */
+function abrirMenuDeAgrupar(ancla, database, view, aplicarConfig) {
+  const menu = document.createElement("div");
+  menu.className = "db-col-menu";
+  const actual = view.config?.group_by || "";
+  const elegir = (clave) => () => {
+    cerrarPanelDeColumna();
+    if (clave !== actual) aplicarConfig({ group_by: clave || null });
+  };
+  menu.appendChild(crearEl("div", "db-col-menu-label", view.type === "board" ? "Columnas del tablero según" : "Agrupar filas por"));
+  if (view.type !== "board") {
+    menu.appendChild(
+      itemDeColumna("Sin agrupar", { radio: true, marca: actual ? "" : "✓", alElegir: elegir("") }),
+    );
+  }
+  database.schema_def
+    .filter((p) => agrupaPor(p, view.type))
+    .forEach((p) =>
+      menu.appendChild(
+        itemDeColumna(p.name, { radio: true, marca: p.key === actual ? "✓" : "", alElegir: elegir(p.key) }),
+      ),
+    );
+  abrirPanelFlotante(ancla, menu, { etiqueta: "Agrupar" });
+}
+
 function abrirMenuDeTipo(ancla, database) {
   const menu = document.createElement("div");
   const aplicar = async (promesa, aviso) => {
@@ -20537,17 +20843,7 @@ function openViewDialog(database) {
   viewDialogDatabase = database;
   document.getElementById("view-name").value = "";
   document.getElementById("view-type").value = "table";
-  const groupSelect = document.getElementById("view-groupby");
-  groupSelect.innerHTML = "";
-  database.schema_def.forEach((p) => {
-    // Una relación múltiple no puede ser columna de un tablero: una fila con
-    // varias filas enlazadas caería en varias a la vez.
-    if (p.type === "relation" && relacionMultiple(p)) return;
-    const opt = document.createElement("option");
-    opt.value = p.key;
-    opt.textContent = p.name;
-    groupSelect.appendChild(opt);
-  });
+  rellenarAgruparDeVistaNueva("table");
   // Las fechas del calendario: solo las propiedades de tipo fecha, que son las
   // únicas que colocan una fila en un día.
   const dateSelect = document.getElementById("view-date");
@@ -20576,14 +20872,38 @@ function openViewDialog(database) {
       opt.textContent = p.name;
       endSelect.appendChild(opt);
     });
-  document.getElementById("view-groupby-field").hidden = true;
   document.getElementById("view-date-field").hidden = true;
   document.getElementById("view-date-end-field").hidden = true;
   viewDialog.showModal();
 }
 
+/** Las opciones de «Agrupar por» del diálogo de vista nueva, según el tipo:
+ * la tabla y la lista empiezan sin agrupar; el tablero necesita una columna. */
+function rellenarAgruparDeVistaNueva(tipo) {
+  const groupSelect = document.getElementById("view-groupby");
+  const antes = groupSelect.value;
+  groupSelect.innerHTML = "";
+  if (tipo !== "board") {
+    const sin = document.createElement("option");
+    sin.value = "";
+    sin.textContent = "— Sin agrupar";
+    groupSelect.appendChild(sin);
+  }
+  (viewDialogDatabase?.schema_def || [])
+    .filter((p) => agrupaPor(p, tipo))
+    .forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.name;
+      groupSelect.appendChild(opt);
+    });
+  if ([...groupSelect.options].some((o) => o.value === antes)) groupSelect.value = antes;
+  const hayAlgo = [...groupSelect.options].some((o) => o.value);
+  document.getElementById("view-groupby-field").hidden = !["table", "list", "board"].includes(tipo) || !hayAlgo;
+}
+
 document.getElementById("view-type").addEventListener("change", (e) => {
-  document.getElementById("view-groupby-field").hidden = e.target.value !== "board";
+  rellenarAgruparDeVistaNueva(e.target.value);
   // Sin propiedades de fecha no hay nada que elegir: el calendario se crea
   // igual y dentro dice que a la base le falta una fecha.
   const hayFechas = document.getElementById("view-date").options.length > 0;
@@ -20599,7 +20919,7 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
   const name = document.getElementById("view-name").value.trim() || "Vista";
   const type = document.getElementById("view-type").value;
   const config = {};
-  if (type === "board") {
+  if (["board", "table", "list"].includes(type)) {
     const groupBy = document.getElementById("view-groupby").value;
     if (groupBy) config.group_by = groupBy;
   }

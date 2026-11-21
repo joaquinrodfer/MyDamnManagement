@@ -4315,6 +4315,49 @@
     color: var(--ink-muted);
   }
   .db-list-head-text { font-size: 12px; font-weight: 500; }
+  /* La cabecera de un grupo (tabla o lista agrupada): el valor con el punto
+     de su tono y cuántas filas tiene, como la cabecera de una columna del
+     tablero. Pulsarla pliega el grupo. */
+  .db-group-row > td {
+    padding: 14px 4px 4px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--surface, transparent);
+  }
+  table .db-group-row:first-child > td { padding-top: 6px; }
+  .db-group-row--list { padding: 14px 4px 4px; border-bottom: 1px solid var(--panel-border); }
+  .db-group-row--list:first-of-type { padding-top: 6px; }
+  .db-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+    padding: 3px 8px 3px 4px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    position: sticky;
+    left: 4px;
+  }
+  .db-group-toggle:hover { background: var(--row-hover); }
+  .db-group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .db-group-caret {
+    flex: none;
+    width: 0;
+    height: 0;
+    border-left: 4.5px solid transparent;
+    border-right: 4.5px solid transparent;
+    border-top: 6px solid var(--ink-muted);
+    transition: transform var(--dur-fast, .12s) ease;
+  }
+  .db-group-toggle[aria-expanded="false"] .db-group-caret { transform: rotate(-90deg); }
+  .db-group-label.is-empty { color: var(--ink-muted); }
+  .db-group-label.is-empty::before { background: transparent; border: 1.5px dashed var(--ink-muted); width: 5px; height: 5px; }
   .list-row-item {
     display: flex;
     align-items: center;
