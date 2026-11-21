@@ -202,7 +202,7 @@ Seguramente en dos tiradas: primero modelo y permisos, después pantallas.
 - Convertir una propiedad `person` existente en «varias personas» (hoy solo al crearla) (H4).
 - Columna calculada de horas en la tabla de proyectos (hoy, en la ficha de cada proyecto).
 - Vistas de la carga por proyecto y por espacio (las piezas ya lo permiten).
-- Autocompletado del `@` en el editor (las menciones funcionan escribiéndolas).
+- ~~Autocompletado del `@` en el editor~~ — hecho (2026-11-21): lista de personas al escribir `@`, menciones conocidas como etiqueta.
 - «En foco» no silencia los avisos todavía.
 - Una URL de webhook por espacio (el plan lo pedía así); eventos adicionales si hacen falta.
 - Revisar a 375 px: tabla de carga, auditoría, avisos y administración de espacios.
