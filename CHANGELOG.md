@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Imágenes en las páginas
+- Se pueden meter imágenes en el cuerpo de una página: **pegándolas** (Ctrl+V, por ejemplo una captura), **soltándolas** encima o con **«/imagen»**. Se suben al vault (`_attachments/<año>/<mes>/`) y entran como un bloque propio `![pie](/files/…)`.
+- Se ven a todo el ancho con su pie debajo. Clic para **ampliar** (Escape o clic para cerrar) y, al pasar el ratón, «Editar» para cambiar el pie o borrarla.
+- `POST /pages/{id}/files`: hasta 50 MB; el tipo se decide por los bytes (PNG, JPEG, GIF, WebP), nunca por el nombre. Pide permiso de edición.
+
 ## Páginas fijadas
 - Nueva sección **Fijadas** en el panel izquierdo, bajo «Mis cosas»: las páginas y bases que más usas, a un clic. Solo aparece si has fijado algo.
 - Se fija y se quita desde el «⋯» de la página o de la base («Fijar en el panel» / «Quitar de Fijadas»), con el clic derecho en el árbol o con la ✕ que sale al pasar el ratón. Se reordenan arrastrando.
