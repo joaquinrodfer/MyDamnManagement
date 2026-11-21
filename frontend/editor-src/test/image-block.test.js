@@ -30,3 +30,19 @@ test("una imagen nueva va en la línea vacía o detrás del bloque", () => {
   assert.deepEqual(blockInsertAt(doc, blocks, 5), { from: 25, to: 25, before: "\n\n", after: "" });
   assert.deepEqual(blockInsertAt(doc, blocks, 27), { from: 27, to: 27, before: "", after: "" });
 });
+
+import { mediaOfBlockText } from "../entry.js";
+
+test("un archivo de la app solo en su línea es multimedia según su extensión", () => {
+  const u = (ext) => `/files/_attachments/2026/11/abc-x.${ext}`;
+  assert.equal(mediaOfBlockText(`[demo.mp4](${u("mp4")})`).kind, "video");
+  assert.equal(mediaOfBlockText(`[nota.mp3](${u("mp3")})`).kind, "audio");
+  assert.equal(mediaOfBlockText(`[informe.pdf](${u("pdf")})`).kind, "pdf");
+  assert.deepEqual(mediaOfBlockText(`[hoja.xlsx](${u("xlsx")})`), { kind: "file", alt: "hoja.xlsx", url: u("xlsx") });
+  assert.equal(mediaOfBlockText(`![pie](${u("png")})`).kind, "image");
+});
+
+test("un enlace normal o a otra web no es un archivo", () => {
+  assert.equal(mediaOfBlockText("[Notion](https://notion.so)"), null);
+  assert.equal(mediaOfBlockText("Mira [demo.mp4](/files/a.mp4) aquí"), null);
+});

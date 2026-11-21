@@ -160,3 +160,69 @@ def save_file(root: str, name: str, data: bytes, ext: str, now: Optional[datetim
     rel = file_rel(name, ext, now)
     vaultfs.atomic_write_bytes(os.path.join(root, rel), data)
     return rel
+
+
+# Lo que se sirve en línea además de las imágenes (vídeo, audio, PDF). Igual
+# que con las imágenes, el tipo lo deciden los bytes del fichero, nunca su
+# nombre: un HTML o un SVG con otra extensión se sigue descargando.
+MEDIA_KINDS = {
+    "mp4": ("video", "video/mp4"),
+    "webm": ("video", "video/webm"),
+    "mov": ("video", "video/quicktime"),
+    "mp3": ("audio", "audio/mpeg"),
+    "m4a": ("audio", "audio/mp4"),
+    "ogg": ("audio", "audio/ogg"),
+    "wav": ("audio", "audio/wav"),
+    "flac": ("audio", "audio/flac"),
+    "pdf": ("pdf", "application/pdf"),
+}
+
+
+def detect_media_format(data: bytes) -> Optional[str]:
+    """Extensión de un vídeo, audio o PDF conocido según sus bytes, o None."""
+    if data.startswith(b"%PDF-"):
+        return "pdf"
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        marca = data[8:12]
+        if marca in (b"M4A ", b"M4B "):
+            return "m4a"
+        if marca == b"qt  ":
+            return "mov"
+        return "mp4"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "webm"
+    if data.startswith(b"ID3") or (len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0 and (data[1] & 0x06) != 0):
+        return "mp3"
+    if data.startswith(b"OggS"):
+        return "ogg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "wav"
+    if data.startswith(b"fLaC"):
+        return "flac"
+    return None
+
+
+def served_type(head: bytes) -> Optional[str]:
+    """Content-Type con el que `/files` sirve un fichero EN LÍNEA, o None si se
+    descarga (`attachment`): imágenes, vídeo, audio y PDF reconocidos."""
+    imagen = media_type(head)
+    if imagen:
+        return imagen
+    fmt = detect_media_format(head)
+    return MEDIA_KINDS[fmt][1] if fmt else None
+
+
+_EXT_RE = __import__("re").compile(r"^[a-z0-9]{1,8}$")
+
+
+def other_ext(name: str) -> str:
+    """Extensión para un archivo cualquiera (se descarga, nunca se abre en
+    línea): la del nombre si es corta y limpia, o `bin`."""
+    ext = os.path.splitext(name or "")[1].lstrip(".").lower()
+    if ext in ("html", "htm", "svg", "xhtml", "xml", "js", "mjs"):
+        return "txt"  # por si acaso: nunca con una extensión que un navegador ejecute
+    # Un nombre que dice ser imagen/vídeo/PDF pero cuyos bytes no lo son: el
+    # editor decide cómo pintar por la extensión, así que no puede llevarla.
+    if ext in MEDIA_KINDS or ext in MEDIA_TYPES or ext == "jpeg":
+        return "bin"
+    return ext if _EXT_RE.match(ext) else "bin"

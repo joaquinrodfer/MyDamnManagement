@@ -309,11 +309,15 @@ async def upload_file(page_id: uuid.UUID, file: UploadFile, repo: Repository = D
     Va al vault (`_attachments/<año>/<mes>/<id>-<nombre>.<ext>`) como la
     portada, así que la copia de la carpeta se lleva el archivo con su página.
     El tipo sale de los magic bytes, nunca del nombre ni del Content-Type del
-    cliente. Por ahora solo imágenes (PNG, JPEG, GIF, WebP). Pide `edit` sobre
-    la página (la guarda: es un POST bajo `/pages/{page_id}`).
+    cliente. Pide `edit` sobre la página (la guarda: es un POST bajo `/pages/{page_id}`).
 
-    Devuelve `{url, name, size, kind, markdown}`: `markdown` es la línea que
-    el editor inserta (`![nombre](url)`).
+    Imágenes (PNG, JPEG, GIF, WebP), vídeo (MP4, WebM, MOV), audio (MP3, M4A,
+    OGG, WAV, FLAC) y PDF se reconocen por sus bytes y se sirven en línea;
+    cualquier otro archivo se guarda y se descarga.
+
+    Devuelve `{url, name, size, kind, markdown}`: `kind` es `image`, `video`,
+    `audio`, `pdf` o `file`, y `markdown` la línea que el editor inserta
+    (`![pie](url)` para una imagen, `[nombre](url)` para lo demás).
     """
     _get_or_404(repo, page_id)
     data = await file.read(MAX_FILE_BYTES + 1)
@@ -321,22 +325,31 @@ async def upload_file(page_id: uuid.UUID, file: UploadFile, repo: Repository = D
         raise HTTPException(413, f"Máximo {MAX_FILE_BYTES // (1024 * 1024)} MB por archivo")
     if not data:
         raise HTTPException(400, "El archivo está vacío")
+    nombre = os.path.basename(file.filename or "") or "archivo"
     ext = attachments.detect_image_format(data)
-    if ext is None:
-        raise HTTPException(415, "Por ahora solo se pueden subir imágenes PNG, JPEG, GIF o WebP")
-    nombre = os.path.basename(file.filename or "") or f"imagen.{ext}"
+    if ext is not None:
+        kind = "image"
+    else:
+        ext = attachments.detect_media_format(data)
+        if ext is not None:
+            kind = attachments.MEDIA_KINDS[ext][0]
+        else:
+            # Cualquier otro archivo se guarda y se DESCARGA (nunca se abre en
+            # línea: `/files` solo sirve así lo que reconoce por sus bytes).
+            kind, ext = "file", attachments.other_ext(nombre)
+    if nombre == "archivo":
+        nombre = f"archivo.{ext}"
     rel = attachments.save_file(settings.vault_path, nombre, data, ext)
     url = attachments.url_for(rel)
-    # El texto alternativo es el nombre sin extensión; los corchetes y saltos
-    # romperían la sintaxis de la imagen.
-    alt = os.path.splitext(nombre)[0].replace("[", "(").replace("]", ")").replace("\n", " ").strip() or "imagen"
-    return {
-        "url": url,
-        "name": nombre,
-        "size": len(data),
-        "kind": "image",
-        "markdown": f"![{alt}]({url})",
-    }
+    # El texto que se ve (pie o nombre): sin corchetes ni saltos, que romperían
+    # la sintaxis del enlace.
+    limpio = lambda t: t.replace("[", "(").replace("]", ")").replace("\n", " ").replace("\r", " ").strip()
+    if kind == "image":
+        alt = limpio(os.path.splitext(nombre)[0]) or "imagen"
+        markdown = f"![{alt}]({url})"
+    else:
+        markdown = f"[{limpio(nombre) or 'archivo'}]({url})"
+    return {"url": url, "name": nombre, "size": len(data), "kind": kind, "markdown": markdown}
 
 
 @router.post("/{page_id}/header-image", response_model=schemas.PageRead)
