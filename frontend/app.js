@@ -732,6 +732,26 @@ function resumenDeInicio(datos) {
   return linea;
 }
 
+/** Sube un archivo al cuerpo de una página (`POST /pages/{id}/files`) y
+ * devuelve `{url, name, size, kind, markdown}`. Explica el fallo y relanza. */
+async function subirArchivoAPagina(pageId, file) {
+  const aviso = showError(`Subiendo «${file.name || "archivo"}»…`, "info", { sticky: true });
+  const formData = new FormData();
+  formData.append("file", file, file.name || "imagen.png");
+  try {
+    const res = await fetch(`/pages/${pageId}/files`, { method: "POST", body: formData });
+    if (sesionExpirada(res)) throw new Error("sesión caducada");
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+    return data;
+  } catch (e) {
+    reportError(`No se pudo subir «${file.name || "el archivo"}»`, e);
+    throw e;
+  } finally {
+    aviso?.querySelector?.(".error-toast-close, button")?.click();
+  }
+}
+
 /** Horas a texto corto: «12 h», «7,5 h». */
 function horasCortas(h) {
   const n = Math.round((Number(h) || 0) * 10) / 10;
@@ -6804,6 +6824,8 @@ function renderNote(page, backlinks) {
     renderDatabaseBlock: renderDatabaseEmbed,
     // Arrastrar desde el fondo de la página marca bloques (rectángulo de selección).
     selectionArea: document.getElementById("main"),
+    // Imágenes pegadas, soltadas o elegidas con «/imagen».
+    onUploadFile: (file) => subirArchivoAPagina(page.id, file),
   });
   noteEditor = state.editor;
 

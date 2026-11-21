@@ -127,3 +127,36 @@ def delete_header(root: str, page_id, keep: Optional[str] = None) -> int:
         except FileNotFoundError:
             pass
     return removed
+
+
+# --------------------------------------------------------------------------
+# archivos dentro del cuerpo de una página (multimedia)
+# --------------------------------------------------------------------------
+
+_SLUG_RE = __import__("re").compile(r"[^a-z0-9]+")
+
+
+def file_slug(name: str) -> str:
+    """Un trozo legible del nombre original para la ruta (`informe-q4`).
+
+    Solo letras ASCII minúsculas, dígitos y guiones, como mucho 40: el nombre
+    del cliente no decide nada más que esto (ni la extensión ni el tipo)."""
+    import unicodedata
+
+    base = os.path.splitext(os.path.basename(name or ""))[0]
+    base = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode().lower()
+    return _SLUG_RE.sub("-", base).strip("-")[:40].strip("-") or "archivo"
+
+
+def file_rel(name: str, ext: str, now: Optional[datetime] = None) -> str:
+    """Ruta (relativa al vault) de un archivo nuevo: nunca pisa a otro."""
+    import uuid as _uuid
+
+    return f"{ATTACHMENTS_DIR}/{month_folder(now)}/{_uuid.uuid4().hex[:12]}-{file_slug(name)}.{ext}"
+
+
+def save_file(root: str, name: str, data: bytes, ext: str, now: Optional[datetime] = None) -> str:
+    """Escribe un archivo subido al cuerpo de una página. Devuelve su ruta relativa."""
+    rel = file_rel(name, ext, now)
+    vaultfs.atomic_write_bytes(os.path.join(root, rel), data)
+    return rel

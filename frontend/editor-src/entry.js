@@ -270,6 +270,8 @@ function buildMarkdownLinkDecorations(view) {
     MDLINK_RE.lastIndex = 0;
     let m;
     while ((m = MDLINK_RE.exec(text))) {
+      // `![texto](url)` es una imagen, no un enlace: la pinta `imageField`.
+      if (m.index > 0 && text[m.index - 1] === "!") continue;
       const start = from + m.index;
       const end = start + m[0].length;
       const label = m[1];
@@ -781,6 +783,8 @@ const SLASH_EXTRA_COMMANDS = [
   // es una conversión de bloque: tiene efectos fuera del texto (lista de la
   // API, altas), así que vive aquí y no en BLOCK_TYPES.
   { type: "database", label: "Base", abbrev: "base" },
+  // "/imagen": elige un archivo y lo sube (ver `pickAndInsertFiles`).
+  { type: "image", label: "Imagen", abbrev: "imagen" },
 ];
 const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
 
@@ -2727,6 +2731,246 @@ const hrField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// ------------------------------------------------------------ imágenes
+// Una línea que es SOLO `![texto](url)` se ve como la imagen, a todo el ancho,
+// con su texto debajo como pie (si lo hay). Como la línea horizontal: mientras
+// el cursor está en ese bloque se ve el Markdown, para poder cambiar el pie o
+// borrarla. Clic en la imagen la amplía; «Editar» pone el cursor en el bloque.
+// Solo imágenes de la app (`/files/…`) o de la web (`http(s)://`).
+
+const IMAGE_LINE_RE = /^!\[([^\]\n]*)\]\(((?:\/files\/|https?:\/\/)[^)\s]+)\)[ \t]*$/;
+
+/** `{alt, url}` si el texto del bloque es una imagen sola, o null. */
+export function imageOfBlockText(text) {
+  const m = IMAGE_LINE_RE.exec(text || "");
+  return m ? { alt: m[1].trim(), url: m[2] } : null;
+}
+
+function abrirVisorDeImagen(url, alt) {
+  const capa = document.createElement("div");
+  capa.className = "mdm-lightbox";
+  capa.setAttribute("role", "dialog");
+  capa.setAttribute("aria-label", alt || "Imagen");
+  const img = document.createElement("img");
+  img.src = url;
+  img.alt = alt || "";
+  capa.appendChild(img);
+  if (alt) {
+    const pie = document.createElement("div");
+    pie.className = "mdm-lightbox-caption";
+    pie.textContent = alt;
+    capa.appendChild(pie);
+  }
+  const cerrar = () => {
+    capa.remove();
+    window.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cerrar();
+    }
+  };
+  capa.addEventListener("click", cerrar);
+  window.addEventListener("keydown", onKey, true);
+  document.body.appendChild(capa);
+}
+
+class ImageWidget extends WidgetType {
+  constructor(alt, url) {
+    super();
+    this.alt = alt;
+    this.url = url;
+  }
+  eq(other) {
+    return other instanceof ImageWidget && other.alt === this.alt && other.url === this.url;
+  }
+  get estimatedHeight() {
+    return 320;
+  }
+  toDOM(view) {
+    const fig = document.createElement("figure");
+    fig.className = "cm-mdm-image";
+    const img = document.createElement("img");
+    img.src = this.url;
+    img.alt = this.alt;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.draggable = false;
+    img.title = "Ampliar";
+    img.addEventListener("load", () => view.requestMeasure());
+    img.addEventListener("error", () => fig.classList.add("is-broken"));
+    img.addEventListener("click", () => abrirVisorDeImagen(this.url, this.alt));
+    fig.appendChild(img);
+    const roto = document.createElement("div");
+    roto.className = "cm-mdm-image-broken";
+    roto.textContent = "No se puede cargar la imagen";
+    fig.appendChild(roto);
+    if (this.alt) {
+      const pie = document.createElement("figcaption");
+      pie.textContent = this.alt;
+      fig.appendChild(pie);
+    }
+    const tools = document.createElement("div");
+    tools.className = "cm-mdm-image-tools";
+    const boton = (texto, accion) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = texto;
+      b.addEventListener("mousedown", (e) => e.preventDefault());
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        accion();
+      });
+      tools.appendChild(b);
+    };
+    boton("Ampliar", () => abrirVisorDeImagen(this.url, this.alt));
+    boton("Editar", () => {
+      // El cursor al final del Markdown: la línea se ve en crudo y se puede
+      // cambiar el pie (lo de los corchetes) o borrarla.
+      const pos = view.posAtDOM(fig);
+      const line = view.state.doc.lineAt(pos);
+      view.dispatch({ selection: { anchor: line.to } });
+      view.focus();
+    });
+    fig.appendChild(tools);
+    return fig;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function imageDecorations(state) {
+  const { blocks } = state.field(blockField);
+  const ranges = [];
+  for (const b of blocks) {
+    if (b.type !== "paragraph") continue;
+    const image = imageOfBlockText(state.doc.sliceString(b.from, b.to));
+    if (!image) continue;
+    if (selectionIntersects(state, b.from, b.to)) continue;
+    ranges.push(Decoration.replace({ widget: new ImageWidget(image.alt, image.url), block: true }).range(b.from, b.to));
+  }
+  return Decoration.set(ranges, true);
+}
+
+// Un StateField y no un ViewPlugin por lo mismo que `hrField`: las decoraciones
+// de bloque solo se admiten desde el estado.
+const imageField = StateField.define({
+  create(state) {
+    return imageDecorations(state);
+  },
+  update(deco, tr) {
+    if (
+      tr.docChanged ||
+      !tr.state.selection.eq(tr.startState.selection) ||
+      tr.state.field(blockField) !== tr.startState.field(blockField)
+    ) {
+      return imageDecorations(tr.state);
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+// ------------------------------------------------- subir archivos al cuerpo
+// Pegar una imagen (Ctrl+V, p. ej. una captura), soltarla sobre la página o
+// elegirla con «/imagen»: se sube con `onUploadFile` (la app la manda a
+// `POST /pages/{id}/files`) y entra como un bloque propio con el Markdown que
+// devuelve el servidor.
+
+const uploaders = new WeakMap();
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function imageFilesOf(list) {
+  return [...(list || [])].filter((f) => IMAGE_TYPES.has(f.type));
+}
+
+/** Dónde entra un bloque nuevo junto a `at`: si la línea está vacía, en ella;
+ * si no, detrás del bloque que la contiene, separado por una línea en blanco. */
+export function blockInsertAt(doc, blocks, at) {
+  const line = doc.lineAt(Math.max(0, Math.min(at, doc.length)));
+  if (!line.text.trim()) return { from: line.from, to: line.to, before: "", after: "" };
+  const block = blocks.find((b) => at >= b.from && at <= b.to);
+  const end = block ? block.to : line.to;
+  return { from: end, to: end, before: "\n\n", after: "" };
+}
+
+async function insertUploadedFiles(view, files, at) {
+  const upload = uploaders.get(view);
+  if (!upload || !files.length) return;
+  let pos = at;
+  for (const file of files) {
+    let res;
+    try {
+      res = await upload(file);
+    } catch {
+      continue; // la app ya ha explicado el fallo
+    }
+    if (!res?.markdown || !view.dom.isConnected) continue;
+    const { blocks } = view.state.field(blockField);
+    const sitio = blockInsertAt(view.state.doc, blocks, Math.min(pos, view.state.doc.length));
+    let insert = sitio.before + res.markdown + sitio.after;
+    const fin = sitio.from + insert.length;
+    // El cursor NO se queda dentro de la imagen (se vería el Markdown en
+    // crudo): si se pegó en medio de un párrafo, sigue donde estaba; si fue en
+    // una línea vacía, salta al bloque siguiente o, al final del documento, a
+    // una línea nueva para seguir escribiendo.
+    let anchor;
+    if (sitio.before) {
+      anchor = view.state.selection.main.head;
+    } else if (sitio.to < view.state.doc.length) {
+      const siguiente = blocks.find((b) => b.from > sitio.to);
+      anchor = siguiente ? siguiente.from - (sitio.to - sitio.from) + res.markdown.length : fin;
+    } else {
+      insert += "\n\n";
+      anchor = sitio.from + insert.length;
+    }
+    view.dispatch({
+      changes: { from: sitio.from, to: sitio.to, insert },
+      selection: { anchor: Math.min(anchor, sitio.from + insert.length + (view.state.doc.length - sitio.to)) },
+      scrollIntoView: true,
+    });
+    pos = fin;
+  }
+}
+
+function pickAndInsertFiles(view, at, accept) {
+  if (!uploaders.get(view)) return;
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = accept;
+  input.multiple = true;
+  input.addEventListener("change", () => {
+    insertUploadedFiles(view, imageFilesOf(input.files), at);
+  });
+  input.click();
+}
+
+const fileDropHandlers = EditorView.domEventHandlers({
+  paste(event, view) {
+    const files = imageFilesOf(event.clipboardData?.files);
+    if (!files.length || !uploaders.get(view)) return false;
+    event.preventDefault();
+    insertUploadedFiles(view, files, view.state.selection.main.head);
+    return true;
+  },
+  dragover(event, view) {
+    if (!uploaders.get(view) || ![...(event.dataTransfer?.types || [])].includes("Files")) return false;
+    event.preventDefault();
+    return true;
+  },
+  drop(event, view) {
+    const files = imageFilesOf(event.dataTransfer?.files);
+    if (!files.length || !uploaders.get(view)) return false;
+    event.preventDefault();
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.doc.length;
+    insertUploadedFiles(view, files, pos);
+    return true;
+  },
+});
+
 // --------------------------------------------------------- menú "/" (slash)
 //
 // Al escribir "/" en una línea vacía se activa un menú de tipos de bloque,
@@ -3288,6 +3532,14 @@ function slashMenuExtension({
         }
 
         // ---- menú "/"
+        if (chosen.type === "image") {
+          // Borra "/imagen" y abre el selector de archivos del sistema; lo
+          // elegido se sube y entra como bloque donde estaba el comando.
+          this.close();
+          this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
+          pickAndInsertFiles(this.view, from, "image/png,image/jpeg,image/gif,image/webp");
+          return true;
+        }
         if (chosen.type === "database") {
           this.openDatabasePicker(from);
           return true;
@@ -4482,6 +4734,7 @@ export function createNoteEditor({
   linkTargets,
   renderDatabaseBlock,
   selectionArea,
+  onUploadFile,
 }) {
   // El menú "/" y el selector de bases van en una variable y no sueltos en la
   // lista de extensiones: la app tiene que poder cerrarlos desde fuera al
@@ -4560,6 +4813,8 @@ export function createNoteEditor({
         syntaxMarkPlugin(),
         underlinePlugin(),
         hrField,
+        imageField,
+        fileDropHandlers,
         databaseBlockField(renderDatabaseBlock),
         suggestionField,
         suggestionPlugin(),
@@ -4610,6 +4865,7 @@ export function createNoteEditor({
 
   // Rectángulo de selección desde el fondo de la página (ver `beginMarquee`).
   const detachMarquee = attachMarqueeArea(view, selectionArea);
+  if (onUploadFile) uploaders.set(view, onUploadFile);
 
   return {
     // Lo que se guarda y lo que se exporta: el cuerpo canónico, sin las líneas

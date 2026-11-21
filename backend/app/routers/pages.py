@@ -1,3 +1,4 @@
+import os
 import uuid
 from pathlib import Path
 from typing import List
@@ -20,6 +21,9 @@ from app.versioning import conflict, etag, parse_if_match
 router = APIRouter(prefix="/pages", tags=["pages"])
 
 MAX_HEADER_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB, generoso para una imagen de cabecera
+# Un archivo dentro del cuerpo de una página (imagen, y más adelante vídeo,
+# audio, PDF…). 50 MB: cabe un vídeo corto sin llenar el servidor.
+MAX_FILE_BYTES = 50 * 1024 * 1024
 
 
 def avisar_de_cambio(antes, page) -> None:
@@ -296,6 +300,43 @@ def export_page_markdown(
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": export.content_disposition(page.title)},
     )
+
+
+@router.post("/{page_id}/files", status_code=201)
+async def upload_file(page_id: uuid.UUID, file: UploadFile, repo: Repository = Depends(get_repo)):
+    """Sube un archivo para el cuerpo de la página y devuelve cómo enlazarlo.
+
+    Va al vault (`_attachments/<año>/<mes>/<id>-<nombre>.<ext>`) como la
+    portada, así que la copia de la carpeta se lleva el archivo con su página.
+    El tipo sale de los magic bytes, nunca del nombre ni del Content-Type del
+    cliente. Por ahora solo imágenes (PNG, JPEG, GIF, WebP). Pide `edit` sobre
+    la página (la guarda: es un POST bajo `/pages/{page_id}`).
+
+    Devuelve `{url, name, size, kind, markdown}`: `markdown` es la línea que
+    el editor inserta (`![nombre](url)`).
+    """
+    _get_or_404(repo, page_id)
+    data = await file.read(MAX_FILE_BYTES + 1)
+    if len(data) > MAX_FILE_BYTES:
+        raise HTTPException(413, f"Máximo {MAX_FILE_BYTES // (1024 * 1024)} MB por archivo")
+    if not data:
+        raise HTTPException(400, "El archivo está vacío")
+    ext = attachments.detect_image_format(data)
+    if ext is None:
+        raise HTTPException(415, "Por ahora solo se pueden subir imágenes PNG, JPEG, GIF o WebP")
+    nombre = os.path.basename(file.filename or "") or f"imagen.{ext}"
+    rel = attachments.save_file(settings.vault_path, nombre, data, ext)
+    url = attachments.url_for(rel)
+    # El texto alternativo es el nombre sin extensión; los corchetes y saltos
+    # romperían la sintaxis de la imagen.
+    alt = os.path.splitext(nombre)[0].replace("[", "(").replace("]", ")").replace("\n", " ").strip() or "imagen"
+    return {
+        "url": url,
+        "name": nombre,
+        "size": len(data),
+        "kind": "image",
+        "markdown": f"![{alt}]({url})",
+    }
 
 
 @router.post("/{page_id}/header-image", response_model=schemas.PageRead)

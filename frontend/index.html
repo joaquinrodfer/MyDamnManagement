@@ -1998,6 +1998,33 @@
     user-select: none;
     white-space: nowrap;
   }
+  /* ---------- imágenes en el cuerpo (ImageWidget del editor) ---------- */
+  #note-body .cm-mdm-image { position: relative; margin: 6px 0 10px; padding: 0 2px 0 6px; display: flex; flex-direction: column; align-items: flex-start; }
+  #note-body .cm-mdm-image img {
+    display: block; max-width: 100%; max-height: 70vh; border-radius: 8px; cursor: zoom-in;
+    background: var(--code-bg); box-shadow: 0 0 0 1px var(--panel-border);
+  }
+  #note-body .cm-mdm-image figcaption { margin-top: 6px; font-size: 13px; color: var(--ink-muted); }
+  #note-body .cm-mdm-image-broken { display: none; padding: 18px 16px; border-radius: 8px; background: var(--code-bg); color: var(--ink-muted); font-size: 13px; }
+  #note-body .cm-mdm-image.is-broken img { display: none; }
+  #note-body .cm-mdm-image.is-broken .cm-mdm-image-broken { display: block; }
+  #note-body .cm-mdm-image-tools {
+    position: absolute; top: 8px; left: 14px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s;
+  }
+  #note-body .cm-mdm-image:hover .cm-mdm-image-tools { opacity: 1; }
+  #note-body .cm-mdm-image-tools button {
+    border: 0; border-radius: 6px; padding: 4px 9px; font: inherit; font-size: 12px; cursor: pointer;
+    background: rgba(15, 17, 24, 0.72); color: #fff; backdrop-filter: blur(6px);
+  }
+  #note-body .cm-mdm-image-tools button:hover { background: rgba(15, 17, 24, 0.9); }
+  .mdm-lightbox {
+    position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+    background: rgba(8, 9, 14, 0.86); cursor: zoom-out; padding: 32px; animation: np-fade-in .15s ease;
+  }
+  .mdm-lightbox img { max-width: 100%; max-height: calc(100vh - 110px); border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .mdm-lightbox-caption { color: #e8eaf2; font-size: 14px; }
+  @keyframes np-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
   /* ---------- rectángulo de selección ----------
      Arrastrar desde el fondo de la página (donde no hay texto) dibuja este
      rectángulo y marca los bloques que toca (ver `beginMarquee` en
