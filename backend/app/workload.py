@@ -34,12 +34,10 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from app import closed
-from app import index as index_mod
+from app import closed, worktime
 from app.due import iso_day
 
-DEFAULT_CAPACITY = 40.0
-META_CAPACITY = "workload_capacity"  # JSON {user_id: horas por semana}
+DEFAULT_CAPACITY = worktime.weekly(worktime.DEFAULT_DAY_HOURS)
 MAX_WEEKS = 26
 
 
@@ -100,26 +98,28 @@ def _ids(value: Any) -> list[str]:
 
 
 def capacities(conn: sqlite3.Connection) -> dict[str, float]:
-    raw = index_mod.get_meta(conn, META_CAPACITY)
-    try:
-        data = json.loads(raw) if raw else {}
-    except ValueError:
-        data = {}
-    return {str(k): float(v) for k, v in data.items() if _number(v) > 0}
+    """Las horas por semana de la jornada de cada persona que tiene una propia
+    (sin festivos ni ausencias). Las demás, `DEFAULT_CAPACITY`."""
+    return {uid: worktime.weekly(h) for uid, h in worktime.schedules(conn).items()}
 
 
 def set_capacity(conn: sqlite3.Connection, user_id: str, hours: Optional[float]) -> dict[str, float]:
-    data = capacities(conn)
-    if hours is None:
-        data.pop(user_id, None)
-    else:
-        data[user_id] = float(hours)
-    index_mod.set_meta(conn, META_CAPACITY, json.dumps(data, sort_keys=True))
-    return data
+    """Lo de antes (horas por semana): una jornada de lunes a viernes por igual."""
+    worktime.set_schedule(conn, user_id, None if hours is None else worktime.from_weekly(float(hours)))
+    return capacities(conn)
 
 
-def pieces(conn: sqlite3.Connection, visible: Optional[set[str]]) -> list[dict[str, Any]]:
-    """Todas las piezas de carga (sin enmascarar los títulos que no se ven)."""
+def pieces(
+    conn: sqlite3.Connection,
+    visible: Optional[set[str]],
+    calendar: Optional[worktime.Calendar] = None,
+) -> list[dict[str, Any]]:
+    """Todas las piezas de carga (sin enmascarar los títulos que no se ven).
+
+    Las horas de cada persona se reparten en los días que ESA persona trabaja
+    (`worktime.Calendar.spread`: su jornada, sin festivos ni ausencias) y se
+    suman por semana: una pieza por persona, tarea y semana."""
+    calendar = calendar or worktime.Calendar(conn)
     bases = conn.execute(
         "SELECT d.id AS id, d.schema_json AS schema_json, k.kind_json AS kind_json,"
         " c.rule_json AS rule_json, p.title AS title, p.workspace_id AS workspace_id,"
@@ -178,7 +178,10 @@ def pieces(conn: sqlite3.Connection, visible: Optional[set[str]]) -> list[dict[s
         share = t["hours"] / len(t["people"]) if t["split"] == "equal" else t["hours"]
         project_title = titles.get(t["projects"][0]) if t["projects"] else None
         for person in t["people"]:
-            slots = spread(t["start"], t["end"], share) or [(None, 0.0)]
+            por_semana: dict[Optional[date], float] = defaultdict(float)
+            for dia, h in calendar.spread(person, t["start"], t["end"], share) or [(None, 0.0)]:
+                por_semana[monday(dia) if dia else None] += h
+            slots = sorted(por_semana.items(), key=lambda x: (x[0] is None, x[0] or date.min))
             for week, h in slots:
                 out.append({
                     "person_id": person,
@@ -222,7 +225,7 @@ def report(
     first = monday(today)
     window = [first + timedelta(weeks=i) for i in range(weeks)]
     keys = [w.isoformat() for w in window]
-    caps = capacities(conn)
+    calendar = worktime.Calendar(conn)
 
     users = {
         r["id"]: r
@@ -231,7 +234,7 @@ def report(
     from app import auth  # import tardío: `auth` no importa este módulo
 
     per_person: dict[str, dict[str, Any]] = {}
-    for piece in pieces(conn, visible):
+    for piece in pieces(conn, visible, calendar):
         piece = piece if piece["visible"] else mask(piece)
         piece.pop("visible", None)
         pid = piece["person_id"]
@@ -244,7 +247,14 @@ def report(
                 "username": u["username"] if u else None,
                 "color": u["color"] if u else None,
                 "avatar": auth.avatar_of(u) if u else None,
-                "capacity": caps.get(pid, DEFAULT_CAPACITY),
+                # `capacity`: su jornada semanal; `capacity_weeks`: lo que de
+                # verdad tiene cada semana (sin festivos ni ausencias), que es
+                # contra lo que se mide la saturación.
+                "capacity": worktime.weekly(calendar.schedule(pid)),
+                "schedule": calendar.schedule(pid),
+                "capacity_weeks": {},
+                "time_off": {},
+                "dedication": calendar.dedications(pid),
                 "weeks": {k: 0.0 for k in keys},
                 "before": 0.0, "after": 0.0, "unscheduled": 0.0,
                 "tasks": set(), "pieces": [],
@@ -264,6 +274,11 @@ def report(
     people = []
     for row in per_person.values():
         row["tasks"] = len(row["tasks"])
+        for w, k in zip(window, keys):
+            semana = calendar.week(row["id"], w)
+            row["capacity_weeks"][k] = semana["capacity"]
+            if semana["holidays"] or semana["absences"]:
+                row["time_off"][k] = {"holidays": semana["holidays"], "absences": semana["absences"]}
         row["weeks"] = {k: round(v, 2) for k, v in row["weeks"].items()}
         for k in ("before", "after", "unscheduled"):
             row[k] = round(row[k], 2)

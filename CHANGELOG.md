@@ -2,6 +2,14 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Jornada, festivos y ausencias en la carga
+- Cada persona tiene su **jornada**: horas por día de la semana (40, 37,5, 35, 30 h, viernes corto, turnos de fin de semana…). La cambia un administrador desde «Carga del equipo» (icono de calendario junto a la capacidad) o desde Ajustes → Administración → «Jornada…».
+- **Dedicación a cada espacio** (en %): la parte de su capacidad que cuenta en cada espacio. Sin rellenar, el 100 % en cada uno; la suma no puede pasar del 100 %.
+- **Ausencias** (vacaciones, baja, formación, asuntos propios…): cada persona apunta las suyas desde su menú → «Mis ausencias»; un administrador, las de cualquiera. Pueden ser de días enteros o de unas horas al día.
+- **Festivos** comunes (Ajustes → Administración → «Festivos comunes…») y de cada espacio («Festivos del espacio…», en su ficha). A cada persona le cuentan los comunes y los de sus espacios.
+- La carga mide cada semana contra lo que **de verdad** tiene cada persona: su jornada menos festivos y ausencias. Las semanas recortadas salen rayadas, con las horas disponibles debajo. Las horas de una tarea se reparten en los días que esa persona trabaja, en proporción a sus horas de cada día. «Mi semana» del inicio usa lo mismo.
+- La capacidad semanal que ya estaba guardada se mantiene como jornada de lunes a viernes.
+
 ## Agrupar tablas y listas
 - Las vistas de **tabla** y **lista** se pueden agrupar por una propiedad: «⋯» → **Agrupar**, o al crear la vista. Cada grupo lleva una cabecera con su valor (con el color de la opción) y cuántas filas tiene, y se pliega al pulsarla; los grupos plegados se recuerdan en ese navegador.
 - Agrupan una selección (en el orden de sus opciones), una persona, una relación simple, un texto, un número, un enlace, una casilla («Marcada» / «Sin marcar») y una fecha (por meses). Lo que no tiene valor va al final, en «Sin valor» o «Sin fecha». Una multiselección o una relación múltiple no agrupan: una fila caería en varios grupos.

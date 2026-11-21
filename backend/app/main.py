@@ -46,6 +46,7 @@ from app.routers import acl as acl_routes
 from app.routers import collab as collab_routes
 from app.routers import about as about_routes
 from app.routers import pins as pins_routes
+from app.routers import worktime as worktime_routes
 from app.guard import guard
 from app.vault.store import EMPTY_VAULT_HINT_STARTUP, VaultError
 from app.vault.watcher import VaultWatcher
@@ -126,6 +127,8 @@ app.include_router(agent.router, dependencies=GUARDED)
 app.include_router(auth_routes.router, dependencies=GUARDED)
 # `/pins`: las páginas fijadas de cada quien, arriba del panel izquierdo.
 app.include_router(pins_routes.router, dependencies=GUARDED)
+# Jornada, dedicación, ausencias y festivos: lo que decide la capacidad de cada día.
+app.include_router(worktime_routes.router, dependencies=GUARDED)
 
 
 # Rutas que no piden sesión. Las tres de `/auth` son las que permiten entrar

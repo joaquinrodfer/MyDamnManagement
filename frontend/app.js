@@ -761,7 +761,8 @@ function horasCortas(h) {
 /** Una barra de carga: horas frente a capacidad, con el tono de «Carga del
  * equipo» (verde hasta el 85 %, ámbar hasta el 100 %, rojo por encima). */
 function barraDeCarga(horas, capacidad) {
-  const pct = capacidad > 0 ? (horas / capacidad) * 100 : 0;
+  // Sin capacidad (una semana de vacaciones) cualquier hora es sobrecarga.
+  const pct = capacidad > 0 ? (horas / capacidad) * 100 : horas > 0 ? 200 : 0;
   const barra = crearEl("span", "home-load-bar");
   const relleno = crearEl("span", "home-load-fill");
   relleno.style.width = `${Math.min(100, pct)}%`;
@@ -1423,6 +1424,10 @@ function initUserChip() {
     }
   });
 
+  menu.querySelector('[data-action="absences"]')?.addEventListener("click", () => {
+    closeMenu();
+    abrirMisAusencias();
+  });
   menu.querySelector('[data-action="settings"]').addEventListener("click", () => {
     closeMenu();
     openSettings();
@@ -1607,6 +1612,15 @@ function renderUsers(users) {
       });
       etiqueta.append(caja, "Carga global");
       row.appendChild(etiqueta);
+    }
+    if (u.id && sessionUser.me?.is_admin) {
+      const jornada = document.createElement("button");
+      jornada.type = "button";
+      jornada.className = "btn user-jornada";
+      jornada.textContent = "Jornada…";
+      jornada.title = "Horas por día, dedicación a cada espacio y ausencias";
+      jornada.addEventListener("click", () => abrirJornada(u));
+      row.appendChild(jornada);
     }
     usersList.appendChild(row);
   });
@@ -1795,7 +1809,12 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
       setFormNote(wsNota, e?.message || "No se pudo guardar.", "error");
     }
   });
-  fila.append(nombre, guardar);
+  // Los festivos del espacio: los ve cualquiera que esté en él; los cambia su
+  // administrador.
+  const festivos = crearEl("button", "btn", "Festivos del espacio…");
+  festivos.type = "button";
+  festivos.addEventListener("click", () => abrirFestivos(w.id, w.name));
+  fila.append(nombre, guardar, festivos);
   cuerpo.append(fila);
 
   // miembros
@@ -4531,7 +4550,8 @@ function pintarCarga(caja, datos) {
   leyenda.innerHTML =
     '<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el 70 %</span>' +
     '<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>70–100 %</span>' +
-    '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>';
+    '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>' +
+    '<span><i class="carga-leyenda-off"></i>con festivos o ausencias (debajo, las horas que quedan)</span>';
   herramientas.append(etiqueta, leyenda, crearEl("span", "", "Solo tareas sin cerrar, de todos los espacios."));
   caja.append(herramientas);
 
@@ -4563,36 +4583,47 @@ function pintarCarga(caja, datos) {
     boton.append(p.display_name || "(ya no está)");
     celdaNombre.append(boton);
     fila.append(celdaNombre, crearEl("td", "", String(p.tasks)));
-    const celdaCap = crearEl("td");
+    // La capacidad es su jornada semanal; el administrador la cambia (con la
+    // dedicación y las ausencias) desde «Jornada».
+    const celdaCap = crearEl("td", "carga-cap-cell");
+    const textoCap = crearEl("span", "carga-cap-text", `${fmtHorasJornada(p.capacity)}`);
+    textoCap.title = `Jornada: ${resumenDeJornada(p.schedule || [])}`;
+    celdaCap.append(textoCap);
     if (esAdmin) {
-      const cap = crearEl("input", "carga-cap");
-      cap.type = "number";
-      cap.min = "1";
-      cap.max = "168";
-      cap.step = "1";
-      cap.value = String(p.capacity);
-      cap.setAttribute("aria-label", `Horas por semana de ${p.display_name || "esta persona"}`);
-      cap.addEventListener("change", async () => {
-        try {
-          await api(`/workload/capacity/${p.id}`, { method: "PUT", body: JSON.stringify({ hours: Number(cap.value) || null }) });
-          showCarga();
-        } catch (e) {
-          reportError("No se pudo guardar la capacidad", e);
-        }
-      });
-      celdaCap.append(cap, " h");
-    } else {
-      celdaCap.textContent = `${p.capacity} h`;
+      const jornada = crearEl("button", "icon-btn carga-cap-edit");
+      jornada.type = "button";
+      jornada.innerHTML = svgIcon("i-calendar");
+      jornada.title = "Jornada, dedicación y ausencias";
+      jornada.setAttribute("aria-label", `Jornada de ${p.display_name || "esta persona"}`);
+      jornada.addEventListener("click", () => abrirJornada(p, showCarga));
+      celdaCap.append(jornada);
     }
     fila.append(celdaCap);
     for (const w of datos.weeks) {
       const h = p.weeks[w] || 0;
+      // La saturación se mide contra lo que de verdad tiene esa semana: su
+      // jornada menos festivos y ausencias.
+      const cap = p.capacity_weeks?.[w] ?? p.capacity;
+      const libre = p.time_off?.[w];
       const celda = crearEl("td", "carga-semana");
-      const ratio = h / p.capacity;
+      const ratio = cap > 0 ? h / cap : h > 0 ? Infinity : 0;
       const valor = crearEl("span", "carga-pill", fmtH(h));
       if (h > 0) valor.classList.add(ratio > 1 ? "carga-celda--over" : ratio >= 0.7 ? "carga-celda--warn" : "carga-celda--ok");
-      if (h > 0) celda.title = `${Math.round(ratio * 100)} % de ${p.capacity} h`;
-      celda.append(valor);
+      const partes = [];
+      if (h > 0) partes.push(cap > 0 ? `${Math.round(ratio * 100)} % de ${fmtHorasJornada(cap)}` : "Sin horas disponibles esta semana");
+      else partes.push(`${fmtHorasJornada(cap)} disponibles`);
+      if (libre) {
+        const motivos = [];
+        if (libre.holidays) motivos.push(libre.holidays === 1 ? "1 festivo" : `${libre.holidays} festivos`);
+        if (libre.absences) motivos.push(libre.absences === 1 ? "1 día de ausencia" : `${libre.absences} días de ausencia`);
+        partes.push(motivos.join(" y "));
+        celda.classList.add("carga-semana--off");
+        const marca = crearEl("span", "carga-off", cap > 0 ? `${fmtHorasJornada(cap)}` : "fuera");
+        marca.setAttribute("aria-hidden", "true");
+        celda.append(marca);
+      }
+      celda.title = partes.join(" · ");
+      celda.prepend(valor);
       fila.append(celda);
     }
     fila.append(crearEl("td", "", fmtH(p.before + p.after)), crearEl("td", "", fmtH(p.unscheduled)));
@@ -4632,8 +4663,435 @@ function pintarCarga(caja, datos) {
   caja.append(envoltorio);
 }
 
+// ----------------------------------- jornada, ausencias y festivos (carga, C1)
+// La capacidad de cada persona sale de su jornada (horas por día de la
+// semana), menos los festivos y sus ausencias. La jornada y la dedicación las
+// cambia un administrador; las ausencias, cada uno las suyas.
+
+const DIAS_DE_JORNADA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+const DIAS_DE_JORNADA_CORTOS = ["L", "M", "X", "J", "V", "S", "D"];
+
+const fmtHorasJornada = (h) => `${Math.round((Number(h) || 0) * 100) / 100} h`;
+
+/** «8 h L–V», «7 h L–J · 5 h V»…: una jornada en pocas palabras. */
+function resumenDeJornada(horas) {
+  const tramos = [];
+  horas.forEach((h, i) => {
+    if (!h) return;
+    const ultimo = tramos[tramos.length - 1];
+    if (ultimo && ultimo.h === h && ultimo.fin === i - 1) ultimo.fin = i;
+    else tramos.push({ h, ini: i, fin: i });
+  });
+  if (!tramos.length) return "sin horas";
+  return tramos
+    .map((t) =>
+      `${fmtHorasJornada(t.h)} ${t.ini === t.fin ? DIAS_DE_JORNADA_CORTOS[t.ini] : `${DIAS_DE_JORNADA_CORTOS[t.ini]}–${DIAS_DE_JORNADA_CORTOS[t.fin]}`}`,
+    )
+    .join(" · ");
+}
+
+/** Un diálogo modal sencillo: título, cuerpo, nota y «Cerrar». Se retira del
+ * documento al cerrarse. */
+function dialogoDeCarga(titulo, subtitulo = "") {
+  const dialogo = crearEl("dialog", "wt-dialog");
+  const cuerpo = crearEl("div", "wt-body");
+  const nota = crearEl("p", "form-note");
+  const acciones = crearEl("div", "dialog-actions");
+  const cerrarBoton = crearEl("button", "btn", "Cerrar");
+  cerrarBoton.type = "button";
+  const alCerrar = [];
+  const cerrar = () => {
+    if (dialogo.open) dialogo.close();
+    dialogo.remove();
+    alCerrar.forEach((f) => f());
+  };
+  cerrarBoton.addEventListener("click", cerrar);
+  dialogo.addEventListener("cancel", (ev) => {
+    ev.preventDefault();
+    cerrar();
+  });
+  acciones.append(cerrarBoton);
+  dialogo.append(crearEl("h3", "", titulo));
+  if (subtitulo) dialogo.append(crearEl("p", "form-note wt-sub", subtitulo));
+  dialogo.append(cuerpo, nota, acciones);
+  document.body.append(dialogo);
+  dialogo.showModal();
+  return { dialogo, cuerpo, nota, cerrar, alCerrar };
+}
+
+function fechaLargaDeJornada(iso) {
+  return new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
+/** La lista de ausencias de una persona y el formulario para añadir otra. */
+async function pintarAusencias(caja, userId, nota) {
+  caja.replaceChildren(crearEl("p", "form-note", "Cargando…"));
+  const hace = new Date();
+  hace.setDate(hace.getDate() - 31);
+  let datos;
+  try {
+    datos = await api(`/absences?user_id=${encodeURIComponent(userId)}&since=${hace.toISOString().slice(0, 10)}`);
+  } catch (e) {
+    caja.replaceChildren(crearEl("p", "form-note form-error", describeError(e)));
+    return;
+  }
+  const lista = crearEl("ul", "wt-list");
+  if (!datos.absences.length) lista.append(crearEl("li", "wt-empty", "No hay ausencias apuntadas."));
+  for (const a of datos.absences) {
+    const li = crearEl("li", "wt-item");
+    const dias = Math.round((new Date(`${a.end}T12:00:00`) - new Date(`${a.start}T12:00:00`)) / 86400000) + 1;
+    const cuando =
+      a.start === a.end
+        ? fechaLargaDeJornada(a.start)
+        : `${fechaLargaDeJornada(a.start)} – ${fechaLargaDeJornada(a.end)} (${dias} días)`;
+    const texto = crearEl("span", "wt-item-text");
+    texto.append(crearEl("strong", "", a.label), ` · ${cuando}`);
+    if (a.hours) texto.append(` · ${fmtHorasJornada(a.hours)} al día`);
+    if (a.note) texto.append(crearEl("span", "wt-item-note", ` — ${a.note}`));
+    const borrar = crearEl("button", "icon-btn wt-del");
+    borrar.type = "button";
+    borrar.innerHTML = svgIcon("i-x");
+    borrar.title = "Quitar esta ausencia";
+    borrar.setAttribute("aria-label", `Quitar ${a.label} del ${a.start}`);
+    borrar.addEventListener("click", async () => {
+      try {
+        await api(`/absences/${a.id}`, { method: "DELETE" });
+        setFormNote(nota, "Ausencia quitada.", "ok");
+        pintarAusencias(caja, userId, nota);
+      } catch (e) {
+        setFormNote(nota, describeError(e), "error");
+      }
+    });
+    li.append(texto, borrar);
+    lista.append(li);
+  }
+
+  const form = crearEl("form", "wt-form");
+  form.noValidate = true;
+  const tipo = crearEl("select");
+  tipo.setAttribute("aria-label", "Tipo de ausencia");
+  for (const k of datos.kinds) tipo.add(new Option(k.label, k.key));
+  const desde = crearEl("input");
+  desde.type = "date";
+  desde.required = true;
+  desde.setAttribute("aria-label", "Desde");
+  const hasta = crearEl("input");
+  hasta.type = "date";
+  hasta.setAttribute("aria-label", "Hasta (incluido)");
+  desde.addEventListener("change", () => {
+    if (!hasta.value || hasta.value < desde.value) hasta.value = desde.value;
+  });
+  const parcialEtiqueta = crearEl("label", "wt-check");
+  const parcial = crearEl("input");
+  parcial.type = "checkbox";
+  const horas = crearEl("input", "wt-hours");
+  horas.type = "number";
+  horas.min = "0.5";
+  horas.max = "24";
+  horas.step = "0.5";
+  horas.placeholder = "h";
+  horas.hidden = true;
+  horas.setAttribute("aria-label", "Horas que faltas cada día");
+  parcial.addEventListener("change", () => (horas.hidden = !parcial.checked));
+  parcialEtiqueta.append(parcial, "Solo unas horas");
+  const texto = crearEl("input", "wt-note");
+  texto.type = "text";
+  texto.maxLength = 500;
+  texto.placeholder = "Nota (opcional)";
+  texto.setAttribute("aria-label", "Nota");
+  const anadir = crearEl("button", "btn btn-primary", "Añadir");
+  anadir.type = "submit";
+  form.append(tipo, crearEl("span", "wt-lbl", "del"), desde, crearEl("span", "wt-lbl", "al"), hasta, parcialEtiqueta, horas, texto, anadir);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!desde.value) return setFormNote(nota, "Elige el primer día.", "error");
+    try {
+      await api("/absences", {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: userId,
+          start: desde.value,
+          end: hasta.value || desde.value,
+          kind: tipo.value,
+          hours: parcial.checked && Number(horas.value) > 0 ? Number(horas.value) : null,
+          note: texto.value.trim(),
+        }),
+      });
+      setFormNote(nota, "Ausencia apuntada.", "ok");
+      pintarAusencias(caja, userId, nota);
+    } catch (e) {
+      setFormNote(nota, describeError(e), "error");
+    }
+  });
+  caja.replaceChildren(lista, form);
+}
+
+/** «Mis ausencias»: las mías y mi jornada (que solo cambia un administrador). */
+async function abrirMisAusencias() {
+  const me = sessionUser.me;
+  if (!me) return;
+  const d = dialogoDeCarga("Mis ausencias", "Vacaciones, bajas, formación…: los días que no estás restan de tu capacidad en la carga del equipo.");
+  const jornada = crearEl("p", "wt-jornada", "");
+  const caja = crearEl("div");
+  d.cuerpo.append(jornada, caja);
+  api(`/worktime/users/${me.id}`)
+    .then((f) => {
+      jornada.textContent = `Tu jornada: ${fmtHorasJornada(f.weekly)} a la semana (${resumenDeJornada(f.schedule)}).`;
+      if (!me.is_admin) jornada.append(crearEl("span", "form-note", " La cambia un administrador."));
+    })
+    .catch(() => jornada.remove());
+  pintarAusencias(caja, me.id, d.nota);
+}
+
+/** La jornada, la dedicación y las ausencias de una persona (administrador). */
+async function abrirJornada(persona, alCambiar = null) {
+  const nombre = persona.display_name || persona.username || "esta persona";
+  const d = dialogoDeCarga(`Jornada de ${nombre}`);
+  d.dialogo.classList.add("wt-dialog--wide");
+  let cambiado = false;
+  d.alCerrar.push(() => cambiado && alCambiar?.());
+  let ficha;
+  let espacios;
+  try {
+    [ficha, espacios] = await Promise.all([api(`/worktime/users/${persona.id}`), api("/workspaces")]);
+  } catch (e) {
+    d.cuerpo.append(crearEl("p", "form-note form-error", describeError(e)));
+    return;
+  }
+
+  // --- jornada: siete casillas, de lunes a domingo
+  const seccion = crearEl("section", "wt-section");
+  seccion.append(crearEl("h4", "", "Horas por día"));
+  const rejilla = crearEl("div", "wt-grid");
+  const entradas = DIAS_DE_JORNADA.map((dia, i) => {
+    const celda = crearEl("label", "wt-day");
+    const input = crearEl("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "24";
+    input.step = "0.5";
+    input.value = String(ficha.schedule[i] ?? 0);
+    input.setAttribute("aria-label", `Horas el ${dia.toLowerCase()}`);
+    celda.append(crearEl("span", "wt-day-name", DIAS_DE_JORNADA_CORTOS[i]), input);
+    celda.title = dia;
+    rejilla.append(celda);
+    return input;
+  });
+  const total = crearEl("p", "wt-total");
+  const pintarTotal = () => {
+    const horas = entradas.map((x) => Number(x.value) || 0);
+    total.textContent = `${fmtHorasJornada(horas.reduce((a, b) => a + b, 0))} a la semana · ${resumenDeJornada(horas)}`;
+  };
+  entradas.forEach((x) => x.addEventListener("input", pintarTotal));
+  pintarTotal();
+  const atajos = crearEl("div", "wt-presets");
+  for (const [txt, h] of [["40 h", 8], ["37,5 h", 7.5], ["35 h", 7], ["30 h", 6], ["20 h", 4]]) {
+    const b = crearEl("button", "btn btn-sm", txt);
+    b.type = "button";
+    b.title = `${fmtHorasJornada(h)} de lunes a viernes`;
+    b.addEventListener("click", () => {
+      entradas.forEach((x, i) => (x.value = String(i < 5 ? h : 0)));
+      pintarTotal();
+    });
+    atajos.append(b);
+  }
+  const guardar = crearEl("button", "btn btn-primary", "Guardar jornada");
+  guardar.type = "button";
+  guardar.addEventListener("click", async () => {
+    try {
+      ficha = await api(`/worktime/users/${persona.id}/schedule`, {
+        method: "PUT",
+        body: JSON.stringify({ hours: entradas.map((x) => Number(x.value) || 0) }),
+      });
+      cambiado = true;
+      setFormNote(d.nota, `Jornada guardada: ${fmtHorasJornada(ficha.weekly)} a la semana.`, "ok");
+    } catch (e) {
+      setFormNote(d.nota, describeError(e), "error");
+    }
+  });
+  const porDefecto = crearEl("button", "btn", "Volver a la de por defecto");
+  porDefecto.type = "button";
+  porDefecto.title = "8 h de lunes a viernes";
+  porDefecto.addEventListener("click", async () => {
+    try {
+      ficha = await api(`/worktime/users/${persona.id}/schedule`, { method: "PUT", body: JSON.stringify({ hours: null }) });
+      entradas.forEach((x, i) => (x.value = String(ficha.schedule[i])));
+      pintarTotal();
+      cambiado = true;
+      setFormNote(d.nota, "Vuelve a la jornada por defecto.", "ok");
+    } catch (e) {
+      setFormNote(d.nota, describeError(e), "error");
+    }
+  });
+  const filaBotones = crearEl("div", "wt-actions");
+  filaBotones.append(guardar, porDefecto);
+  seccion.append(atajos, rejilla, total, filaBotones);
+
+  // --- dedicación por espacio
+  const ded = crearEl("section", "wt-section");
+  ded.append(
+    crearEl("h4", "", "Dedicación a cada espacio"),
+    crearEl("p", "form-note", "Qué parte de su capacidad cuenta en cada espacio cuando se mira la carga de un solo espacio. Sin rellenar: el 100 % en cada uno. La suma no puede pasar del 100 %."),
+  );
+  const camposDed = new Map();
+  const listaDed = crearEl("div", "wt-ded");
+  for (const w of espacios.filter((x) => !x.personal_of)) {
+    const fila = crearEl("label", "wt-ded-row");
+    const input = crearEl("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "100";
+    input.step = "5";
+    input.placeholder = "—";
+    const actual = ficha.dedication?.[w.id];
+    if (actual != null) input.value = String(actual);
+    input.setAttribute("aria-label", `Dedicación a ${w.name} (%)`);
+    fila.append(crearEl("span", "wt-ded-name", w.name), input, crearEl("span", "", "%"));
+    camposDed.set(w.id, input);
+    listaDed.append(fila);
+  }
+  const sumaDed = crearEl("p", "form-note");
+  const pintarSuma = () => {
+    const vals = [...camposDed.values()].filter((x) => x.value !== "").map((x) => Number(x.value) || 0);
+    sumaDed.textContent = vals.length ? `Suma: ${vals.reduce((a, b) => a + b, 0)} %` : "Sin dedicación declarada.";
+  };
+  camposDed.forEach((x) => x.addEventListener("input", pintarSuma));
+  pintarSuma();
+  const guardarDed = crearEl("button", "btn", "Guardar dedicación");
+  guardarDed.type = "button";
+  guardarDed.addEventListener("click", async () => {
+    const dedication = {};
+    camposDed.forEach((input, id) => {
+      if (input.value !== "") dedication[id] = Number(input.value);
+    });
+    try {
+      await api(`/worktime/users/${persona.id}/dedication`, { method: "PUT", body: JSON.stringify({ dedication }) });
+      cambiado = true;
+      setFormNote(d.nota, "Dedicación guardada.", "ok");
+    } catch (e) {
+      setFormNote(d.nota, describeError(e), "error");
+    }
+  });
+  ded.append(listaDed, sumaDed, guardarDed);
+
+  // --- ausencias de esa persona
+  const aus = crearEl("section", "wt-section");
+  aus.append(crearEl("h4", "", "Ausencias"));
+  const cajaAus = crearEl("div");
+  aus.append(cajaAus);
+  pintarAusencias(cajaAus, persona.id, d.nota).then(() => {
+    cajaAus.addEventListener("submit", () => (cambiado = true), true);
+    cajaAus.addEventListener("click", (e) => {
+      if (e.target.closest?.(".wt-del")) cambiado = true;
+    }, true);
+  });
+
+  d.cuerpo.append(seccion, ded, aus);
+}
+
+/** Los festivos comunes (`workspaceId` null) o de un espacio, por año. */
+async function abrirFestivos(workspaceId = null, nombreDelEspacio = "") {
+  const d = dialogoDeCarga(
+    workspaceId ? `Festivos de ${nombreDelEspacio}` : "Festivos comunes",
+    workspaceId
+      ? "Cuentan a quienes son miembros de este espacio, además de los comunes."
+      : "Cuentan a toda la empresa. Cada espacio puede añadir los suyos.",
+  );
+  const hoy = new Date();
+  let anio = hoy.getFullYear();
+  const cabeza = crearEl("div", "wt-year");
+  const selector = crearEl("select");
+  selector.setAttribute("aria-label", "Año");
+  for (let a = anio - 1; a <= anio + 2; a += 1) selector.add(new Option(String(a), String(a), false, a === anio));
+  cabeza.append(crearEl("span", "", "Año "), selector);
+  const caja = crearEl("div");
+  d.cuerpo.append(cabeza, caja);
+  const pintar = async () => {
+    caja.replaceChildren(crearEl("p", "form-note", "Cargando…"));
+    let datos;
+    try {
+      const q = new URLSearchParams({ year: String(anio) });
+      if (workspaceId) q.set("workspace_id", workspaceId);
+      datos = await api(`/holidays?${q}`);
+    } catch (e) {
+      caja.replaceChildren(crearEl("p", "form-note form-error", describeError(e)));
+      return;
+    }
+    const lista = crearEl("ul", "wt-list");
+    if (!datos.holidays.length) lista.append(crearEl("li", "wt-empty", `No hay festivos en ${anio}.`));
+    for (const h of datos.holidays) {
+      const li = crearEl("li", "wt-item");
+      const texto = crearEl("span", "wt-item-text");
+      texto.append(crearEl("strong", "", fechaLargaDeJornada(h.day)), ` · ${h.name}`);
+      if (h.source_name) texto.append(crearEl("span", "wt-item-note", ` — ${h.source_name}`));
+      li.append(texto);
+      if (datos.can_edit) {
+        const borrar = crearEl("button", "icon-btn wt-del");
+        borrar.type = "button";
+        borrar.innerHTML = svgIcon("i-x");
+        borrar.title = "Quitar este festivo";
+        borrar.setAttribute("aria-label", `Quitar ${h.name}`);
+        borrar.addEventListener("click", async () => {
+          try {
+            await api(`/holidays/${h.id}`, { method: "DELETE" });
+            pintar();
+          } catch (e) {
+            setFormNote(d.nota, describeError(e), "error");
+          }
+        });
+        li.append(borrar);
+      }
+      lista.append(li);
+    }
+    caja.replaceChildren(lista);
+    if (!datos.can_edit) {
+      caja.append(crearEl("p", "form-note", workspaceId ? "Los cambia un administrador del espacio." : "Los cambia un administrador."));
+      return;
+    }
+    const form = crearEl("form", "wt-form");
+    form.noValidate = true;
+    const dia = crearEl("input");
+    dia.type = "date";
+    dia.setAttribute("aria-label", "Día");
+    const nombre = crearEl("input", "wt-note");
+    nombre.type = "text";
+    nombre.maxLength = 200;
+    nombre.placeholder = "Nombre (Navidad, fiesta local…)";
+    nombre.setAttribute("aria-label", "Nombre del festivo");
+    const anadir = crearEl("button", "btn btn-primary", "Añadir festivo");
+    anadir.type = "submit";
+    form.append(dia, nombre, anadir);
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (!dia.value) return setFormNote(d.nota, "Elige el día.", "error");
+      try {
+        await api("/holidays", {
+          method: "POST",
+          body: JSON.stringify({ workspace_id: workspaceId, day: dia.value, name: nombre.value.trim() || "Festivo" }),
+        });
+        setFormNote(d.nota, "Festivo añadido.", "ok");
+        const a = Number(dia.value.slice(0, 4));
+        if (a !== anio && [...selector.options].some((o) => Number(o.value) === a)) {
+          anio = a;
+          selector.value = String(a);
+        }
+        pintar();
+      } catch (e) {
+        setFormNote(d.nota, describeError(e), "error");
+      }
+    });
+    caja.append(form);
+  };
+  selector.addEventListener("change", () => {
+    anio = Number(selector.value);
+    pintar();
+  });
+  pintar();
+}
+
 function initCarga() {
   document.getElementById("btn-workload")?.addEventListener("click", () => goTo("workload"));
+  document.getElementById("btn-holidays")?.addEventListener("click", () => abrirFestivos(null));
 }
 
 initCarga();
