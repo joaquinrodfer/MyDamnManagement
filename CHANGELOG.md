@@ -2,6 +2,15 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Repaso visual de jornada, ausencias y festivos
+- Los diálogos de **jornada**, **Mis ausencias** y **festivos** tienen cabecera y pie fijos (el aviso de «guardado» sale abajo, junto a «Cerrar») y el contenido se desplaza en medio.
+- Cada campo lleva su rótulo encima; las ausencias se añaden en una tarjeta «Nueva ausencia» con tipo, desde y hasta, y «Solo unas horas al día» es un interruptor (antes una casilla deformada).
+- Jornada: los atajos (40, 37,5, 35, 30, 20 h) van en una barra que marca el que coincide; los días sin horas se ven apagados.
+- Dedicación: cada espacio en una fila con el número y el «%» dentro de la casilla; la suma se pone en rojo si pasa del 100 %.
+- Festivos: el año se cambia con flechas, la lista tiene la fecha en su columna y su propio scroll, e importar va en pestañas (Oficiales, Desde una URL, Archivo .ics). El archivo se elige con un recuadro propio, en el que también se puede soltar, en vez del botón del navegador.
+- Las listas (ausencias, festivos, calendarios importados) llevan el tipo como etiqueta de color.
+- «Carga del equipo»: las semanas, las cifras y las horas que quedan salen centradas en su celda, y la leyenda cabe en una línea.
+
 ## Importar calendarios de festivos
 - En «Festivos comunes…» y «Festivos del espacio…» hay tres formas de traer los festivos en vez de teclearlos:
   - **Oficiales por país y región** (date.nager.at): los nacionales y, si eliges comunidad, los autonómicos.

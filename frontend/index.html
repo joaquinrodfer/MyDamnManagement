@@ -482,47 +482,6 @@
   .carga-off { display: block; font-size: 10.5px; line-height: 1.2; color: var(--ink-muted); margin-top: 2px; }
 
   /* Jornada, ausencias y festivos */
-  .wt-dialog { width: min(560px, calc(100vw - 32px)); }
-  .wt-dialog--wide { width: min(680px, calc(100vw - 32px)); }
-  .wt-dialog h3 { margin: 0 0 4px; }
-  .wt-sub { margin: 0 0 12px; }
-  .wt-body { display: flex; flex-direction: column; gap: 14px; max-height: min(64vh, 640px); overflow: auto; }
-  .wt-section { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--panel-border); }
-  .wt-section:first-child { border-top: 0; padding-top: 0; }
-  .wt-section h4 { margin: 0; font-size: var(--text-sm); }
-  .wt-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
-  .wt-day { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-  .wt-day-name { font-size: 11.5px; font-weight: 600; color: var(--ink-muted); }
-  .wt-day input { width: 100%; min-width: 0; text-align: center; font: inherit; padding: 5px 2px; }
-  .wt-total { margin: 0; font-size: var(--text-sm); color: var(--ink-muted); }
-  .wt-presets, .wt-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-  .wt-presets .btn { min-height: 26px; padding: 2px 10px; font-size: 12px; }
-  .wt-jornada { margin: 0; }
-  .wt-ded { display: flex; flex-direction: column; gap: 4px; }
-  .wt-ded-row { display: flex; align-items: center; gap: 8px; }
-  .wt-ded-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wt-ded-row { font-size: var(--text-sm); }
-  .wt-ded-row input { width: 70px; text-align: right; font: inherit; padding: 3px 6px; }
-  .wt-section > .btn { align-self: flex-start; }
-  .wt-day input { font-size: var(--text-sm); }
-  .wt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-  .wt-item { display: flex; align-items: center; gap: 8px; padding: 6px 2px; border-bottom: 1px solid var(--panel-border); font-size: var(--text-sm); }
-  .wt-item-text { flex: 1; min-width: 0; }
-  .wt-item-note { color: var(--ink-muted); }
-  .wt-empty { padding: 6px 2px; color: var(--ink-muted); font-size: var(--text-sm); }
-  .wt-del { width: 26px; height: 26px; flex: none; }
-  .wt-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
-  .wt-form input, .wt-form select { font: inherit; font-size: var(--text-sm); padding: 4px 6px; min-height: 30px; }
-  .wt-form input[type="file"] { padding: 0; min-height: 0; }
-  .wt-form .wt-note { flex: 1 1 160px; min-width: 0; }
-  .wt-form .wt-hours { width: 64px; }
-  .wt-lbl { color: var(--ink-muted); font-size: var(--text-sm); }
-  .wt-check { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); }
-  .wt-year { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); }
-  .wt-import .wt-form { margin-top: 0; }
-  .wt-import-lbl { width: 110px; flex: none; }
-  .wt-import select { max-width: 220px; }
-  .wt-mini { min-height: 24px; padding: 1px 8px; font-size: 12px; }
   .user-jornada { min-height: 26px; padding: 2px 10px; font-size: 12px; margin-left: 6px; }
   .carga-detalle td { background: var(--code-bg); font-size: 12.5px; text-align: left; white-space: normal; }
   .carga-detalle table { width: 100%; border-collapse: collapse; }
@@ -6044,6 +6003,17 @@
   .carga-persona { font-weight: 500; border-radius: var(--radius-sm); padding: 2px 4px 2px 0; }
   .carga-persona .svg-icon { color: var(--ink-muted); transition: transform var(--dur-normal) var(--ease-out); }
   .carga-semana { padding: 6px 6px !important; }
+  /* Semanas, «Más tarde» y «Sin fecha»: centradas, la cifra y debajo lo que queda. */
+  .carga-table thead th:nth-child(n+4), .carga-table > tbody > tr:not(.carga-detalle) > td:nth-child(n+4) { text-align: center; }
+  .carga-table > tbody > tr:not(.carga-detalle) > td { vertical-align: middle; }
+  .carga-table thead th:nth-child(2), .carga-table > tbody > tr:not(.carga-detalle) > td:nth-child(2) { text-align: center; }
+  .carga-semana { min-width: 76px; }
+  .carga-pill { min-width: 58px; text-align: center; font-variant-numeric: tabular-nums; }
+  .carga-off { text-align: center; margin-top: 3px; }
+  .carga-cap-cell { text-align: right; }
+  .carga-cap-box { display: inline-flex; align-items: center; justify-content: flex-end; gap: 2px; }
+  .carga-cap-box .carga-cap-edit { margin-left: 0; }
+  .carga-ambito { color: var(--ink-muted); }
   .carga-pill {
     display: inline-block; min-width: 52px; padding: 3px 8px; border-radius: var(--radius-sm);
     color: var(--ink-muted);
@@ -6493,6 +6463,179 @@
   }
   .cover-picker-upload:hover { background: var(--menu-hover); }
   .cover-picker-upload .svg-icon { width: 14px; height: 14px; transform: rotate(180deg); color: var(--ink-muted); }
+  /* ---------- jornada, ausencias y festivos (diálogos de la carga) ---------- */
+  .wt-dialog { width: min(600px, calc(100vw - 32px)); padding: 0 !important; overflow: hidden; }
+  .wt-dialog[open] { display: flex; flex-direction: column; max-height: min(88vh, 820px); }
+  .wt-dialog--wide { width: min(700px, calc(100vw - 32px)); }
+  .wt-dialog > .wt-head { display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 22px 26px 16px; border-bottom: 1px solid var(--panel-border); }
+  .wt-head h3 { margin: 0; }
+  .wt-sub { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--ink-muted); }
+  .wt-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 26px 22px; display: flex; flex-direction: column; }
+  .wt-foot { display: flex; align-items: center; gap: 12px; padding: 12px 26px; border-top: 1px solid var(--panel-border); background: color-mix(in srgb, var(--bg) 25%, var(--surface-elevated)); }
+  .wt-foot .wt-msg { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; }
+  .wt-foot .btn { flex: none; }
+
+  .wt-section { display: flex; flex-direction: column; gap: 12px; padding: 20px 0; border-top: 1px solid var(--panel-border); }
+  .wt-section:first-child { border-top: 0; }
+  .wt-section:last-child { padding-bottom: 0; }
+  .wt-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .wt-section-titles { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .wt-section h4 { margin: 0; font-size: 14px; font-weight: 600; color: var(--ink); }
+  .wt-desc { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-muted); }
+  .wt-desc.form-error { color: var(--down); }
+  .wt-section-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .wt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+  .wt-stack { display: flex; flex-direction: column; gap: 12px; }
+  .wt-total { margin: 0; display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; color: var(--ink-muted); }
+  .wt-total strong { font-size: 13.5px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .wt-total--over, .wt-total--over strong { color: var(--down); }
+
+  /* Botones de texto, sin caja hasta pasar por encima. */
+  .wt-dialog .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--ink-muted); }
+  .wt-dialog .btn-ghost:hover { background: var(--menu-hover); color: var(--ink); }
+
+  /* Atajos de jornada: una fila de pastillas; la que coincide, marcada. */
+  .wt-presets { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--field-bg); border: 1px solid var(--field-border); }
+  .wt-preset {
+    font: inherit; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--ink-muted);
+    background: none; border: 0; border-radius: 7px; padding: 4px 10px; cursor: pointer;
+    transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease;
+  }
+  .wt-preset:hover { color: var(--ink); background: var(--menu-hover); }
+  .wt-preset[aria-pressed="true"] { color: var(--ink); background: var(--surface-elevated); box-shadow: 0 0 0 1px var(--panel-border), 0 1px 2px rgba(0, 0, 0, .18); }
+  .wt-preset:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+  /* Los siete días. */
+  .wt-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+  .wt-day { display: flex; flex-direction: column; align-items: stretch; gap: 6px; text-align: center; }
+  .wt-day-name { font-size: 11.5px; font-weight: 600; color: var(--ink-muted); text-transform: capitalize; }
+  .wt-dialog .wt-day input {
+    width: 100%; min-width: 0; height: 40px; padding: 0 4px; text-align: center;
+    font: inherit; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink);
+    -moz-appearance: textfield;
+  }
+  .wt-dialog input[type="number"]::-webkit-inner-spin-button,
+  .wt-dialog input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .wt-dialog input[type="number"] { -moz-appearance: textfield; }
+  .wt-day--off input { color: var(--ink-muted); font-weight: 400; }
+  .wt-day--weekend .wt-day-name { opacity: .7; }
+
+  /* Campos con rótulo encima, filas y tarjetas. */
+  .wt-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .wt-field-label { font-size: 12px; font-weight: 500; color: var(--ink-muted); }
+  .wt-dialog :is(.wt-field, .wt-suffix) :is(input:not([type="checkbox"]), select),
+  .wt-dialog .wt-field select {
+    width: 100%; min-width: 0; height: 36px; min-height: 36px; padding: 0 10px;
+    font: inherit; font-size: 13.5px; color: var(--ink);
+  }
+  .wt-dialog input[type="date"] { padding-right: 6px; }
+  .wt-dialog input[type="date"]::-webkit-calendar-picker-indicator { opacity: .55; cursor: pointer; filter: var(--date-icon-filter, none); }
+  .wt-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .wt-row--end { align-items: flex-end; }
+  .wt-row > .btn { height: 36px; }
+  .wt-grow { flex: 1 1 180px; min-width: 0; }
+  .wt-card { border: 1px solid var(--panel-border); border-radius: 12px; padding: 14px; background: color-mix(in srgb, var(--bg) 30%, var(--surface-elevated)); }
+  .wt-card-title { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  .wt-form-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: end; }
+  .wt-span { grid-column: 1 / -1; }
+  @media (max-width: 560px) { .wt-form-grid { grid-template-columns: 1fr; } }
+
+  /* Un número con su unidad dentro de la caja (h, %). */
+  .wt-suffix { position: relative; display: inline-flex; align-items: center; }
+  .wt-suffix[hidden] { display: none; }
+  .wt-suffix > span { position: absolute; right: 10px; pointer-events: none; font-size: 12.5px; color: var(--ink-muted); }
+  .wt-dialog .wt-suffix > input.wt-num { width: 84px; padding: 0 28px 0 10px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* Interruptor (el de la app, aquí también). */
+  .wt-switch { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink); cursor: pointer; min-height: 36px; }
+  .wt-dialog input.db-switch {
+    appearance: none; -webkit-appearance: none; flex: none; position: relative;
+    width: 30px; min-width: 30px; height: 18px; padding: 0; margin: 0; border: none; border-radius: 999px;
+    background: var(--panel-border); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-std);
+  }
+  .wt-dialog input.db-switch::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .3); transition: transform var(--dur-fast) var(--ease-std);
+  }
+  .wt-dialog input.db-switch:checked { background: var(--accent); }
+  .wt-dialog input.db-switch:checked::after { transform: translateX(12px); }
+  .wt-dialog input.db-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Dedicación: una lista con el % a la derecha. */
+  .wt-ded { display: flex; flex-direction: column; border: 1px solid var(--panel-border); border-radius: 12px; overflow: hidden; }
+  .wt-ded-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 8px 8px 14px; font-size: 13.5px; }
+  .wt-ded-row + .wt-ded-row { border-top: 1px solid var(--panel-border); }
+  .wt-ded-row:hover { background: var(--row-hover); }
+  .wt-ded-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-dialog .wt-ded-row .wt-suffix input { height: 32px; min-height: 32px; }
+
+  /* Listas: ausencias, festivos y calendarios importados. */
+  .wt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--panel-border); border-radius: 12px; overflow: hidden; }
+  .wt-list[hidden] { display: none; }
+  .wt-list--scroll { max-height: 300px; overflow: auto; }
+  .wt-item { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 7px 8px 7px 14px; font-size: 13px; }
+  .wt-item + .wt-item { border-top: 1px solid var(--panel-border); }
+  .wt-item:hover { background: var(--row-hover); }
+  .wt-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .wt-item-title { color: var(--ink); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-item-note { color: var(--ink-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-item-note.form-error { color: var(--down); white-space: normal; }
+  .wt-empty { margin: 0; padding: 14px; color: var(--ink-muted); font-size: 13px; text-align: center; }
+  .wt-del, .wt-del-sitio { width: 28px; height: 28px; flex: none; }
+  .wt-del { color: var(--ink-muted); }
+  .wt-del:hover { color: var(--down); }
+  .wt-date { flex: none; width: 92px; font-size: 12.5px; font-weight: 500; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .wt-mini { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12.5px; }
+  .wt-chip {
+    flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 92px; height: 22px; padding: 0 8px;
+    border-radius: 999px; font-size: 11.5px; font-weight: 600;
+    color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+  .wt-chip--baja { color: var(--down); background: color-mix(in srgb, var(--down) 15%, transparent); }
+  .wt-chip--formacion, .wt-chip--url { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+  .wt-chip--personal, .wt-chip--otro, .wt-chip--file { color: var(--ink-muted); background: color-mix(in srgb, var(--ink-muted) 16%, transparent); }
+  .wt-chip--country { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); }
+
+  /* «Tu jornada» en «Mis ausencias». */
+  .wt-info { display: flex; align-items: flex-start; gap: 12px; margin-top: 18px; padding: 12px 14px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); }
+  .wt-info[hidden] { display: none; }
+  .wt-info > .svg-icon { width: 18px; height: 18px; flex: none; margin-top: 1px; color: var(--accent-ink); }
+  .wt-info > div { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; color: var(--ink-muted); }
+  .wt-info strong { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .wt-info + .wt-stack { margin-top: 16px; }
+
+  /* El año, con flechas. */
+  .wt-stepper { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--field-border); border-radius: 10px; background: var(--field-bg); }
+  .wt-stepper .icon-btn { width: 28px; height: 28px; }
+  .wt-stepper .icon-btn:disabled { opacity: .35; cursor: default; }
+  .wt-stepper-value { min-width: 44px; text-align: center; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* Importar: pestañas y panel. */
+  .wt-tabs { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--field-bg); border: 1px solid var(--field-border); align-self: flex-start; max-width: 100%; overflow-x: auto; }
+  .wt-tab {
+    font: inherit; font-size: 12.5px; font-weight: 500; color: var(--ink-muted); white-space: nowrap;
+    background: none; border: 0; border-radius: 7px; padding: 5px 12px; cursor: pointer;
+  }
+  .wt-tab:hover { color: var(--ink); }
+  .wt-tab[aria-selected="true"] { color: var(--ink); background: var(--surface-elevated); box-shadow: 0 0 0 1px var(--panel-border), 0 1px 2px rgba(0, 0, 0, .18); }
+  .wt-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .wt-panel { display: flex; flex-direction: column; gap: 10px; }
+  .wt-panel[hidden] { display: none; }
+  .wt-import .wt-tabs { margin-bottom: -4px; }
+  .wt-drop {
+    position: relative; display: flex; align-items: center; justify-content: center; gap: 12px;
+    min-height: 76px; padding: 14px; border: 1.5px dashed var(--field-border-hover); border-radius: 10px;
+    color: var(--ink-muted); cursor: pointer; transition: border-color var(--dur-fast) ease, background-color var(--dur-fast) ease;
+  }
+  .wt-drop:hover, .wt-drop.is-over, .wt-drop:focus-within { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  .wt-drop > .svg-icon { width: 22px; height: 22px; }
+  .wt-drop-text { display: flex; flex-direction: column; font-size: 12.5px; }
+  .wt-drop-text strong { color: var(--ink); font-size: 13.5px; font-weight: 600; }
+  .wt-file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+
+  /* El botón «Jornada» de la lista de usuarios. */
+  .user-jornada { min-height: 30px; padding: 3px 10px; font-size: 12.5px; gap: 6px; }
+  .user-jornada .svg-icon { width: 14px; height: 14px; }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
@@ -6520,6 +6663,8 @@
       <symbol id="i-board" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></symbol>
       <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></symbol>
       <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></symbol>
+      <symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></symbol>
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>

@@ -1617,7 +1617,7 @@ function renderUsers(users) {
       const jornada = document.createElement("button");
       jornada.type = "button";
       jornada.className = "btn user-jornada";
-      jornada.textContent = "Jornada…";
+      jornada.innerHTML = `${svgIcon("i-calendar")}<span>Jornada</span>`;
       jornada.title = "Horas por día, dedicación a cada espacio y ausencias";
       jornada.addEventListener("click", () => abrirJornada(u));
       row.appendChild(jornada);
@@ -4551,8 +4551,8 @@ function pintarCarga(caja, datos) {
     '<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el 70 %</span>' +
     '<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>70–100 %</span>' +
     '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>' +
-    '<span><i class="carga-leyenda-off"></i>con festivos o ausencias (debajo, las horas que quedan)</span>';
-  herramientas.append(etiqueta, leyenda, crearEl("span", "", "Solo tareas sin cerrar, de todos los espacios."));
+    '<span title="Debajo, las horas que le quedan esa semana"><i class="carga-leyenda-off"></i>con festivos o ausencias</span>';
+  herramientas.append(etiqueta, leyenda, crearEl("span", "carga-ambito", "Solo tareas sin cerrar, de todos los espacios."));
   caja.append(herramientas);
 
   if (!datos.people.length) {
@@ -4586,9 +4586,11 @@ function pintarCarga(caja, datos) {
     // La capacidad es su jornada semanal; el administrador la cambia (con la
     // dedicación y las ausencias) desde «Jornada».
     const celdaCap = crearEl("td", "carga-cap-cell");
+    const cajaCap = crearEl("span", "carga-cap-box");
     const textoCap = crearEl("span", "carga-cap-text", `${fmtHorasJornada(p.capacity)}`);
     textoCap.title = `Jornada: ${resumenDeJornada(p.schedule || [])}`;
-    celdaCap.append(textoCap);
+    cajaCap.append(textoCap);
+    celdaCap.append(cajaCap);
     if (esAdmin) {
       const jornada = crearEl("button", "icon-btn carga-cap-edit");
       jornada.type = "button";
@@ -4596,7 +4598,7 @@ function pintarCarga(caja, datos) {
       jornada.title = "Jornada, dedicación y ausencias";
       jornada.setAttribute("aria-label", `Jornada de ${p.display_name || "esta persona"}`);
       jornada.addEventListener("click", () => abrirJornada(p, showCarga));
-      celdaCap.append(jornada);
+      cajaCap.append(jornada);
     }
     fila.append(celdaCap);
     for (const w of datos.weeks) {
@@ -4690,13 +4692,18 @@ function resumenDeJornada(horas) {
     .join(" · ");
 }
 
-/** Un diálogo modal sencillo: título, cuerpo, nota y «Cerrar». Se retira del
- * documento al cerrarse. */
+/** Un diálogo de la carga: cabecera (título y explicación), cuerpo con su
+ * propio scroll y pie fijo con el aviso a la izquierda y «Cerrar». Se retira
+ * del documento al cerrarse. */
 function dialogoDeCarga(titulo, subtitulo = "") {
   const dialogo = crearEl("dialog", "wt-dialog");
+  const cabeza = crearEl("div", "wt-head");
+  cabeza.append(crearEl("h3", "", titulo));
+  if (subtitulo) cabeza.append(crearEl("p", "wt-sub", subtitulo));
   const cuerpo = crearEl("div", "wt-body");
-  const nota = crearEl("p", "form-note");
-  const acciones = crearEl("div", "dialog-actions");
+  const pie = crearEl("div", "wt-foot");
+  const nota = crearEl("p", "form-note wt-msg");
+  nota.setAttribute("role", "status");
   const cerrarBoton = crearEl("button", "btn", "Cerrar");
   cerrarBoton.type = "button";
   const alCerrar = [];
@@ -4710,22 +4717,69 @@ function dialogoDeCarga(titulo, subtitulo = "") {
     ev.preventDefault();
     cerrar();
   });
-  acciones.append(cerrarBoton);
-  dialogo.append(crearEl("h3", "", titulo));
-  if (subtitulo) dialogo.append(crearEl("p", "form-note wt-sub", subtitulo));
-  dialogo.append(cuerpo, nota, acciones);
+  pie.append(nota, cerrarBoton);
+  dialogo.append(cabeza, cuerpo, pie);
   document.body.append(dialogo);
   dialogo.showModal();
   return { dialogo, cuerpo, nota, cerrar, alCerrar };
 }
 
+/** Una sección del diálogo: título, explicación opcional y lo demás. */
+function seccionDeCarga(titulo, explicacion = "", extraCabeza = null) {
+  const sec = crearEl("section", "wt-section");
+  const cab = crearEl("div", "wt-section-head");
+  const textos = crearEl("div", "wt-section-titles");
+  textos.append(crearEl("h4", "", titulo));
+  if (explicacion) textos.append(crearEl("p", "wt-desc", explicacion));
+  cab.append(textos);
+  if (extraCabeza) cab.append(extraCabeza);
+  sec.append(cab);
+  return sec;
+}
+
+/** Un campo con su rótulo encima. */
+function campoDeCarga(rotulo, control, clase = "") {
+  const campo = crearEl("label", `wt-field ${clase}`.trim());
+  campo.append(crearEl("span", "wt-field-label", rotulo), control);
+  return campo;
+}
+
+/** Un interruptor con su texto (el mismo dibujo que el resto de la app). */
+function interruptorDeCarga(texto) {
+  const etiqueta = crearEl("label", "wt-switch");
+  const input = crearEl("input", "db-switch");
+  input.type = "checkbox";
+  input.setAttribute("role", "switch");
+  etiqueta.append(input, crearEl("span", "", texto));
+  return { etiqueta, input };
+}
+
+function botonQuitarDeCarga(titulo, aria, alPulsar) {
+  const b = crearEl("button", "icon-btn wt-del");
+  b.type = "button";
+  b.innerHTML = svgIcon("i-x");
+  b.title = titulo;
+  b.setAttribute("aria-label", aria);
+  b.addEventListener("click", alPulsar);
+  return b;
+}
+
+const diasDeCarga = (n) => (n === 1 ? "1 día" : `${n} días`);
+
 function fechaLargaDeJornada(iso) {
   return new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 }
 
+function fechaCortaDeJornada(iso, conAnio = false) {
+  const o = { weekday: "short", day: "numeric", month: "short" };
+  if (conAnio) o.year = "numeric";
+  const s = new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", o).replace(",", "");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 /** La lista de ausencias de una persona y el formulario para añadir otra. */
 async function pintarAusencias(caja, userId, nota) {
-  caja.replaceChildren(crearEl("p", "form-note", "Cargando…"));
+  caja.replaceChildren(crearEl("p", "wt-empty", "Cargando…"));
   const hace = new Date();
   hace.setDate(hace.getDate() - 31);
   let datos;
@@ -4740,68 +4794,74 @@ async function pintarAusencias(caja, userId, nota) {
   for (const a of datos.absences) {
     const li = crearEl("li", "wt-item");
     const dias = Math.round((new Date(`${a.end}T12:00:00`) - new Date(`${a.start}T12:00:00`)) / 86400000) + 1;
-    const cuando =
-      a.start === a.end
-        ? fechaLargaDeJornada(a.start)
-        : `${fechaLargaDeJornada(a.start)} – ${fechaLargaDeJornada(a.end)} (${dias} días)`;
-    const texto = crearEl("span", "wt-item-text");
-    texto.append(crearEl("strong", "", a.label), ` · ${cuando}`);
-    if (a.hours) texto.append(` · ${fmtHorasJornada(a.hours)} al día`);
-    if (a.note) texto.append(crearEl("span", "wt-item-note", ` — ${a.note}`));
-    const borrar = crearEl("button", "icon-btn wt-del");
-    borrar.type = "button";
-    borrar.innerHTML = svgIcon("i-x");
-    borrar.title = "Quitar esta ausencia";
-    borrar.setAttribute("aria-label", `Quitar ${a.label} del ${a.start}`);
-    borrar.addEventListener("click", async () => {
-      try {
-        await api(`/absences/${a.id}`, { method: "DELETE" });
-        setFormNote(nota, "Ausencia quitada.", "ok");
-        pintarAusencias(caja, userId, nota);
-      } catch (e) {
-        setFormNote(nota, describeError(e), "error");
-      }
-    });
-    li.append(texto, borrar);
+    const cuando = a.start === a.end ? fechaCortaDeJornada(a.start, true) : `${fechaCortaDeJornada(a.start)} – ${fechaCortaDeJornada(a.end, true)}`;
+    const principal = crearEl("div", "wt-item-main");
+    principal.append(crearEl("span", "wt-item-title", cuando));
+    const detalles = [diasDeCarga(dias)];
+    if (a.hours) detalles.push(`${fmtHorasJornada(a.hours)} al día`);
+    if (a.note) detalles.push(a.note);
+    principal.append(crearEl("span", "wt-item-note", detalles.join(" · ")));
+    li.append(
+      crearEl("span", `wt-chip wt-chip--${a.kind}`, a.label),
+      principal,
+      botonQuitarDeCarga("Quitar esta ausencia", `Quitar ${a.label} del ${a.start}`, async () => {
+        try {
+          await api(`/absences/${a.id}`, { method: "DELETE" });
+          setFormNote(nota, "Ausencia quitada.", "ok");
+          pintarAusencias(caja, userId, nota);
+        } catch (e) {
+          setFormNote(nota, describeError(e), "error");
+        }
+      }),
+    );
     lista.append(li);
   }
 
-  const form = crearEl("form", "wt-form");
+  const form = crearEl("form", "wt-card wt-form-grid");
   form.noValidate = true;
   const tipo = crearEl("select");
-  tipo.setAttribute("aria-label", "Tipo de ausencia");
   for (const k of datos.kinds) tipo.add(new Option(k.label, k.key));
   const desde = crearEl("input");
   desde.type = "date";
   desde.required = true;
-  desde.setAttribute("aria-label", "Desde");
   const hasta = crearEl("input");
   hasta.type = "date";
-  hasta.setAttribute("aria-label", "Hasta (incluido)");
   desde.addEventListener("change", () => {
     if (!hasta.value || hasta.value < desde.value) hasta.value = desde.value;
   });
-  const parcialEtiqueta = crearEl("label", "wt-check");
-  const parcial = crearEl("input");
-  parcial.type = "checkbox";
-  const horas = crearEl("input", "wt-hours");
+  const { etiqueta: parcialEtiqueta, input: parcial } = interruptorDeCarga("Solo unas horas al día");
+  const horas = crearEl("input", "wt-hours wt-num");
   horas.type = "number";
   horas.min = "0.5";
   horas.max = "24";
   horas.step = "0.5";
-  horas.placeholder = "h";
-  horas.hidden = true;
+  horas.placeholder = "0";
   horas.setAttribute("aria-label", "Horas que faltas cada día");
-  parcial.addEventListener("change", () => (horas.hidden = !parcial.checked));
-  parcialEtiqueta.append(parcial, "Solo unas horas");
-  const texto = crearEl("input", "wt-note");
+  const campoHoras = crearEl("span", "wt-suffix");
+  campoHoras.append(horas, crearEl("span", "", "h"));
+  campoHoras.hidden = true;
+  parcial.addEventListener("change", () => {
+    campoHoras.hidden = !parcial.checked;
+    if (parcial.checked) horas.focus();
+  });
+  const filaParcial = crearEl("div", "wt-span wt-row");
+  filaParcial.append(parcialEtiqueta, campoHoras);
+  const texto = crearEl("input");
   texto.type = "text";
   texto.maxLength = 500;
-  texto.placeholder = "Nota (opcional)";
-  texto.setAttribute("aria-label", "Nota");
-  const anadir = crearEl("button", "btn btn-primary", "Añadir");
+  texto.placeholder = "Opcional";
+  const anadir = crearEl("button", "btn btn-primary", "Añadir ausencia");
   anadir.type = "submit";
-  form.append(tipo, crearEl("span", "wt-lbl", "del"), desde, crearEl("span", "wt-lbl", "al"), hasta, parcialEtiqueta, horas, texto, anadir);
+  const filaNota = crearEl("div", "wt-span wt-row wt-row--end");
+  filaNota.append(campoDeCarga("Nota", texto, "wt-grow"), anadir);
+  form.append(
+    crearEl("p", "wt-card-title wt-span", "Nueva ausencia"),
+    campoDeCarga("Tipo", tipo),
+    campoDeCarga("Desde", desde),
+    campoDeCarga("Hasta (incluido)", hasta),
+    filaParcial,
+    filaNota,
+  );
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!desde.value) return setFormNote(nota, "Elige el primer día.", "error");
@@ -4831,13 +4891,18 @@ async function abrirMisAusencias() {
   const me = sessionUser.me;
   if (!me) return;
   const d = dialogoDeCarga("Mis ausencias", "Vacaciones, bajas, formación…: los días que no estás restan de tu capacidad en la carga del equipo.");
-  const jornada = crearEl("p", "wt-jornada", "");
-  const caja = crearEl("div");
+  const jornada = crearEl("div", "wt-info");
+  jornada.hidden = true;
+  const caja = crearEl("div", "wt-stack");
   d.cuerpo.append(jornada, caja);
   api(`/worktime/users/${me.id}`)
     .then((f) => {
-      jornada.textContent = `Tu jornada: ${fmtHorasJornada(f.weekly)} a la semana (${resumenDeJornada(f.schedule)}).`;
-      if (!me.is_admin) jornada.append(crearEl("span", "form-note", " La cambia un administrador."));
+      jornada.innerHTML = svgIcon("i-calendar");
+      const t = crearEl("div");
+      t.append(crearEl("strong", "", `Tu jornada: ${fmtHorasJornada(f.weekly)} a la semana`), crearEl("span", "", resumenDeJornada(f.schedule)));
+      if (!me.is_admin) t.append(crearEl("span", "wt-item-note", "La cambia un administrador."));
+      jornada.append(t);
+      jornada.hidden = false;
     })
     .catch(() => jornada.remove());
   pintarAusencias(caja, me.id, d.nota);
@@ -4846,7 +4911,7 @@ async function abrirMisAusencias() {
 /** La jornada, la dedicación y las ausencias de una persona (administrador). */
 async function abrirJornada(persona, alCambiar = null) {
   const nombre = persona.display_name || persona.username || "esta persona";
-  const d = dialogoDeCarga(`Jornada de ${nombre}`);
+  const d = dialogoDeCarga(`Jornada de ${nombre}`, "Las horas que trabaja cada día, cuánto dedica a cada espacio y los días que no está.");
   d.dialogo.classList.add("wt-dialog--wide");
   let cambiado = false;
   d.alCerrar.push(() => cambiado && alCambiar?.());
@@ -4859,12 +4924,13 @@ async function abrirJornada(persona, alCambiar = null) {
     return;
   }
 
-  // --- jornada: siete casillas, de lunes a domingo
-  const seccion = crearEl("section", "wt-section");
-  seccion.append(crearEl("h4", "", "Horas por día"));
+  // --- jornada: siete casillas, de lunes a domingo, y atajos arriba
+  const atajos = crearEl("div", "wt-presets");
+  atajos.setAttribute("aria-label", "Jornadas habituales (de lunes a viernes)");
+  const seccion = seccionDeCarga("Horas por día", "", atajos);
   const rejilla = crearEl("div", "wt-grid");
   const entradas = DIAS_DE_JORNADA.map((dia, i) => {
-    const celda = crearEl("label", "wt-day");
+    const celda = crearEl("label", `wt-day${i >= 5 ? " wt-day--weekend" : ""}`);
     const input = crearEl("input");
     input.type = "number";
     input.min = "0";
@@ -4872,29 +4938,38 @@ async function abrirJornada(persona, alCambiar = null) {
     input.step = "0.5";
     input.value = String(ficha.schedule[i] ?? 0);
     input.setAttribute("aria-label", `Horas el ${dia.toLowerCase()}`);
-    celda.append(crearEl("span", "wt-day-name", DIAS_DE_JORNADA_CORTOS[i]), input);
+    celda.append(crearEl("span", "wt-day-name", dia.slice(0, 3)), input);
     celda.title = dia;
     rejilla.append(celda);
     return input;
   });
   const total = crearEl("p", "wt-total");
+  const botonesAtajo = [];
   const pintarTotal = () => {
     const horas = entradas.map((x) => Number(x.value) || 0);
-    total.textContent = `${fmtHorasJornada(horas.reduce((a, b) => a + b, 0))} a la semana · ${resumenDeJornada(horas)}`;
+    total.replaceChildren(
+      crearEl("strong", "", `${fmtHorasJornada(horas.reduce((a, b) => a + b, 0))} a la semana`),
+      crearEl("span", "", resumenDeJornada(horas)),
+    );
+    for (const { boton, h } of botonesAtajo) {
+      const igual = horas.every((x, i) => x === (i < 5 ? h : 0));
+      boton.setAttribute("aria-pressed", String(igual));
+    }
+    entradas.forEach((x) => x.closest(".wt-day").classList.toggle("wt-day--off", !(Number(x.value) > 0)));
   };
-  entradas.forEach((x) => x.addEventListener("input", pintarTotal));
-  pintarTotal();
-  const atajos = crearEl("div", "wt-presets");
   for (const [txt, h] of [["40 h", 8], ["37,5 h", 7.5], ["35 h", 7], ["30 h", 6], ["20 h", 4]]) {
-    const b = crearEl("button", "btn btn-sm", txt);
+    const b = crearEl("button", "wt-preset", txt);
     b.type = "button";
     b.title = `${fmtHorasJornada(h)} de lunes a viernes`;
     b.addEventListener("click", () => {
       entradas.forEach((x, i) => (x.value = String(i < 5 ? h : 0)));
       pintarTotal();
     });
+    botonesAtajo.push({ boton: b, h });
     atajos.append(b);
   }
+  entradas.forEach((x) => x.addEventListener("input", pintarTotal));
+  pintarTotal();
   const guardar = crearEl("button", "btn btn-primary", "Guardar jornada");
   guardar.type = "button";
   guardar.addEventListener("click", async () => {
@@ -4909,7 +4984,7 @@ async function abrirJornada(persona, alCambiar = null) {
       setFormNote(d.nota, describeError(e), "error");
     }
   });
-  const porDefecto = crearEl("button", "btn", "Volver a la de por defecto");
+  const porDefecto = crearEl("button", "btn btn-ghost", "Volver a la de por defecto");
   porDefecto.type = "button";
   porDefecto.title = "8 h de lunes a viernes";
   porDefecto.addEventListener("click", async () => {
@@ -4923,37 +4998,45 @@ async function abrirJornada(persona, alCambiar = null) {
       setFormNote(d.nota, describeError(e), "error");
     }
   });
-  const filaBotones = crearEl("div", "wt-actions");
-  filaBotones.append(guardar, porDefecto);
-  seccion.append(atajos, rejilla, total, filaBotones);
+  const pieJornada = crearEl("div", "wt-section-foot");
+  const botones = crearEl("div", "wt-actions");
+  botones.append(porDefecto, guardar);
+  pieJornada.append(total, botones);
+  seccion.append(rejilla, pieJornada);
 
   // --- dedicación por espacio
-  const ded = crearEl("section", "wt-section");
-  ded.append(
-    crearEl("h4", "", "Dedicación a cada espacio"),
-    crearEl("p", "form-note", "Qué parte de su capacidad cuenta en cada espacio cuando se mira la carga de un solo espacio. Sin rellenar: el 100 % en cada uno. La suma no puede pasar del 100 %."),
+  const ded = seccionDeCarga(
+    "Dedicación a cada espacio",
+    "Qué parte de su capacidad cuenta en cada espacio al mirar la carga de un solo espacio. Sin rellenar cuenta el 100 % en cada uno; la suma no puede pasar del 100 %.",
   );
   const camposDed = new Map();
   const listaDed = crearEl("div", "wt-ded");
   for (const w of espacios.filter((x) => !x.personal_of)) {
     const fila = crearEl("label", "wt-ded-row");
-    const input = crearEl("input");
+    const input = crearEl("input", "wt-num");
     input.type = "number";
     input.min = "0";
     input.max = "100";
     input.step = "5";
-    input.placeholder = "—";
+    input.placeholder = "100";
     const actual = ficha.dedication?.[w.id];
     if (actual != null) input.value = String(actual);
     input.setAttribute("aria-label", `Dedicación a ${w.name} (%)`);
-    fila.append(crearEl("span", "wt-ded-name", w.name), input, crearEl("span", "", "%"));
+    const sufijo = crearEl("span", "wt-suffix");
+    sufijo.append(input, crearEl("span", "", "%"));
+    fila.append(crearEl("span", "wt-ded-name", w.name), sufijo);
     camposDed.set(w.id, input);
     listaDed.append(fila);
   }
-  const sumaDed = crearEl("p", "form-note");
+  const sumaDed = crearEl("p", "wt-total");
   const pintarSuma = () => {
     const vals = [...camposDed.values()].filter((x) => x.value !== "").map((x) => Number(x.value) || 0);
-    sumaDed.textContent = vals.length ? `Suma: ${vals.reduce((a, b) => a + b, 0)} %` : "Sin dedicación declarada.";
+    const suma = vals.reduce((a, b) => a + b, 0);
+    sumaDed.classList.toggle("wt-total--over", suma > 100);
+    sumaDed.replaceChildren(
+      vals.length ? crearEl("strong", "", `Suma: ${suma} %`) : crearEl("span", "", "Sin dedicación declarada: 100 % en cada espacio."),
+    );
+    if (suma > 100) sumaDed.append(crearEl("span", "", "Pasa del 100 %"));
   };
   camposDed.forEach((x) => x.addEventListener("input", pintarSuma));
   pintarSuma();
@@ -4972,18 +5055,23 @@ async function abrirJornada(persona, alCambiar = null) {
       setFormNote(d.nota, describeError(e), "error");
     }
   });
-  ded.append(listaDed, sumaDed, guardarDed);
+  const pieDed = crearEl("div", "wt-section-foot");
+  pieDed.append(sumaDed, guardarDed);
+  ded.append(listaDed, pieDed);
 
   // --- ausencias de esa persona
-  const aus = crearEl("section", "wt-section");
-  aus.append(crearEl("h4", "", "Ausencias"));
-  const cajaAus = crearEl("div");
+  const aus = seccionDeCarga("Ausencias", "Las del último mes y las que vienen.");
+  const cajaAus = crearEl("div", "wt-stack");
   aus.append(cajaAus);
   pintarAusencias(cajaAus, persona.id, d.nota).then(() => {
     cajaAus.addEventListener("submit", () => (cambiado = true), true);
-    cajaAus.addEventListener("click", (e) => {
-      if (e.target.closest?.(".wt-del")) cambiado = true;
-    }, true);
+    cajaAus.addEventListener(
+      "click",
+      (e) => {
+        if (e.target.closest?.(".wt-del")) cambiado = true;
+      },
+      true,
+    );
   });
 
   d.cuerpo.append(seccion, ded, aus);
@@ -4997,17 +5085,43 @@ async function abrirFestivos(workspaceId = null, nombreDelEspacio = "") {
       ? "Cuentan a quienes son miembros de este espacio, además de los comunes."
       : "Cuentan a toda la empresa. Cada espacio puede añadir los suyos.",
   );
+  d.dialogo.classList.add("wt-dialog--wide");
   const hoy = new Date();
   let anio = hoy.getFullYear();
-  const cabeza = crearEl("div", "wt-year");
-  const selector = crearEl("select");
-  selector.setAttribute("aria-label", "Año");
-  for (let a = anio - 1; a <= anio + 2; a += 1) selector.add(new Option(String(a), String(a), false, a === anio));
-  cabeza.append(crearEl("span", "", "Año "), selector);
-  const caja = crearEl("div");
-  d.cuerpo.append(cabeza, caja);
+  const minimo = anio - 1;
+  const maximo = anio + 2;
+
+  // El año, con flechas: un desplegable de cuatro años no compensa.
+  const pasos = crearEl("div", "wt-stepper");
+  const antes = crearEl("button", "icon-btn");
+  antes.type = "button";
+  antes.innerHTML = svgIcon("i-chevron-left");
+  antes.setAttribute("aria-label", "Año anterior");
+  const rotuloAnio = crearEl("span", "wt-stepper-value");
+  rotuloAnio.setAttribute("aria-live", "polite");
+  const despues = crearEl("button", "icon-btn");
+  despues.type = "button";
+  despues.innerHTML = svgIcon("i-chevron-right");
+  despues.setAttribute("aria-label", "Año siguiente");
+  pasos.append(antes, rotuloAnio, despues);
+  const ponerAnio = (a) => {
+    anio = Math.min(maximo, Math.max(minimo, a));
+    rotuloAnio.textContent = String(anio);
+    antes.disabled = anio <= minimo;
+    despues.disabled = anio >= maximo;
+  };
+  ponerAnio(anio);
+
+  const seccionLista = seccionDeCarga("Festivos", "", pasos);
+  const cuenta = seccionLista.querySelector(".wt-section-titles h4");
+  const caja = crearEl("div", "wt-stack");
+  seccionLista.append(caja);
+  const cajaImportar = crearEl("div");
+  d.cuerpo.append(seccionLista, cajaImportar);
+  let importarPintado = false;
+
   const pintar = async () => {
-    caja.replaceChildren(crearEl("p", "form-note", "Cargando…"));
+    caja.replaceChildren(crearEl("p", "wt-empty", "Cargando…"));
     let datos;
     try {
       const q = new URLSearchParams({ year: String(anio) });
@@ -5017,52 +5131,50 @@ async function abrirFestivos(workspaceId = null, nombreDelEspacio = "") {
       caja.replaceChildren(crearEl("p", "form-note form-error", describeError(e)));
       return;
     }
-    const lista = crearEl("ul", "wt-list");
-    if (!datos.holidays.length) lista.append(crearEl("li", "wt-empty", `No hay festivos en ${anio}.`));
+    const n = datos.holidays.length;
+    cuenta.textContent = n ? `Festivos de ${anio} · ${n}` : `Festivos de ${anio}`;
+    const lista = crearEl("ul", "wt-list wt-list--scroll");
+    if (!n) lista.append(crearEl("li", "wt-empty", `No hay festivos en ${anio}.`));
     for (const h of datos.holidays) {
       const li = crearEl("li", "wt-item");
-      const texto = crearEl("span", "wt-item-text");
-      texto.append(crearEl("strong", "", fechaLargaDeJornada(h.day)), ` · ${h.name}`);
-      if (h.source_name) texto.append(crearEl("span", "wt-item-note", ` — ${h.source_name}`));
-      li.append(texto);
+      const principal = crearEl("div", "wt-item-main");
+      principal.append(crearEl("span", "wt-item-title", h.name));
+      if (h.source_name) principal.append(crearEl("span", "wt-item-note", h.source_name));
+      li.append(crearEl("span", "wt-date", fechaCortaDeJornada(h.day)), principal);
       // Uno importado se quita con su calendario (abajo): borrado suelto,
       // volvería en la siguiente actualización.
       if (datos.can_edit && !h.source_id) {
-        const borrar = crearEl("button", "icon-btn wt-del");
-        borrar.type = "button";
-        borrar.innerHTML = svgIcon("i-x");
-        borrar.title = "Quitar este festivo";
-        borrar.setAttribute("aria-label", `Quitar ${h.name}`);
-        borrar.addEventListener("click", async () => {
-          try {
-            await api(`/holidays/${h.id}`, { method: "DELETE" });
-            pintar();
-          } catch (e) {
-            setFormNote(d.nota, describeError(e), "error");
-          }
-        });
-        li.append(borrar);
+        li.append(
+          botonQuitarDeCarga("Quitar este festivo", `Quitar ${h.name}`, async () => {
+            try {
+              await api(`/holidays/${h.id}`, { method: "DELETE" });
+              pintar();
+            } catch (e) {
+              setFormNote(d.nota, describeError(e), "error");
+            }
+          }),
+        );
+      } else if (h.source_id) {
+        li.append(crearEl("span", "wt-del-sitio"));
       }
       lista.append(li);
     }
     caja.replaceChildren(lista);
     if (!datos.can_edit) {
-      caja.append(crearEl("p", "form-note", workspaceId ? "Los cambia un administrador del espacio." : "Los cambia un administrador."));
+      caja.append(crearEl("p", "wt-desc", workspaceId ? "Los cambia un administrador del espacio." : "Los cambia un administrador."));
       return;
     }
-    const form = crearEl("form", "wt-form");
+    const form = crearEl("form", "wt-card wt-row wt-row--end");
     form.noValidate = true;
     const dia = crearEl("input");
     dia.type = "date";
-    dia.setAttribute("aria-label", "Día");
-    const nombre = crearEl("input", "wt-note");
+    const nombre = crearEl("input");
     nombre.type = "text";
     nombre.maxLength = 200;
-    nombre.placeholder = "Nombre (Navidad, fiesta local…)";
-    nombre.setAttribute("aria-label", "Nombre del festivo");
+    nombre.placeholder = "Navidad, fiesta local…";
     const anadir = crearEl("button", "btn btn-primary", "Añadir festivo");
     anadir.type = "submit";
-    form.append(dia, nombre, anadir);
+    form.append(campoDeCarga("Día", dia), campoDeCarga("Nombre", nombre, "wt-grow"), anadir);
     form.addEventListener("submit", async (ev) => {
       ev.preventDefault();
       if (!dia.value) return setFormNote(d.nota, "Elige el día.", "error");
@@ -5073,20 +5185,24 @@ async function abrirFestivos(workspaceId = null, nombreDelEspacio = "") {
         });
         setFormNote(d.nota, "Festivo añadido.", "ok");
         const a = Number(dia.value.slice(0, 4));
-        if (a !== anio && [...selector.options].some((o) => Number(o.value) === a)) {
-          anio = a;
-          selector.value = String(a);
-        }
+        if (a >= minimo && a <= maximo) ponerAnio(a);
         pintar();
       } catch (e) {
         setFormNote(d.nota, describeError(e), "error");
       }
     });
     caja.append(form);
-    caja.append(await seccionDeImportarFestivos(workspaceId, d.nota, pintar));
+    if (!importarPintado) {
+      importarPintado = true;
+      cajaImportar.replaceWith(await seccionDeImportarFestivos(workspaceId, d.nota, pintar));
+    }
   };
-  selector.addEventListener("change", () => {
-    anio = Number(selector.value);
+  antes.addEventListener("click", () => {
+    ponerAnio(anio - 1);
+    pintar();
+  });
+  despues.addEventListener("click", () => {
+    ponerAnio(anio + 1);
     pintar();
   });
   pintar();
@@ -5109,78 +5225,107 @@ function nombreDePais(code, porDefecto = code) {
   }
 }
 
-/** «Importar»: las fuentes que ya hay (actualizar, quitar) y las tres formas
- * de traer festivos: archivo .ics, URL suscrita y festivos oficiales. */
+/** «Importar»: los calendarios que ya hay (actualizar, quitar) y, en
+ * pestañas, las tres formas de traer festivos: oficiales, URL y archivo. */
 async function seccionDeImportarFestivos(workspaceId, nota, repintar) {
-  const sec = crearEl("section", "wt-section wt-import");
-  sec.append(crearEl("h4", "", "Importar un calendario"));
+  const sec = seccionDeCarga("Importar un calendario", "Los festivos importados se quitan quitando su calendario.");
+  sec.classList.add("wt-import");
   const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
   const ws = workspaceId ? { workspace_id: workspaceId } : {};
+  const listaFuentes = crearEl("ul", "wt-list");
   const enviar = async (ruta, cuerpo, ok) => {
     try {
       const f = await api(ruta, { method: "POST", body: JSON.stringify({ ...ws, ...cuerpo }) });
       setFormNote(nota, ok(f), "ok");
       repintar();
+      pintarFuentes();
+      return true;
     } catch (e) {
       setFormNote(nota, describeError(e), "error");
+      return false;
     }
   };
 
   // Lo que ya está importado.
-  let fuentes = [];
-  try {
-    fuentes = await api(`/holidays/sources${q}`);
-  } catch {
-    fuentes = [];
-  }
-  if (fuentes.length) {
-    const lista = crearEl("ul", "wt-list");
+  const pintarFuentes = async () => {
+    let fuentes = [];
+    try {
+      fuentes = await api(`/holidays/sources${q}`);
+    } catch {
+      fuentes = [];
+    }
+    listaFuentes.hidden = !fuentes.length;
+    listaFuentes.replaceChildren();
     for (const f of fuentes) {
       const li = crearEl("li", "wt-item");
-      const texto = crearEl("span", "wt-item-text");
-      const tipo = f.kind === "url" ? "suscripción" : f.kind === "country" ? "oficiales" : "archivo";
-      texto.append(crearEl("strong", "", f.name), ` · ${f.count === 1 ? "1 día" : `${f.count} días`} · ${tipo}`);
-      if (f.error) texto.append(crearEl("span", "wt-item-note form-error", ` — ${f.error}`));
-      li.append(texto);
+      const tipo = f.kind === "url" ? "Suscripción" : f.kind === "country" ? "Oficiales" : "Archivo";
+      const principal = crearEl("div", "wt-item-main");
+      principal.append(crearEl("span", "wt-item-title", f.name));
+      const sub = [diasDeCarga(f.count)];
+      if (f.kind !== "file") sub.push("se actualiza cada día");
+      principal.append(crearEl("span", "wt-item-note", sub.join(" · ")));
+      if (f.error) principal.append(crearEl("span", "wt-item-note form-error", f.error));
+      li.append(crearEl("span", `wt-chip wt-chip--${f.kind}`, tipo), principal);
       if (f.kind !== "file") {
-        const act = crearEl("button", "btn wt-mini", "Actualizar");
+        const act = crearEl("button", "btn btn-ghost wt-mini", "Actualizar");
         act.type = "button";
-        act.addEventListener("click", () => enviar(`/holidays/sources/${f.id}/sync`, {}, (r) => `Actualizado: ${r.count} días.`));
+        act.addEventListener("click", () => enviar(`/holidays/sources/${f.id}/sync`, {}, (r) => `Actualizado: ${diasDeCarga(r.count)}.`));
         li.append(act);
       }
-      const quitar = crearEl("button", "icon-btn wt-del");
-      quitar.type = "button";
-      quitar.innerHTML = svgIcon("i-x");
-      quitar.title = "Quitar este calendario y sus festivos";
-      quitar.setAttribute("aria-label", `Quitar ${f.name}`);
-      quitar.addEventListener("click", async () => {
-        try {
-          await api(`/holidays/sources/${f.id}`, { method: "DELETE" });
-          setFormNote(nota, `«${f.name}» quitado, con sus festivos.`, "ok");
-          repintar();
-        } catch (e) {
-          setFormNote(nota, describeError(e), "error");
-        }
-      });
-      li.append(quitar);
-      lista.append(li);
+      li.append(
+        botonQuitarDeCarga("Quitar este calendario y sus festivos", `Quitar ${f.name}`, async () => {
+          try {
+            await api(`/holidays/sources/${f.id}`, { method: "DELETE" });
+            setFormNote(nota, `«${f.name}» quitado, con sus festivos.`, "ok");
+            repintar();
+            pintarFuentes();
+          } catch (e) {
+            setFormNote(nota, describeError(e), "error");
+          }
+        }),
+      );
+      listaFuentes.append(li);
     }
-    sec.append(lista);
-  }
+  };
+  await pintarFuentes();
+
+  // Las pestañas.
+  const pestanas = crearEl("div", "wt-tabs");
+  pestanas.setAttribute("role", "tablist");
+  const paneles = crearEl("div", "wt-card");
+  const formas = [];
+  const pestana = (texto, panel) => {
+    const b = crearEl("button", "wt-tab", texto);
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.addEventListener("click", () => elegir(formas.findIndex((x) => x.b === b)));
+    formas.push({ b, panel });
+    pestanas.append(b);
+    paneles.append(panel);
+  };
+  const elegir = (i) => {
+    formas.forEach((f, j) => {
+      f.b.setAttribute("aria-selected", String(i === j));
+      f.panel.hidden = i !== j;
+    });
+  };
 
   // 1) Festivos oficiales de un país (y región).
-  const oficial = crearEl("form", "wt-form");
+  const oficial = crearEl("form", "wt-panel");
   oficial.noValidate = true;
   const pais = crearEl("select");
-  pais.setAttribute("aria-label", "País");
-  pais.add(new Option("País…", ""));
+  pais.add(new Option("Elige un país…", ""));
   const region = crearEl("select");
-  region.setAttribute("aria-label", "Región");
-  region.add(new Option("Solo nacionales", ""));
+  region.add(new Option("Solo los nacionales", ""));
   region.disabled = true;
-  const anadirOficial = crearEl("button", "btn", "Añadir festivos oficiales");
+  const anadirOficial = crearEl("button", "btn btn-primary", "Añadir");
   anadirOficial.type = "submit";
-  oficial.append(crearEl("span", "wt-lbl wt-import-lbl", "Oficiales"), pais, region, anadirOficial);
+  const filaOficial = crearEl("div", "wt-row wt-row--end");
+  filaOficial.append(campoDeCarga("País", pais, "wt-grow"), campoDeCarga("Comunidad o región", region, "wt-grow"), anadirOficial);
+  oficial.append(
+    filaOficial,
+    crearEl("p", "wt-desc", "Nacionales y autonómicos, de date.nager.at. Los locales de tu municipio no están: súbelos con un .ics o añádelos a mano."),
+  );
   api("/holidays/countries")
     .then((lista) => {
       lista
@@ -5196,10 +5341,10 @@ async function seccionDeImportarFestivos(workspaceId, nota, repintar) {
     .catch(() => {
       pais.disabled = true;
       anadirOficial.disabled = true;
-      anadirOficial.title = "El servidor no puede consultar los festivos oficiales (sin conexión a internet).";
+      oficial.append(crearEl("p", "wt-desc form-error", "El servidor no puede consultar los festivos oficiales (no tiene conexión a internet)."));
     });
   pais.addEventListener("change", async () => {
-    region.replaceChildren(new Option("Solo nacionales", ""));
+    region.replaceChildren(new Option("Solo los nacionales", ""));
     region.disabled = true;
     if (!pais.value) return;
     try {
@@ -5222,52 +5367,70 @@ async function seccionDeImportarFestivos(workspaceId, nota, repintar) {
     enviar(
       "/holidays/sources",
       { kind: "country", country: pais.value, region: region.value || null, name: nombre },
-      (f) => `«${f.name}»: ${f.count === 1 ? "1 día" : `${f.count} días`}. Se actualiza solo cada día.`,
+      (f) => `«${f.name}»: ${diasDeCarga(f.count)}. Se actualiza solo cada día.`,
     );
   });
 
   // 2) Suscripción a una URL .ics / webcal.
-  const url = crearEl("form", "wt-form");
+  const url = crearEl("form", "wt-panel");
   url.noValidate = true;
-  const campoUrl = crearEl("input", "wt-note");
+  const campoUrl = crearEl("input");
   campoUrl.type = "url";
-  campoUrl.placeholder = "https://… o webcal://… (.ics)";
-  campoUrl.setAttribute("aria-label", "Dirección del calendario");
-  const suscribir = crearEl("button", "btn", "Suscribirse");
+  campoUrl.placeholder = "https://… o webcal://…";
+  const suscribir = crearEl("button", "btn btn-primary", "Suscribirse");
   suscribir.type = "submit";
-  url.append(crearEl("span", "wt-lbl wt-import-lbl", "Desde una URL"), campoUrl, suscribir);
-  url.addEventListener("submit", (ev) => {
+  const filaUrl = crearEl("div", "wt-row wt-row--end");
+  filaUrl.append(campoDeCarga("Dirección del calendario (.ics)", campoUrl, "wt-grow"), suscribir);
+  url.append(
+    filaUrl,
+    crearEl(
+      "p",
+      "wt-desc",
+      "La dirección pública o secreta en formato iCal que dan Google Calendar, Outlook o Apple Calendar. Se vuelve a leer cada día. Ojo: el calendario de festivos de Google incluye días señalados que no son fiesta, como Nochevieja.",
+    ),
+  );
+  url.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!campoUrl.value.trim()) return setFormNote(nota, "Pega la dirección del calendario.", "error");
-    enviar("/holidays/sources", { kind: "url", url: campoUrl.value.trim() }, (f) => `«${f.name}»: ${f.count === 1 ? "1 día" : `${f.count} días`}. Se actualiza solo cada día.`);
+    if (await enviar("/holidays/sources", { kind: "url", url: campoUrl.value.trim() }, (f) => `«${f.name}»: ${diasDeCarga(f.count)}. Se actualiza solo cada día.`)) campoUrl.value = "";
   });
 
-  // 3) Archivo .ics.
-  const archivo = crearEl("form", "wt-form");
-  const input = crearEl("input");
+  // 3) Archivo .ics: el botón nativo se esconde detrás de uno propio.
+  const archivo = crearEl("div", "wt-panel");
+  const input = crearEl("input", "wt-file-input");
   input.type = "file";
   input.accept = ".ics,text/calendar";
   input.setAttribute("aria-label", "Archivo de calendario (.ics)");
-  archivo.append(crearEl("span", "wt-lbl wt-import-lbl", "Desde un archivo"), input);
-  input.addEventListener("change", async () => {
-    const f = input.files?.[0];
+  const zona = crearEl("label", "wt-drop");
+  zona.innerHTML = svgIcon("i-upload");
+  const textoZona = crearEl("span", "wt-drop-text");
+  textoZona.append(crearEl("strong", "", "Elige un archivo .ics"), crearEl("span", "", "o suéltalo aquí"));
+  zona.append(textoZona, input);
+  const subir = async (f) => {
     if (!f) return;
     if (f.size > 3 * 1024 * 1024) return setFormNote(nota, "El archivo pasa de 3 MB: no parece un calendario de festivos.", "error");
     const texto = await f.text();
     await enviar("/holidays/import", { name: f.name.replace(/\.ics$/i, ""), content: texto }, (r) => `«${r.name}»: ${r.count === 1 ? "1 día importado" : `${r.count} días importados`}.`);
     input.value = "";
+  };
+  input.addEventListener("change", () => subir(input.files?.[0]));
+  zona.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    zona.classList.add("is-over");
   });
+  zona.addEventListener("dragleave", () => zona.classList.remove("is-over"));
+  zona.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    zona.classList.remove("is-over");
+    subir(ev.dataTransfer?.files?.[0]);
+  });
+  archivo.append(zona, crearEl("p", "wt-desc", "Exportado de cualquier calendario (Google, Outlook, Apple…). Se importa una vez: si cambia, vuelve a subirlo."));
 
-  sec.append(
-    oficial,
-    url,
-    archivo,
-    crearEl(
-      "p",
-      "form-note",
-      "Google Calendar, Outlook y Apple Calendar exportan o publican sus calendarios en formato .ics (ojo: el calendario público de festivos de Google incluye también días señalados que no son fiesta, como Nochevieja). Los oficiales (nacionales y autonómicos) vienen de date.nager.at; los locales, súbelos con un .ics o añádelos a mano. Un festivo importado se quita quitando su calendario.",
-    ),
-  );
+  pestana("Oficiales", oficial);
+  pestana("Desde una URL", url);
+  pestana("Archivo .ics", archivo);
+  elegir(0);
+  sec.append(listaFuentes, pestanas, paneles);
   return sec;
 }
 
