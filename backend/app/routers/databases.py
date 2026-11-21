@@ -28,7 +28,7 @@ from app.serializers import as_utc
 from app import templates as template_defs
 from app.vault.store import UNSET, VaultError, VersionConflict
 from app.versioning import conflict, parse_if_match
-from app.views import apply_view, sort_keys, validar_rango
+from app.views import apply_view, sort_keys, validar_agrupacion, validar_rango
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
@@ -970,7 +970,9 @@ def create_view(
     # El rango de un calendario se valida contra el schema de la base, que el
     # esquema de la petición no tiene: una vista que nombra una fecha que no
     # existe es un 400 que dice cuál, no un calendario que cae a otra fecha.
-    motivo = validar_rango(payload.config, db_def.schema_def)
+    motivo = validar_rango(payload.config, db_def.schema_def) or validar_agrupacion(
+        payload.config, db_def.schema_def
+    )
     if motivo:
         raise HTTPException(400, motivo)
     with _vault_errors():
@@ -994,6 +996,11 @@ def update_view(
 ):
     db_def = _get_database_or_404(repo, database_id)
     motivo = validar_rango(payload.config, db_def.schema_def)
+    if not motivo and payload.config is not None:
+        guardada = repo.get_view(database_id, view_id)
+        motivo = validar_agrupacion(
+            payload.config, db_def.schema_def, (guardada.config or {}) if guardada else None
+        )
     if motivo:
         raise HTTPException(400, motivo)
     with _vault_errors():

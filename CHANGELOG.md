@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Agrupar tablas y listas
+- Las vistas de **tabla** y **lista** se pueden agrupar por una propiedad: «⋯» → **Agrupar**, o al crear la vista. Cada grupo lleva una cabecera con su valor (con el color de la opción) y cuántas filas tiene, y se pliega al pulsarla; los grupos plegados se recuerdan en ese navegador.
+- Agrupan una selección (en el orden de sus opciones), una persona, una relación simple, un texto, un número, un enlace, una casilla («Marcada» / «Sin marcar») y una fecha (por meses). Lo que no tiene valor va al final, en «Sin valor» o «Sin fecha». Una multiselección o una relación múltiple no agrupan: una fila caería en varios grupos.
+- En un **tablero**, «Agrupar» cambia qué propiedad reparte las columnas, que antes solo se elegía al crearlo.
+- El servidor rechaza una agrupación nueva por una propiedad que no existe o que no puede agrupar.
+
 ## Menciones con autocompletado
 - Al escribir `@` y unas letras en una página sale la lista de personas (busca por nombre de usuario y por nombre, sin acentos ni mayúsculas); elegir una escribe `@usuario `. Quien se menciona recibe el aviso de siempre.
 - Las menciones de personas que existen se ven como una etiqueta del color de acento.
