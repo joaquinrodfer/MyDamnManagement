@@ -21,7 +21,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from app import audit, auth, workspaces, worktime
+from app import audit, auth, holiday_import, workspaces, worktime
 from app.dependencies import get_current_user, get_repo
 from app.due import server_today
 from app.repository import Repository
@@ -259,3 +259,121 @@ def delete_holiday(
     _puede_gestionar(repo, user, festivo["workspace_id"])
     worktime.delete_holiday(repo.conn, holiday_id)
     return Response(status_code=204)
+
+
+# --------------------------------------------------------------------------
+# importar festivos (C1b)
+# --------------------------------------------------------------------------
+
+
+class ImportIcsIn(BaseModel):
+    workspace_id: Optional[str] = None
+    name: str = Field(default="", max_length=200)
+    content: str = Field(max_length=holiday_import.MAX_BYTES)
+
+
+class SourceIn(BaseModel):
+    workspace_id: Optional[str] = None
+    kind: str  # "url" | "country"
+    name: str = Field(default="", max_length=200)
+    url: Optional[str] = Field(default=None, max_length=2000)
+    country: Optional[str] = Field(default=None, max_length=2)
+    region: Optional[str] = Field(default=None, max_length=10)
+
+
+def _importar(fn):
+    try:
+        return fn()
+    except holiday_import.ImportErrorMsg as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@router.get("/holidays/sources")
+def list_sources(
+    workspace_id: Optional[str] = None,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    _puede_leer(repo, user, workspace_id)
+    return holiday_import.sources(repo.conn, workspace_id)
+
+
+@router.post("/holidays/import", status_code=201)
+def import_ics(
+    payload: ImportIcsIn,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    _puede_gestionar(repo, user, payload.workspace_id)
+    fuente = _importar(
+        lambda: holiday_import.create_source(
+            repo.conn, payload.workspace_id, "file", name=payload.name, content=payload.content
+        )
+    )
+    audit.record(repo.conn, user, "holidays.imported", workspace_id=payload.workspace_id,
+                 target_type="holiday_source", target_id=fuente["id"], target_name=fuente["name"])
+    return fuente
+
+
+@router.post("/holidays/sources", status_code=201)
+def create_source(
+    payload: SourceIn,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    _puede_gestionar(repo, user, payload.workspace_id)
+    if payload.kind not in ("url", "country"):
+        raise HTTPException(400, "Una suscripción es a una URL o a un país.")
+    fuente = _importar(
+        lambda: holiday_import.create_source(
+            repo.conn, payload.workspace_id, payload.kind, name=payload.name,
+            url=payload.url, country=payload.country, region=payload.region,
+        )
+    )
+    audit.record(repo.conn, user, "holidays.imported", workspace_id=payload.workspace_id,
+                 target_type="holiday_source", target_id=fuente["id"], target_name=fuente["name"])
+    return fuente
+
+
+def _fuente_gestionable(repo: Repository, user: auth.User, source_id: int) -> dict:
+    fuente = holiday_import._source(repo.conn, source_id)
+    if fuente is None:
+        raise HTTPException(404, "no existe esa fuente de festivos")
+    _puede_gestionar(repo, user, fuente["workspace_id"])
+    return fuente
+
+
+@router.post("/holidays/sources/{source_id}/sync")
+def sync_source(
+    source_id: int,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    _fuente_gestionable(repo, user, source_id)
+    return _importar(lambda: holiday_import.sync_source(repo.conn, source_id))
+
+
+@router.delete("/holidays/sources/{source_id}", status_code=204)
+def delete_source(
+    source_id: int,
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    fuente = _fuente_gestionable(repo, user, source_id)
+    holiday_import.delete_source(repo.conn, source_id)
+    audit.record(repo.conn, user, "holidays.source_removed", workspace_id=fuente["workspace_id"],
+                 target_type="holiday_source", target_id=source_id, target_name=fuente["name"])
+    return Response(status_code=204)
+
+
+@router.get("/holidays/countries")
+def official_countries(user: auth.User = Depends(get_current_user)):
+    return _importar(holiday_import.countries)
+
+
+@router.get("/holidays/regions")
+def official_regions(
+    country: str = Query(min_length=2, max_length=2),
+    user: auth.User = Depends(get_current_user),
+):
+    return _importar(lambda: holiday_import.regions(country.upper(), server_today().year))
