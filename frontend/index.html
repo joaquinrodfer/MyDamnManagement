@@ -2017,6 +2017,30 @@
     background: rgba(15, 17, 24, 0.72); color: #fff; backdrop-filter: blur(6px);
   }
   #note-body .cm-mdm-image-tools button:hover { background: rgba(15, 17, 24, 0.9); }
+  /* vídeo, audio, PDF y archivos (MediaWidget) */
+  #note-body .cm-mdm-media { position: relative; margin: 6px 0 10px; padding: 0 2px 0 6px; display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+  #note-body .cm-mdm-media--image { align-items: flex-start; }
+  #note-body .cm-mdm-media figcaption { font-size: 13px; color: var(--ink-muted); }
+  #note-body .cm-mdm-media video { width: 100%; max-height: 70vh; border-radius: 8px; background: #000; box-shadow: 0 0 0 1px var(--panel-border); }
+  #note-body .cm-mdm-media--audio, #note-body .cm-mdm-media--pdf, #note-body .cm-mdm-media--file {
+    padding: 10px 12px; margin-left: 6px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--surface-elevated);
+  }
+  #note-body .cm-mdm-media audio { width: 100%; height: 36px; }
+  #note-body .cm-mdm-media iframe { width: 100%; height: 480px; border: 0; border-radius: 6px; background: #fff; }
+  #note-body .cm-mdm-media-card { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 14px; }
+  #note-body .cm-mdm-media-icon { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent-ink); }
+  #note-body .cm-mdm-media--pdf .cm-mdm-media-icon { background: var(--down-bg); color: var(--down); }
+  #note-body .cm-mdm-media-icon svg { width: 17px; height: 17px; }
+  #note-body .cm-mdm-media-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 500; }
+  #note-body .cm-mdm-media-ext { font-size: 11px; letter-spacing: .04em; color: var(--ink-muted); padding: 2px 6px; border-radius: 4px; background: var(--code-bg); }
+  #note-body .cm-mdm-media-action {
+    font-size: 12.5px; padding: 4px 10px; border-radius: 6px; text-decoration: none; color: var(--accent-ink);
+    border: 1px solid var(--panel-border); background: var(--panel); white-space: nowrap;
+  }
+  #note-body .cm-mdm-media-action:hover { background: var(--accent-soft); }
+  #note-body .cm-mdm-media--audio .cm-mdm-image-tools, #note-body .cm-mdm-media--pdf .cm-mdm-image-tools, #note-body .cm-mdm-media--file .cm-mdm-image-tools { top: auto; bottom: 100%; left: auto; right: 6px; transform: translateY(50%); }
+  #note-body .cm-mdm-media:hover .cm-mdm-image-tools { opacity: 1; }
+
   .mdm-lightbox {
     position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
     background: rgba(8, 9, 14, 0.86); cursor: zoom-out; padding: 32px; animation: np-fade-in .15s ease;

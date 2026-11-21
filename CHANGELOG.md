@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Vídeo, audio, PDF y archivos en las páginas
+- Además de imágenes, en una página se pueden meter **vídeos** (MP4, WebM, MOV), **audios** (MP3, M4A, OGG, WAV, FLAC), **PDF** y **cualquier otro archivo**: pegándolos, soltándolos o con «/video», «/audio», «/pdf» y «/archivo».
+- El vídeo se ve con su reproductor (y se puede adelantar: `/files` atiende peticiones por rangos), el audio en una tarjeta con reproductor, el PDF con vista previa, «Abrir» y «Descargar», y el resto como una tarjeta con su tipo y «Descargar».
+- Se guardan como `[nombre](/files/…)` en su propia línea. Lo que no es imagen, vídeo, audio ni PDF reconocido por sus bytes se descarga siempre (nunca se abre en la app), y un nombre que dice ser HTML o SVG no conserva esa extensión.
+
 ## Imágenes en las páginas
 - Se pueden meter imágenes en el cuerpo de una página: **pegándolas** (Ctrl+V, por ejemplo una captura), **soltándolas** encima o con **«/imagen»**. Se suben al vault (`_attachments/<año>/<mes>/`) y entran como un bloque propio `![pie](/files/…)`.
 - Se ven a todo el ancho con su pie debajo. Clic para **ampliar** (Escape o clic para cerrar) y, al pasar el ratón, «Editar» para cambiar el pie o borrarla.

@@ -270,10 +270,14 @@ function buildMarkdownLinkDecorations(view) {
     MDLINK_RE.lastIndex = 0;
     let m;
     while ((m = MDLINK_RE.exec(text))) {
-      // `![texto](url)` es una imagen, no un enlace: la pinta `imageField`.
+      // `![texto](url)` es una imagen, no un enlace: la pinta `mediaField`.
       if (m.index > 0 && text[m.index - 1] === "!") continue;
       const start = from + m.index;
       const end = start + m[0].length;
+      // Y una línea que es solo `[nombre](/files/…)` es un archivo (vídeo,
+      // audio, PDF…): también es de `mediaField`.
+      const lineaDelEnlace = view.state.doc.lineAt(start);
+      if (lineaDelEnlace.from === start && mediaOfBlockText(lineaDelEnlace.text)) continue;
       const label = m[1];
       const url = m[2];
 
@@ -783,8 +787,12 @@ const SLASH_EXTRA_COMMANDS = [
   // es una conversión de bloque: tiene efectos fuera del texto (lista de la
   // API, altas), así que vive aquí y no en BLOCK_TYPES.
   { type: "database", label: "Base", abbrev: "base" },
-  // "/imagen": elige un archivo y lo sube (ver `pickAndInsertFiles`).
+  // "/imagen", "/video"…: eligen un archivo y lo suben (ver `pickAndInsertFiles`).
   { type: "image", label: "Imagen", abbrev: "imagen" },
+  { type: "video", label: "Vídeo", abbrev: "video" },
+  { type: "audio", label: "Audio", abbrev: "audio" },
+  { type: "pdf", label: "PDF", abbrev: "pdf" },
+  { type: "file", label: "Archivo", abbrev: "archivo" },
 ];
 const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
 
@@ -2731,19 +2739,40 @@ const hrField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-// ------------------------------------------------------------ imágenes
-// Una línea que es SOLO `![texto](url)` se ve como la imagen, a todo el ancho,
-// con su texto debajo como pie (si lo hay). Como la línea horizontal: mientras
-// el cursor está en ese bloque se ve el Markdown, para poder cambiar el pie o
-// borrarla. Clic en la imagen la amplía; «Editar» pone el cursor en el bloque.
-// Solo imágenes de la app (`/files/…`) o de la web (`http(s)://`).
+// ------------------------------------------------------------ multimedia
+// Una línea que es SOLO una imagen (`![pie](url)`) o un archivo de la app
+// (`[nombre](/files/…)`) se ve como lo que es: la imagen con su pie, el vídeo o
+// el audio con su reproductor, el PDF con una vista previa y cualquier otro
+// archivo como una tarjeta para descargarlo. Como la línea horizontal: mientras
+// el cursor está en ese bloque se ve el Markdown, para poder cambiarlo o
+// borrarlo; «Editar» lleva el cursor ahí.
+//
+// Qué es cada cosa lo dice la extensión de la URL, que pone el servidor según
+// los bytes del archivo (nunca el nombre que traía).
 
 const IMAGE_LINE_RE = /^!\[([^\]\n]*)\]\(((?:\/files\/|https?:\/\/)[^)\s]+)\)[ \t]*$/;
+const FILE_LINE_RE = /^\[([^\]\n]+)\]\((\/files\/[^)\s]+)\)[ \t]*$/;
+const KIND_BY_EXT = {
+  mp4: "video", webm: "video", mov: "video",
+  mp3: "audio", m4a: "audio", ogg: "audio", wav: "audio", flac: "audio",
+  pdf: "pdf",
+};
 
-/** `{alt, url}` si el texto del bloque es una imagen sola, o null. */
+/** `{kind, alt, url}` si el texto del bloque es una imagen o un archivo solo,
+ * o null. `kind`: image, video, audio, pdf o file. */
+export function mediaOfBlockText(text) {
+  const img = IMAGE_LINE_RE.exec(text || "");
+  if (img) return { kind: "image", alt: img[1].trim(), url: img[2] };
+  const file = FILE_LINE_RE.exec(text || "");
+  if (!file) return null;
+  const ext = (/\.([a-z0-9]+)$/i.exec(file[2]) || [])[1]?.toLowerCase() || "";
+  return { kind: KIND_BY_EXT[ext] || "file", alt: file[1].trim(), url: file[2] };
+}
+
+/** Compatibilidad con lo de la primera entrega (solo imágenes). */
 export function imageOfBlockText(text) {
-  const m = IMAGE_LINE_RE.exec(text || "");
-  return m ? { alt: m[1].trim(), url: m[2] } : null;
+  const m = mediaOfBlockText(text);
+  return m && m.kind === "image" ? { alt: m.alt, url: m.url } : null;
 }
 
 function abrirVisorDeImagen(url, alt) {
@@ -2777,41 +2806,112 @@ function abrirVisorDeImagen(url, alt) {
   document.body.appendChild(capa);
 }
 
-class ImageWidget extends WidgetType {
-  constructor(alt, url) {
+const MEDIA_ICON = {
+  pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15h6"/><path d="M9 11h2"/></svg>',
+  audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/></svg>',
+};
+
+class MediaWidget extends WidgetType {
+  constructor(kind, alt, url) {
     super();
+    this.kind = kind;
     this.alt = alt;
     this.url = url;
   }
   eq(other) {
-    return other instanceof ImageWidget && other.alt === this.alt && other.url === this.url;
+    return other instanceof MediaWidget && other.kind === this.kind && other.alt === this.alt && other.url === this.url;
   }
   get estimatedHeight() {
-    return 320;
+    return { image: 320, video: 360, audio: 96, pdf: 540, file: 64 }[this.kind] || 64;
   }
   toDOM(view) {
     const fig = document.createElement("figure");
-    fig.className = "cm-mdm-image";
-    const img = document.createElement("img");
-    img.src = this.url;
-    img.alt = this.alt;
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.draggable = false;
-    img.title = "Ampliar";
-    img.addEventListener("load", () => view.requestMeasure());
-    img.addEventListener("error", () => fig.classList.add("is-broken"));
-    img.addEventListener("click", () => abrirVisorDeImagen(this.url, this.alt));
-    fig.appendChild(img);
-    const roto = document.createElement("div");
-    roto.className = "cm-mdm-image-broken";
-    roto.textContent = "No se puede cargar la imagen";
-    fig.appendChild(roto);
-    if (this.alt) {
-      const pie = document.createElement("figcaption");
-      pie.textContent = this.alt;
-      fig.appendChild(pie);
+    fig.className = `cm-mdm-media cm-mdm-media--${this.kind}` + (this.kind === "image" ? " cm-mdm-image" : "");
+    const medir = () => view.requestMeasure();
+    const ext = ((/\.([a-z0-9]+)$/i.exec(this.url) || [])[1] || "").toUpperCase();
+
+    // La cabecera de tarjeta (audio, PDF, archivo): icono, nombre y acciones.
+    const tarjeta = (extra) => {
+      const head = document.createElement("div");
+      head.className = "cm-mdm-media-card";
+      const ico = document.createElement("span");
+      ico.className = "cm-mdm-media-icon";
+      ico.innerHTML = MEDIA_ICON[this.kind] || MEDIA_ICON.file;
+      const nombre = document.createElement("span");
+      nombre.className = "cm-mdm-media-name";
+      nombre.textContent = this.alt || "Archivo";
+      const tipo = document.createElement("span");
+      tipo.className = "cm-mdm-media-ext";
+      tipo.textContent = ext;
+      head.append(ico, nombre, tipo);
+      for (const [texto, attrs] of extra) {
+        const a = document.createElement("a");
+        a.className = "cm-mdm-media-action";
+        a.textContent = texto;
+        a.href = this.url;
+        for (const [k, v] of Object.entries(attrs)) a.setAttribute(k, v);
+        a.addEventListener("mousedown", (e) => e.stopPropagation());
+        head.appendChild(a);
+      }
+      fig.appendChild(head);
+    };
+
+    if (this.kind === "image") {
+      const img = document.createElement("img");
+      img.src = this.url;
+      img.alt = this.alt;
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.draggable = false;
+      img.title = "Ampliar";
+      img.addEventListener("load", medir);
+      img.addEventListener("error", () => fig.classList.add("is-broken"));
+      img.addEventListener("click", () => abrirVisorDeImagen(this.url, this.alt));
+      fig.appendChild(img);
+      const roto = document.createElement("div");
+      roto.className = "cm-mdm-image-broken";
+      roto.textContent = "No se puede cargar la imagen";
+      fig.appendChild(roto);
+      if (this.alt) {
+        const pie = document.createElement("figcaption");
+        pie.textContent = this.alt;
+        fig.appendChild(pie);
+      }
+    } else if (this.kind === "video") {
+      const video = document.createElement("video");
+      video.src = this.url;
+      video.controls = true;
+      video.preload = "metadata";
+      video.playsInline = true;
+      video.addEventListener("loadedmetadata", medir);
+      fig.appendChild(video);
+      if (this.alt) {
+        const pie = document.createElement("figcaption");
+        pie.textContent = this.alt;
+        fig.appendChild(pie);
+      }
+    } else if (this.kind === "audio") {
+      tarjeta([["Descargar", { download: this.alt || "" }]]);
+      const audio = document.createElement("audio");
+      audio.src = this.url;
+      audio.controls = true;
+      audio.preload = "metadata";
+      fig.appendChild(audio);
+    } else if (this.kind === "pdf") {
+      tarjeta([
+        ["Abrir", { target: "_blank", rel: "noopener" }],
+        ["Descargar", { download: this.alt || "" }],
+      ]);
+      const marco = document.createElement("iframe");
+      marco.src = `${this.url}#view=FitH`;
+      marco.loading = "lazy";
+      marco.title = this.alt || "PDF";
+      fig.appendChild(marco);
+    } else {
+      tarjeta([["Descargar", { download: this.alt || "" }]]);
     }
+
     const tools = document.createElement("div");
     tools.className = "cm-mdm-image-tools";
     const boton = (texto, accion) => {
@@ -2825,10 +2925,10 @@ class ImageWidget extends WidgetType {
       });
       tools.appendChild(b);
     };
-    boton("Ampliar", () => abrirVisorDeImagen(this.url, this.alt));
+    if (this.kind === "image") boton("Ampliar", () => abrirVisorDeImagen(this.url, this.alt));
     boton("Editar", () => {
       // El cursor al final del Markdown: la línea se ve en crudo y se puede
-      // cambiar el pie (lo de los corchetes) o borrarla.
+      // cambiar el texto (lo de los corchetes) o borrarla.
       const pos = view.posAtDOM(fig);
       const line = view.state.doc.lineAt(pos);
       view.dispatch({ selection: { anchor: line.to } });
@@ -2842,24 +2942,26 @@ class ImageWidget extends WidgetType {
   }
 }
 
-function imageDecorations(state) {
+function mediaDecorations(state) {
   const { blocks } = state.field(blockField);
   const ranges = [];
   for (const b of blocks) {
     if (b.type !== "paragraph") continue;
-    const image = imageOfBlockText(state.doc.sliceString(b.from, b.to));
-    if (!image) continue;
+    const media = mediaOfBlockText(state.doc.sliceString(b.from, b.to));
+    if (!media) continue;
     if (selectionIntersects(state, b.from, b.to)) continue;
-    ranges.push(Decoration.replace({ widget: new ImageWidget(image.alt, image.url), block: true }).range(b.from, b.to));
+    ranges.push(
+      Decoration.replace({ widget: new MediaWidget(media.kind, media.alt, media.url), block: true }).range(b.from, b.to),
+    );
   }
   return Decoration.set(ranges, true);
 }
 
 // Un StateField y no un ViewPlugin por lo mismo que `hrField`: las decoraciones
 // de bloque solo se admiten desde el estado.
-const imageField = StateField.define({
+const mediaField = StateField.define({
   create(state) {
-    return imageDecorations(state);
+    return mediaDecorations(state);
   },
   update(deco, tr) {
     if (
@@ -2867,7 +2969,7 @@ const imageField = StateField.define({
       !tr.state.selection.eq(tr.startState.selection) ||
       tr.state.field(blockField) !== tr.startState.field(blockField)
     ) {
-      return imageDecorations(tr.state);
+      return mediaDecorations(tr.state);
     }
     return deco;
   },
@@ -2881,10 +2983,18 @@ const imageField = StateField.define({
 // devuelve el servidor.
 
 const uploaders = new WeakMap();
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-function imageFilesOf(list) {
-  return [...(list || [])].filter((f) => IMAGE_TYPES.has(f.type));
+// Qué deja elegir cada comando del menú "/" en el selector de archivos.
+const FILE_PICKER_ACCEPT = {
+  image: "image/png,image/jpeg,image/gif,image/webp",
+  video: "video/mp4,video/webm,video/quicktime",
+  audio: "audio/*",
+  pdf: "application/pdf",
+  file: "",
+};
+
+function filesOf(list) {
+  return [...(list || [])].filter((f) => f && f.size >= 0);
 }
 
 /** Dónde entra un bloque nuevo junto a `at`: si la línea está vacía, en ella;
@@ -2940,17 +3050,17 @@ function pickAndInsertFiles(view, at, accept) {
   if (!uploaders.get(view)) return;
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = accept;
+  if (accept) input.accept = accept;
   input.multiple = true;
   input.addEventListener("change", () => {
-    insertUploadedFiles(view, imageFilesOf(input.files), at);
+    insertUploadedFiles(view, filesOf(input.files), at);
   });
   input.click();
 }
 
 const fileDropHandlers = EditorView.domEventHandlers({
   paste(event, view) {
-    const files = imageFilesOf(event.clipboardData?.files);
+    const files = filesOf(event.clipboardData?.files);
     if (!files.length || !uploaders.get(view)) return false;
     event.preventDefault();
     insertUploadedFiles(view, files, view.state.selection.main.head);
@@ -2962,7 +3072,7 @@ const fileDropHandlers = EditorView.domEventHandlers({
     return true;
   },
   drop(event, view) {
-    const files = imageFilesOf(event.dataTransfer?.files);
+    const files = filesOf(event.dataTransfer?.files);
     if (!files.length || !uploaders.get(view)) return false;
     event.preventDefault();
     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.doc.length;
@@ -3532,12 +3642,12 @@ function slashMenuExtension({
         }
 
         // ---- menú "/"
-        if (chosen.type === "image") {
-          // Borra "/imagen" y abre el selector de archivos del sistema; lo
-          // elegido se sube y entra como bloque donde estaba el comando.
+        if (FILE_PICKER_ACCEPT[chosen.type] !== undefined) {
+          // Borra "/imagen" (o "/video"…) y abre el selector de archivos del
+          // sistema; lo elegido se sube y entra como bloque donde estaba.
           this.close();
           this.view.dispatch({ changes: { from, to, insert: "" }, selection: { anchor: from } });
-          pickAndInsertFiles(this.view, from, "image/png,image/jpeg,image/gif,image/webp");
+          pickAndInsertFiles(this.view, from, FILE_PICKER_ACCEPT[chosen.type]);
           return true;
         }
         if (chosen.type === "database") {
@@ -4813,7 +4923,7 @@ export function createNoteEditor({
         syntaxMarkPlugin(),
         underlinePlugin(),
         hrField,
-        imageField,
+        mediaField,
         fileDropHandlers,
         databaseBlockField(renderDatabaseBlock),
         suggestionField,
