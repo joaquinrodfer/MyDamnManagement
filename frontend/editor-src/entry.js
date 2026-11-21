@@ -4707,13 +4707,100 @@ const linkKeymap = keymap.of([
   { key: "Escape", run: closeCompletion },
 ]);
 
+// ------------------------------------------------------------ menciones @
+// Escribir `@` y unas letras abre la lista de personas (las de `GET /people`,
+// que la app pasa como `onListPeople`); elegir una escribe `@usuario `. El
+// servidor ya avisa a quien se nombra así (`notifications.mentions_in`): esto
+// solo evita tener que saberse el nombre de usuario. Una mención de alguien
+// que existe se pinta como una etiqueta.
+
+// La misma regla que `MENTION_RE` del servidor: no detrás de una letra, de otra
+// @ ni de una barra (un correo o una ruta no son menciones).
+const MENTION_TRIGGER_RE = /(?:^|[^\w@/])@([a-z0-9_]{0,32})$/i;
+
+// Quién se puede mencionar: lo pone `createNoteEditor` (hay una nota abierta
+// cada vez). Se llama en cada consulta, así que ve la lista ya cargada.
+let currentPeopleProvider = null;
+
+function peopleOf() {
+  try {
+    return (currentPeopleProvider && currentPeopleProvider()) || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Las opciones de la lista para lo escrito tras la @ (exportada para los tests). */
+export function mentionOptions(people, typed) {
+  const q = foldText(String(typed || ""));
+  const out = [];
+  for (const p of people || []) {
+    const user = String(p?.username || "");
+    if (!user) continue;
+    const name = String(p.display_name || user);
+    const enUser = foldText(user).indexOf(q);
+    const enNombre = foldText(name).indexOf(q);
+    if (q && enUser < 0 && enNombre < 0) continue;
+    const rank = enUser === 0 || enNombre === 0 ? 0 : 1;
+    out.push({ user, name, rank });
+  }
+  out.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
+  return out.slice(0, 20);
+}
+
+function mentionCompletionSource(context) {
+  const line = context.state.doc.lineAt(context.pos);
+  const before = line.text.slice(0, context.pos - line.from);
+  const m = MENTION_TRIGGER_RE.exec(before);
+  if (!m) return null;
+  const from = context.pos - m[1].length - 1; // incluida la @
+  const options = mentionOptions(peopleOf(), m[1]).map((o) => ({
+    label: `@${o.user}`,
+    displayLabel: o.name,
+    detail: `@${o.user}`,
+    apply: `@${o.user} `,
+    type: "mention",
+  }));
+  if (!options.length) return null;
+  return { from, options, filter: false };
+}
+
+function mentionDecorations(view) {
+  const known = new Set(peopleOf().map((p) => String(p?.username || "")));
+  if (!known.size) return Decoration.none;
+  const ranges = [];
+  const re = /(?<![\w@/])@([a-z][a-z0-9_]{2,31})\b/g;
+  for (const { from, to } of view.visibleRanges) {
+    const text = view.state.doc.sliceString(from, to);
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      if (!known.has(m[1])) continue;
+      ranges.push(Decoration.mark({ class: "cm-mdm-mention" }).range(from + m.index, from + m.index + m[0].length));
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+const mentionPlugin = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      this.decorations = mentionDecorations(view);
+    }
+    update(update) {
+      if (update.docChanged || update.viewportChanged) this.decorations = mentionDecorations(update.view);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
 function linkCompletion(onCreateLink) {
   return [
     linkTargetsField,
     autocompletion({
       // Solo esta fuente: el autocompletado de palabras del documento no
       // aporta nada en una nota y competiría por el mismo popup.
-      override: [linkCompletionSource(onCreateLink)],
+      override: [linkCompletionSource(onCreateLink), mentionCompletionSource],
       icons: false, // sin hueco de icono: el tipo de destino va en `detail`
       // El keymap lo pone linkKeymap, más abajo (ver el porqué ahí).
       defaultKeymap: false,
@@ -4845,6 +4932,7 @@ export function createNoteEditor({
   renderDatabaseBlock,
   selectionArea,
   onUploadFile,
+  onListPeople,
 }) {
   // El menú "/" y el selector de bases van en una variable y no sueltos en la
   // lista de extensiones: la app tiene que poder cerrarlos desde fuera al
@@ -4924,6 +5012,7 @@ export function createNoteEditor({
         underlinePlugin(),
         hrField,
         mediaField,
+        mentionPlugin,
         fileDropHandlers,
         databaseBlockField(renderDatabaseBlock),
         suggestionField,
@@ -4976,6 +5065,7 @@ export function createNoteEditor({
   // Rectángulo de selección desde el fondo de la página (ver `beginMarquee`).
   const detachMarquee = attachMarqueeArea(view, selectionArea);
   if (onUploadFile) uploaders.set(view, onUploadFile);
+  if (onListPeople) currentPeopleProvider = onListPeople;
 
   return {
     // Lo que se guarda y lo que se exporta: el cuerpo canónico, sin las líneas

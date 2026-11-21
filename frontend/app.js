@@ -6826,7 +6826,11 @@ function renderNote(page, backlinks) {
     selectionArea: document.getElementById("main"),
     // Imágenes pegadas, soltadas o elegidas con «/imagen».
     onUploadFile: (file) => subirArchivoAPagina(page.id, file),
+    // Menciones «@»: la lista de personas (la misma de las celdas `person`).
+    onListPeople: () => [...personasCache.values()],
   });
+  // La lista de personas se pide ya (una vez), para que al escribir «@» esté.
+  cargarPersonas().catch(() => {});
   noteEditor = state.editor;
 
   // ---- edición en vivo (3.0, hito 4) ----

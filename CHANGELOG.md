@@ -2,6 +2,10 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Menciones con autocompletado
+- Al escribir `@` y unas letras en una página sale la lista de personas (busca por nombre de usuario y por nombre, sin acentos ni mayúsculas); elegir una escribe `@usuario `. Quien se menciona recibe el aviso de siempre.
+- Las menciones de personas que existen se ven como una etiqueta del color de acento.
+
 ## Vídeo, audio, PDF y archivos en las páginas
 - Además de imágenes, en una página se pueden meter **vídeos** (MP4, WebM, MOV), **audios** (MP3, M4A, OGG, WAV, FLAC), **PDF** y **cualquier otro archivo**: pegándolos, soltándolos o con «/video», «/audio», «/pdf» y «/archivo».
 - El vídeo se ve con su reproductor (y se puede adelantar: `/files` atiende peticiones por rangos), el audio en una tarjeta con reproductor, el PDF con vista previa, «Abrir» y «Descargar», y el resto como una tarjeta con su tipo y «Descargar».
