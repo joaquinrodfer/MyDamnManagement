@@ -201,7 +201,7 @@ Seguramente en dos tiradas: primero modelo y permisos, después pantallas.
 - Tablero agrupado por **grupo** de estado, y que renombrar o borrar una opción actualice los grupos (H3).
 - Convertir una propiedad `person` existente en «varias personas» (hoy solo al crearla) (H4).
 - Columna calculada de horas en la tabla de proyectos (hoy, en la ficha de cada proyecto).
-- Vistas de la carga por proyecto y por espacio (las piezas ya lo permiten).
+- ~~Vistas de la carga por proyecto y por espacio~~ — pasa a `docs/PLAN-CARGA.md` (segunda vuelta a la carga, fases C1–C8).
 - ~~Autocompletado del `@` en el editor~~ — hecho (2026-11-21): lista de personas al escribir `@`, menciones conocidas como etiqueta.
 - «En foco» no silencia los avisos todavía.
 - Una URL de webhook por espacio (el plan lo pedía así); eventos adicionales si hacen falta.
