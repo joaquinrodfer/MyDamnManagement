@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Carga del equipo, vista nueva (plan de la carga, C3)
+- **Escala:** por día, semana o mes, con ‹ Hoy › para moverse.
+- **Ver por:** persona, grupo, espacio o proyecto. Por persona o grupo, cada celda dice las horas frente a la capacidad real (jornada menos festivos y ausencias) con el semáforo; los días sin trabajo salen rayados.
+- **Pulsa una celda** y salen las tareas que la llenan, con su espacio, base, proyecto, entrega y horas, y enlace a cada una.
+- **Huecos a la vista:** «Sin fecha» (horas que no caen en ningún periodo) y «Sin estimar» (tareas con responsable y sin horas, que no cuentan).
+- **Exportar a CSV** lo que se está viendo, listo para Excel.
 ## Qué puedo hacer (plan de roles, R5)
 - **Ajustes → Perfil → Qué puedo hacer:** tu rol, tus espacios (con tu rol en cada uno, y si es directo o por un grupo) y tus permisos, con dónde valen y de dónde te vienen.
 - **Ajustes → Espacios:** cada ficha dice quién tiene permisos sobre ese espacio.

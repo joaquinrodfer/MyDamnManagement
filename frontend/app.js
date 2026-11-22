@@ -4845,8 +4845,45 @@ function pintarBotonDeCarga() {
   if (nav) nav.hidden = !tengoPermiso("view_workload");
 }
 
-let cargaSemanas = 8;
-let cargaEspacio = ""; // "" = todos los que puedo ver
+// Carga del equipo, vista nueva (plan de la carga, C3): fila × periodo.
+const cargaVista = {
+  escala: "week", // day | week | month
+  agrupar: "person", // person | group | workspace | project
+  inicio: null, // ISO del primer día; null = hoy
+  espacio: "", // "" = todos los que puedo ver
+  celda: null, // {fila, periodo} con el detalle abierto
+};
+const CARGA_ESCALAS = [
+  ["day", "Día"],
+  ["week", "Semana"],
+  ["month", "Mes"],
+];
+const CARGA_GRUPOS = [
+  ["person", "Persona"],
+  ["group", "Grupo"],
+  ["workspace", "Espacio"],
+  ["project", "Proyecto"],
+];
+const CARGA_PASO = { day: 14, week: 8, month: 6 };
+
+function isoLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Mover la ventana: un bloque entero hacia delante o hacia atrás. */
+function moverCarga(sentido, datos) {
+  if (sentido === 0) {
+    cargaVista.inicio = null;
+  } else {
+    const base = new Date(`${datos.periods[0].start}T12:00:00`);
+    if (cargaVista.escala === "day") base.setDate(base.getDate() + sentido * CARGA_PASO.day);
+    else if (cargaVista.escala === "week") base.setDate(base.getDate() + sentido * 7 * CARGA_PASO.week);
+    else base.setMonth(base.getMonth() + sentido * CARGA_PASO.month);
+    cargaVista.inicio = isoLocal(base);
+  }
+  cargaVista.celda = null;
+  showCarga();
+}
 
 async function showCarga() {
   state.current = { kind: "workload", id: null };
@@ -4858,10 +4895,12 @@ async function showCarga() {
   main.append(caja);
   caja.append(crearEl("h1", "my-tasks-title", "Carga del equipo"));
   caja.append(crearEl("p", "form-note", "Cargando…"));
+  const q = new URLSearchParams({ scale: cargaVista.escala, group: cargaVista.agrupar });
+  if (cargaVista.inicio) q.set("start", cargaVista.inicio);
+  if (cargaVista.espacio) q.set("workspace", cargaVista.espacio);
   let datos;
   try {
-    const espacio = cargaEspacio ? `&workspace=${encodeURIComponent(cargaEspacio)}` : "";
-    datos = await api(`/workload?weeks=${cargaSemanas}${espacio}`);
+    datos = await api(`/workload/grid?${q}`);
   } catch (e) {
     caja.replaceChildren(crearEl("h1", "my-tasks-title", "Carga del equipo"), crearEl("p", "form-note form-error", describeError(e)));
     return;
@@ -4869,154 +4908,352 @@ async function showCarga() {
   pintarCarga(caja, datos);
 }
 
+function segmentadoDeCarga(etiqueta, opciones, actual, alCambiar) {
+  const grupo = crearEl("div", "carga-seg");
+  grupo.setAttribute("role", "group");
+  grupo.setAttribute("aria-label", etiqueta);
+  for (const [valor, texto] of opciones) {
+    const b = crearEl("button", "carga-seg-btn", texto);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(valor === actual));
+    b.addEventListener("click", () => valor !== actual && alCambiar(valor));
+    grupo.append(b);
+  }
+  const caja = crearEl("div", "carga-campo");
+  caja.append(crearEl("span", "carga-campo-label", etiqueta), grupo);
+  return caja;
+}
+
+function etiquetaDePeriodo(escala, p, corta = false) {
+  const d = new Date(`${p.start}T12:00:00`);
+  if (escala === "day") {
+    const dia = d.toLocaleDateString("es-ES", { weekday: "short" }).replace(".", "");
+    return corta ? `${dia} ${d.getDate()}` : d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+  }
+  if (escala === "week") {
+    const fin = new Date(`${p.end}T12:00:00`);
+    return corta
+      ? d.toLocaleDateString("es-ES", { day: "numeric", month: "short" }).replace(".", "")
+      : `semana del ${d.getDate()} de ${d.toLocaleDateString("es-ES", { month: "long" })} al ${fin.getDate()} de ${fin.toLocaleDateString("es-ES", { month: "long" })}`;
+  }
+  const mes = d.toLocaleDateString("es-ES", { month: corta ? "short" : "long", year: corta ? "2-digit" : "numeric" }).replace(".", "");
+  return mes.charAt(0).toUpperCase() + mes.slice(1);
+}
+
 function pintarCarga(caja, datos) {
   const fmtH = (h) => (h ? `${Math.round(h * 10) / 10} h` : "–");
-  const fmtSemana = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+  const escala = datos.scale;
+  const conCapacidad = datos.group === "person" || datos.group === "group";
   caja.replaceChildren(crearEl("h1", "my-tasks-title", "Carga del equipo"));
 
+  // --- herramientas
   const herramientas = crearEl("div", "carga-tools");
-  const etiqueta = crearEl("label", "carga-semanas", "Semanas ");
-  const selector = crearEl("select");
-  for (const n of [4, 8, 12, 26]) selector.add(new Option(String(n), String(n), false, n === cargaSemanas));
-  selector.addEventListener("change", () => {
-    cargaSemanas = Number(selector.value);
-    showCarga();
-  });
-  etiqueta.append(selector);
-  // Por espacio (R4): solo lo de ese espacio y la capacidad por la dedicación.
-  const etiquetaEspacio = crearEl("label", "carga-semanas", "Espacio ");
-  const selEspacio = crearEl("select");
+  herramientas.append(
+    segmentadoDeCarga("Escala", CARGA_ESCALAS, escala, (v) => {
+      cargaVista.escala = v;
+      cargaVista.celda = null;
+      showCarga();
+    }),
+    segmentadoDeCarga("Ver por", CARGA_GRUPOS, datos.group, (v) => {
+      cargaVista.agrupar = v;
+      cargaVista.celda = null;
+      showCarga();
+    }),
+  );
+  const campoEspacio = crearEl("label", "carga-campo");
+  const selEspacio = crearEl("select", "carga-select");
   const todos = tengoPermisoEnTodos("view_workload");
   selEspacio.add(new Option(todos ? "Todos" : "Todos los míos", ""));
-  for (const w of datos.workspaces || []) selEspacio.add(new Option(w.name, w.id, false, w.id === cargaEspacio));
+  for (const w of datos.workspaces || []) selEspacio.add(new Option(w.name, w.id, false, w.id === datos.workspace_id));
   selEspacio.addEventListener("change", () => {
-    cargaEspacio = selEspacio.value;
+    cargaVista.espacio = selEspacio.value;
+    cargaVista.celda = null;
     showCarga();
   });
-  etiquetaEspacio.append(selEspacio);
-  const leyenda = crearEl("span", "carga-leyenda");
-  leyenda.innerHTML =
-    '<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el 70 %</span>' +
-    '<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>70–100 %</span>' +
-    '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>' +
-    '<span title="Debajo, las horas que le quedan esa semana"><i class="carga-leyenda-off"></i>con festivos o ausencias</span>';
-  const nombreEspacio = (datos.workspaces || []).find((w) => w.id === datos.workspace_id)?.name;
-  const ambito = nombreEspacio
-    ? `Solo tareas sin cerrar de ${nombreEspacio}; la capacidad, según la dedicación de cada persona a ese espacio.`
-    : todos
-      ? "Solo tareas sin cerrar, de todos los espacios."
-      : "Las personas de tus espacios, con todas sus tareas sin cerrar.";
-  herramientas.append(etiqueta, etiquetaEspacio, leyenda, crearEl("span", "carga-ambito", ambito));
+  campoEspacio.append(crearEl("span", "carga-campo-label", "Espacio"), selEspacio);
+  herramientas.append(campoEspacio);
+
+  const nav = crearEl("div", "carga-nav");
+  const anterior = crearEl("button", "icon-btn");
+  anterior.type = "button";
+  anterior.innerHTML = svgIcon("i-chevron-left");
+  anterior.setAttribute("aria-label", "Periodo anterior");
+  anterior.addEventListener("click", () => moverCarga(-1, datos));
+  const hoy = crearEl("button", "btn", "Hoy");
+  hoy.type = "button";
+  hoy.addEventListener("click", () => moverCarga(0, datos));
+  const siguiente = crearEl("button", "icon-btn");
+  siguiente.type = "button";
+  siguiente.innerHTML = svgIcon("i-chevron-right");
+  siguiente.setAttribute("aria-label", "Periodo siguiente");
+  siguiente.addEventListener("click", () => moverCarga(1, datos));
+  const rango = crearEl(
+    "span",
+    "carga-rango",
+    `${etiquetaDePeriodo(escala, datos.periods[0], true)} – ${etiquetaDePeriodo(escala, datos.periods[datos.periods.length - 1], true)}`,
+  );
+  nav.append(anterior, hoy, siguiente, rango);
+  const csv = crearEl("button", "btn carga-csv");
+  csv.type = "button";
+  csv.innerHTML = `${svgIcon("i-download")}<span>CSV</span>`;
+  csv.title = "Exportar esta vista a CSV";
+  csv.addEventListener("click", () => exportarCargaCsv(datos));
+  herramientas.append(nav, csv);
   caja.append(herramientas);
 
-  if (!datos.people.length) {
+  const leyenda = crearEl("div", "carga-leyenda");
+  if (conCapacidad) {
+    leyenda.innerHTML =
+      '<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el 70 %</span>' +
+      '<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>70–100 %</span>' +
+      '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>';
+  }
+  const nombreEspacio = (datos.workspaces || []).find((w) => w.id === datos.workspace_id)?.name;
+  const ambito = [
+    nombreEspacio
+      ? `Solo ${nombreEspacio}; la capacidad, según la dedicación de cada persona.`
+      : todos
+        ? "Tareas sin cerrar de todos los espacios."
+        : "Las personas de tus espacios, con todas sus tareas sin cerrar.",
+    conCapacidad ? "La capacidad descuenta festivos y ausencias." : "Por espacio o proyecto se ven las horas; el semáforo, por persona o grupo.",
+    "Pulsa una celda para ver sus tareas.",
+  ].join(" ");
+  leyenda.append(crearEl("span", "carga-ambito", ambito));
+  caja.append(leyenda);
+
+  if (!datos.rows.length && !datos.gaps.unestimated.length) {
     caja.append(crearEl("p", "form-note", "Nadie tiene tareas abiertas con responsable en las bases de Tareas."));
     return;
   }
-  const tabla = crearEl("table", "carga-table");
+
+  // --- mapa de calor
+  const tabla = crearEl("table", `carga-table carga-grid carga-grid--${escala}`);
   const cab = crearEl("tr");
-  cab.append(crearEl("th", "", "Persona"), crearEl("th", "", "Tareas"), crearEl("th", "", "Capacidad"));
-  for (const w of datos.weeks) cab.append(crearEl("th", "", fmtSemana(w)));
-  cab.append(crearEl("th", "", "Más tarde"), crearEl("th", "", "Sin fecha"));
-  const encabezado = crearEl("thead");
-  encabezado.append(cab);
-  tabla.append(encabezado);
+  const primera = { person: "Persona", group: "Grupo", workspace: "Espacio", project: "Proyecto" }[datos.group];
+  cab.append(crearEl("th", "carga-col-nombre", primera));
+  for (const p of datos.periods) {
+    const th = crearEl("th", p.key === hoyDeCarga(escala, datos.today) ? "carga-col-hoy" : "", etiquetaDePeriodo(escala, p, true));
+    th.title = etiquetaDePeriodo(escala, p);
+    cab.append(th);
+  }
+  cab.append(crearEl("th", "", "Fuera"), crearEl("th", "", "Sin fecha"));
+  const thead = crearEl("thead");
+  thead.append(cab);
+  tabla.append(thead);
   const cuerpo = crearEl("tbody");
   tabla.append(cuerpo);
-  const columnas = 3 + datos.weeks.length + 2;
+  const detalle = crearEl("div", "carga-celda-detalle");
+  detalle.hidden = true;
 
-  for (const p of datos.people) {
-    const fila = crearEl("tr");
-    const celdaNombre = crearEl("td");
-    const boton = crearEl("button", "carga-persona");
-    boton.type = "button";
-    boton.setAttribute("aria-expanded", "false");
-    boton.insertAdjacentHTML("beforeend", svgIcon("i-chevron-right"));
-    const av = avatarImg(p.avatar, "user-avatar has-img");
-    if (av) boton.append(av);
-    boton.append(p.display_name || "(ya no está)");
-    celdaNombre.append(boton);
-    fila.append(celdaNombre, crearEl("td", "", String(p.tasks)));
-    // La capacidad es su jornada semanal; el administrador la cambia (con la
-    // dedicación y las ausencias) desde «Jornada».
-    const celdaCap = crearEl("td", "carga-cap-cell");
-    const cajaCap = crearEl("span", "carga-cap-box");
-    const textoCap = crearEl("span", "carga-cap-text", `${fmtHorasJornada(p.capacity)}`);
-    textoCap.title = `Jornada: ${resumenDeJornada(p.schedule || [])}`;
-    cajaCap.append(textoCap);
-    celdaCap.append(cajaCap);
-    if (p.manageable) {
+  const abrirDetalle = (fila, periodo, boton) => {
+    tabla.querySelectorAll(".carga-celda-btn[aria-pressed=true]").forEach((b) => b.setAttribute("aria-pressed", "false"));
+    if (cargaVista.celda && cargaVista.celda.fila === fila.id && cargaVista.celda.periodo === periodo.key) {
+      cargaVista.celda = null;
+      detalle.hidden = true;
+      return;
+    }
+    cargaVista.celda = { fila: fila.id, periodo: periodo.key };
+    boton?.setAttribute("aria-pressed", "true");
+    pintarDetalleDeCelda(detalle, datos, fila, periodo);
+  };
+
+  for (const fila of datos.rows) {
+    const tr = crearEl("tr");
+    const celdaNombre = crearEl("td", "carga-col-nombre");
+    const nombre = crearEl("span", "carga-fila-nombre");
+    if (fila.kind === "person") {
+      const av = avatarImg(fila.avatar, "user-avatar has-img");
+      if (av) nombre.append(av);
+    } else {
+      nombre.insertAdjacentHTML("beforeend", svgIcon({ group: "i-users-group", workspace: "i-layers", project: "i-folder" }[fila.kind] || "i-list"));
+    }
+    nombre.append(crearEl("span", "carga-fila-texto", fila.name));
+    celdaNombre.append(nombre);
+    const meta = [`${fila.tasks} ${fila.tasks === 1 ? "tarea" : "tareas"}`];
+    if (fila.kind !== "person") meta.push(`${fila.people} ${fila.people === 1 ? "persona" : "personas"}`);
+    const sub = crearEl("span", "carga-fila-meta", meta.join(" · "));
+    celdaNombre.append(sub);
+    if (fila.kind === "person" && fila.manageable) {
       const jornada = crearEl("button", "icon-btn carga-cap-edit");
       jornada.type = "button";
       jornada.innerHTML = svgIcon("i-calendar");
       jornada.title = "Jornada, dedicación y ausencias";
-      jornada.setAttribute("aria-label", `Jornada de ${p.display_name || "esta persona"}`);
-      jornada.addEventListener("click", () => abrirJornada(p, showCarga));
-      cajaCap.append(jornada);
+      jornada.setAttribute("aria-label", `Jornada de ${fila.name}`);
+      jornada.addEventListener("click", () => abrirJornada({ id: fila.id, display_name: fila.name }, showCarga));
+      nombre.append(jornada);
     }
-    fila.append(celdaCap);
-    for (const w of datos.weeks) {
-      const h = p.weeks[w] || 0;
-      // La saturación se mide contra lo que de verdad tiene esa semana: su
-      // jornada menos festivos y ausencias.
-      const cap = p.capacity_weeks?.[w] ?? p.capacity;
-      const libre = p.time_off?.[w];
-      const celda = crearEl("td", "carga-semana");
-      const ratio = cap > 0 ? h / cap : h > 0 ? Infinity : 0;
+    tr.append(celdaNombre);
+    for (const p of datos.periods) {
+      const h = fila.hours[p.key] || 0;
+      const cap = fila.capacity ? fila.capacity[p.key] : null;
+      const td = crearEl("td", "carga-semana");
+      if (cap === 0) td.classList.add("carga-semana--off");
+      const boton = crearEl("button", "carga-celda-btn");
+      boton.type = "button";
+      boton.setAttribute("aria-pressed", "false");
       const valor = crearEl("span", "carga-pill", fmtH(h));
-      if (h > 0) valor.classList.add(ratio > 1 ? "carga-celda--over" : ratio >= 0.7 ? "carga-celda--warn" : "carga-celda--ok");
-      const partes = [];
-      if (h > 0) partes.push(cap > 0 ? `${Math.round(ratio * 100)} % de ${fmtHorasJornada(cap)}` : "Sin horas disponibles esta semana");
-      else partes.push(`${fmtHorasJornada(cap)} disponibles`);
-      if (libre) {
-        const motivos = [];
-        if (libre.holidays) motivos.push(libre.holidays === 1 ? "1 festivo" : `${libre.holidays} festivos`);
-        if (libre.absences) motivos.push(libre.absences === 1 ? "1 día de ausencia" : `${libre.absences} días de ausencia`);
-        partes.push(motivos.join(" y "));
-        celda.classList.add("carga-semana--off");
-        const marca = crearEl("span", "carga-off", cap > 0 ? `${fmtHorasJornada(cap)}` : "fuera");
-        marca.setAttribute("aria-hidden", "true");
-        celda.append(marca);
+      if (h > 0) {
+        if (cap != null) {
+          const ratio = cap > 0 ? h / cap : Infinity;
+          valor.classList.add(ratio > 1 ? "carga-celda--over" : ratio >= 0.7 ? "carga-celda--warn" : "carga-celda--ok");
+          boton.title = cap > 0 ? `${Math.round(ratio * 100)} % de ${fmtHorasJornada(cap)}` : "Sin horas disponibles";
+        } else {
+          valor.classList.add("carga-celda--neutral");
+          boton.title = `${fmtH(h)}`;
+        }
+      } else if (cap != null) {
+        boton.title = cap > 0 ? `${fmtHorasJornada(cap)} disponibles` : "No trabaja (fin de semana, festivo o ausencia)";
       }
-      celda.title = partes.join(" · ");
-      celda.prepend(valor);
-      fila.append(celda);
+      boton.append(valor);
+      if (cap != null && escala !== "day") boton.append(crearEl("span", "carga-off", cap > 0 ? `de ${fmtHorasJornada(cap)}` : "fuera"));
+      boton.disabled = h <= 0;
+      boton.setAttribute("aria-label", `${fila.name}, ${etiquetaDePeriodo(escala, p)}: ${boton.title || fmtH(h)}`);
+      boton.addEventListener("click", () => abrirDetalle(fila, p, boton));
+      td.append(boton);
+      tr.append(td);
     }
-    fila.append(crearEl("td", "", fmtH(p.before + p.after)), crearEl("td", "", fmtH(p.unscheduled)));
-    cuerpo.append(fila);
-
-    // El desglose: de dónde sale cada hora (espacio, proyecto, base y tarea).
-    const detalle = crearEl("tr", "carga-detalle");
-    detalle.hidden = true;
-    const celdaDetalle = crearEl("td");
-    celdaDetalle.colSpan = columnas;
-    const sub = crearEl("table");
-    const sc = crearEl("tr");
-    sc.className = "carga-detalle-cab";
-    for (const t of ["Semana", "Espacio", "Proyecto", "Tarea", "Horas"]) sc.append(crearEl("th", "", t));
-    sub.append(sc);
-    for (const pz of p.pieces) {
-      const f = crearEl("tr");
-      f.append(
-        crearEl("td", "", pz.week ? `Sem. ${fmtSemana(pz.week)}` : "Sin fecha"),
-        crearEl("td", "", pz.workspace_name),
-        crearEl("td", "", pz.project || "–"),
-        crearEl("td", "", pz.masked ? pz.row_title : `${pz.base_title} › ${pz.row_title}`),
-        crearEl("td", "", fmtH(pz.hours)),
-      );
-      sub.append(f);
-    }
-    celdaDetalle.append(sub);
-    detalle.append(celdaDetalle);
-    cuerpo.append(detalle);
-    boton.addEventListener("click", () => {
-      detalle.hidden = !detalle.hidden;
-      boton.setAttribute("aria-expanded", String(!detalle.hidden));
-    });
+    tr.append(crearEl("td", "carga-fuera", fmtH(fila.before + fila.after)), crearEl("td", "carga-fuera", fmtH(fila.unscheduled)));
+    cuerpo.append(tr);
   }
   const envoltorio = crearEl("div", "carga-wrap");
   envoltorio.append(tabla);
-  caja.append(envoltorio);
+  caja.append(envoltorio, detalle);
+
+  // Al volver (cambiar de escala no, pero sí tras la jornada): la celda abierta.
+  if (cargaVista.celda) {
+    const fila = datos.rows.find((r) => r.id === cargaVista.celda.fila);
+    const periodo = datos.periods.find((p) => p.key === cargaVista.celda.periodo);
+    if (fila && periodo) pintarDetalleDeCelda(detalle, datos, fila, periodo);
+  }
+
+  // --- huecos
+  caja.append(pintarHuecosDeCarga(datos));
+}
+
+function hoyDeCarga(escala, hoyIso) {
+  if (escala === "day") return hoyIso;
+  const d = new Date(`${hoyIso}T12:00:00`);
+  if (escala === "month") return hoyIso.slice(0, 7);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return isoLocal(d);
+}
+
+function enlaceATareaDeCarga(t) {
+  if (t.masked || !t.row_id) return crearEl("span", "carga-tarea-titulo", t.row_title);
+  const a = crearEl("a", "carga-tarea-titulo", t.row_title);
+  a.href = `#/page/${t.row_id}`;
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    navigateToPage(t.row_id);
+  });
+  return a;
+}
+
+function pintarDetalleDeCelda(caja, datos, fila, periodo) {
+  const fmtH = (h) => `${Math.round(h * 10) / 10} h`;
+  const tareas = fila.cells[periodo.key] || [];
+  const cap = fila.capacity ? fila.capacity[periodo.key] : null;
+  const total = fila.hours[periodo.key] || 0;
+  caja.replaceChildren();
+  const cabeza = crearEl("div", "carga-detalle-cabeza");
+  const titulo = crearEl("div");
+  titulo.append(
+    crearEl("strong", "", `${fila.name} · ${etiquetaDePeriodo(datos.scale, periodo)}`),
+    crearEl("span", "carga-fila-meta", cap != null ? `${fmtH(total)} de ${fmtHorasJornada(cap)}` : fmtH(total)),
+  );
+  const cerrar = botonQuitarDeCarga("Cerrar el detalle", "Cerrar el detalle", () => {
+    cargaVista.celda = null;
+    caja.hidden = true;
+  });
+  cabeza.append(titulo, cerrar);
+  const lista = crearEl("ul", "perm-list");
+  for (const t of tareas) {
+    const li = crearEl("li", "perm-row carga-tarea");
+    const texto = crearEl("div", "carga-tarea-texto");
+    texto.append(enlaceATareaDeCarga(t));
+    const partes = [t.workspace_name];
+    if (!t.masked && t.base_title) partes.push(t.base_title);
+    if (t.project && !t.masked) partes.push(t.project);
+    if (datos.group !== "person") partes.push(t.person_name);
+    if (t.end) partes.push(`entrega ${new Date(`${t.end}T12:00:00`).toLocaleDateString("es-ES", { day: "numeric", month: "short" })}`);
+    texto.append(crearEl("span", "carga-fila-meta", partes.filter(Boolean).join(" · ")));
+    li.append(texto, crearEl("span", "perm-scope", fmtH(t.hours)));
+    lista.append(li);
+  }
+  caja.append(cabeza, lista);
+  caja.hidden = false;
+  caja.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function pintarHuecosDeCarga(datos) {
+  const fmtH = (h) => `${Math.round(h * 10) / 10} h`;
+  const caja = crearEl("div", "carga-huecos");
+  const bloque = (titulo, resumen, tareas, extra) => {
+    const det = crearEl("details", "carga-hueco");
+    const s = crearEl("summary");
+    s.append(crearEl("strong", "", titulo), crearEl("span", "carga-fila-meta", resumen));
+    det.append(s);
+    const lista = crearEl("ul", "perm-list");
+    if (!tareas.length) lista.append(crearEl("li", "perm-empty", "Nada por aquí."));
+    for (const t of tareas) {
+      const li = crearEl("li", "perm-row carga-tarea");
+      const texto = crearEl("div", "carga-tarea-texto");
+      texto.append(enlaceATareaDeCarga(t), crearEl("span", "carga-fila-meta", [t.workspace_name, t.person_name].filter(Boolean).join(" · ")));
+      li.append(texto);
+      const e = extra(t);
+      if (e) li.append(crearEl("span", "perm-scope", e));
+      lista.append(li);
+    }
+    det.append(lista);
+    return det;
+  };
+  const sinFecha = datos.gaps.unscheduled;
+  caja.append(
+    bloque(
+      "Sin fecha",
+      sinFecha.length ? `${fmtH(datos.gaps.unscheduled_hours)} en ${sinFecha.length} ${sinFecha.length === 1 ? "tarea" : "tareas"} que no caen en ningún periodo` : "ninguna",
+      sinFecha,
+      (t) => fmtH(t.hours),
+    ),
+    bloque(
+      "Sin estimar",
+      datos.gaps.unestimated.length
+        ? `${datos.gaps.unestimated.length} ${datos.gaps.unestimated.length === 1 ? "tarea" : "tareas"} con responsable y sin horas: no cuentan`
+        : "ninguna",
+      datos.gaps.unestimated,
+      () => null,
+    ),
+  );
+  return caja;
+}
+
+function exportarCargaCsv(datos) {
+  const campo = (v) => {
+    const t = v == null ? "" : String(v);
+    return /[";\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const num = (n) => (n == null ? "" : String(Math.round(n * 100) / 100).replace(".", ","));
+  const lineas = [["Fila", "Periodo", "Desde", "Hasta", "Horas", "Capacidad", "Ocupación %"].join(";")];
+  for (const fila of datos.rows) {
+    for (const p of datos.periods) {
+      const h = fila.hours[p.key] || 0;
+      const cap = fila.capacity ? fila.capacity[p.key] : null;
+      lineas.push(
+        [fila.name, p.key, p.start, p.end, num(h), num(cap), cap ? num((h / cap) * 100) : ""].map(campo).join(";"),
+      );
+    }
+    if (fila.unscheduled) lineas.push([fila.name, "sin fecha", "", "", num(fila.unscheduled), "", ""].map(campo).join(";"));
+  }
+  // BOM para que Excel lea bien las tildes; «;» como separador (Excel en español).
+  const blob = new Blob(["﻿" + lineas.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `carga-${datos.scale}-${datos.periods[0].start}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ----------------------------------- jornada, ausencias y festivos (carga, C1)

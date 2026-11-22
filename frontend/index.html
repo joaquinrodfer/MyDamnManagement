@@ -6096,6 +6096,57 @@
   .carga-detalle td td { background: none; }
   .carga-detalle td { padding: 4px 8px !important; border-top: 1px solid color-mix(in srgb, var(--panel-border) 60%, transparent) !important; }
 
+
+  /* ---------- carga del equipo, vista nueva (C3) ---------- */
+  .carga-tools { align-items: flex-end; gap: 12px 18px; }
+  .carga-campo { display: inline-flex; flex-direction: column; gap: 4px; }
+  .carga-campo-label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-muted); }
+  .carga-seg { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--field-border); border-radius: var(--radius-md); background: var(--field-bg); }
+  .carga-seg-btn { font: inherit; font-size: 12.5px; color: var(--ink-muted); background: none; border: 0; border-radius: calc(var(--radius-md) - 2px); padding: 4px 10px; min-height: 26px; cursor: pointer; }
+  .carga-seg-btn:hover { color: var(--ink); background: var(--menu-hover); }
+  .carga-seg-btn[aria-pressed="true"] { color: var(--ink); background: var(--surface-elevated); box-shadow: 0 0 0 1px var(--panel-border); font-weight: 600; }
+  .carga-seg-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .carga-select { font: inherit; font-size: 13px; color: var(--ink); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--radius-md); min-height: 32px; padding: 4px 8px; }
+  .carga-nav { display: inline-flex; align-items: center; gap: 6px; }
+  .carga-nav .btn { min-height: 30px; padding: 4px 12px; }
+  .carga-rango { margin-left: 6px; color: var(--ink); font-weight: 500; font-size: 13px; white-space: nowrap; }
+  .carga-csv { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; }
+  .carga-csv .svg-icon { width: 15px; height: 15px; }
+  .carga-leyenda { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 12.5px; color: var(--ink-muted); }
+  .carga-leyenda > .carga-ambito { border: 0; padding: 0 0 0 4px; white-space: normal; display: inline; }
+  .carga-grid th, .carga-grid td { text-align: center !important; }
+  .carga-grid .carga-col-nombre { text-align: left !important; position: sticky; left: 0; z-index: 1; background: var(--panel); min-width: 190px; }
+  .carga-grid thead .carga-col-nombre { background: var(--surface-elevated); z-index: 2; }
+  .carga-grid > tbody > tr:hover > td.carga-col-nombre { background: var(--row-hover); }
+  .carga-fila-nombre { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 500; }
+  .carga-fila-nombre > .svg-icon { width: 16px; height: 16px; color: var(--ink-muted); flex: none; }
+  .carga-fila-texto { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  .carga-fila-meta { display: block; font-size: 11.5px; color: var(--ink-muted); font-weight: 400; }
+  .carga-col-nombre .carga-fila-meta { margin: 1px 0 0 32px; }
+  .carga-col-hoy { color: var(--accent) !important; box-shadow: inset 0 -2px 0 var(--accent); }
+  .carga-grid--day .carga-semana { min-width: 54px; }
+  .carga-grid--day .carga-pill { min-width: 44px; padding: 3px 4px; }
+  .carga-celda-btn { display: inline-flex; flex-direction: column; align-items: center; background: none; border: 0; padding: 2px; border-radius: var(--radius-sm); font: inherit; color: inherit; cursor: pointer; }
+  .carga-celda-btn:disabled { cursor: default; }
+  .carga-celda-btn:not(:disabled):hover .carga-pill { filter: brightness(1.15); }
+  .carga-celda-btn[aria-pressed="true"] .carga-pill { box-shadow: 0 0 0 2px var(--accent) !important; }
+  .carga-celda-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .carga-pill.carga-celda--neutral { color: var(--ink); background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .carga-fuera { color: var(--ink-muted); }
+  .carga-celda-detalle { border: 1px solid var(--panel-border); border-radius: var(--radius-lg); background: var(--panel); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .carga-celda-detalle[hidden] { display: none; }
+  .carga-detalle-cabeza { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .carga-detalle-cabeza strong { font-size: 14px; color: var(--ink); }
+  .carga-tarea-texto { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .carga-tarea-titulo { color: var(--ink); font-weight: 500; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  a.carga-tarea-titulo:hover { text-decoration: underline; color: var(--accent-ink); }
+  .carga-huecos { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .carga-hueco { border: 1px solid var(--panel-border); border-radius: var(--radius-lg); background: var(--panel); padding: 12px 14px; }
+  .carga-hueco > summary { cursor: pointer; display: flex; flex-direction: column; gap: 2px; list-style: none; }
+  .carga-hueco > summary::-webkit-details-marker { display: none; }
+  .carga-hueco[open] > summary { margin-bottom: 10px; }
+  .carga-hueco strong { color: var(--ink); font-size: 13.5px; }
+
   /* ---------- panel de avisos ---------- */
   .avisos-head { padding: 12px 14px 10px; font-size: 14px; }
   .avisos-todo {
@@ -6777,6 +6828,7 @@
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
       <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V8"/><path d="M18 17v-9"/></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>

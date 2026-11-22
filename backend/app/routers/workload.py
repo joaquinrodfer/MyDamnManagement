@@ -10,12 +10,13 @@ salen enmascarados (ver `app.workload`).
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app import acl, auth, grants, workload
+from app import acl, auth, grants, workload, workload_grid
 from app import workspaces as ws_mod
 from app.due import server_today
 from app.dependencies import get_current_user, get_repo
@@ -68,6 +69,39 @@ def get_workload(
     gestionables = None if alcance is None else grants.people_in(repo.conn, alcance)
     for p in informe["people"]:
         p["manageable"] = gestionables is None or p["id"] in gestionables
+    return informe
+
+
+@router.get("/workload/grid")
+def get_workload_grid(
+    scale: str = Query(default="week", pattern="^(day|week|month)$"),
+    group: str = Query(default="person", pattern="^(person|group|workspace|project)$"),
+    start: Optional[date] = Query(default=None),
+    periods: Optional[int] = Query(default=None, ge=1, le=62),
+    workspace: Optional[str] = Query(default=None),
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """La vista nueva (C3): fila × periodo, por día, semana o mes, y por
+    persona, grupo, espacio o proyecto. Mismos permisos que `/workload`."""
+    alcance = _allowed(repo, user)
+    if workspace is not None and alcance is not None and workspace not in alcance:
+        raise HTTPException(404, "no existe ese espacio")
+    personas = None if alcance is None else grants.people_in(repo.conn, alcance)
+    gestion = grants.scopes(repo.conn, user, "manage_people")
+    informe = workload_grid.grid(
+        repo.conn, visible=acl.visible_ids(repo.conn, user), today=server_today(),
+        scale=scale, group=group, start=start, count=periods,
+        people=personas, workspace_id=workspace,
+        manageable=None if gestion is None else grants.people_in(repo.conn, gestion),
+    )
+    filas = repo.conn.execute("SELECT id, name, settings FROM workspaces ORDER BY name COLLATE NOCASE").fetchall()
+    informe["workspaces"] = [
+        {"id": r["id"], "name": r["name"]}
+        for r in filas
+        if not ws_mod.is_personal(r) and (alcance is None or r["id"] in alcance)
+    ]
+    informe["workspace_id"] = workspace
     return informe
 
 
