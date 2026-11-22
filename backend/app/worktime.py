@@ -437,7 +437,8 @@ class Calendar:
         return dict(self._dedications.get(str(person), {}))
 
     def spread(
-        self, person: str, start: Optional[date], end: Optional[date], hours: float
+        self, person: str, start: Optional[date], end: Optional[date], hours: float,
+        mode: str = "uniform",
     ) -> list[tuple[Optional[date], float]]:
         """`[(día, horas)]`: las horas de una tarea repartidas en los días que
         esa persona trabaja, en proporción a las horas que tiene cada día.
@@ -458,6 +459,8 @@ class Calendar:
             return [(start or end, hours)]
         if end < start:
             start, end = end, start
+        if mode == "due":
+            return [(end, hours)]
         dias = []
         d = start
         while d <= end:
@@ -469,4 +472,7 @@ class Calendar:
         total = sum(pesos)
         if total <= 0:
             return [(end, hours)]
+        if mode in ("start", "end"):
+            con_horas = [x for x, w in zip(dias, pesos) if w > 0]
+            return [(con_horas[0] if mode == "start" else con_horas[-1], hours)]
         return [(x, hours * w / total) for x, w in zip(dias, pesos) if w > 0]

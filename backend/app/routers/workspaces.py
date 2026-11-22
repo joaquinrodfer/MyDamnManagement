@@ -19,7 +19,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app import audit, auth, webhooks
+from app import effort, audit, auth, webhooks
 from app import workspaces as ws
 from app.dependencies import get_current_user
 from app.routers.auth import get_conn
@@ -116,8 +116,15 @@ def update_workspace(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     _manager(conn, user, workspace_id)
+    ajustes = payload.settings
+    if ajustes and "workload" in ajustes:
+        # Cómo cuenta la carga en el espacio (C4 y C5): se comprueba entero.
+        try:
+            ajustes = {**ajustes, "workload": effort.validate(ajustes["workload"])}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
     try:
-        ws.update(conn, workspace_id, name=payload.name, icon=payload.icon, settings=payload.settings)
+        ws.update(conn, workspace_id, name=payload.name, icon=payload.icon, settings=ajustes)
     except ws.WorkspaceError as exc:
         _raise(exc)
     audit.record(conn, user, "workspace.updated", workspace_id=workspace_id, target_type="workspace",

@@ -155,7 +155,9 @@ def grid(
                 gaps["unestimated"].append({k: pz[k] for k in (
                     "row_id", "row_title", "base_title", "workspace_name", "person_name", "end", "masked"
                 ) if k in pz})
-            continue
+            # Con un peso por defecto (C4) cuenta; sin él, solo sale aquí.
+            if pz["hours"] <= 0:
+                continue
         for r in destinos(pz):
             r["tasks"].add(tarea)
             r["members"].add(pz["person_id"])

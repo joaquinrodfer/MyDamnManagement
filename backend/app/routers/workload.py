@@ -16,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app import acl, auth, grants, workload, workload_grid
+from app import acl, auth, effort, grants, workload, workload_grid
 from app import workspaces as ws_mod
 from app.due import server_today
 from app.dependencies import get_current_user, get_repo
@@ -102,6 +102,14 @@ def get_workload_grid(
         if not ws_mod.is_personal(r) and (alcance is None or r["id"] in alcance)
     ]
     informe["workspace_id"] = workspace
+    # El semáforo y la unidad (C4, C5): los del espacio que se mira; sin
+    # filtro, los de siempre.
+    cfg = effort.DEFAULTS
+    if workspace:
+        fila = repo.conn.execute("SELECT settings FROM workspaces WHERE id = ?", (workspace,)).fetchone()
+        cfg = effort.of_settings(fila["settings"] if fila else None)
+    informe["thresholds"] = effort.thresholds(cfg)
+    informe["unit"] = {"key": cfg["unit"], "label": effort.UNITS[cfg["unit"]][0], "hours": effort.per_unit(cfg)}
     return informe
 
 

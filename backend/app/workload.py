@@ -34,7 +34,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from app import closed, worktime
+from app import closed, effort, worktime
 from app.due import iso_day
 
 DEFAULT_CAPACITY = worktime.weekly(worktime.DEFAULT_DAY_HOURS)
@@ -127,7 +127,7 @@ def pieces(
     bases = conn.execute(
         "SELECT d.id AS id, d.schema_json AS schema_json, k.kind_json AS kind_json,"
         " c.rule_json AS rule_json, p.title AS title, p.workspace_id AS workspace_id,"
-        " w.name AS workspace_name, p.id AS page_id"
+        " w.name AS workspace_name, w.settings AS workspace_settings, p.id AS page_id"
         " FROM databases d JOIN database_kinds k ON k.database_id = d.id"
         " JOIN pages p ON p.id = d.page_id JOIN workspaces w ON w.id = p.workspace_id"
         " LEFT JOIN database_closed c ON c.database_id = d.id"
@@ -135,6 +135,7 @@ def pieces(
     out: list[dict[str, Any]] = []
     project_ids: set[str] = set()
     staged: list[dict[str, Any]] = []
+    reglas: dict[str, dict[str, Any]] = {}
     for base in bases:
         kind = json.loads(base["kind_json"] or "null") or {}
         if kind.get("type") != "tasks":
@@ -144,7 +145,13 @@ def pieces(
             continue
         schema_def = json.loads(base["schema_json"] or "[]")
         rule, _src = closed.effective(json.loads(base["rule_json"] or "null"), schema_def)
-        split = (kind.get("options") or {}).get("hours_split", "full")
+        opciones = kind.get("options") or {}
+        split = opciones.get("hours_split", "full")
+        modo = opciones.get("spread", "uniform")
+        # La unidad de esfuerzo del espacio (C4).
+        cfg = reglas.get(base["workspace_id"])
+        if cfg is None:
+            cfg = reglas[base["workspace_id"]] = effort.of_settings(base["workspace_settings"])
         for row in conn.execute(
             "SELECT r.id AS id, r.properties_json AS props, p.title AS title, p.acl_source AS acl_source"
             " FROM rows r JOIN pages p ON p.id = r.id WHERE r.database_id = ?",
@@ -156,7 +163,11 @@ def pieces(
             people = _ids(props.get(roles["assignee"]))
             if not people:
                 continue
-            hours = _number(props.get(roles.get("hours"))) if roles.get("hours") else 0.0
+            hours, estimated = effort.to_hours(
+                cfg,
+                props.get(roles["hours"]) if roles.get("hours") else None,
+                props.get(roles["size"]) if roles.get("size") else None,
+            )
             start = iso_day(props.get(roles.get("start"))) if roles.get("start") else None
             end = iso_day(props.get(roles.get("end"))) if roles.get("end") else None
             projects = _ids(props.get(roles.get("project"))) if roles.get("project") else []
@@ -166,8 +177,8 @@ def pieces(
                 "base_id": base["id"], "base_title": base["title"],
                 "workspace_id": base["workspace_id"], "workspace_name": base["workspace_name"],
                 "visible": visible is None or row["id"] in visible,
-                "people": people, "hours": hours, "start": start, "end": end,
-                "projects": projects, "split": split,
+                "people": people, "hours": hours, "estimated": estimated,
+                "start": start, "end": end, "projects": projects, "split": split, "spread": modo,
             })
     titles: dict[str, str] = {}
     if project_ids:
@@ -179,11 +190,19 @@ def pieces(
             ):
                 titles[r["id"]] = r["title"] or "Sin título"
     for t in staged:
-        share = t["hours"] / len(t["people"]) if t["split"] == "equal" else t["hours"]
         project_title = titles.get(t["projects"][0]) if t["projects"] else None
+        if t["split"] == "dedication":
+            pesos = {p: calendar.dedication(p, t["workspace_id"]) for p in t["people"]}
+            suma = sum(pesos.values())
+            partes = {p: t["hours"] * (pesos[p] / suma if suma > 0 else 1 / len(t["people"])) for p in t["people"]}
+        elif t["split"] == "equal":
+            partes = {p: t["hours"] / len(t["people"]) for p in t["people"]}
+        else:
+            partes = {p: t["hours"] for p in t["people"]}
         for person in t["people"]:
+            share = partes[person]
             if by_day:
-                for dia, h in calendar.spread(person, t["start"], t["end"], share) or [(None, 0.0)]:
+                for dia, h in calendar.spread(person, t["start"], t["end"], share, t["spread"]) or [(None, 0.0)]:
                     out.append({
                         "person_id": person,
                         "workspace_id": t["workspace_id"], "workspace_name": t["workspace_name"],
@@ -192,14 +211,14 @@ def pieces(
                         "row_id": t["row_id"], "row_title": t["row_title"],
                         "day": dia.isoformat() if dia else None,
                         "hours": round(h, 4),
-                        "estimated": t["hours"] > 0,
+                        "estimated": t["estimated"],
                         "start": t["start"].isoformat() if t["start"] else None,
                         "end": t["end"].isoformat() if t["end"] else None,
                         "visible": t["visible"],
                     })
                 continue
             por_semana: dict[Optional[date], float] = defaultdict(float)
-            for dia, h in calendar.spread(person, t["start"], t["end"], share) or [(None, 0.0)]:
+            for dia, h in calendar.spread(person, t["start"], t["end"], share, t["spread"]) or [(None, 0.0)]:
                 por_semana[monday(dia) if dia else None] += h
             slots = sorted(por_semana.items(), key=lambda x: (x[0] is None, x[0] or date.min))
             for week, h in slots:
