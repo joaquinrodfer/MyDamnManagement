@@ -133,6 +133,37 @@ def update_workspace(
     return ws.get_dict(conn, user, workspace_id)
 
 
+@router.get("/workload/templates")
+def list_workload_templates(user: auth.User = Depends(get_current_user)):
+    """Las plantillas de carga por tipo de equipo (C8)."""
+    return [{k: t[k] for k in ("key", "label", "help", "settings")} for t in effort.TEMPLATES]
+
+
+class TemplateIn(BaseModel):
+    template: str
+
+
+@router.post("/workspaces/{workspace_id}/workload-template")
+def apply_workload_template(
+    workspace_id: str,
+    payload: TemplateIn,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Deja la carga del espacio como dice una plantilla (C8)."""
+    _manager(conn, user, workspace_id)
+    plantilla = effort.template(payload.template)
+    if plantilla is None:
+        raise HTTPException(404, "no existe esa plantilla")
+    try:
+        ws.update(conn, workspace_id, settings={"workload": effort.validate(plantilla["settings"])})
+    except ws.WorkspaceError as exc:
+        _raise(exc)
+    audit.record(conn, user, "workspace.updated", workspace_id=workspace_id, target_type="workspace",
+                 target_id=workspace_id, metadata={"workload_template": plantilla["key"]})
+    return ws.get_dict(conn, user, workspace_id)
+
+
 @router.delete("/workspaces/{workspace_id}", status_code=204)
 def delete_workspace(
     workspace_id: str, user: auth.User = Depends(_superadmin), conn: sqlite3.Connection = Depends(get_conn)

@@ -134,3 +134,43 @@ def to_hours(cfg: dict[str, Any], value: Any, size: Any = None) -> tuple[float, 
 
 def thresholds(cfg: dict[str, Any]) -> dict[str, float]:
     return {"warn": cfg["warn"], "over": cfg["over"], "under": cfg["under"]}
+
+
+# Plantillas por tipo de equipo (C8): un clic deja la carga del espacio
+# configurada. Son puntos de partida; luego se ajusta cada valor.
+TEMPLATES: list[dict[str, Any]] = [
+    {
+        "key": "agency", "label": "Agencia",
+        "help": "Horas, con un aviso si alguien está por debajo de la mitad (horas sin facturar).",
+        "settings": {"unit": "hours", "default_hours": 2, "warn": 80, "over": 100, "under": 50},
+    },
+    {
+        "key": "software", "label": "Software (puntos)",
+        "help": "Puntos de historia a 4 h cada uno.",
+        "settings": {"unit": "points", "hours_per_unit": 4, "default_hours": 0, "warn": 70, "over": 100, "under": 0},
+    },
+    {
+        "key": "sizes", "label": "Por tallas",
+        "help": "Tallas S, M, L… en vez de horas, para estimar rápido.",
+        "settings": {"unit": "sizes", "sizes": dict(DEFAULT_SIZES), "default_hours": 0, "warn": 70, "over": 100, "under": 0},
+    },
+    {
+        "key": "operations", "label": "Operaciones y turnos",
+        "help": "Horas, y amarillo al 90 %: un turno lleno es lo normal.",
+        "settings": {"unit": "hours", "default_hours": 0, "warn": 90, "over": 100, "under": 0},
+    },
+    {
+        "key": "consulting", "label": "Consultoría",
+        "help": "Jornadas de 8 h, medio día para lo no estimado y aviso por debajo del 40 %.",
+        "settings": {"unit": "days", "hours_per_unit": 8, "default_hours": 4, "warn": 75, "over": 100, "under": 40},
+    },
+    {
+        "key": "no_estimates", "label": "Sin estimación",
+        "help": "Cada tarea abierta cuenta 4 h: sirve para ver el reparto sin estimar nada.",
+        "settings": {"unit": "tasks", "hours_per_unit": 4, "default_hours": 0, "warn": 70, "over": 100, "under": 0},
+    },
+]
+
+
+def template(key: str) -> Optional[dict[str, Any]]:
+    return next((t for t in TEMPLATES if t["key"] == key), None)

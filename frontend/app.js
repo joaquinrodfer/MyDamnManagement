@@ -2347,6 +2347,15 @@ function seccionDePermisosDelEspacio(w, permisos) {
   return caja;
 }
 
+let plantillasDeCargaPromesa = null;
+function plantillasDeCarga() {
+  plantillasDeCargaPromesa ||= api("/workload/templates").catch((e) => {
+    plantillasDeCargaPromesa = null;
+    throw e;
+  });
+  return plantillasDeCargaPromesa;
+}
+
 const UNIDADES_DE_ESFUERZO = [
   ["hours", "Horas", null],
   ["days", "Días", 8],
@@ -2363,6 +2372,34 @@ function seccionDeCargaDelEspacio(w) {
     crearEl("strong", "", "Carga del espacio"),
     crearEl("p", "form-note", "Cómo se mide el esfuerzo de las tareas de este espacio y cuándo se pone en amarillo o en rojo la carga al mirarlo solo."),
   );
+  // Plantillas por tipo de equipo (C8): un clic y queda configurado.
+  const plantillas = crearEl("div", "ws-carga-plantillas");
+  plantillas.append(crearEl("span", "wt-field-label", "Empezar de una plantilla"));
+  const botones = crearEl("div", "ws-carga-plantillas-btns");
+  plantillas.append(botones);
+  plantillasDeCarga()
+    .then((lista) => {
+      for (const t of lista) {
+        const b = crearEl("button", "btn", t.label);
+        b.type = "button";
+        b.title = t.help;
+        b.addEventListener("click", async () => {
+          if (!confirm(`¿Configurar la carga de «${w.name}» como «${t.label}»? ${t.help}`)) return;
+          try {
+            const nuevo = await api(`/workspaces/${w.id}/workload-template`, { method: "POST", body: JSON.stringify({ template: t.key }) });
+            w.settings = nuevo.settings;
+            const otra = seccionDeCargaDelEspacio(w);
+            caja.replaceWith(otra);
+            setFormNote(otra.querySelector(".form-note:last-child"), `Plantilla «${t.label}» aplicada.`, "ok");
+          } catch (e) {
+            setFormNote(nota, describeError(e), "error");
+          }
+        });
+        botones.append(b);
+      }
+    })
+    .catch(() => plantillas.remove());
+  caja.append(plantillas);
   const rejilla = crearEl("div", "ws-carga-grid");
   const numero = (valor, min, max, paso = "0.5") => {
     const i = crearEl("input", "wt-num");
