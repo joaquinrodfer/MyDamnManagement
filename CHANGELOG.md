@@ -2,6 +2,10 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## El panel izquierdo crece al fijarlo
+- Con el panel asomando (flotante) y pulsando ☰ para dejarlo fijo, la tarjeta flotante **crece hasta ser la columna**: sube hasta arriba y se estira mientras el contenido se desliza para hacerle sitio. Antes se escondía y volvía a entrar.
+- Con «reducir movimiento» activado en el sistema, cambia sin animación, como antes.
+
 ## Plantillas de carga por tipo de equipo (plan de la carga, C8)
 - En la ficha de cada espacio, «Carga del espacio» → **Empezar de una plantilla**: Agencia, Software (puntos), Por tallas, Operaciones y turnos, Consultoría o Sin estimación.
 - Un clic deja configurados la unidad, el peso de lo no estimado y el semáforo; luego se puede ajustar cada valor.
