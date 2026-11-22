@@ -638,8 +638,13 @@ def test_la_pagina_lleva_el_color_de_quien_la_creo(client, index_path):
         assert nota["created_by"] == "Luis"
         assert nota["created_by_color"] == "#f5a623"
 
-    # Desde la sesión del admin, que no ha creado la nota ni conoce a Luis por
-    # el panel: el color sigue siendo el del autor.
+    # Luis la comparte con el espacio, y desde la sesión del admin, que no ha
+    # creado la nota ni conoce a Luis por el panel, el color sigue siendo el
+    # del autor. (Sin compartir no la vería: plan de roles, R1.)
+    with TestClient(app) as luis:
+        luis.post("/auth/login", json={"username": "luis", "password": "contrasena-de-luis"})
+        r = luis.patch(f"/pages/{nota['id']}", json={"section": "shared"})
+        assert r.status_code == 200, r.text
     leida = client.get(f"/pages/{nota['id']}").json()
     assert leida["created_by"] == "Luis"
     assert leida["created_by_color"] == "#f5a623"

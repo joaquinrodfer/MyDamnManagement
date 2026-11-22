@@ -145,10 +145,8 @@ def test_el_inicio_cuenta_lo_que_hacen_otros_y_solo_lo_que_se_ve(client):
         privada = ana.post("/pages", json={"title": "Diario de Ana", "type": "note"}).json()
         ana.patch(f"/pages/{privada['id']}", json={"body_markdown": "hola"})
 
-        # El administrador lo ve todo: le sale lo de Ana, no lo suyo.
-        actividad = client.get("/dashboard").json()["activity"]
-        assert [(a["page_title"], a["user"]["name"]) for a in actividad] == [("Diario de Ana", "Ana")]
-        assert actividad[0]["action"] == "created"
+        # El administrador no ve lo privado de Ana (plan de roles, R1).
+        assert client.get("/dashboard").json()["activity"] == []
 
         # Beto no puede ver la nota: no le sale.
         assert beto.get("/dashboard").json()["activity"] == []

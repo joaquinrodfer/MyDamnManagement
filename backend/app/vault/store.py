@@ -2318,9 +2318,13 @@ class VaultStore:
 
         if events:
             # Un fichero puede haber cambiado de carpeta (de madre): la
-            # herencia de permisos se recalcula una vez por pasada.
+            # herencia de permisos se recalcula una vez por pasada. Lo que
+            # llega por fuera sin permisos pasa a ser del primer administrador
+            # (plan de roles, R1: si no, no lo vería nadie).
             with self._tx():
                 refresh_acl_sources(self.conn)
+                if acl_mod.adopt_orphans(self.conn):
+                    refresh_acl_sources(self.conn)
         return events
 
     @staticmethod
@@ -2732,6 +2736,10 @@ class VaultStore:
                 # ya existía queda compartido con el espacio (3.0, hito 3).
                 acl_mod.share_roots_with_workspace(self.conn)
             refresh_acl_sources(self.conn)
+            # Lo puesto a mano en el disco, sin permisos: del primer
+            # administrador (plan de roles, R1).
+            if acl_mod.adopt_orphans(self.conn):
+                refresh_acl_sources(self.conn)
             if self.fs.in_db:
                 # Migrado: desde aquí la verdad es la base y el arranque no
                 # vuelve a leer el disco.

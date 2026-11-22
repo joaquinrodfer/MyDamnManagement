@@ -295,11 +295,11 @@ def share_roots_with_workspace(conn: sqlite3.Connection) -> int:
 def adopt_orphans(conn: sqlite3.Connection, user: Any = None) -> int:
     """Las páginas de la raíz sin ningún permiso pasan a ser de `user`.
 
-    Son las que alguien pone a mano en el disco y se reindexan: antes solo las
-    veía el administrador (que lo veía todo); desde el plan de roles (R1) no
-    las vería nadie. Quedan privadas de quien reindexa o, si reindexa el
-    sistema (arranque, vigilante del disco), del primer administrador, que es
-    quien tiene el disco. No recalcula la herencia: quien llama hace
+    Son las que alguien pone a mano en el disco y se reindexan (reindexado,
+    vigilante, script de migración): antes solo las veía el administrador (que
+    lo veía todo); desde el plan de roles (R1) no las vería nadie. Quedan
+    privadas del primer administrador, que es quien tiene el disco, salvo que
+    se pase otro `user`. No recalcula la herencia: quien llama hace
     `refresh_sources`.
     """
     owner = str(getattr(user, "id", "") or "")

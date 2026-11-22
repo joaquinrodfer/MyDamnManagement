@@ -56,7 +56,7 @@ Sigue siendo así:
 
 ## Fases
 
-### R1 — El administrador deja de leer lo ajeno
+### R1 — El administrador deja de leer lo ajeno (hecho)
 - **Permisos de página:** `acl` y `guard` dejan de tratar a `is_admin` como «sistema». Solo el proceso interno (usuario `None`) se salta los permisos.
 - **Partes que hoy usan `is_admin` como atajo y pasan a filtrar como para cualquiera:**
   - barra lateral (quita la sección «otros» de `_build_tree`);
@@ -69,8 +69,9 @@ Sigue siendo así:
   - los personales de otros no salen;
   - puede cambiar los miembros de cualquier espacio no personal, para que nadie se quede fuera. Añadirse a sí mismo queda en la auditoría;
   - en un espacio personal no puede añadir a nadie.
-- **Exportar a Markdown:** exporta lo que ve quien lo pide, no el vault entero.
-- **Páginas sin permisos** (`acl_source` NULL, puestas a mano en el disco): pasan a ser de quien instaló Notemil, que es quien tiene el disco. Decisión mía.
+- **Exportar el vault entero y la papelera** siguen siendo del administrador: son una copia y mantenimiento, no lectura del día a día. Pasan al permiso «Copias de seguridad» en R2. La exportación de una página («Exportar a Markdown») ya respetaba los permisos.
+- **Páginas sin permisos** (un `.md` puesto a mano en el disco, por el vigilante, el reindexado o el script de migración): pasan a ser privadas del primer administrador, que es quien tiene el disco.
+- **Subir una subpágina a la raíz** conserva los permisos que heredaba. Antes se quedaba sin ninguno y su dueño la perdía de vista.
 - **Las copias de seguridad** las sigue haciendo el administrador hasta R2.
 
 ### R2 — Permisos que se conceden

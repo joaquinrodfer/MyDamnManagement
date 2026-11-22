@@ -147,12 +147,13 @@ def test_no_se_puede_colgar_una_nota_de_una_base_de_datos(client):
     assert respuesta.status_code == 400
     assert "solo puede colgar de otra nota" in respuesta.json()["detail"]
 
-    # Y un padre que no existe tampoco es un 500.
+    # Y un padre que no existe tampoco es un 500: la guarda no lo encuentra
+    # (404, la misma respuesta que un padre que no se puede ver).
     respuesta = client.post(
         "/pages",
         json={"title": "Huerfana", "parent_id": "00000000-0000-0000-0000-000000000000"},
     )
-    assert respuesta.status_code == 400
+    assert respuesta.status_code == 404
 
 
 def test_el_titulo_no_escapa_del_vault(client, vault_path):

@@ -393,18 +393,12 @@ class Repository:
         servicio en marcha que durante el arranque. `progress` solo lo pasa el
         arranque en segundo plano (P16): informa del avance, no cambia nada.
         """
-        stats = self.vault.rebuild(
+        return self.vault.rebuild(
             allow_empty=force,
             empty_hint=empty_hint or EMPTY_VAULT_HINT_HTTP,
             progress=progress,
             source=source,
         )
-        # Lo puesto a mano en el disco, sin permisos: de quien reindexa (plan
-        # de roles, R1; el administrador ya no lo ve todo).
-        with self._tx():
-            if acl.adopt_orphans(self.conn, self.user):
-                acl.refresh_sources(self.conn)
-        return stats
 
     def migrated(self) -> bool:
         """¿La verdad ya está en la base? (3.0, hito 2; ver `VaultStore.migrated`)."""
@@ -608,6 +602,17 @@ class Repository:
         if not changes:
             return current
 
+        # Subir a la raíz: la página deja de heredar de su madre. Se queda con
+        # los mismos permisos que heredaba (quién la veía la sigue viendo); sin
+        # esto se quedaba sin ninguno y no la veía nadie.
+        heredadas = None
+        if "parent_id" in changes and changes["parent_id"] is None and current.type != PageType.database_row:
+            pid = str(page_id)
+            fila = self.conn.execute("SELECT acl_source FROM pages WHERE id = ?", (pid,)).fetchone()
+            fuente = fila["acl_source"] if fila else None
+            if fuente and fuente != pid and not acl.declared(self.conn, pid):
+                heredadas = acl.entries(self.conn, fuente)
+
         changes["expected_version"] = expected_version
         if current.type == PageType.note:
             self.vault.save(page_id, **changes)
@@ -622,6 +627,11 @@ class Repository:
                     "una fila no se mueve de carpeta: su sitio lo decide su base"
                 )
             self.vault.save_row(page_id, **changes)
+        if heredadas is not None and not acl.declared(self.conn, str(page_id)):
+            with self._tx():
+                tipo = "database" if current.type == PageType.database else "page"
+                acl.set_entries(self.conn, tipo, str(page_id), heredadas)
+                acl.refresh_sources(self.conn)
         return self.get_page(page_id)
 
     def set_header_image(self, page_id: uuid.UUID, path: Optional[str]) -> Optional[Page]:
