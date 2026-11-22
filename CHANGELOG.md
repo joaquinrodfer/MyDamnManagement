@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Chat: convertir en tarea, buscar y «está escribiendo…» (plan del chat, CH4)
+- **Convertir en tarea:** en el menú de un mensaje (✓). Eliges la base (de Tareas o que cuenta para la carga) y el título. Se crea la fila con quien escribió el mensaje como responsable y, en su cuerpo, el mensaje citado y de dónde viene. El mensaje queda marcado «Convertido en tarea · abrir».
+- **Buscar en el chat:** encima de las conversaciones, solo en las que ves. Al pulsar un resultado se abre la conversación y se resalta el mensaje.
+- **«Fulano está escribiendo…»** en la conversación abierta.
+
 ## Chat: menciones, enlaces y adjuntos (plan del chat, CH3)
 - **`@persona`** se autocompleta al escribir. A quien nombras y puede ver la conversación le llega un aviso en la campana; al pulsarlo se abre esa conversación.
 - **`[[Página]]`** también se autocompleta. En el mensaje es un enlace que abre la página y enseña su vista previa al pasar el ratón.

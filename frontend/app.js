@@ -9391,6 +9391,16 @@ function pintarListaDeChat() {
   nuevo.setAttribute("aria-label", "Mensaje directo nuevo");
   nuevo.addEventListener("click", () => pintarSelectorDeGente());
   cab.append(nuevo);
+  // Buscar en el chat (CH4): en las conversaciones que veo.
+  const buscar = crearEl("input", "chat-search");
+  buscar.type = "search";
+  buscar.placeholder = "Buscar en el chat…";
+  buscar.setAttribute("aria-label", "Buscar en el chat");
+  let espera = null;
+  buscar.addEventListener("input", () => {
+    clearTimeout(espera);
+    espera = setTimeout(() => buscarEnChat(buscar.value, lista), 250);
+  });
   const lista = crearEl("div", "chat-list");
   const canales = chatUI.convs.filter((c) => c.kind === "workspace");
   const directos = chatUI.convs.filter((c) => c.kind === "direct");
@@ -9401,7 +9411,59 @@ function pintarListaDeChat() {
   for (const c of canales) lista.append(itemDeChat(c));
   if (directos.length) lista.append(crearEl("div", "chat-section-label", "Directos"));
   for (const c of directos) lista.append(itemDeChat(c));
-  panel.replaceChildren(cab, lista);
+  panel.replaceChildren(cab, buscar, lista);
+}
+
+async function buscarEnChat(q, lista) {
+  if (q.trim().length < 2) {
+    pintarListaDeChat();
+    const nuevo = document.querySelector("#chat-pane .chat-search");
+    if (nuevo) {
+      nuevo.value = q;
+      nuevo.focus();
+    }
+    return;
+  }
+  let r;
+  try {
+    r = await api(`/chat/search?q=${encodeURIComponent(q.trim())}`);
+  } catch (e) {
+    lista.replaceChildren(crearEl("p", "chat-empty", describeError(e)));
+    return;
+  }
+  lista.replaceChildren();
+  if (!r.messages.length) lista.append(crearEl("p", "chat-empty", "Nada coincide."));
+  for (const m of r.messages) {
+    const b = crearEl("button", "chat-item chat-result");
+    b.type = "button";
+    b.append(avatarDeChat(m.author));
+    const texto = crearEl("span", "chat-item-text");
+    texto.append(
+      crearEl("span", "chat-item-title", `${m.author?.display_name || "Alguien"} · ${m.conversation_kind === "workspace" ? "# " : ""}${m.conversation_title}`),
+      crearEl("span", "chat-item-last", (m.body || "").replace(/[*`>]/g, "")),
+    );
+    const lado = crearEl("span", "chat-item-side");
+    lado.append(crearEl("span", "chat-item-time", horaDeChat(m.created_at)));
+    b.append(texto, lado);
+    b.addEventListener("click", () => irAMensaje(m.conversation_id, m.id));
+    lista.append(b);
+  }
+}
+
+/** Abre la conversación y baja (o sube) hasta el mensaje, resaltado. */
+async function irAMensaje(conversationId, messageId) {
+  await abrirConversacion(conversationId);
+  for (let i = 0; i < 20 && !chatUI.mensajes.some((m) => m.id === messageId) && chatUI.hayMasAntes; i++) {
+    const caja = document.querySelector("#chat-pane .chat-msgs");
+    if (!caja) break;
+    await cargarAnteriores(caja);
+  }
+  const el = document.querySelector(`#chat-pane .chat-msg[data-id="${messageId}"]`);
+  if (el) {
+    el.scrollIntoView({ block: "center" });
+    el.classList.add("is-found");
+    setTimeout(() => el.classList.remove("is-found"), 2000);
+  }
 }
 
 function itemDeChat(c) {
@@ -9700,6 +9762,14 @@ function mensajeDeChat(m, primero) {
     cuerpo.innerHTML = htmlDeChat(m.body || "");
     if (m.edited_at) cuerpo.append(crearEl("span", "chat-edited", "(editado)"));
     adjuntosDeMensaje(cuerpo, m);
+    if (m.task_id) {
+      const tarea = crearEl("button", "chat-task-chip");
+      tarea.type = "button";
+      tarea.innerHTML = svgIcon("i-check");
+      tarea.append("Convertido en tarea · abrir");
+      tarea.addEventListener("click", () => navigateToPage(m.task_id));
+      cuerpo.append(tarea);
+    }
   }
   fila.append(av, meta, cuerpo);
   if (!m.deleted) fila.append(accionesDeMensaje(m));
@@ -9799,9 +9869,57 @@ function accionesDeMensaje(m) {
   return caja;
 }
 
-/** Acciones que añaden fases posteriores (convertir en tarea, CH4). */
-function accionesExtraDeMensaje(_m) {
-  return [];
+/** «Convertir en tarea» (CH4), si el mensaje aún no lo es. */
+function accionesExtraDeMensaje(m) {
+  if (m.task_id) return [];
+  const b = botonDeAccion("i-check", "Convertir en tarea", (e) => abrirConvertirEnTarea(m, e.currentTarget));
+  return [b];
+}
+
+async function abrirConvertirEnTarea(m, ancla) {
+  if (ancla.getAttribute("aria-expanded") === "true") {
+    cerrarPanelDeColumna();
+    return;
+  }
+  const panel = crearEl("div", "db-col-menu chat-task-panel");
+  panel.setAttribute("role", "dialog");
+  panel.append(crearEl("strong", "", "Convertir en tarea"));
+  const base = crearEl("select");
+  base.add(new Option("Cargando bases…", ""));
+  const titulo = crearEl("input");
+  titulo.type = "text";
+  titulo.value = (m.body || "").split("\n")[0].replace(/^>\s?/, "").slice(0, 200);
+  titulo.placeholder = "Título de la tarea";
+  const nota = crearEl("p", "form-note", "Quien escribió el mensaje queda como responsable. Puedes cambiarlo en la tarea.");
+  const crear = crearEl("button", "btn btn-primary", "Crear tarea");
+  crear.type = "button";
+  crear.disabled = true;
+  panel.append(campoDeCarga("Base", base), campoDeCarga("Título", titulo), nota, crear);
+  abrirPanelFlotante(ancla, panel, { etiqueta: "Convertir en tarea" });
+  try {
+    const bases = (await api("/databases")).filter((d) => ["tasks", "workload"].includes(d.kind?.type));
+    base.replaceChildren();
+    if (!bases.length) base.add(new Option("No hay bases de Tareas", ""));
+    for (const d of bases) base.add(new Option(d.title || "Sin título", d.id));
+    crear.disabled = !bases.length;
+  } catch (e) {
+    setFormNote(nota, describeError(e), "error");
+  }
+  crear.addEventListener("click", async () => {
+    crear.disabled = true;
+    try {
+      const r = await api(`/chat/messages/${m.id}/task`, {
+        method: "POST",
+        body: JSON.stringify({ database_id: base.value, title: titulo.value.trim() || null }),
+      });
+      cerrarPanelDeColumna();
+      reemplazarMensaje(r.message);
+      showError(`Tarea «${r.title}» creada`, "info");
+    } catch (e) {
+      setFormNote(nota, describeError(e), "error");
+      crear.disabled = false;
+    }
+  });
 }
 
 function compositorDeChat() {
@@ -9833,7 +9951,14 @@ function compositorDeChat() {
     }
   });
   box.append(...herramientasDelCompositor(t), t, enviar);
-  caja.append(box, nota);
+  caja.append(crearEl("div", "chat-typing"), box, nota);
+  // Avisar de que escribo (como mucho cada 3 s).
+  let ultimoAviso = 0;
+  t.addEventListener("input", () => {
+    if (!t.value.trim() || Date.now() - ultimoAviso < 3000) return;
+    ultimoAviso = Date.now();
+    api(`/chat/conversations/${c.id}/typing`, { method: "POST" }).catch(() => {});
+  });
   prepararCompositor(t, caja);
   return caja;
 }
@@ -10076,6 +10201,7 @@ function reemplazarMensaje(msg) {
 /** `event: chat` de `/events`. */
 function alEventoDeChat(ev) {
   if (ev.action === "message") {
+    if (escribiendoAhora.delete(ev.message?.user_id)) pintarEscribiendo();
     const abierta = chatUI.actual && ev.conversation_id === chatUI.actual.id && chatUI.vista === "conversacion";
     if (abierta && chatVisible()) {
       recibirMensaje(ev.message);
@@ -10094,8 +10220,27 @@ function alEventoDeChat(ev) {
   if (ev.action === "members") cargarChat();
   alEventoDeChatExtra(ev);
 }
-/** Eventos que añaden fases posteriores («está escribiendo…», CH4). */
-function alEventoDeChatExtra(_ev) {}
+/** «Fulano está escribiendo…» (CH4): dura unos segundos si no se repite. */
+const escribiendoAhora = new Map(); // id -> {nombre, hasta}
+function alEventoDeChatExtra(ev) {
+  if (ev.action !== "typing" || ev.user_id === sessionUser.me?.id) return;
+  if (!chatUI.actual || ev.conversation_id !== chatUI.actual.id) return;
+  escribiendoAhora.set(ev.user_id, { nombre: ev.name, hasta: Date.now() + 5000 });
+  pintarEscribiendo();
+  setTimeout(pintarEscribiendo, 5100);
+}
+function pintarEscribiendo() {
+  const el = document.querySelector("#chat-pane .chat-typing");
+  if (!el) return;
+  const ahora = Date.now();
+  for (const [id, v] of escribiendoAhora) if (v.hasta < ahora) escribiendoAhora.delete(id);
+  const nombres = [...escribiendoAhora.values()].map((v) => v.nombre);
+  el.textContent = !nombres.length
+    ? ""
+    : nombres.length === 1
+      ? `${nombres[0]} está escribiendo…`
+      : `${nombres.slice(0, -1).join(", ")} y ${nombres.at(-1)} están escribiendo…`;
+}
 
 // Un `[[Página]]` de un mensaje abre esa página (por su título).
 document.getElementById("chat-pane")?.addEventListener("click", (e) => {

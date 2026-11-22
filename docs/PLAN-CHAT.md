@@ -79,7 +79,7 @@ Todo va en el índice, como `notifications`; no va al vault, porque no son notas
 - `[[Página]]` con la misma vista previa y clic que en el editor.
 - Adjuntar archivos e imágenes; las imágenes se ven dentro del mensaje.
 
-### CH4 — Convertir en tarea y buscar
+### CH4 — Convertir en tarea y buscar (hecho)
 - «Convertir en tarea» desde el mensaje.
 - Buscar en el chat, con los mismos permisos.
 - «Está escribiendo…».

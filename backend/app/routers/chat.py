@@ -194,3 +194,82 @@ async def upload_file(
             ext = attachments.other_ext(nombre)
     rel = attachments.save_file(settings.vault_path, nombre, data, ext)
     return {"url": attachments.url_for(rel), "name": nombre, "size": len(data), "type": kind}
+
+
+# ---------------------------------------------------------------- CH4
+
+
+@router.get("/search")
+def search(q: str = Query(min_length=1, max_length=200), repo: Repository = Depends(get_repo),
+           user: auth.User = Depends(get_current_user)):
+    """Buscar en el chat, solo en las conversaciones que veo."""
+    return {"messages": chat.search(repo.conn, user, q)}
+
+
+@router.post("/conversations/{conversation_id}/typing", status_code=204)
+def typing(conversation_id: str, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)):
+    """«Está escribiendo…»: un aviso efímero, no se guarda."""
+    conv = _conv(repo, user, conversation_id)
+    chat.publish(repo.conn, conv, "typing", user_id=str(user.id), name=user.display_name)
+    return Response(status_code=204)
+
+
+class TaskIn(BaseModel):
+    database_id: str
+    title: Optional[str] = Field(default=None, max_length=300)
+
+
+@router.post("/messages/{message_id}/task", status_code=201)
+def message_to_task(
+    message_id: int, payload: TaskIn, repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """Convierte un mensaje en una fila de una base de Tareas o que cuenta para
+    la carga: el texto como título (o el que se dé), quien lo escribió como
+    responsable propuesto y, en el cuerpo, el mensaje y de dónde viene."""
+    import uuid as uuid_mod
+
+    from app import acl, schemas
+    from app.routers.databases import create_row
+
+    msg = chat.get_message(repo.conn, message_id)
+    if msg is None or msg["deleted"]:
+        raise HTTPException(404, "no existe ese mensaje")
+    conv = _conv(repo, user, msg["conversation_id"])
+    try:
+        database_id = uuid_mod.UUID(payload.database_id)
+    except ValueError:
+        raise HTTPException(404, "no existe esa base") from None
+    try:
+        acl.authorize(repo.conn, user, str(database_id), "edit")
+    except acl.NotVisible:
+        raise HTTPException(404, "no existe esa base") from None
+    except acl.Forbidden:
+        raise HTTPException(403, "no puedes añadir filas a esa base") from None
+    base = repo.get_database(database_id)
+    if base is None:
+        raise HTTPException(404, "no existe esa base")
+    propiedades: dict[str, Any] = {}
+    kind = base.kind or {}
+    clave = (kind.get("roles") or {}).get("assignee") if kind.get("type") in ("tasks", "workload") else None
+    if clave and msg["user_id"]:
+        prop = next((p for p in base.schema_def if p.get("key") == clave), {})
+        multiple = prop.get("multiple") in (True, "true")
+        propiedades[clave] = [msg["user_id"]] if multiple else msg["user_id"]
+    texto = msg["body"] or ""
+    titulo = (payload.title or texto.split("\n")[0] or "Tarea del chat").strip()[:200]
+    donde = f"# {conv_title(repo, conv)}" if conv["kind"] == "workspace" else "un mensaje directo"
+    autor = (msg.get("author") or {}).get("display_name") or "alguien"
+    cuerpo = "\n".join(f"> {linea}" for linea in texto.split("\n")) + f"\n\nDesde el chat ({donde}), de {autor}."
+    fila = create_row(
+        database_id, schemas.RowCreate(title=titulo, properties=propiedades, body_markdown=cuerpo), repo, user,
+    )
+    chat.set_task(repo.conn, message_id, str(fila.id))
+    actualizado = chat.get_message(repo.conn, message_id)
+    chat.publish(repo.conn, conv, "edited", message=actualizado)
+    return {"task_id": str(fila.id), "title": fila.title, "message": actualizado}
+
+
+def conv_title(repo: Repository, conv: dict) -> str:
+    fila = repo.conn.execute("SELECT name FROM workspaces WHERE id = ?", (conv.get("workspace_id"),)).fetchone()
+    return fila["name"] if fila else "canal"
