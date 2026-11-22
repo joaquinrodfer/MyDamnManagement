@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, Depends
 
-from app import acl, activity, auth, mytasks, notifications, workload, worktime
+from app import acl, activity, auth, grants, mytasks, notifications, workload, worktime
 from app.due import server_today
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
@@ -104,8 +104,7 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
     """Mis horas de esta semana frente a mi capacidad (de las bases de Proyectos
     y de Tareas, con el mismo cálculo que «Carga del equipo»).
 
-    `team` solo para quien puede ver la carga del equipo (administrador o
-    `can_view_global_workload`): una fila por persona, sin detalle de tareas.
+    `team` solo para quien tiene el permiso «Ver carga»: una fila por persona, sin detalle de tareas.
     Lo que quien pregunta no puede ver sale enmascarado, como en `/workload`.
     """
     informe = workload.report(
@@ -127,7 +126,7 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
         },
         "team": None,
     }
-    if user.is_admin or user.can_view_global_workload:
+    if grants.can(repo.conn, user, "view_workload"):
         salida["team"] = [
             {
                 "id": p["id"],

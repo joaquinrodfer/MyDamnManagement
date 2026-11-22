@@ -7,7 +7,8 @@
   `X-Workspace` limita los listados al espacio activo;
 - los roles: un `viewer` no pasa de lectura por el espacio ni crea en la raíz;
 - los grupos dan acceso a un espacio o a una página;
-- `can_view_global_workload` es un permiso aparte del de administrador.
+- Ver la carga de todos es un permiso aparte del de administrador (desde R2,
+  `grants`: «Ver carga»).
 """
 
 import pytest
@@ -190,15 +191,18 @@ def test_solo_el_administrador_del_espacio_gestiona_sus_miembros(client, cierra)
 
 
 def test_la_carga_global_es_un_permiso_aparte(client, cierra):
+    # Desde R2 (plan de roles) es el permiso «Ver carga» en todos los espacios;
+    # el campo viejo del alta y de la edición se sigue aceptando.
     c, u = _sesion(client, "pmgr", can_view_global_workload=True)
     cierra.append(c)
-    assert u["can_view_global_workload"] is True and u["is_admin"] is False
-    assert c.get("/auth/me").json()["can_view_global_workload"] is True
+    assert u["is_admin"] is False
+    assert c.get("/auth/me").json()["capabilities"] == {"view_workload": "all"}
     otro, ou = _sesion(client, "otro")
     cierra.append(otro)
-    assert ou["can_view_global_workload"] is False
+    assert otro.get("/auth/me").json()["capabilities"] == {}
     # Un administrador se lo da; un usuario normal no puede dárselo.
-    assert client.patch(f"/auth/users/{ou['id']}", json={"can_view_global_workload": True}).json()["can_view_global_workload"] is True
+    assert client.patch(f"/auth/users/{ou['id']}", json={"can_view_global_workload": True}).status_code == 200
+    assert otro.get("/auth/me").json()["capabilities"] == {"view_workload": "all"}
     assert otro.patch(f"/auth/users/{ou['id']}", json={"can_view_global_workload": False}).status_code == 403
 
 

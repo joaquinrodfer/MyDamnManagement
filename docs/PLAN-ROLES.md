@@ -74,7 +74,7 @@ Sigue siendo así:
 - **Subir una subpágina a la raíz** conserva los permisos que heredaba. Antes se quedaba sin ninguno y su dueño la perdía de vista.
 - **Las copias de seguridad** las sigue haciendo el administrador hasta R2.
 
-### R2 — Permisos que se conceden
+### R2 — Permisos que se conceden (hecho)
 - **Datos:** tabla `grants` (`subject_type` persona o grupo, `subject_id`, `capability`, `workspace_id`; NULL significa todos los espacios, más quién y cuándo). Va en el índice como las demás tablas de permisos.
 - **Comprobación:** una sola función, `can(conn, user, capability, workspace_id=None)`, que mira la persona y sus grupos.
 - **Pantalla:** en Ajustes → Administración, una sección «Permisos». Para cada permiso, quién lo tiene (personas y grupos) y en qué espacios. Conceder y retirar queda en la auditoría.
@@ -87,6 +87,13 @@ Sigue siendo así:
   - festivos comunes;
   - auditoría;
   - copias.
+- **Cómo quedó:**
+  - «Ver auditoría» y «Copias de seguridad» son solo para todos los espacios: la auditoría y una copia hablan de toda la instalación.
+  - La papelera y exportar el vault entero van con «Copias de seguridad». Reindexar sigue siendo del administrador: no enseña contenido.
+  - El administrador recibe también «Ver carga» al migrar, porque hoy la veía.
+  - El primer usuario de una instalación nueva recibe todos: no tendría a nadie que se los diera.
+  - El campo viejo `can_view_global_workload` del alta y la edición de usuarios se sigue aceptando y se traduce a «Ver carga» en todos.
+  - Los festivos de un espacio, además de su administrador, los gestiona quien tiene «Gestionar festivos» en él, desde Ajustes → Calendario laboral.
 
 ### R3 — «Gestionar personas» y la privacidad de las ausencias
 - **Alcance:** jornada, dedicación y ausencias de otros, solo de las personas de los espacios del permiso.

@@ -1,16 +1,17 @@
 """Jornada, dedicación, ausencias y festivos (plan de la carga, C1).
 
 - `GET /worktime/users/{id}`: la jornada, la dedicación y las ausencias de una
-  persona. Cada uno la suya; un administrador, la de cualquiera.
+  persona. Cada uno la suya; con «Gestionar personas» (`app.grants`), la de las
+  personas de sus espacios.
 - `PUT /worktime/users/{id}/schedule` `{hours: [7] | null}` y
-  `PUT /worktime/users/{id}/dedication` `{dedication: {espacio: %}}`: solo un
-  administrador.
+  `PUT /worktime/users/{id}/dedication` `{dedication: {espacio: %}}`: con
+  «Gestionar personas».
 - `GET /absences`, `POST /absences`, `DELETE /absences/{id}`: cada persona las
-  suyas; un administrador, las de cualquiera.
+  suyas; con «Gestionar personas», las de las personas de sus espacios.
 - `GET /holidays?workspace_id=&year=`, `POST /holidays`, `DELETE /holidays/{id}`:
-  los comunes (sin `workspace_id`) los gestiona el superadministrador; los de un
-  espacio, también el administrador de ese espacio. Leerlos, cualquiera que
-  pertenezca al ámbito.
+  los comunes (sin `workspace_id`), con «Gestionar festivos» en todos los
+  espacios; los de un espacio, su administrador o quien tiene el permiso en
+  él. Leerlos, cualquiera que pertenezca al ámbito.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from app import audit, auth, holiday_import, workspaces, worktime
+from app import audit, auth, grants, holiday_import, workspaces, worktime
 from app.dependencies import get_current_user, get_repo
 from app.due import server_today
 from app.repository import Repository
@@ -38,9 +39,20 @@ def _user_or_404(repo: Repository, user_id: str) -> dict:
     return dict(r)
 
 
-def _self_or_admin(user: auth.User, user_id: str) -> None:
-    if str(user.id) != str(user_id) and not user.is_admin:
+def _self_or_manager(repo: Repository, user: auth.User, user_id: str) -> None:
+    """Lo tuyo, siempre; lo de otra persona, con «Gestionar personas» en un
+    espacio suyo (o en todos)."""
+    if str(user.id) != str(user_id) and not _manages(repo, user, user_id):
         raise HTTPException(403, "solo puedes ver y cambiar lo tuyo")
+
+
+def _manages(repo: Repository, user: auth.User, user_id: str) -> bool:
+    return grants.can_for_person(repo.conn, user, "manage_people", str(user_id))
+
+
+def _manager(repo: Repository, user: auth.User, user_id: str, que: str) -> None:
+    if not _manages(repo, user, user_id):
+        raise HTTPException(403, f"cambiar {que} pide el permiso «Gestionar personas»")
 
 
 # --------------------------------------------------------------------------
@@ -79,7 +91,7 @@ def get_worktime(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    _self_or_admin(user, user_id)
+    _self_or_manager(repo, user, user_id)
     _user_or_404(repo, user_id)
     return _ficha(repo, user_id)
 
@@ -91,8 +103,7 @@ def put_schedule(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    if not user.is_admin:
-        raise HTTPException(403, "solo un administrador cambia la jornada")
+    _manager(repo, user, user_id, "la jornada")
     persona = _user_or_404(repo, user_id)
     try:
         worktime.set_schedule(repo.conn, user_id, payload.hours)
@@ -113,8 +124,7 @@ def put_dedication(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    if not user.is_admin:
-        raise HTTPException(403, "solo un administrador cambia la dedicación")
+    _manager(repo, user, user_id, "la dedicación")
     persona = _user_or_404(repo, user_id)
     try:
         worktime.set_dedication(repo.conn, user_id, payload.dedication)
@@ -150,7 +160,7 @@ def list_absences(
     user: auth.User = Depends(get_current_user),
 ):
     quien = str(user_id or user.id)
-    _self_or_admin(user, quien)
+    _self_or_manager(repo, user, quien)
     return {
         "kinds": [{"key": k, "label": worktime.ABSENCE_LABELS[k]} for k in worktime.ABSENCE_KINDS],
         "absences": worktime.absences(repo.conn, quien, since=since),
@@ -164,7 +174,7 @@ def create_absence(
     user: auth.User = Depends(get_current_user),
 ):
     quien = str(payload.user_id or user.id)
-    _self_or_admin(user, quien)
+    _self_or_manager(repo, user, quien)
     _user_or_404(repo, quien)
     try:
         creada = worktime.add_absence(
@@ -185,7 +195,7 @@ def delete_absence(
     ausencia = worktime.get_absence(repo.conn, absence_id)
     if ausencia is None:
         raise HTTPException(404, "no existe esa ausencia")
-    _self_or_admin(user, ausencia["user_id"])
+    _self_or_manager(repo, user, ausencia["user_id"])
     worktime.delete_absence(repo.conn, absence_id)
     return Response(status_code=204)
 
@@ -210,13 +220,30 @@ def _puede_leer(repo: Repository, user: auth.User, workspace_id: Optional[str]) 
 
 def _puede_gestionar(repo: Repository, user: auth.User, workspace_id: Optional[str]) -> None:
     if workspace_id is None:
-        if not user.is_admin:
-            raise HTTPException(403, "solo un administrador cambia los festivos comunes")
+        if not grants.can(repo.conn, user, "manage_holidays"):
+            raise HTTPException(403, "los festivos comunes piden el permiso «Gestionar festivos»")
         return
     if repo.conn.execute("SELECT 1 FROM workspaces WHERE id = ?", (str(workspace_id),)).fetchone() is None:
         raise HTTPException(404, "no existe ese espacio")
-    if not workspaces.can_manage(repo.conn, user, workspace_id):
-        raise HTTPException(403, "solo un administrador del espacio cambia sus festivos")
+    if not workspaces.can_manage_holidays(repo.conn, user, workspace_id):
+        raise HTTPException(403, "los festivos de un espacio son de su administrador o de quien tiene «Gestionar festivos»")
+
+
+@router.get("/holidays/scopes")
+def holiday_scopes(
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """Dónde puedo cambiar festivos: los comunes y los espacios (por ser su
+    administrador o por «Gestionar festivos»). Para el apartado «Calendario
+    laboral» de Ajustes."""
+    filas = repo.conn.execute("SELECT id, name, settings FROM workspaces ORDER BY name COLLATE NOCASE").fetchall()
+    espacios = [
+        {"id": r["id"], "name": r["name"]}
+        for r in filas
+        if not workspaces.is_personal(r) and workspaces.can_manage_holidays(repo.conn, user, r["id"])
+    ]
+    return {"common": grants.can(repo.conn, user, "manage_holidays"), "workspaces": espacios}
 
 
 @router.get("/holidays")

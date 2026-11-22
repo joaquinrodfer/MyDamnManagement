@@ -15,8 +15,8 @@ un espacio no ve nada de él (salvo lo que le compartan como invitado, H2).
 - **Instancia**: `users.is_admin` es el administrador: crea y borra espacios y
   gestiona los miembros y ajustes de cualquiera que no sea personal, pero
   **no entra** en los que no es miembro (plan de roles, R1): no ve sus páginas.
-  `users.can_view_global_workload` es un permiso aparte para la Carga del
-  equipo.
+  Lo demás (ver la carga, gestionar personas, festivos, auditoría, copias) son
+  permisos que se conceden: `app.grants` (R2).
 
 Este módulo solo habla con la base; los permisos de página siguen siendo cosa
 de `app.acl`, que usa aquí `member_workspaces_sql`.
@@ -123,6 +123,17 @@ def can_manage(conn: sqlite3.Connection, user: Any, workspace_id: Any) -> bool:
     if role_of(conn, user, workspace_id) == "admin":
         return True
     return bool(getattr(user, "is_admin", False)) and not is_personal(get(conn, workspace_id))
+
+
+def can_manage_holidays(conn: sqlite3.Connection, user: Any, workspace_id: Any) -> bool:
+    """Los festivos de un espacio: su administrador, o quien tiene «Gestionar
+    festivos» en ese espacio (o en todos). Los comunes, solo con el permiso en
+    todos (`grants.can(..., "manage_holidays")`)."""
+    from app import grants  # import tardío
+
+    if role_of(conn, user, workspace_id) == "admin":
+        return True
+    return grants.can(conn, user, "manage_holidays", str(workspace_id))
 
 
 def can_edit(conn: sqlite3.Connection, user: Any, workspace_id: Any) -> bool:
@@ -481,4 +492,7 @@ def delete_group(conn: sqlite3.Connection, group_id: str) -> None:
         "DELETE FROM workspace_members WHERE subject_type = 'group' AND subject_id = ?", (group_id,)
     )
     conn.execute("DELETE FROM group_members WHERE group_id = ?", (group_id,))
+    from app import grants  # import tardío
+
+    grants.forget_subject(conn, "group", group_id)
     conn.execute("DELETE FROM groups WHERE id = ?", (group_id,))

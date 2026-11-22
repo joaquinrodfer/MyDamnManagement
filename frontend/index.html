@@ -6604,6 +6604,30 @@
   .wt-row--end { align-items: flex-end; }
   .wt-row > .btn { height: 36px; }
   .wt-grow { flex: 1 1 180px; min-width: 0; }
+  /* Permisos (plan de roles, R2) */
+  .perm-grid { display: flex; flex-direction: column; gap: 12px; }
+  .perm-card { border: 1px solid var(--panel-border); border-radius: 12px; padding: 14px; background: color-mix(in srgb, var(--bg) 30%, var(--surface-elevated)); display: flex; flex-direction: column; gap: 10px; }
+  .perm-head { display: flex; gap: 12px; align-items: flex-start; }
+  .perm-icon { flex: none; width: 32px; height: 32px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+  .perm-icon .svg-icon { width: 17px; height: 17px; }
+  .perm-texts { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .perm-title { font-size: 14px; color: var(--ink); }
+  .perm-help { font-size: 12.5px; color: var(--ink-muted); line-height: 1.4; }
+  .perm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--panel-border); border-radius: 10px; overflow: hidden; }
+  .perm-row { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 5px 6px 5px 12px; font-size: 13px; }
+  .perm-row + .perm-row { border-top: 1px solid var(--panel-border); }
+  .perm-row:hover { background: var(--row-hover); }
+  .perm-empty { padding: 11px 12px; font-size: 12.5px; color: var(--ink-muted); }
+  .perm-subject { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--ink); }
+  .perm-subject .user-dot { width: 10px; height: 10px; flex: none; }
+  .perm-subject .svg-icon { width: 15px; height: 15px; color: var(--ink-muted); flex: none; }
+  .perm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .perm-kind { font-size: 11px; color: var(--ink-muted); border: 1px solid var(--panel-border); border-radius: 999px; padding: 0 7px; }
+  .perm-scope { flex: none; font-size: 12px; padding: 2px 9px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .perm-scope--all { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+  .perm-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .perm-form select { flex: 1 1 180px; min-width: 0; }
+  .perm-fixed { flex: 1 1 140px; font-size: 12.5px; color: var(--ink-muted); }
   .wt-card { border: 1px solid var(--panel-border); border-radius: 12px; padding: 14px; background: color-mix(in srgb, var(--bg) 30%, var(--surface-elevated)); }
   .wt-card-title { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--ink); }
   .wt-form-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: end; }
@@ -6744,6 +6768,8 @@
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V8"/><path d="M18 17v-9"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
       <symbol id="i-at" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol>
       <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
@@ -7088,6 +7114,7 @@
         <button type="button" class="settings-tab" data-section="users" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users"/></svg><span>Usuarios</span></button>
         <button type="button" class="settings-tab" data-section="groups" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users-group"/></svg><span>Grupos</span></button>
         <button type="button" class="settings-tab" data-section="workspaces" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-layers"/></svg><span>Espacios</span></button>
+        <button type="button" class="settings-tab" data-section="permisos" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-shield"/></svg><span>Permisos</span></button>
         <button type="button" class="settings-tab" data-section="holidays" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg><span>Calendario laboral</span></button>
         <button type="button" class="settings-tab" data-section="audit" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-list"/></svg><span>Auditoría</span></button>
         <button type="button" class="settings-tab" data-section="backups" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-archive"/></svg><span>Copias de seguridad</span></button>
@@ -7227,10 +7254,7 @@
                 <input type="checkbox" id="nu-admin" />
                 <label for="nu-admin">Administrador</label>
               </div>
-              <div class="field field-inline">
-                <input type="checkbox" id="nu-workload" />
-                <label for="nu-workload">Puede ver carga global</label>
-              </div>
+              <p class="form-note">Un administrador gestiona usuarios, grupos y espacios. Ver la carga, la auditoría o las copias se concede aparte, en «Permisos».</p>
               <p class="form-note" id="nu-note">Elige su imagen (luego la puede cambiar en su cuenta); si no eliges, se le da una.</p>
               <div class="dialog-actions">
                 <button type="submit" class="btn btn-primary" id="btn-create-user">Crear usuario</button>
@@ -7254,15 +7278,26 @@
             <p class="form-note" id="ws-note"></p>
           </div>
         </section>
+        <section class="settings-section" data-section="permisos" aria-labelledby="settings-permisos-title" hidden>
+          <h4 id="settings-permisos-title">Permisos</h4>
+          <p class="settings-lead">El administrador gestiona personas, grupos y espacios, pero no lee lo que no le comparten. Lo demás se concede aquí, a personas o a grupos, en todos los espacios o en uno. Conceder y retirar queda en la auditoría.</p>
+          <p class="form-note" id="permisos-note"></p>
+          <div class="perm-grid" id="permisos-admin"></div>
+        </section>
         <section class="settings-section" data-section="holidays" aria-labelledby="settings-holidays-title" hidden>
           <h4 id="settings-holidays-title">Calendario laboral</h4>
-          <p class="settings-lead">Los días que no se trabaja restan de la capacidad de cada persona en la carga del equipo. Cada espacio añade los suyos desde su ficha, en «Espacios»; la jornada de cada persona, en «Usuarios» → «Jornada».</p>
+          <p class="settings-lead">Los días que no se trabaja restan de la capacidad de cada persona en la carga del equipo. La jornada de cada persona, en «Usuarios» → «Jornada».</p>
           <div class="settings-group" id="holidays-group">
             <h5>Festivos comunes</h5>
             <p class="form-note">Cuentan a toda la empresa. Se añaden a mano o se importan (festivos oficiales por país y región, una URL .ics o un archivo).</p>
             <div class="dialog-actions dialog-actions-start">
               <button type="button" class="btn" id="btn-holidays">Festivos comunes…</button>
             </div>
+          </div>
+          <div class="settings-group" id="holidays-spaces-group" hidden>
+            <h5>Festivos de cada espacio</h5>
+            <p class="form-note">Cuentan a los miembros de ese espacio, además de los comunes.</p>
+            <div class="dialog-actions dialog-actions-start" id="holidays-spaces"></div>
           </div>
         </section>
         <section class="settings-section" data-section="audit" aria-labelledby="settings-audit-title" hidden>

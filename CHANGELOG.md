@@ -2,6 +2,14 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Permisos que se conceden (plan de roles, R2)
+- **Ajustes → Administración → Permisos:** cinco permisos que se dan a personas o a grupos, en todos los espacios o en uno: **Gestionar personas**, **Ver carga**, **Gestionar festivos**, **Ver auditoría** y **Copias de seguridad**. Conceder y retirar queda en la auditoría.
+- Ser administrador ya no los trae: gestiona usuarios, grupos, espacios y permisos. Los administradores que había los reciben todos, de forma explícita y retirable, para que nada cambie; uno nuevo empieza sin ninguno.
+- **Copias de seguridad** cubre también la papelera y exportar el vault entero.
+- «Puede ver carga global» desaparece del alta y de la lista de usuarios: ahora es «Ver carga» en todos los espacios.
+- **Calendario laboral** enseña un botón por cada espacio cuyos festivos puedes cambiar (por ser su administrador o por el permiso).
+- La auditoría, las copias y el calendario laboral solo salen en Ajustes a quien tiene el permiso.
+
 ## Enlaces a páginas que se comportan como enlaces
 - **`/page` deja el enlace en la página madre:** al crear una página nueva, el nombre escrito se convierte en `[[Título]]` antes de abrirla. Antes se borraba y la madre se quedaba sin nada.
 - **`/page` dentro de una lista o una cita:** el menú «/» sale también detrás de «- », «1. », «- [ ] » o «> », solo con «Página» (lo que va en línea).

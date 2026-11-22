@@ -114,8 +114,6 @@ class User:
     color: Optional[str]
     is_admin: bool
     avatar: Optional[str] = None
-    # Plan H1: ver la carga del equipo de todos los espacios sin ser admin.
-    can_view_global_workload: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -125,7 +123,6 @@ class User:
             "color": self.color,
             "avatar": self.avatar,
             "is_admin": self.is_admin,
-            "can_view_global_workload": self.can_view_global_workload,
         }
 
 
@@ -198,9 +195,6 @@ def _user(row: sqlite3.Row) -> User:
         color=row["color"],
         is_admin=bool(row["is_admin"]),
         avatar=avatar_of(row),
-        can_view_global_workload=bool(
-            row["can_view_global_workload"] if "can_view_global_workload" in row.keys() else 0
-        ),
     )
 
 
@@ -319,6 +313,7 @@ def create_user(
 
     password_hash, salt = hash_password(password)
     user_id = secrets.token_hex(16)
+    first = count_users(conn) == 0
     try:
         conn.execute(
             "INSERT INTO users (id, username, display_name, password_hash, salt,"
@@ -334,7 +329,7 @@ def create_user(
                 _iso(_now()),
                 1 if is_admin else 0,
                 avatar,
-                1 if can_view_global_workload else 0,
+                0,  # columna vieja: ahora es el permiso «Ver carga» (`app.grants`)
             ),
         )
     except sqlite3.IntegrityError as exc:
@@ -346,6 +341,13 @@ def create_user(
     else:
         for workspace_id, role in workspaces:
             ws_mod.enroll_user(conn, user_id, workspace_id, role)
+    from app import grants  # import tardío
+
+    if first and is_admin:
+        # El primero de la instalación no tendría quien se los diera.
+        grants.grant_all(conn, user_id)
+    elif can_view_global_workload:
+        grants.grant(conn, "view_workload", "user", user_id, None)
     created = get_user(conn, user_id)
     assert created is not None
     return created
@@ -381,7 +383,13 @@ def update_user(
         return None
     changes: dict[str, Any] = {}
     if can_view_global_workload is not None:
-        changes["can_view_global_workload"] = 1 if can_view_global_workload else 0
+        # Compatibilidad: ahora es el permiso «Ver carga» en todos los espacios.
+        from app import grants  # import tardío
+
+        if can_view_global_workload:
+            grants.grant(conn, "view_workload", "user", user_id, None)
+        else:
+            grants.revoke_matching(conn, "view_workload", "user", user_id, None)
     if display_name is not None:
         changes["display_name"] = validate_display_name(display_name)
     if color is not None:

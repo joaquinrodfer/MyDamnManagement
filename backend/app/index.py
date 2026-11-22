@@ -74,13 +74,28 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
 # `pages.workspace_id` de cada fila (el ADR exige que la reconstrucción sea
 # idéntica). El nombre y la fecha sí son de la fila singleton.
 DEFAULT_WORKSPACE_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "mdm:default-workspace"))
+
+GRANTS_SQL = """CREATE TABLE IF NOT EXISTS grants (
+    id           TEXT PRIMARY KEY,
+    subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'group')),
+    subject_id   TEXT NOT NULL,
+    capability   TEXT NOT NULL,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    granted_by   TEXT,
+    granted_at   TEXT NOT NULL
+)"""
+# Un permiso no se repite (NULL = todos los espacios cuenta como un valor).
+GRANTS_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS grants_unique ON grants"
+    "(capability, subject_type, subject_id, COALESCE(workspace_id, ''))"
+)
 
 # Migraciones futuras: {versión_destino: [sql, ...]}. Se aplican en orden.
 MIGRATIONS: dict[int, list[str]] = {
@@ -464,7 +479,23 @@ MIGRATIONS: dict[int, list[str]] = {
 )""",
         "CREATE INDEX IF NOT EXISTS absences_user ON absences(user_id, start)",
     ],
+    # v23 (plan de roles, R2): los permisos que se conceden a una persona o a
+    # un grupo, en todos los espacios (`workspace_id` NULL) o en uno. Los
+    # administradores que había reciben todos de forma explícita, y quien
+    # tenía `can_view_global_workload`, «Ver carga» en todos (`app.grants`).
+    23: [
+        GRANTS_SQL,
+        GRANTS_INDEX_SQL,
+        "CREATE INDEX IF NOT EXISTS grants_subject ON grants(subject_type, subject_id)",
+        lambda conn: _migrate_grants(conn),
+    ],
 }
+
+
+def _migrate_grants(conn: sqlite3.Connection) -> None:
+    from app import grants  # import tardío: `grants` no importa este módulo
+
+    grants.migrate_from_admins(conn)
 
 
 def _rebuild_acl_with_groups(conn: sqlite3.Connection) -> None:
@@ -902,7 +933,20 @@ CREATE TABLE absences (
 
 CREATE INDEX absences_user ON absences(user_id, start);
 
-PRAGMA user_version = 22;
+-- Permisos que se conceden (v23, plan de roles R2). Ver la migración 23.
+CREATE TABLE grants (
+    id           TEXT PRIMARY KEY,
+    subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'group')),
+    subject_id   TEXT NOT NULL,
+    capability   TEXT NOT NULL,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    granted_by   TEXT,
+    granted_at   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX grants_unique ON grants(capability, subject_type, subject_id, COALESCE(workspace_id, ''));
+CREATE INDEX grants_subject ON grants(subject_type, subject_id);
+
+PRAGMA user_version = 23;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1410,6 +1454,8 @@ DUMP_EXCLUDED = {
     "holiday_sources",
     "holidays",
     "absences",
+    # Permisos que se conceden (v23): como `acl`, no están en el `.md`.
+    "grants",
 }
 
 
