@@ -18,8 +18,9 @@ Hablar con el equipo sin salir de Notemil. El chat va en el panel derecho, junto
 ## Modelo
 
 ### Conversaciones
-- **Canal de espacio:** uno por espacio, que se crea solo. Lo leen y escriben los miembros del espacio, sean directos o por grupo, con el rol que tengan:
-  - un *lector* lee el canal pero no escribe;
+- **Canal de espacio:** uno por espacio, que se crea solo. Lo leen y escriben los miembros del espacio con al menos el rol que diga el ajuste del espacio «Quién ve el chat» (`chat_min_role`):
+  - **por defecto, editores y administradores**: un lector no lo ve (decisión del dueño, 2026-11-22);
+  - se puede abrir a todos los miembros o cerrar a solo administradores;
   - los espacios personales no tienen canal.
 - **Mensaje directo:** entre 2 personas, o un grupo pequeño de hasta 8. Solo lo ven sus participantes. Si alguien deja la conversación, deja de verla.
 - **El administrador de la instalación** no lee canales de espacios en los que no está ni mensajes directos ajenos. Es lo mismo que con las páginas.
@@ -59,7 +60,7 @@ Todo va en el índice, como `notifications`; no va al vault, porque no son notas
 
 ## Fases
 
-### CH1 — Canales de espacio
+### CH1 — Canales de espacio (hecho)
 - Tablas, permisos (`can_read` y `can_write` por conversación) y la API:
   - listar conversaciones;
   - leer mensajes por páginas;
@@ -69,7 +70,7 @@ Todo va en el índice, como `notifications`; no va al vault, porque no son notas
 - La pestaña «Chat» del panel derecho, con lista, conversación y escribir.
 - El contador de no leídos, en la pestaña y en el título del navegador.
 
-### CH2 — Mensajes directos
+### CH2 — Mensajes directos (hecho)
 - Crear un directo (1 a 1 o grupo pequeño), añadir y salir.
 - «Escribir» desde la ficha de una persona en «Miembros».
 

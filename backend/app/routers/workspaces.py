@@ -19,7 +19,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app import effort, audit, auth, webhooks
+from app import chat, effort, audit, auth, webhooks
 from app import workspaces as ws
 from app.dependencies import get_current_user
 from app.routers.auth import get_conn
@@ -117,6 +117,8 @@ def update_workspace(
 ):
     _manager(conn, user, workspace_id)
     ajustes = payload.settings
+    if ajustes and "chat_min_role" in ajustes and ajustes["chat_min_role"] not in chat.CHAT_ROLES:
+        raise HTTPException(400, "Quién ve el chat: lectores (viewer), editores (editor) o administradores (admin).")
     if ajustes and "workload" in ajustes:
         # Cómo cuenta la carga en el espacio (C4 y C5): se comprueba entero.
         try:

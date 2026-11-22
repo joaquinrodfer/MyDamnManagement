@@ -2,6 +2,16 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Chat del equipo: canales y mensajes directos (plan del chat, CH1 y CH2)
+- **Pestaña «Chat»** en el panel derecho, junto a «Miembros». Cada espacio tiene su canal y, además, hay mensajes directos con una o varias personas (hasta 8).
+- **Quién ve el canal de un espacio:** por defecto sus editores y administradores; un lector no. Se cambia en Ajustes → Espacios → «Quién ve el chat del espacio» (todos los miembros, editores o solo administradores). El administrador de Notemil no lee canales de espacios en los que no está ni directos ajenos.
+- **Mensajes:**
+  - llegan al momento;
+  - se pueden citar, y quien los escribió puede editarlos y borrarlos;
+  - aceptan **negrita**, `código`, citas, enlaces y `[[Página]]`, que abre la página.
+- **No leídos:** en la pestaña «Chat», en cada conversación y en el título del navegador.
+- **«Escribir»** al pasar el ratón por una persona en «Miembros» abre el directo con ella. Con «+», un directo con varias personas. En un directo se puede añadir gente o salir.
+
 ## Repaso de «Mi semana» y «Apunta algo»
 - **«Mi semana»:** los datos van en filas de etiqueta y valor (tareas con horas, sin fechas, semana que viene, sin estimar), con la semana que viene en rojo si te pasas. En «Equipo» ya no hay recuadro: un aviso pequeño junto al título y un icono al lado del nombre de quien se pasa, con las barras alineadas.
 - **«Apunta algo» flotante:** sin marcos ni recuadro. Solo el texto de ayuda y el cursor esperando a que escribas.

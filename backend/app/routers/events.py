@@ -54,6 +54,10 @@ def _le_toca(user, event: dict) -> bool:
     que ya no existe (borrado) no le llega a nadie: no se sabe quién lo veía.
     """
     # Un aviso personal (plan H6) solo le llega a su destinatario, también al admin.
+    # Un evento del chat, solo a quien puede ver la conversación (la lista la
+    # calcula quien publica: `app.chat.publish`).
+    if event.get("type") == "chat":
+        return user is not None and str(getattr(user, "id", "")) in (event.get("recipients") or ())
     if event.get("type") == "notification":
         return user is not None and str(getattr(user, "id", "")) == str(event.get("user_id"))
     if user is None:
@@ -97,6 +101,8 @@ async def stream_events(request: Request = None) -> StreamingResponse:
                 # sugerencia) por separado, con el mismo formato de `data`.
                 if not _le_toca(user, event):
                     continue
+                if "recipients" in event:
+                    event = {k: v for k, v in event.items() if k != "recipients"}
                 name = str(event.get("type") or "page")
                 yield f"event: {name}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
