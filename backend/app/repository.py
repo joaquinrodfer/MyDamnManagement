@@ -203,11 +203,15 @@ def _page(row: sqlite3.Row) -> Page:
     )
 
 
-def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Database:
+def _database(conn: sqlite3.Connection, row: sqlite3.Row) -> Optional[Database]:
     page = conn.execute(
         "SELECT title, icon, created_at, updated_at FROM pages WHERE id = ?",
         (row["page_id"],),
     ).fetchone()
+    if page is None:
+        # Su página se acaba de borrar (el vigilante, otra petición) entre la
+        # consulta de la base y esta: para quien lee, ya no existe.
+        return None
     title = conn.execute(
         "SELECT name, hidden FROM database_titles WHERE database_id = ?",
         (row["id"],),
@@ -1215,7 +1219,7 @@ class Repository:
             f" JOIN pages p ON p.id = d.page_id WHERE {cond} ORDER BY d.rowid",
             args,
         ).fetchall()
-        return [_database(self.conn, r) for r in rows]
+        return [d for d in (_database(self.conn, r) for r in rows) if d is not None]
 
     def get_database(self, database_id: uuid.UUID) -> Optional[Database]:
         row = self.conn.execute(
