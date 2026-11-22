@@ -13,9 +13,10 @@ ruta lleva su propio `if` de permisos. Decide, para cada petición:
 3. **Lo que es solo de administración**: la papelera y `POST /reindex` (hablan
    del vault entero, no de una página).
 
-Sin sesión (las rutas públicas, la puerta de los agentes con su token) o con un
-administrador, no se comprueba nada: lo primero lo decide el middleware y lo
-segundo lo ve todo (soporte).
+Sin sesión (las rutas públicas, la puerta de los agentes con su token) no se
+comprueba nada: lo decide el middleware. El administrador pasa por las mismas
+comprobaciones que cualquiera (plan de roles, R1); solo las rutas del vault
+entero (papelera, reindexar) son suyas.
 
 Los listados no pasan por aquí: los filtra el repositorio con
 `acl.visible_clause` (no hay un recurso que comprobar, hay que quitar filas).
@@ -48,12 +49,14 @@ PARENT_IN_BODY_PATCH_PREFIXES = ("/pages/", "/databases/")
 
 async def guard(request: Request) -> None:
     user = getattr(request.state, "user", None)
-    if user is None or getattr(user, "is_admin", False):
+    if user is None:
         return
     path = request.url.path
     method = request.method.upper()
 
     if path.startswith(ADMIN_PREFIXES):
+        if getattr(user, "is_admin", False):
+            return
         raise HTTPException(403, "solo un administrador puede hacer esto")
 
     params = request.path_params

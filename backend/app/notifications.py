@@ -218,7 +218,7 @@ def scan_deadlines(conn: sqlite3.Connection) -> int:
     hoy = _now().date().isoformat()
     creados = 0
     for user in conn.execute("SELECT id, is_admin FROM users").fetchall():
-        visible = None if user["is_admin"] else acl.visible_ids(conn, _Person(user["id"], False))
+        visible = acl.visible_ids(conn, _Person(user["id"], False))
         data = mytasks.my_tasks(conn, user["id"], visible)
         for task in data.get("tasks", []):
             if task["due"] == "overdue":

@@ -94,8 +94,10 @@ def test_lo_de_la_raiz_es_privado_de_quien_lo_crea(client, gente):
     assert pid not in {p["id"] for p in beto.get("/dashboard").json()["recent_pages"]}
     assert pid in {p["id"] for p in ana.get("/dashboard").json()["recent_pages"]}
     assert pid in {p["id"] for p in ana.get("/pages").json()}
-    # El administrador lo ve todo (soporte).
-    assert _ok(client.get(f"/pages/{pid}"))["title"] == "Diario de Ana"
+    # El administrador tampoco la ve (plan de roles, R1): gestiona, no lee.
+    assert client.get(f"/pages/{pid}").status_code == 404
+    assert pid not in {p["id"] for p in client.get("/pages").json()}
+    assert client.get("/search", params={"q": "secreto"}).json() == []
     # En el árbol de Ana sale como privada (el candado).
     nodo = next(n for n in ana.get("/pages/tree").json() if n["id"] == pid)
     assert nodo["shared"] is False
@@ -357,7 +359,8 @@ def test_los_avisos_no_cuentan_lo_que_no_se_ve(index_path, gente):
     evento = {"type": "page", "action": "modified", "page_id": pid}
     assert _le_toca(U(ids["ana"]), evento)
     assert not _le_toca(U(ids["beto"]), evento)
-    assert _le_toca(U("x", admin=True), evento)
+    # Al administrador tampoco le llega lo que no ve (plan de roles, R1).
+    assert not _le_toca(U("x", admin=True), evento)
     assert _le_toca(U(ids["beto"]), {"type": "page", "action": "modified"})
 
 

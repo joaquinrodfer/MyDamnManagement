@@ -20,7 +20,9 @@ def test_cada_persona_el_suyo_y_no_ve_el_ajeno(client, cierra):
     cierra.append(c)
     lista = c.post("/workspaces/personal").json()
     assert [w["name"] for w in lista if w["personal_of"]] == ["Espacio de Ana"]
-    # El superadministrador lo ve pero no es miembro.
+    # El administrador no lo ve: ni en sus espacios ni entre los que gestiona
+    # (un espacio personal no lo gestiona nadie más; plan de roles, R1).
     admin = client.post("/workspaces/personal").json()
-    ajeno = next(w for w in admin if w["personal_of"] == u["id"])
-    assert ajeno["member"] is False
+    assert not any(w["personal_of"] == u["id"] for w in admin)
+    gestionables = client.get("/workspaces", params={"manage": 1}).json()
+    assert not any(w["personal_of"] == u["id"] for w in gestionables)

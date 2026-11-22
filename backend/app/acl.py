@@ -25,8 +25,10 @@ reindexado. Crear una página la calcula para esa sola (`inherit_source`).
 **Regla por defecto.** Un espacio es privado: una página nueva en la raíz es de
 quien la crea (`owner`) y nadie más la ve. Compartir es declarar entradas. Lo
 que no tiene ningún permiso por encima (`acl_source` NULL: una página puesta a
-mano en el disco y reindexada) solo lo ven los administradores. `is_admin` lo
-ve todo, para soporte.
+mano en el disco y reindexada) no la ve nadie desde la app. El administrador
+**no** se salta los permisos (plan de roles, R1): gestiona usuarios y espacios,
+pero solo lee lo suyo y lo que le compartan. Solo los procesos internos (sin
+usuario) lo ven todo.
 
 **Un solo punto de comprobación.** `authorize(conn, user, resource, level)`.
 La API lo llama desde una única guarda (`app.guard`), enganchada a todos los
@@ -68,8 +70,11 @@ def _rank(level: Optional[str]) -> int:
 
 
 def _is_system(user: Any) -> bool:
-    """Sin usuario (scripts, arranque, agentes) o administrador: lo ve todo."""
-    return user is None or bool(getattr(user, "is_admin", False))
+    """Sin usuario (scripts, arranque, tareas de fondo): lo ve todo.
+
+    El administrador ya no (plan de roles, R1): sus permisos de página son los
+    de cualquiera."""
+    return user is None
 
 
 def _subjects(user: Any) -> tuple[str, list[Any]]:
@@ -284,6 +289,35 @@ def share_roots_with_workspace(conn: sqlite3.Connection) -> int:
         " VALUES (?, 'workspace', ?, ?, ?, 'edit')",
         [(str(uuid.uuid4()), index_mod.DEFAULT_WORKSPACE_ID, kind, rid) for rid, kind in found],
     )
+    return len(found)
+
+
+def adopt_orphans(conn: sqlite3.Connection, user: Any = None) -> int:
+    """Las páginas de la raíz sin ningún permiso pasan a ser de `user`.
+
+    Son las que alguien pone a mano en el disco y se reindexan (reindexado,
+    vigilante, script de migración): antes solo las veía el administrador (que
+    lo veía todo); desde el plan de roles (R1) no las vería nadie. Quedan
+    privadas del primer administrador, que es quien tiene el disco, salvo que
+    se pase otro `user`. No recalcula la herencia: quien llama hace
+    `refresh_sources`.
+    """
+    owner = str(getattr(user, "id", "") or "")
+    if not owner or conn.execute("SELECT 1 FROM users WHERE id = ?", (owner,)).fetchone() is None:
+        row = conn.execute(
+            "SELECT id FROM users WHERE is_admin = 1 ORDER BY created_at, id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return 0
+        owner = row[0]
+    found = conn.execute(
+        "SELECT p.id, CASE p.type WHEN 'database' THEN 'database' ELSE 'page' END"
+        " FROM pages p WHERE p.acl_source IS NULL AND p.type != 'database_row'"
+        " AND (p.parent_id IS NULL OR p.parent_id NOT IN (SELECT id FROM pages))"
+        " AND NOT EXISTS (SELECT 1 FROM acl_roots r WHERE r.resource_id = p.id)"
+    ).fetchall()
+    for rid, kind in found:
+        set_entries(conn, kind, rid, [Entry("user", owner, "owner")])
     return len(found)
 
 

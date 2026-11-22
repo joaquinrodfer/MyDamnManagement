@@ -1,7 +1,8 @@
 """Espacios de trabajo y grupos (plan H1).
 
-- `GET /workspaces`: los espacios del usuario (todos, si es superadministrador),
-  con su rol y cuántas páginas tienen.
+- `GET /workspaces`: los espacios en los que el usuario es miembro, con su rol
+  y cuántas páginas tienen. `?manage=1`: los que puede gestionar (el
+  administrador, también los ajenos no personales, sin entrar en ellos).
 - `POST /workspaces`, `DELETE /workspaces/{id}`: solo superadministrador.
 - `PATCH /workspaces/{id}`: nombre, icono y ajustes; administrador del espacio.
 - `GET /workspaces/{id}/members`, `PUT`/`DELETE /workspaces/{id}/members/...`:
@@ -37,12 +38,15 @@ def _superadmin(user: auth.User = Depends(get_current_user)) -> auth.User:
 
 
 def _manager(conn: sqlite3.Connection, user: auth.User, workspace_id: str) -> None:
-    """Administrador del espacio (o superadministrador); 404 si no lo ve."""
-    role = ws.role_of(conn, user, workspace_id)
-    if ws.get(conn, workspace_id) is None or role is None:
+    """Administrador del espacio, o el de la instalación si no es personal
+    (`ws.can_manage`); 404 si ni lo ve ni lo gestiona."""
+    if ws.get(conn, workspace_id) is None:
         raise HTTPException(404, "no existe ese espacio")
-    if role != "admin":
-        raise HTTPException(403, "solo un administrador del espacio puede hacer esto")
+    if ws.can_manage(conn, user, workspace_id):
+        return
+    if ws.role_of(conn, user, workspace_id) is None:
+        raise HTTPException(404, "no existe ese espacio")
+    raise HTTPException(403, "solo un administrador del espacio puede hacer esto")
 
 
 class WorkspaceCreate(BaseModel):
@@ -72,8 +76,12 @@ class GroupMembers(BaseModel):
 
 
 @router.get("/workspaces")
-def list_workspaces(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)):
-    return ws.list_for(conn, user)
+def list_workspaces(
+    manage: bool = False,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    return ws.list_for(conn, user, manage=manage)
 
 
 @router.post("/workspaces/personal")
@@ -239,7 +247,9 @@ def list_members(
     user: auth.User = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
-    if ws.role_of(conn, user, workspace_id) is None or ws.get(conn, workspace_id) is None:
+    if ws.get(conn, workspace_id) is None or (
+        ws.role_of(conn, user, workspace_id) is None and not ws.can_manage(conn, user, workspace_id)
+    ):
         raise HTTPException(404, "no existe ese espacio")
     return ws.members(conn, workspace_id)
 

@@ -602,6 +602,17 @@ class Repository:
         if not changes:
             return current
 
+        # Subir a la raíz: la página deja de heredar de su madre. Se queda con
+        # los mismos permisos que heredaba (quién la veía la sigue viendo); sin
+        # esto se quedaba sin ninguno y no la veía nadie.
+        heredadas = None
+        if "parent_id" in changes and changes["parent_id"] is None and current.type != PageType.database_row:
+            pid = str(page_id)
+            fila = self.conn.execute("SELECT acl_source FROM pages WHERE id = ?", (pid,)).fetchone()
+            fuente = fila["acl_source"] if fila else None
+            if fuente and fuente != pid and not acl.declared(self.conn, pid):
+                heredadas = acl.entries(self.conn, fuente)
+
         changes["expected_version"] = expected_version
         if current.type == PageType.note:
             self.vault.save(page_id, **changes)
@@ -616,6 +627,11 @@ class Repository:
                     "una fila no se mueve de carpeta: su sitio lo decide su base"
                 )
             self.vault.save_row(page_id, **changes)
+        if heredadas is not None and not acl.declared(self.conn, str(page_id)):
+            with self._tx():
+                tipo = "database" if current.type == PageType.database else "page"
+                acl.set_entries(self.conn, tipo, str(page_id), heredadas)
+                acl.refresh_sources(self.conn)
         return self.get_page(page_id)
 
     def set_header_image(self, page_id: uuid.UUID, path: Optional[str]) -> Optional[Page]:
@@ -699,11 +715,12 @@ class Repository:
         """Lo que me han compartido en espacios que no son los míos (invitado).
 
         Cada raíz trae el espacio al que pertenece (`workspace`); lo de dentro
-        sale con el permiso que ya heredaba. El superadministrador no es
-        invitado de nada: lista vacía.
+        sale con el permiso que ya heredaba. El administrador también puede
+        serlo: no entra en los espacios ajenos, pero le pueden compartir una
+        página de uno.
         """
         user = self.user
-        if user is None or getattr(user, "is_admin", False):
+        if user is None:
             return []
         cond, args = acl.visible_clause(user, "p", None)
         member_sql, member_args = ws_mod.member_workspaces_sql(user.id)
@@ -738,7 +755,7 @@ class Repository:
             for r in rows
         }
         roots: list[dict[str, Any]] = []
-        system = self.user is None or getattr(self.user, "is_admin", False)
+        system = self.user is None
         for r in rows:
             node = nodes[r["id"]]
             parent = r["parent_id"]

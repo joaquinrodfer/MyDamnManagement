@@ -51,12 +51,12 @@ def _le_toca(user, event: dict) -> bool:
 
     Un aviso de una página o base que no ve no le llega: si no, el canal
     contaría títulos, rutas e ids de lo que no puede abrir. Un aviso de algo
-    que ya no existe (borrado) solo le llega a quien lo ve todo.
+    que ya no existe (borrado) no le llega a nadie: no se sabe quién lo veía.
     """
     # Un aviso personal (plan H6) solo le llega a su destinatario, también al admin.
     if event.get("type") == "notification":
         return user is not None and str(getattr(user, "id", "")) == str(event.get("user_id"))
-    if user is None or getattr(user, "is_admin", False):
+    if user is None:
         return True
     resource = event.get("page_id") or event.get("database_id")
     if not resource:

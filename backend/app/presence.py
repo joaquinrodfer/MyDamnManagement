@@ -13,7 +13,7 @@ Dos cosas distintas:
 
 **Privacidad.** `GET /presence` dice en qué página está alguien solo a quien
 puede **leer esa página** (`acl`); a los demás les sale «en línea». Y solo se ve
-a quien comparte algún espacio con quien pregunta (el superadministrador, a todos).
+a quien comparte algún espacio con quien pregunta (también para el administrador).
 """
 
 from __future__ import annotations
@@ -109,10 +109,8 @@ def listing(conn: sqlite3.Connection, user: Any) -> list[dict[str, Any]]:
     if not vivos:
         return []
     statuses = _statuses(conn)
-    mine = None
-    if not getattr(user, "is_admin", False):
-        sql, args = ws_mod.member_workspaces_sql(user.id)
-        mine = {r[0] for r in conn.execute(sql, args)}
+    sql, args = ws_mod.member_workspaces_sql(user.id)
+    mine = {r[0] for r in conn.execute(sql, args)}
     from app import auth  # import tardío
 
     out = []
@@ -122,7 +120,7 @@ def listing(conn: sqlite3.Connection, user: Any) -> list[dict[str, Any]]:
         ).fetchone()
         if row is None:
             continue
-        if uid != str(user.id) and mine is not None:
+        if uid != str(user.id):
             # Solo se ve a quien comparte algún espacio.
             sql, args = ws_mod.member_workspaces_sql(uid)
             if not ({r[0] for r in conn.execute(sql, args)} & mine):

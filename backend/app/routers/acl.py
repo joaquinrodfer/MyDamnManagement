@@ -160,7 +160,7 @@ def put_acl(
             if (e.subject_type, e.subject_id) in seen:
                 raise HTTPException(400, "cada usuario (o el espacio) va una sola vez")
             seen.add((e.subject_type, e.subject_id))
-        if not user.is_admin and not any(
+        if not any(
             e.subject_type == "user" and e.subject_id == str(user.id) and e.level == "owner"
             for e in payload.entries
         ):
