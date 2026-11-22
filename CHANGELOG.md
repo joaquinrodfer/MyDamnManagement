@@ -2,6 +2,14 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Enlaces a páginas que se comportan como enlaces
+- **`/page` deja el enlace en la página madre:** al crear una página nueva, el nombre escrito se convierte en `[[Título]]` antes de abrirla. Antes se borraba y la madre se quedaba sin nada.
+- **`/page` dentro de una lista o una cita:** el menú «/» sale también detrás de «- », «1. », «- [ ] » o «> », solo con «Página» (lo que va en línea).
+- **Un clic en un enlace entra en la página**, sin Ctrl. Para cambiarlo, la vista previa tiene un botón **Editar**: el texto que se ve (`[[Página|texto]]`) y la página enlazada, con buscador; también **Quitar enlace**.
+- **La vista previa** ya no se queda en «Sin contenido» en una página recién creada (se guardaba para siempre la primera lectura), enseña el texto sin marcas de Markdown y no se cierra al pasar el ratón a ella.
+- **Pestaña del navegador:** con avisos sin leer, el título es «(N) Notemil» y el icono lleva el número en el punto rojo.
+- **El logo y el nombre** de la barra lateral, más grandes (en el móvil, igual que antes).
+
 ## Repaso visual de jornada, ausencias y festivos
 - Los diálogos de **jornada**, **Mis ausencias** y **festivos** tienen cabecera y pie fijos (el aviso de «guardado» sale abajo, junto a «Cerrar») y el contenido se desplaza en medio.
 - Cada campo lleva su rótulo encima; las ausencias se añaden en una tarjeta «Nueva ausencia» con tipo, desde y hasta, y «Solo unas horas al día» es un interruptor (antes una casilla deformada).
