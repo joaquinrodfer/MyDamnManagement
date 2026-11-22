@@ -202,7 +202,9 @@ class HolidayIn(BaseModel):
 
 
 def _puede_leer(repo: Repository, user: auth.User, workspace_id: Optional[str]) -> None:
-    if workspace_id and workspaces.role_of(repo.conn, user, workspace_id) is None:
+    if workspace_id and workspaces.role_of(repo.conn, user, workspace_id) is None and not workspaces.can_manage(
+        repo.conn, user, workspace_id
+    ):
         raise HTTPException(404, "no existe ese espacio")
 
 
@@ -213,7 +215,7 @@ def _puede_gestionar(repo: Repository, user: auth.User, workspace_id: Optional[s
         return
     if repo.conn.execute("SELECT 1 FROM workspaces WHERE id = ?", (str(workspace_id),)).fetchone() is None:
         raise HTTPException(404, "no existe ese espacio")
-    if not workspaces.is_workspace_admin(repo.conn, user, workspace_id):
+    if not workspaces.can_manage(repo.conn, user, workspace_id):
         raise HTTPException(403, "solo un administrador del espacio cambia sus festivos")
 
 

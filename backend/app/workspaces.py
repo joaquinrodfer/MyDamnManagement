@@ -12,9 +12,11 @@ un espacio no ve nada de él (salvo lo que le compartan como invitado, H2).
     suyo (una página de la que es propietario) no se recorta.
 - **Grupos** (`groups`, `group_members`): listas de personas a las que se da
   acceso de una vez, a un espacio o a una página (`acl`, sujeto `group`).
-- **Instancia**: `users.is_admin` es el superadministrador (ve y gestiona todos
-  los espacios); `users.can_view_global_workload` es un permiso aparte para la
-  Carga del equipo.
+- **Instancia**: `users.is_admin` es el administrador: crea y borra espacios y
+  gestiona los miembros y ajustes de cualquiera que no sea personal, pero
+  **no entra** en los que no es miembro (plan de roles, R1): no ve sus páginas.
+  `users.can_view_global_workload` es un permiso aparte para la Carga del
+  equipo.
 
 Este módulo solo habla con la base; los permisos de página siguen siendo cosa
 de `app.acl`, que usa aquí `member_workspaces_sql`.
@@ -95,10 +97,32 @@ def member_role(conn: sqlite3.Connection, user_id: Any, workspace_id: Any) -> Op
 
 
 def role_of(conn: sqlite3.Connection, user: Any, workspace_id: Any) -> Optional[str]:
-    """El rol efectivo: el superadministrador (y el sistema) es `admin` en todos."""
-    if user is None or getattr(user, "is_admin", False):
+    """El rol efectivo en el espacio: el de miembro (el sistema, `admin` en todos).
+
+    El administrador de la instalación no tiene rol en un espacio en el que no
+    está: no lo ve por dentro (plan de roles, R1). Gestionarlo es otra cosa:
+    `can_manage`."""
+    if user is None:
         return "admin"
     return member_role(conn, user.id, workspace_id)
+
+
+def is_personal(row: Optional[sqlite3.Row]) -> bool:
+    if row is None:
+        return False
+    try:
+        return bool(json.loads(row["settings"] or "{}").get("personal_of"))
+    except ValueError:
+        return False
+
+
+def can_manage(conn: sqlite3.Connection, user: Any, workspace_id: Any) -> bool:
+    """¿Puede cambiar miembros y ajustes? El administrador del espacio, o el de
+    la instalación si el espacio no es personal (para que nadie se quede fuera
+    de uno). Gestionar no es leer: no le da acceso a las páginas."""
+    if role_of(conn, user, workspace_id) == "admin":
+        return True
+    return bool(getattr(user, "is_admin", False)) and not is_personal(get(conn, workspace_id))
 
 
 def can_edit(conn: sqlite3.Connection, user: Any, workspace_id: Any) -> bool:
@@ -135,11 +159,14 @@ def _row(conn: sqlite3.Connection, r: sqlite3.Row, role: Optional[str]) -> dict:
     }
 
 
-def list_for(conn: sqlite3.Connection, user: Any) -> list[dict]:
-    """Los espacios que ve `user`: los suyos, o todos si es superadministrador.
+def list_for(conn: sqlite3.Connection, user: Any, manage: bool = False) -> list[dict]:
+    """Los espacios de `user`: en los que es miembro.
 
-    Cada uno trae `member` (¿está en él de verdad, o solo lo ve por ser
-    superadministrador?) y `personal_of` (el id de la persona de quien es el
+    Con `manage`, los que puede gestionar (`can_manage`): para el administrador
+    de la instalación, también los que no son suyos ni personales, con
+    `role` None y `member` False (los ve por fuera, no por dentro).
+
+    Cada uno trae `member` y `personal_of` (el id de la persona de quien es el
     «Espacio de …»). El de la propia persona va el primero.
     """
     rows = conn.execute("SELECT * FROM workspaces ORDER BY created_at, name").fetchall()
@@ -147,11 +174,15 @@ def list_for(conn: sqlite3.Connection, user: Any) -> list[dict]:
     out = []
     for r in rows:
         role = role_of(conn, user, r["id"])
-        if role is not None:
-            d = _row(conn, r, role)
-            d["member"] = member_role(conn, uid, r["id"]) is not None if uid else True
-            d["personal_of"] = d["settings"].get("personal_of")
-            out.append(d)
+        if manage:
+            if not can_manage(conn, user, r["id"]):
+                continue
+        elif role is None:
+            continue
+        d = _row(conn, r, role)
+        d["member"] = member_role(conn, uid, r["id"]) is not None if uid else True
+        d["personal_of"] = d["settings"].get("personal_of")
+        out.append(d)
     out.sort(key=lambda d: (d["personal_of"] != uid, not d["member"], d["personal_of"] is not None))
     return out
 
@@ -196,7 +227,9 @@ def get_dict(conn: sqlite3.Connection, user: Any, workspace_id: Any) -> Optional
     if r is None:
         return None
     role = role_of(conn, user, r["id"])
-    return _row(conn, r, role) if role else None
+    if role or can_manage(conn, user, r["id"]):
+        return _row(conn, r, role)
+    return None
 
 
 def _unique_slug(conn: sqlite3.Connection, name: str, exclude: Optional[str] = None) -> str:

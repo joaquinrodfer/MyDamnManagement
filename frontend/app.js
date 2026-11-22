@@ -1708,12 +1708,15 @@ async function cargarAdministracionDeEspacios() {
   const cajaGrupos = document.getElementById("groups-admin");
   if (!caja || !cajaGrupos) return;
   try {
-    const [lista, grupos, usuarios] = await Promise.all([
+    // Los que puedo gestionar: el administrador ve también los ajenos (no
+    // personales) por fuera, sin entrar en ellos. La barra usa los míos.
+    const [lista, mios, grupos, usuarios] = await Promise.all([
+      api("/workspaces?manage=1"),
       api("/workspaces"),
       api("/groups"),
       api("/auth/users").catch(() => []),
     ]);
-    state.workspaces = lista;
+    state.workspaces = mios;
     pintarSelectorDeEspacio();
     caja.replaceChildren(...lista.map((w) => tarjetaDeEspacio(w, grupos, usuarios)), formularioDeEspacioNuevo());
     cajaGrupos.replaceChildren(...grupos.map((g) => tarjetaDeGrupo(g, usuarios)), formularioDeGrupoNuevo());
@@ -1769,7 +1772,7 @@ function tarjetaDeEspacio(w, grupos, usuarios) {
   resumen.append(
     iconoDeEspacio(w),
     crearEl("strong", "", w.name),
-    crearEl("span", "ws-meta", `${ROLES_DE_ESPACIO[w.role] || ""} · ${w.pages} páginas`),
+    crearEl("span", "ws-meta", `${ROLES_DE_ESPACIO[w.role] || "No eres miembro"} · ${w.pages} páginas`),
   );
   det.append(resumen);
   const cuerpo = crearEl("div", "ws-body");
@@ -1785,7 +1788,9 @@ function tarjetaDeEspacio(w, grupos, usuarios) {
 
 async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
   cuerpo.replaceChildren();
-  const esAdminDelEspacio = w.role === "admin";
+  // Gestiona el administrador del espacio y, si no es personal, el de la
+  // instalación (sin ser miembro: cambia miembros y ajustes, no lee páginas).
+  const esAdminDelEspacio = w.role === "admin" || (Boolean(sessionUser.me?.is_admin) && !w.personal_of);
   // nombre (el icono ya no se elige: es la inicial sobre el color del espacio)
   const fila = crearEl("div", "ws-row");
   const nombre = crearEl("input", "ws-grow");
@@ -5611,7 +5616,6 @@ function pintarEspacios(notes, invitado) {
   if (!panel) return;
   panel.replaceChildren();
   const colapsados = leerColapsados();
-  const esAdmin = Boolean(sessionUser.me?.is_admin);
   const misEspacios = state.workspaces;
   const porEspacio = new Map(misEspacios.map((w) => [w.id, []]));
   for (const n of notes) porEspacio.get(String(n.workspace_id))?.push(n);
@@ -5671,13 +5675,9 @@ function pintarEspacios(notes, invitado) {
 
     if (esInvitado) {
       cuerpo.append(arbolDeSeccion(nodos, { ws: w.id, etiqueta: w.name, soltable: false }));
-    } else if (w.member === false) {
-      // Solo lo veo por ser superadministrador: sin Compartido/Privado propios.
-      cuerpo.append(arbolDeSeccion(nodos, { ws: w.id, seccion: "shared", etiqueta: w.name, soltable: true, vacia: "Sin páginas" }));
     } else {
       const compartidas = nodos.filter((n) => n.section === "shared" || n.section === "with_me");
       const privadas = nodos.filter((n) => n.section === "private");
-      const ajenas = nodos.filter((n) => n.section === "others");
       cuerpo.append(
         subSeccion("Compartido", compartidas, { ws: w.id, seccion: "shared", soltable: true, vacia: "Suelta aquí páginas para todo el espacio" }),
         subSeccion(
@@ -5687,9 +5687,6 @@ function pintarEspacios(notes, invitado) {
           puedeCrear ? [botonDeCabecera("i-plus", "Nueva página privada", () => createNote(null, "private", w.id))] : [],
         ),
       );
-      if (ajenas.length) {
-        cuerpo.append(subSeccion("Privado de otras personas", ajenas, { ws: w.id, soltable: false }));
-      }
     }
     sec.append(cab, cuerpo);
     return sec;
@@ -5707,11 +5704,6 @@ function pintarEspacios(notes, invitado) {
     invitadoPor.get(id).nodos.push(n);
   }
   for (const { w, nodos } of invitadoPor.values()) panel.append(bloque(w, { invitado: true, nodos }));
-  if (esAdmin) {
-    for (const w of misEspacios.filter((x) => x.member === false)) {
-      panel.append(bloque(w, { nodos: porEspacio.get(w.id) || [], plegadoPorDefecto: true }));
-    }
-  }
   panel.querySelectorAll('[role="tree"]').forEach(initTreeRovingTabIndex);
 }
 

@@ -393,12 +393,18 @@ class Repository:
         servicio en marcha que durante el arranque. `progress` solo lo pasa el
         arranque en segundo plano (P16): informa del avance, no cambia nada.
         """
-        return self.vault.rebuild(
+        stats = self.vault.rebuild(
             allow_empty=force,
             empty_hint=empty_hint or EMPTY_VAULT_HINT_HTTP,
             progress=progress,
             source=source,
         )
+        # Lo puesto a mano en el disco, sin permisos: de quien reindexa (plan
+        # de roles, R1; el administrador ya no lo ve todo).
+        with self._tx():
+            if acl.adopt_orphans(self.conn, self.user):
+                acl.refresh_sources(self.conn)
+        return stats
 
     def migrated(self) -> bool:
         """¿La verdad ya está en la base? (3.0, hito 2; ver `VaultStore.migrated`)."""
@@ -699,11 +705,12 @@ class Repository:
         """Lo que me han compartido en espacios que no son los míos (invitado).
 
         Cada raíz trae el espacio al que pertenece (`workspace`); lo de dentro
-        sale con el permiso que ya heredaba. El superadministrador no es
-        invitado de nada: lista vacía.
+        sale con el permiso que ya heredaba. El administrador también puede
+        serlo: no entra en los espacios ajenos, pero le pueden compartir una
+        página de uno.
         """
         user = self.user
-        if user is None or getattr(user, "is_admin", False):
+        if user is None:
             return []
         cond, args = acl.visible_clause(user, "p", None)
         member_sql, member_args = ws_mod.member_workspaces_sql(user.id)
@@ -738,7 +745,7 @@ class Repository:
             for r in rows
         }
         roots: list[dict[str, Any]] = []
-        system = self.user is None or getattr(self.user, "is_admin", False)
+        system = self.user is None
         for r in rows:
             node = nodes[r["id"]]
             parent = r["parent_id"]
