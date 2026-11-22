@@ -118,9 +118,22 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   - **El aviso de sobrecarga** sale en «Mi semana», para ti y para las personas del equipo que ves, en vez de como notificación. Un tipo de aviso nuevo pedía rehacer la tabla de avisos, y la idea era verlo al planificar.
   - **«Mi semana»** dice también la semana que viene y cuántas tareas tuyas no tienen estimación.
 
-### C8 — Plantillas por tipo de equipo
+### C8 — Plantillas por tipo de equipo (hecho)
 - Agencia, software (puntos), operaciones con turnos, consultoría, sin
   estimación…: un clic deja el espacio configurado.
+
+- **Cómo quedó:** en «Carga del espacio», «Empezar de una plantilla» (`GET /workload/templates`, `POST /workspaces/{id}/workload-template`). Queda en la auditoría.
+
+| Plantilla | Unidad | Lo no estimado | Semáforo |
+|---|---|---|---|
+| Agencia | horas | 2 h | 80 / 100, aviso por debajo del 50 % |
+| Software (puntos) | puntos × 4 h | 0 | 70 / 100 |
+| Por tallas | tallas XS–XL (1–16 h) | 0 | 70 / 100 |
+| Operaciones y turnos | horas | 0 | 90 / 100 |
+| Consultoría | jornadas × 8 h | 4 h | 75 / 100, aviso por debajo del 40 % |
+| Sin estimación | cada tarea, 4 h | — | 70 / 100 |
+
+- Configuran el espacio, no sus bases: el reparto en el tiempo de cada base (p. ej. «el día de entrega» para turnos) se elige en la base.
 
 ## Para más adelante (anotado, no planificado)
 
