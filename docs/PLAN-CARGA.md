@@ -62,6 +62,8 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   mano.
 
 ### C2 — Permiso «Ver carga»
+> Se hace dentro del plan de roles: fase R4 de `PLAN-ROLES.md`.
+
 - Se concede a un usuario o a un grupo, para uno o varios espacios (o todos:
   sustituye a `can_view_global_workload`, que se migra como «todos»).
 - Quien lo tiene ve a todas las personas de esos espacios: su carga combinada
@@ -100,9 +102,7 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
 
 ## Para más adelante (anotado, no planificado)
 
-- **Replantear los roles** (quién puede qué en un espacio). El dueño quiere
-  darle una vuelta; afecta a quién registra ausencias de otros y a quién
-  concede el permiso de carga.
+- **Replantear los roles:** ya planificado en `PLAN-ROLES.md` (2026-11-22).
 - **Botón de «Apunta algo» en el panel izquierdo:** abajo a la izquierda del
   panel desplegado. Con el panel cerrado, un botón flotante con «+» abajo a la
   izquierda que hace lo mismo.
