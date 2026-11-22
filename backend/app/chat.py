@@ -384,9 +384,31 @@ def mark_read(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], last_id
     )
 
 
-def after_post(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], msg: dict[str, Any]) -> None:
-    """Lo que pasa después de enviar (las menciones, en CH3)."""
-    return None
+def after_post(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], msg: dict[str, Any]) -> int:
+    """Después de enviar: un aviso a cada persona que el mensaje menciona con
+    `@usuario` y que puede ver la conversación (no a quien lo escribe).
+    Devuelve cuántos avisos se crearon."""
+    from app import notifications
+
+    nombrados = mentioned(conn, msg.get("body") or "") & participants(conn, conv)
+    nombrados.discard(_uid(user))
+    if not nombrados:
+        return 0
+    if conv["kind"] == "workspace":
+        fila = conn.execute("SELECT name FROM workspaces WHERE id = ?", (conv["workspace_id"],)).fetchone()
+        donde = f"en # {fila['name']}" if fila else "en un canal"
+    else:
+        donde = "en un mensaje directo"
+    autor = getattr(user, "display_name", None) or "Alguien"
+    resumen = re.sub(r"\s+", " ", msg.get("body") or "")[:120]
+    creados = 0
+    for uid in nombrados:
+        creados += notifications.notify(
+            conn, uid, "chat_mention", f"{autor} te ha mencionado {donde}: {resumen}",
+            dedupe_key=f"chat:{msg['id']}", conversation_id=conv["id"],
+            workspace_id=conv.get("workspace_id"),
+        )
+    return creados
 
 
 def mentioned(conn: sqlite3.Connection, body: str) -> set[str]:

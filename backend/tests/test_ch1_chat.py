@@ -118,3 +118,34 @@ def test_los_eventos_solo_llegan_a_quien_ve_la_conversacion(client, gente):
     assert _le_toca(SimpleNamespace(id=gente["ids"]["ana"]), ev)
     assert not _le_toca(SimpleNamespace(id=gente["ids"]["beto"]), ev)
     assert not _le_toca(None, ev)
+
+
+def test_menciones_avisan_solo_a_quien_ve_la_conversacion(client, gente):
+    ana, beto, carla, ids = gente["ana"], gente["beto"], gente["carla"], gente["ids"]
+    canal = _canal(ana, "Desarrollo")
+    # Beto es lector (no ve el canal) y Carla no es del espacio: no reciben aviso.
+    _ok(ana.post(f"/chat/conversations/{canal['id']}/messages", json={"body": "@prueba @beto @carla mirad esto"}))
+    avisos = _ok(client.get("/notifications"))["items"]
+    mencion = next(a for a in avisos if a["type"] == "chat_mention")
+    assert mencion["conversation_id"] == canal["id"] and "Ana te ha mencionado en # Desarrollo" in mencion["message"]
+    for c in (beto, carla):
+        assert not [a for a in _ok(c.get("/notifications"))["items"] if a["type"] == "chat_mention"]
+    # En un directo, sí.
+    d = _ok(ana.post("/chat/direct", json={"user_ids": [ids["beto"]]}))
+    _ok(ana.post(f"/chat/conversations/{d['id']}/messages", json={"body": "@beto ¿lo ves?"}))
+    assert [a for a in _ok(beto.get("/notifications"))["items"] if a["type"] == "chat_mention"]
+
+
+def test_adjuntos(client, gente):
+    ana, carla = gente["ana"], gente["carla"]
+    canal = _canal(ana, "Desarrollo")
+    png = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6300010000050001"
+                        "0d0a2db40000000049454e44ae426082")
+    subido = _ok(ana.post(f"/chat/conversations/{canal['id']}/files", files={"file": ("foto.png", png, "image/png")}))
+    assert subido["type"] == "image" and subido["url"].startswith("/files/")
+    assert carla.post(f"/chat/conversations/{canal['id']}/files", files={"file": ("x.png", png, "image/png")}).status_code == 404
+    msg = _ok(ana.post(f"/chat/conversations/{canal['id']}/messages", json={"body": "", "attachments": [subido]}))
+    assert msg["attachments"][0]["name"] == "foto.png"
+    assert ana.get(subido["url"]).status_code == 200
+    mal = ana.post(f"/chat/conversations/{canal['id']}/messages", json={"body": "x", "attachments": [{"url": "https://malo"}]})
+    assert mal.status_code == 400
