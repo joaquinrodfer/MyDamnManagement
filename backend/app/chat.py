@@ -432,3 +432,41 @@ def publish(conn: sqlite3.Connection, conv: dict[str, Any], action: str, **data:
         "type": "chat", "action": action, "conversation_id": conv["id"],
         "recipients": sorted(participants(conn, conv)), **data,
     })
+
+
+# --------------------------------------------------------------------------
+# buscar (CH4)
+# --------------------------------------------------------------------------
+
+
+def search(conn: sqlite3.Connection, user: Any, q: str, limit: int = 30) -> list[dict[str, Any]]:
+    """Los mensajes que casan con `q` en las conversaciones que veo."""
+    from app import index as index_mod
+
+    texto = (q or "").strip()
+    if len(texto) < 2:
+        return []
+    mias = {c["id"]: c for c in listing(conn, user)}
+    if not mias:
+        return []
+    ids = sorted(mias)
+    marks = ",".join("?" * len(ids))
+    filas = conn.execute(
+        "SELECT m.* FROM chat_fts f JOIN chat_messages m ON m.id = f.rowid"
+        f" WHERE chat_fts MATCH ? AND m.deleted = 0 AND m.conversation_id IN ({marks})"
+        " ORDER BY m.id DESC LIMIT ?",
+        (index_mod.fts_query(texto), *ids, max(1, min(limit, 100))),
+    ).fetchall()
+    gente = _people(conn, {r["user_id"] for r in filas})
+    salida = []
+    for r in filas:
+        m = _message(r, gente)
+        c = mias[r["conversation_id"]]
+        m["conversation_title"] = c["title"]
+        m["conversation_kind"] = c["kind"]
+        salida.append(m)
+    return salida
+
+
+def set_task(conn: sqlite3.Connection, message_id: int, task_id: str) -> None:
+    conn.execute("UPDATE chat_messages SET task_id = ? WHERE id = ?", (str(task_id), int(message_id)))
