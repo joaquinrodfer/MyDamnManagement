@@ -5038,6 +5038,39 @@
     .settings-close { position: fixed; top: 8px; right: 8px; }
     .settings-section h4 { padding-right: 0; }
   }
+  /* Ajustes agrupados: Cuenta, Aplicación y Administración, con icono en cada
+     apartado y una entradilla debajo del título. */
+  .settings-nav { flex-basis: 220px; overflow-y: auto; }
+  .settings-nav-group {
+    margin: 14px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: color-mix(in srgb, var(--ink-muted) 85%, transparent);
+  }
+  .settings-nav h3 + .settings-nav-group { margin-top: 0; }
+  .settings-nav-group[hidden] { display: none; }
+  .settings-tab { gap: 9px; min-height: 32px; }
+  .settings-tab .svg-icon { width: 16px; height: 16px; flex: none; opacity: .75; }
+  .settings-tab.active .svg-icon { opacity: 1; color: var(--accent-ink); }
+  .settings-section h4 + .settings-lead { margin-top: -12px; }
+  .settings-lead { margin: 0 0 20px; max-width: 620px; font-size: 13px; line-height: 1.55; color: var(--ink-muted); }
+  .settings-group > .form-note:empty { display: none; }
+  .settings-fold { padding: 0; }
+  .settings-fold > summary {
+    display: flex; align-items: center; gap: 8px; padding: 14px 20px; cursor: pointer; list-style: none;
+    font-size: 14px; font-weight: 600; color: var(--ink); border-radius: 12px;
+  }
+  .settings-fold > summary::-webkit-details-marker { display: none; }
+  .settings-fold > summary:hover { background: var(--row-hover); }
+  .settings-fold > summary .svg-icon { width: 16px; height: 16px; color: var(--accent-ink); transition: transform var(--dur-fast, .12s) ease; }
+  .settings-fold[open] > summary .svg-icon { transform: rotate(45deg); }
+  .settings-fold[open] > summary { border-bottom: 1px solid var(--panel-border); border-radius: 12px 12px 0 0; }
+  .settings-fold > form { padding: 16px 20px 18px; }
+  /* Los listados que ya son tarjetas (espacios, grupos) no van dentro de otra. */
+  #workspaces-group, #groups-group { padding: 0; border: 0; background: none; }
+  @media (max-width: 640px) {
+    .settings-nav-group { display: none; }
+    .settings-tab .svg-icon { display: none; }
+    .settings-nav { flex-basis: auto; }
+  }
   .form-note.form-error { color: var(--down); }
   /* Ajustes > Información: versión, estado y (admins) estadísticas. */
   .info-content { display: flex; flex-direction: column; }
@@ -6700,6 +6733,12 @@
       <symbol id="i-board" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></symbol>
       <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></symbol>
       <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></symbol>
+      <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+      <symbol id="i-users-group" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 21a8 8 0 0 0-16 0"/><circle cx="10" cy="8" r="5"/><path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3"/></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></symbol>
       <symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
       <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></symbol>
       <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
@@ -7039,10 +7078,19 @@
     <div class="settings-shell">
       <nav class="settings-nav" aria-label="Apartados de los ajustes">
         <h3 id="settings-title">Ajustes</h3>
-        <button type="button" class="settings-tab" data-section="info">Información</button>
-        <button type="button" class="settings-tab" data-section="app">Aplicación</button>
-        <button type="button" class="settings-tab" data-section="user">Usuario</button>
-        <button type="button" class="settings-tab" data-section="admin" hidden>Administración</button>
+        <p class="settings-nav-group">Cuenta</p>
+        <button type="button" class="settings-tab" data-section="perfil"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-user"/></svg><span>Perfil</span></button>
+        <button type="button" class="settings-tab" data-section="tokens"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-key"/></svg><span>Captura</span></button>
+        <p class="settings-nav-group">Aplicación</p>
+        <button type="button" class="settings-tab" data-section="app"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg><span>Apariencia</span></button>
+        <button type="button" class="settings-tab" data-section="info"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg><span>Información</span></button>
+        <p class="settings-nav-group" data-admin hidden>Administración</p>
+        <button type="button" class="settings-tab" data-section="users" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users"/></svg><span>Usuarios</span></button>
+        <button type="button" class="settings-tab" data-section="groups" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users-group"/></svg><span>Grupos</span></button>
+        <button type="button" class="settings-tab" data-section="workspaces" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-layers"/></svg><span>Espacios</span></button>
+        <button type="button" class="settings-tab" data-section="holidays" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg><span>Calendario laboral</span></button>
+        <button type="button" class="settings-tab" data-section="audit" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-list"/></svg><span>Auditoría</span></button>
+        <button type="button" class="settings-tab" data-section="backups" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-archive"/></svg><span>Copias de seguridad</span></button>
       </nav>
       <div class="settings-body">
         <button type="button" class="icon-btn settings-close" id="btn-close-settings" title="Cerrar (Esc)" aria-label="Cerrar los ajustes"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
@@ -7055,7 +7103,7 @@
         </section>
 
         <section class="settings-section" data-section="app" aria-labelledby="settings-app-title" hidden>
-          <h4 id="settings-app-title">Ajustes de la aplicación</h4>
+          <h4 id="settings-app-title">Apariencia</h4>
           <div class="settings-group">
             <h5>Tema</h5>
             <p class="form-note">Se recuerda en este navegador.</p>
@@ -7066,13 +7114,13 @@
           </div>
         </section>
 
-        <section class="settings-section" data-section="user" aria-labelledby="settings-user-title" hidden>
-          <h4 id="settings-user-title">Ajustes de usuario</h4>
+        <section class="settings-section" data-section="perfil" aria-labelledby="settings-user-title" hidden>
+          <h4 id="settings-user-title">Perfil</h4>
 
           <!-- Nombre visible propio (PATCH /auth/me). El @usuario no cambia:
                es con lo que se entra. -->
           <div class="settings-group">
-            <h5>Perfil</h5>
+            <h5>Imagen y nombre</h5>
             <!-- Tu imagen (bloque B): una de las de la app. Se guarda al
                  elegirla (PATCH /auth/me), sin botón. -->
             <div class="field">
@@ -7117,6 +7165,10 @@
             </form>
           </div>
 
+        </section>
+
+        <section class="settings-section" data-section="tokens" aria-labelledby="settings-tokens-title" hidden>
+          <h4 id="settings-tokens-title">Captura</h4>
           <!-- Tokens de captura (P13): crear, listar con su último uso y
                revocar. El secreto se enseña una sola vez —en la base solo
                queda su SHA-256— y el atajo del sistema lo usa como MDM_TOKEN. -->
@@ -7144,13 +7196,16 @@
           </div>
         </section>
 
-        <!-- Usuarios (P11b, solo admin): listar y crear. -->
-        <section class="settings-section" data-section="admin" aria-labelledby="settings-admin-title" hidden>
-          <h4 id="settings-admin-title">Ajustes de administración</h4>
+        <!-- Administración (solo admin), un apartado por tema. -->
+        <section class="settings-section" data-section="users" aria-labelledby="settings-users-title" hidden>
+          <h4 id="settings-users-title">Usuarios</h4>
+          <p class="settings-lead">Quién entra en Notemil. La jornada, la dedicación y las ausencias de cada persona, en «Jornada».</p>
           <div class="settings-group">
-            <h5>Usuarios</h5>
             <p class="form-note" id="users-note"></p>
             <div class="users-list" id="users-list"></div>
+          </div>
+          <details class="settings-group settings-fold" id="new-user-group">
+            <summary><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Nuevo usuario</span></summary>
             <form id="form-new-user" novalidate>
               <div class="field">
                 <label for="nu-username">Usuario</label>
@@ -7181,29 +7236,39 @@
                 <button type="submit" class="btn btn-primary" id="btn-create-user">Crear usuario</button>
               </div>
             </form>
+          </details>
+        </section>
+        <section class="settings-section" data-section="groups" aria-labelledby="settings-groups-title" hidden>
+          <h4 id="settings-groups-title">Grupos</h4>
+          <p class="settings-lead">Un grupo reúne personas para darles acceso de una vez a un espacio o a una página.</p>
+          <div class="settings-group" id="groups-group">
+            <div id="groups-admin"></div>
+            <p class="form-note" id="groups-note"></p>
           </div>
+        </section>
+        <section class="settings-section" data-section="workspaces" aria-labelledby="settings-workspaces-title" hidden>
+          <h4 id="settings-workspaces-title">Espacios</h4>
+          <p class="settings-lead">Cada espacio separa un contexto de trabajo: quien no está en él no ve nada de lo suyo. Los miembros pueden ser personas o grupos.</p>
           <div class="settings-group" id="workspaces-group">
-            <h5>Espacios de trabajo</h5>
-            <p class="form-note">Cada espacio separa un contexto de trabajo: quien no está en él no ve nada de lo suyo. Los miembros pueden ser personas o grupos.</p>
             <div id="ws-admin"></div>
             <p class="form-note" id="ws-note"></p>
           </div>
+        </section>
+        <section class="settings-section" data-section="holidays" aria-labelledby="settings-holidays-title" hidden>
+          <h4 id="settings-holidays-title">Calendario laboral</h4>
+          <p class="settings-lead">Los días que no se trabaja restan de la capacidad de cada persona en la carga del equipo. Cada espacio añade los suyos desde su ficha, en «Espacios»; la jornada de cada persona, en «Usuarios» → «Jornada».</p>
           <div class="settings-group" id="holidays-group">
-            <h5>Festivos</h5>
-            <p class="form-note">Los días que no se trabaja en toda la empresa: restan de la capacidad de todos en la carga. Cada espacio puede añadir los suyos desde su ficha, aquí arriba.</p>
+            <h5>Festivos comunes</h5>
+            <p class="form-note">Cuentan a toda la empresa. Se añaden a mano o se importan (festivos oficiales por país y región, una URL .ics o un archivo).</p>
             <div class="dialog-actions dialog-actions-start">
               <button type="button" class="btn" id="btn-holidays">Festivos comunes…</button>
             </div>
           </div>
-          <div class="settings-group" id="groups-group">
-            <h5>Grupos</h5>
-            <p class="form-note">Un grupo reúne personas para darles acceso de una vez a un espacio o a una página.</p>
-            <div id="groups-admin"></div>
-            <p class="form-note" id="groups-note"></p>
-          </div>
+        </section>
+        <section class="settings-section" data-section="audit" aria-labelledby="settings-audit-title" hidden>
+          <h4 id="settings-audit-title">Auditoría</h4>
+          <p class="settings-lead">Quién hizo qué y cuándo: espacios, permisos, usuarios, borrados, exportaciones y copias. No guarda contenido.</p>
           <div class="settings-group" id="audit-group">
-            <h5>Auditoría</h5>
-            <p class="form-note">Quién hizo qué y cuándo: espacios, permisos, usuarios, borrados, exportaciones y copias. No guarda contenido.</p>
             <div class="audit-filters">
               <select id="audit-action" aria-label="Acción"><option value="">Todas las acciones</option></select>
               <select id="audit-actor" aria-label="Persona"><option value="">Todas las personas</option></select>
@@ -7218,9 +7283,11 @@
               <span class="form-note" id="audit-note"></span>
             </div>
           </div>
+        </section>
+        <section class="settings-section" data-section="backups" aria-labelledby="settings-backups-title" hidden>
+          <h4 id="settings-backups-title">Copias de seguridad</h4>
+          <p class="settings-lead">La copia lleva todas las notas y bases, los adjuntos, los usuarios y sus contraseñas cifradas. Guárdala en un sitio seguro.</p>
           <div class="settings-group" id="backups-group">
-            <h5>Copias de seguridad</h5>
-            <p class="form-note">La copia lleva todas las notas y bases, los adjuntos, los usuarios y sus contraseñas cifradas. Guárdala en un sitio seguro.</p>
             <div class="dialog-actions dialog-actions-start">
               <button type="button" class="btn btn-primary" id="btn-backup-download">Descargar una copia ahora</button>
             </div>

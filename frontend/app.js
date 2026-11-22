@@ -1428,8 +1428,9 @@ function paintUserChip() {
   chip.setAttribute("aria-label", `Tu cuenta: ${me.display_name}. Abrir el menú`);
   // «Administración» solo existe para un admin: a los demás no se les enseña
   // un apartado que solo puede dar 403.
-  const pestanaAdmin = document.querySelector('.settings-tab[data-section="admin"]');
-  if (pestanaAdmin) pestanaAdmin.hidden = !me.is_admin;
+  document.querySelectorAll(".settings-nav [data-admin]").forEach((el) => {
+    el.hidden = !me.is_admin;
+  });
 }
 
 function initUserChip() {
@@ -3548,8 +3549,12 @@ async function pintarInformacion() {
   caja.replaceChildren(...partes);
 }
 
+// Nombres viejos de los apartados (antes de separar Cuenta y Administración).
+const APARTADOS_ANTIGUOS = { user: "perfil", admin: "users" };
+
 function mostrarApartadoDeAjustes(nombre) {
   if (!settingsDialog) return;
+  nombre = APARTADOS_ANTIGUOS[nombre] || nombre;
   const pestana = settingsDialog.querySelector(`.settings-tab[data-section="${nombre}"]`);
   // Un apartado que no toca (Administración sin ser admin) no se abre.
   if (!pestana || pestana.hidden) nombre = "info";
@@ -3565,20 +3570,18 @@ function mostrarApartadoDeAjustes(nombre) {
   if (nombre === "app") sincronizarTemaEnAjustes();
   if (nombre === "info") cargarInformacion();
   else pararInformacion();
-  if (nombre === "user") {
+  if (nombre === "perfil") {
     prepararPerfil();
     prepararContrasena();
-    cargarTokensDeAjustes();
   }
-  if (nombre === "admin") {
-    cargarUsuariosDeAjustes();
-    cargarAdministracionDeEspacios();
-    prepararAuditoria();
-    cargarCopias();
-  }
+  if (nombre === "tokens") cargarTokensDeAjustes();
+  if (nombre === "users") cargarUsuariosDeAjustes();
+  if (nombre === "groups" || nombre === "workspaces") cargarAdministracionDeEspacios();
+  if (nombre === "audit") prepararAuditoria();
+  if (nombre === "backups") cargarCopias();
 }
 
-function openSettings(apartado = "info") {
+function openSettings(apartado = "perfil") {
   if (!settingsDialog) return;
   if (!settingsDialog.open) settingsDialog.showModal();
   mostrarApartadoDeAjustes(apartado);
