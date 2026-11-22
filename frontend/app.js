@@ -21766,6 +21766,7 @@ async function openTemplateDialog() {
 const ROLES_DE_TIPO = {
   tasks: ["assignee", "status", "start", "end", "hours", "project", "size"],
   projects: ["assignee", "status", "start", "end", "estimate"],
+  workload: ["assignee", "status", "start", "end", "hours", "size", "project"],
 };
 const TIPO_DE_COLUMNA_DE_ROL = {
   assignee: "person", status: "select", start: "date", end: "date", hours: "number", project: "relation", estimate: "number",
@@ -21793,7 +21794,7 @@ async function abrirDialogoDeTipo(database) {
   document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   dialog.append(
-    crearEl("h3", "", `Base de ${nombreDeTipo(database)}`),
+    crearEl("h3", "", tipo === "workload" ? "Base que cuenta para la carga" : `Base de ${nombreDeTipo(database)}`),
     crearEl(
       "p",
       "dialog-note",
@@ -21808,7 +21809,8 @@ async function abrirDialogoDeTipo(database) {
   for (const rol of ROLES_DE_TIPO[tipo]) {
     const compat = columnas.filter((c) => c.type === TIPO_DE_COLUMNA_DE_ROL[rol]);
     const select = crearEl("select");
-    const opcional = OPCIONALES_DE_ROL.has(rol);
+    // En «Cuenta para la carga» (C6) solo el responsable es obligatorio.
+    const opcional = OPCIONALES_DE_ROL.has(rol) || (tipo === "workload" && rol !== "assignee");
     const actual = database.kind.roles?.[rol] || "";
     if (opcional) {
       const o = crearEl("option", "", "Sin columna");
@@ -21862,7 +21864,7 @@ async function abrirDialogoDeTipo(database) {
   }
   let reparto = database.kind.options?.hours_split || "full";
   let enElTiempo = database.kind.options?.spread || "uniform";
-  if (tipo === "tasks") {
+  if (tipo === "tasks" || tipo === "workload") {
     const grupoDeRadios = (leyenda, nombre, opciones, actual, alCambiar) => {
       const grupo = crearEl("fieldset", "kind-split");
       grupo.append(crearEl("legend", "prop-field-label", leyenda));
@@ -21922,7 +21924,7 @@ async function abrirDialogoDeTipo(database) {
     const roles = {};
     const cuerpo = {
       type: tipo,
-      options: tipo === "tasks" ? { hours_split: reparto, ...(enElTiempo !== "uniform" || database.kind.options?.spread ? { spread: enElTiempo } : {}) } : undefined,
+      options: tipo === "tasks" || tipo === "workload" ? { hours_split: reparto, ...(enElTiempo !== "uniform" || database.kind.options?.spread ? { spread: enElTiempo } : {}) } : undefined,
     };
     for (const rol of ROLES_DE_TIPO[tipo]) {
       const v = selects[rol].value;
@@ -22006,25 +22008,32 @@ function abrirMenuDeTipo(ancla, database) {
       crearEl("div", "db-col-menu-label", "Convertir esta base en…"),
       itemDeColumna("Proyectos", { alElegir: () => poner({ type: "projects" }, "La base es ahora de Proyectos: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
       itemDeColumna("Tareas", { alElegir: () => poner({ type: "tasks" }, "La base es ahora de Tareas: se han reutilizado las columnas que encajaban y creado las que faltaban.") }),
+      itemDeColumna("Cuenta para la carga", {
+        alElegir: () =>
+          poner(
+            { type: "workload" },
+            "La base cuenta ya para la carga del equipo con su responsable. En «Tipo de base…» eliges sus fechas, su esfuerzo y su estado.",
+          ),
+      }),
     );
-  } else if (database.kind.type === "tasks") {
+  } else if (database.kind.type === "tasks" || database.kind.type === "workload") {
     const actual = database.kind.options?.hours_split || "full";
     menu.append(
       crearEl("div", "db-col-menu-label", "Horas con varios responsables"),
       itemDeColumna("Completas a cada uno", {
         radio: true,
         marca: actual === "full" ? "✓" : "",
-        alElegir: () => poner({ type: "tasks", options: { ...database.kind.options, hours_split: "full" } }, "Cada responsable cuenta las horas completas."),
+        alElegir: () => poner({ type: database.kind.type, options: { ...database.kind.options, hours_split: "full" } }, "Cada responsable cuenta las horas completas."),
       }),
       itemDeColumna("A partes iguales", {
         radio: true,
         marca: actual === "equal" ? "✓" : "",
-        alElegir: () => poner({ type: "tasks", options: { ...database.kind.options, hours_split: "equal" } }, "Las horas se reparten a partes iguales entre los responsables."),
+        alElegir: () => poner({ type: database.kind.type, options: { ...database.kind.options, hours_split: "equal" } }, "Las horas se reparten a partes iguales entre los responsables."),
       }),
       itemDeColumna("Según la dedicación", {
         radio: true,
         marca: actual === "dedication" ? "✓" : "",
-        alElegir: () => poner({ type: "tasks", options: { ...database.kind.options, hours_split: "dedication" } }, "Las horas se reparten según lo que cada responsable dedica al espacio."),
+        alElegir: () => poner({ type: database.kind.type, options: { ...database.kind.options, hours_split: "dedication" } }, "Las horas se reparten según lo que cada responsable dedica al espacio."),
       }),
     );
   } else if (database.kind.type === "projects" && !database.kind.roles?.estimate) {
@@ -22069,7 +22078,7 @@ function rolDeColumna(database, clave) {
   return rol ? ETIQUETAS_DE_ROL[rol] || rol : null;
 }
 function nombreDeTipo(database) {
-  return { projects: "Proyectos", tasks: "Tareas" }[database?.kind?.type] || "";
+  return { projects: "Proyectos", tasks: "Tareas", workload: "Cuenta para la carga" }[database?.kind?.type] || "";
 }
 
 /** Un campo de valor por defecto de una plantilla de fila.

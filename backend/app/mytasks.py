@@ -204,7 +204,7 @@ def _bases(conn: sqlite3.Connection) -> dict[str, dict]:
             "closed": rule,
             "close": close_with(schema_def, rule),
             # Proyectos o Tareas: solo ahí una fecha pasada es «vencida».
-            "typed": (json.loads(row["kind_json"] or "null") or {}).get("type") in ("projects", "tasks"),
+            "typed": (json.loads(row["kind_json"] or "null") or {}).get("type") in ("projects", "tasks", "workload"),
         }
     return bases
 

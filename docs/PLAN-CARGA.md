@@ -101,9 +101,13 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   - **Reparto en el tiempo** (`spread`: repartidas, al principio, al final, el día de entrega) y **reparto según la dedicación** (`hours_split: dedication`): en el diálogo «Tipo de base…».
   - `spread` solo se escribe en el `.md` si se cambia.
 
-### C6 — Cualquier base cuenta
+### C6 — Cualquier base cuenta (hecho)
 - Una base de cualquier tipo puede contar para la carga declarando qué
   columna es responsable, fechas y esfuerzo (tickets, encargos, turnos…).
+- **Cómo quedó:** un tipo de base nuevo, «Cuenta para la carga» (`workload`).
+  - Solo pide el responsable; si la base no tiene una columna de persona, se crea. Estado, inicio, fin, esfuerzo, talla y proyecto son opcionales.
+  - Sin estado, todas las filas cuentan como abiertas.
+  - Sus filas entran en la carga con la unidad del espacio (con «Número de tareas», cada ticket cuenta N h), salen en «Mis tareas» y tienen vencimientos, como las de Tareas.
 
 ### C7 — Ayudas para planificar
 - Carga de cada persona junto a su nombre al elegir responsable.

@@ -14,7 +14,8 @@ Se declara en el frontmatter de la base, como la regla de «cerrado»:
       roles: {assignee: responsable, status: estado, start: inicio, end: fin, hours: horas}
       options: {hours_split: equal}
 
-- `type`: `projects` o `tasks`. Cada tipo es una **ficha** de este módulo:
+- `type`: `projects`, `tasks` o `workload` (C6: cualquier base que cuenta
+  para la carga, con solo el responsable obligatorio). Cada tipo es una **ficha** de este módulo:
   qué roles lleva (obligatorios y opcionales), con qué tipo de propiedad y las
   opciones que admite. Añadir un tipo nuevo es añadir otra ficha.
 - `roles`: `{rol: clave de la propiedad}`. Las columnas de un rol **se pueden
@@ -36,7 +37,7 @@ from typing import Any, Iterable, Optional
 
 from fastapi import HTTPException
 
-KIND_TYPES = ("projects", "tasks")
+KIND_TYPES = ("projects", "tasks", "workload")
 
 # Tipo de propiedad que exige cada rol.
 ROLE_TYPES = {
@@ -95,6 +96,18 @@ SPECS: dict[str, dict[str, Any]] = {
 
 # Cómo se reparten las horas entre varios responsables (C5): completas a cada
 # uno, a partes iguales o según la dedicación de cada uno al espacio.
+# «Cuenta para la carga» (C6): cualquier base (tickets, encargos, turnos…)
+# con solo un responsable; lo demás, si lo tiene.
+SPECS["workload"] = {
+    "title": "Cuenta para la carga",
+    "required": ("assignee",),
+    "optional": ("status", "start", "end", "hours", "size", "project"),
+    "options": {"hours_split": "full"},
+    "extra_options": {"spread": "uniform"},
+}
+# Los tipos cuyas filas cuentan para la carga del equipo.
+WORKLOAD_TYPES = ("tasks", "workload")
+
 HOURS_SPLITS = ("full", "equal", "dedication")
 # Cómo se reparten en el tiempo (C5): por igual en los días de trabajo del
 # rango, todo el primero, todo el último o todo el día de entrega.

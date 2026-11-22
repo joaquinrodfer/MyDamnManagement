@@ -143,7 +143,7 @@ def overdue_date_keys(
     """
     # Solo en bases de proyectos o de tareas (`kind`): en una base libre una
     # fecha pasada no es un plazo (decisión del dueño, 2026-11-20).
-    if not kind or kind.get("type") not in ("projects", "tasks"):
+    if not kind or kind.get("type") not in ("projects", "tasks", "workload"):
         return []
     if not rule:
         return []

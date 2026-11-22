@@ -2,6 +2,10 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Cualquier base cuenta para la carga (plan de la carga, C6)
+- **Tipo de base nuevo, «Cuenta para la carga»:** en el menú de la base, «Tipo de base…». Sirve para tickets, encargos, turnos o lo que sea. Solo hace falta saber quién hace cada fila; las fechas, el esfuerzo, la talla, el estado y el proyecto son opcionales.
+- Sus filas suman en la Carga del equipo con la unidad del espacio: con «Número de tareas», cada ticket cuenta las horas que digas. También salen en «Mis tareas» y avisan al vencer, como las de Tareas.
+
 ## Reglas de la carga por espacio y por base (plan de la carga, C4 y C5)
 - **Unidad de esfuerzo por espacio** (Ajustes → Espacios → «Carga del espacio»):
   - horas, días, puntos o número de tareas, con su equivalencia en horas;
