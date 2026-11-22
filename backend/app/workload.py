@@ -230,6 +230,7 @@ def pieces(
                     "row_id": t["row_id"], "row_title": t["row_title"],
                     "week": week.isoformat() if week else None,
                     "hours": round(h, 4),
+                    "estimated": t["estimated"],
                     "start": t["start"].isoformat() if t["start"] else None,
                     "end": t["end"].isoformat() if t["end"] else None,
                     "visible": t["visible"],
@@ -307,7 +308,7 @@ def report(
                 "dedication": calendar.dedications(pid),
                 "weeks": {k: 0.0 for k in keys},
                 "before": 0.0, "after": 0.0, "unscheduled": 0.0,
-                "tasks": set(), "pieces": [],
+                "tasks": set(), "pieces": [], "unestimated": set(),
             }
         week = piece["week"]
         if week is None:
@@ -318,12 +319,16 @@ def report(
             row["before"] += piece["hours"]
         else:
             row["after"] += piece["hours"]
-        row["tasks"].add(piece["row_id"] or f"{piece['base_title']}:{piece['row_title']}:{piece['person_id']}")
+        tarea = piece["row_id"] or f"{piece['base_title']}:{piece['row_title']}:{piece['person_id']}"
+        row["tasks"].add(tarea)
+        if not piece.get("estimated", True):
+            row["unestimated"].add(tarea)
         row["pieces"].append(piece)
 
     people = []
     for row in per_person.values():
         row["tasks"] = len(row["tasks"])
+        row["unestimated"] = len(row["unestimated"])
         parte = calendar.dedication(row["id"], workspace_id) / 100 if workspace_id else 1.0
         if workspace_id:
             row["capacity"] = round(row["capacity"] * parte, 2)

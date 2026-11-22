@@ -109,10 +109,14 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   - Sin estado, todas las filas cuentan como abiertas.
   - Sus filas entran en la carga con la unidad del espacio (con «Número de tareas», cada ticket cuenta N h), salen en «Mis tareas» y tienen vencimientos, como las de Tareas.
 
-### C7 — Ayudas para planificar
+### C7 — Ayudas para planificar (hecho)
 - Carga de cada persona junto a su nombre al elegir responsable.
 - Aviso de sobrecarga para la semana siguiente.
 - «Mi semana» del inicio con todo lo anterior.
+- **Cómo quedó:**
+  - **Al elegir responsable:** en la columna del responsable de una base que cuenta para la carga, cada persona lleva «horas / capacidad» de esta semana, en amarillo o rojo si va justa o pasada. Sale de `GET /workload/week`, solo de quien se puede ver: con «Ver carga», las personas de esos espacios; sin él, uno mismo.
+  - **El aviso de sobrecarga** sale en «Mi semana», para ti y para las personas del equipo que ves, en vez de como notificación. Un tipo de aviso nuevo pedía rehacer la tabla de avisos, y la idea era verlo al planificar.
+  - **«Mi semana»** dice también la semana que viene y cuántas tareas tuyas no tienen estimación.
 
 ### C8 — Plantillas por tipo de equipo
 - Agencia, software (puntos), operaciones con turnos, consultoría, sin

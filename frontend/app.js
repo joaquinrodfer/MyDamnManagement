@@ -795,12 +795,45 @@ function seccionMiSemana(semana) {
     ? `${yo.tasks} ${yo.tasks === 1 ? "tarea" : "tareas"} con horas${yo.unscheduled ? ` · ${horasCortas(yo.unscheduled)} sin fechas` : ""}`
     : "Sin horas asignadas esta semana en bases de Proyectos o de Tareas.";
   fila.append(crearEl("small", "home-load-note", pie));
+  // C7: avisar antes de que llegue la semana que viene, y lo que falta estimar.
+  const sig = yo.next;
+  if (sig && sig.hours > 0 && sig.hours > sig.capacity) {
+    const aviso = crearEl("p", "home-load-alert");
+    aviso.innerHTML = svgIcon("i-alert");
+    aviso.append(
+      `La semana que viene tienes ${horasCortas(sig.hours)} para ${horasCortas(sig.capacity)}` +
+        (sig.capacity > 0 ? ` (${Math.round((sig.hours / sig.capacity) * 100)} %).` : "."),
+    );
+    fila.append(aviso);
+  } else if (sig) {
+    fila.append(crearEl("small", "home-load-note", `La semana que viene: ${horasCortas(sig.hours)} de ${horasCortas(sig.capacity)}.`));
+  }
+  if (yo.unestimated) {
+    fila.append(
+      crearEl(
+        "small",
+        "home-load-note",
+        `${yo.unestimated} ${yo.unestimated === 1 ? "tarea tuya no tiene" : "tareas tuyas no tienen"} estimación: no cuentan en la carga.`,
+      ),
+    );
+  }
   seccion.append(fila);
 
   const equipo = (semana?.team || []).filter((p) => p.id !== sessionUser.me?.id);
   if (equipo.length) {
     const lista = crearEl("div", "home-load-team");
     lista.append(crearEl("div", "home-task-group-head", "Equipo"));
+    const sobrecargados = equipo.filter((p) => p.next_hours > 0 && p.next_hours > p.next_capacity);
+    if (sobrecargados.length) {
+      const aviso = crearEl("p", "home-load-alert");
+      aviso.innerHTML = svgIcon("i-alert");
+      aviso.append(
+        sobrecargados.length === 1
+          ? `${sobrecargados[0].name} pasa de su capacidad la semana que viene.`
+          : `${sobrecargados.length} personas pasan de su capacidad la semana que viene: ${sobrecargados.map((p) => p.name).join(", ")}.`,
+      );
+      lista.append(aviso);
+    }
     equipo
       .slice()
       .sort((a, b) => b.hours / (b.capacity || 1) - a.hours / (a.capacity || 1))
@@ -13657,13 +13690,31 @@ function cerrarSelectorDePersona({ foco = false } = {}) {
  * que hace que `is_empty` del filtro sirva—. Elegir guarda por el mismo PATCH
  * que cualquier otra celda.
  */
+// La carga de esta semana de cada persona, para elegir responsable (C7). Se
+// pide como mucho una vez por minuto.
+let cargaSemanalCache = { at: 0, datos: null };
+async function cargaDeEstaSemana() {
+  if (cargaSemanalCache.datos && Date.now() - cargaSemanalCache.at < 60000) return cargaSemanalCache.datos;
+  const datos = await api("/workload/week");
+  cargaSemanalCache = { at: Date.now(), datos };
+  return datos;
+}
+
 async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
   if (selectorDePersona) return;
   cerrarSelectorDeRelacion();
   let gente = [];
   let error = "";
+  // En la columna del responsable de una base que cuenta para la carga, la
+  // carga de cada uno esta semana junto a su nombre (C7).
+  const esResponsable =
+    ["tasks", "workload"].includes(database?.kind?.type) && database.kind.roles?.assignee === prop.key;
+  let carga = null;
   try {
-    gente = await cargarPersonas({ forzar: true });
+    [gente, carga] = await Promise.all([
+      cargarPersonas({ forzar: true }),
+      esResponsable ? cargaDeEstaSemana().catch(() => null) : Promise.resolve(null),
+    ]);
   } catch (e) {
     // Con una lista ya cargada, se sigue con ella: elegir a alguien de un
     // directorio de hace un rato es mejor que no poder elegir.
@@ -13796,6 +13847,17 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
       const suyo = document.createElement("span");
       suyo.className = "rel-picker-option-base";
       suyo.textContent = esVacio ? "la celda queda vacía" : `@${persona.username || "usuario"}`;
+      const suCarga = !esVacio && carga?.people?.[String(persona.id)];
+      if (suCarga) {
+        const pct = suCarga.capacity > 0 ? suCarga.hours / suCarga.capacity : suCarga.hours > 0 ? Infinity : 0;
+        const pastilla = crearEl(
+          "span",
+          `person-load ${pct > 1 ? "person-load--over" : pct >= 0.7 ? "person-load--warn" : ""}`.trim(),
+          `${horasCortas(suCarga.hours)} / ${horasCortas(suCarga.capacity)}`,
+        );
+        pastilla.title = "Su carga esta semana frente a su capacidad";
+        suyo.append(" · ", pastilla);
+      }
       opcion.append(titulo, suyo);
       if (marcada) {
         const marca = document.createElement("span");
