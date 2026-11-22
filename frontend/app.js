@@ -22881,8 +22881,19 @@ function setSidebarCollapsed(collapsed, { animar = false } = {}) {
   clearTimeout(sidebarSaliendo);
   sidebarSaliendo = null;
   layoutEl.classList.remove("sidebar-entering", "sidebar-leaving");
+  // Fijarla mientras asoma: la tarjeta flotante CRECE hasta ser la columna
+  // (sin desaparecer y volver a entrar). Se mide dónde está ahora.
+  const crecer = !collapsed && animar && asomando() && !sinMovimiento.matches && !esMovil();
+  const mainEl = crecer ? document.querySelector(".layout > .workspace") : null;
+  const antes = crecer ? barraAside.getBoundingClientRect() : null;
+  const mainAntes = mainEl?.getBoundingClientRect();
   // Fijarla o plegarla acaba con el asomo: deja de flotar.
   terminarAsomo({ animar: false });
+  if (crecer) {
+    layoutEl.classList.remove("sidebar-collapsed");
+    crecerBarraDesde(antes, mainEl, mainAntes);
+    return;
+  }
   if (!animar || sinMovimiento.matches || esMovil()) {
     layoutEl.classList.toggle("sidebar-collapsed", collapsed);
     return;
@@ -22899,6 +22910,40 @@ function setSidebarCollapsed(collapsed, { animar = false } = {}) {
     layoutEl.classList.remove("sidebar-leaving");
     layoutEl.classList.add("sidebar-collapsed");
   }, SIDEBAR_SALIDA_MS - 40);
+}
+
+/** La tarjeta que asomaba (en `antes`) se estira hasta la columna fija: su
+ * esquina sube hasta arriba y crece hacia abajo y a la derecha, a la vez que
+ * el contenido se desplaza para dejarle sitio (técnica FLIP: se pinta ya en su
+ * sitio final y se anima desde donde estaba). */
+function crecerBarraDesde(antes, mainEl, mainAntes) {
+  const despues = barraAside.getBoundingClientRect();
+  const dx = antes.left - despues.left;
+  const dy = antes.top - despues.top;
+  const derecha = Math.max(0, despues.width - antes.width);
+  const abajo = Math.max(0, despues.height - antes.height);
+  const tiempo = { duration: 280, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" };
+  // Mientras crece va por delante del contenido, que se desliza por debajo.
+  barraAside.style.position = "relative";
+  barraAside.style.zIndex = "30";
+  const animacion = barraAside.animate(
+    [
+      { transform: `translate(${dx}px, ${dy}px)`, clipPath: `inset(0px ${derecha}px ${abajo}px 0px round 12px)` },
+      { transform: "translate(0, 0)", clipPath: "inset(0px 0px 0px 0px round 0px)" },
+    ],
+    tiempo,
+  );
+  const limpiar = () => {
+    barraAside.style.position = "";
+    barraAside.style.zIndex = "";
+  };
+  animacion.addEventListener("finish", limpiar);
+  animacion.addEventListener("cancel", limpiar);
+  if (mainEl && mainAntes) {
+    const mainDespues = mainEl.getBoundingClientRect();
+    const corrimiento = mainAntes.left - mainDespues.left;
+    if (corrimiento) mainEl.animate([{ transform: `translateX(${corrimiento}px)` }, { transform: "translateX(0)" }], tiempo);
+  }
 }
 
 /** ¿La barra está (o va camino de estar) oculta? Durante la salida todavía no
