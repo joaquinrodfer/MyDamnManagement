@@ -277,6 +277,35 @@ def me(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = D
     return me_dict(conn, user)
 
 
+@router.get("/me/permissions")
+def my_permissions(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)):
+    """«Qué puedo hacer» (plan de roles, R5): mi rol, mis espacios con su rol
+    (directo o por un grupo) y mis permisos con su origen."""
+    from app import grants
+
+    espacios = []
+    for r in conn.execute(
+        "SELECT w.id, w.name, w.settings, m.role, m.subject_type, g.name AS group_name"
+        " FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id"
+        " LEFT JOIN groups g ON m.subject_type = 'group' AND g.id = m.subject_id"
+        " WHERE (m.subject_type = 'user' AND m.subject_id = ?)"
+        " OR (m.subject_type = 'group' AND m.subject_id IN (SELECT group_id FROM group_members WHERE user_id = ?))"
+        " ORDER BY w.name COLLATE NOCASE",
+        (user.id, user.id),
+    ):
+        if ws_mod.is_personal(r):
+            continue
+        espacios.append({
+            "id": r["id"], "name": r["name"], "role": r["role"],
+            "via": "group" if r["subject_type"] == "group" else "user", "group_name": r["group_name"],
+        })
+    return {
+        "is_admin": user.is_admin,
+        "workspaces": espacios,
+        "capabilities": grants.explain(conn, user),
+    }
+
+
 @router.patch("/me")
 def update_me(
     payload: MeUpdateRequest,

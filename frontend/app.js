@@ -1782,20 +1782,97 @@ async function cargarAdministracionDeEspacios() {
   try {
     // Los que puedo gestionar: el administrador ve también los ajenos (no
     // personales) por fuera, sin entrar en ellos. La barra usa los míos.
-    const [lista, mios, grupos, usuarios] = await Promise.all([
+    const [lista, mios, grupos, usuarios, permisos] = await Promise.all([
       api("/workspaces?manage=1"),
       api("/workspaces"),
       api("/groups"),
       api("/auth/users").catch(() => []),
+      sessionUser.me?.is_admin ? api("/grants").catch(() => null) : Promise.resolve(null),
     ]);
     state.workspaces = mios;
     pintarSelectorDeEspacio();
-    caja.replaceChildren(...lista.map((w) => tarjetaDeEspacio(w, grupos, usuarios)), formularioDeEspacioNuevo());
+    caja.replaceChildren(...lista.map((w) => tarjetaDeEspacio(w, grupos, usuarios, permisos)), formularioDeEspacioNuevo());
     cajaGrupos.replaceChildren(...grupos.map((g) => tarjetaDeGrupo(g, usuarios)), formularioDeGrupoNuevo());
   } catch (e) {
     if (e?.status === 401) return;
     setFormNote(wsNota, e?.message || "No se pudieron leer los espacios.", "error");
   }
+}
+
+// --------------------------------------- qué puedo hacer (plan de roles, R5)
+
+/** Perfil → «Qué puedo hacer»: mi rol, mis espacios y mis permisos con su origen. */
+async function pintarQuePuedoHacer() {
+  const caja = document.getElementById("profile-perms");
+  if (!caja) return;
+  caja.replaceChildren(crearEl("p", "form-note", "Cargando…"));
+  let d;
+  try {
+    d = await api("/auth/me/permissions");
+  } catch (e) {
+    caja.replaceChildren(crearEl("p", "form-note form-error", describeError(e)));
+    return;
+  }
+  const origen = (x) => (x.via === "group" ? `por el grupo ${x.group_name || "(borrado)"}` : "directo");
+  const bloque = (titulo) => {
+    const b = crearEl("div", "perm-mine-block");
+    b.append(crearEl("p", "perm-mine-label", titulo));
+    return b;
+  };
+
+  const rol = bloque("Rol");
+  const lineaRol = crearEl("div", "perm-mine-role");
+  const icono = crearEl("span", "perm-icon");
+  icono.innerHTML = svgIcon(d.is_admin ? "i-shield" : "i-user");
+  const textos = crearEl("div", "perm-texts");
+  textos.append(
+    crearEl("strong", "perm-title", d.is_admin ? "Administrador" : "Usuario"),
+    crearEl(
+      "span",
+      "perm-help",
+      d.is_admin
+        ? "Gestionas usuarios, grupos, espacios y permisos. No ves lo privado de nadie: solo lo tuyo y lo que te compartan."
+        : "Ves tus espacios y lo que te compartan. Lo tuyo privado no lo ve nadie más, tampoco el administrador.",
+    ),
+  );
+  lineaRol.append(icono, textos);
+  rol.append(lineaRol);
+
+  const espacios = bloque("Espacios");
+  const lista = crearEl("ul", "perm-list");
+  if (!d.workspaces.length) lista.append(crearEl("li", "perm-empty", "No estás en ningún espacio compartido."));
+  for (const w of d.workspaces) {
+    const fila = crearEl("li", "perm-row");
+    const nombre = crearEl("span", "perm-subject");
+    nombre.append(crearEl("span", "perm-name", w.name), crearEl("span", "perm-via", origen(w)));
+    fila.append(nombre, crearEl("span", "perm-scope", ROLES_DE_ESPACIO[w.role] || w.role));
+    lista.append(fila);
+  }
+  espacios.append(lista);
+
+  const permisos = bloque("Permisos");
+  if (!d.capabilities.length) {
+    permisos.append(crearEl("p", "form-note", "Ninguno. Los concede un administrador (ver carga, gestionar personas, festivos, auditoría o copias)."));
+  }
+  for (const c of d.capabilities) {
+    const tarjeta = crearEl("div", "perm-card");
+    const cabeza = crearEl("div", "perm-head");
+    const ic = crearEl("span", "perm-icon");
+    ic.innerHTML = svgIcon(CAPACIDAD_ICONOS[c.key] || "i-key");
+    const tx = crearEl("div", "perm-texts");
+    tx.append(crearEl("strong", "perm-title", c.label), crearEl("span", "perm-help", c.help));
+    cabeza.append(ic, tx);
+    const chips = crearEl("div", "perm-chips");
+    for (const g of c.grants) {
+      const chip = crearEl("span", g.workspace_id ? "perm-scope" : "perm-scope perm-scope--all", g.workspace_id ? g.workspace_name : "Todos los espacios");
+      chip.title = origen(g);
+      chips.append(chip);
+      if (g.via === "group") chips.append(crearEl("span", "perm-via", origen(g)));
+    }
+    tarjeta.append(cabeza, chips);
+    permisos.append(tarjeta);
+  }
+  caja.replaceChildren(rol, espacios, permisos);
 }
 
 // ------------------------------------------- permisos (plan de roles, R2)
@@ -1994,7 +2071,7 @@ function iconoDeEspacio(w) {
   return el;
 }
 
-function tarjetaDeEspacio(w, grupos, usuarios) {
+function tarjetaDeEspacio(w, grupos, usuarios, permisos = null) {
   const det = crearEl("details", "ws-card");
   if (w.personal_of) det.classList.add("ws-personal"); // el mismo violeta que en la barra
   const resumen = crearEl("summary");
@@ -2010,12 +2087,12 @@ function tarjetaDeEspacio(w, grupos, usuarios) {
   det.addEventListener("toggle", () => {
     if (!det.open || cargado) return;
     cargado = true;
-    pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios);
+    pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios, permisos);
   });
   return det;
 }
 
-async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
+async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios, permisos = null) {
   cuerpo.replaceChildren();
   // Gestiona el administrador del espacio y, si no es personal, el de la
   // instalación (sin ser miembro: cambia miembros y ajustes, no lee páginas).
@@ -2166,6 +2243,9 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios) {
   // webhook saliente (plan H9): solo el administrador del espacio
   if (esAdminDelEspacio) cuerpo.append(seccionDeWebhook(w));
 
+  // Quién tiene permisos sobre este espacio (R5): los de este y los de todos.
+  if (permisos && !w.personal_of) cuerpo.append(seccionDePermisosDelEspacio(w, permisos));
+
   // borrar (solo el superadministrador)
   if (sessionUser.me?.is_admin) {
     const borrar = crearEl("button", "btn btn-danger", "Borrar espacio");
@@ -2194,6 +2274,25 @@ const EVENTOS_DE_WEBHOOK = {
 
 /** El webhook saliente de un espacio (plan H9): URL, eventos, secreto (se enseña
  * una vez), envío de prueba y los últimos envíos. */
+function seccionDePermisosDelEspacio(w, permisos) {
+  const caja = crearEl("div", "ws-webhook");
+  caja.append(crearEl("strong", "", "Permisos sobre este espacio"));
+  const lista = crearEl("div", "ws-perms");
+  for (const c of permisos.capabilities.filter((c) => c.scoped)) {
+    const quien = permisos.grants.filter((g) => g.capability === c.key && (g.workspace_id === w.id || !g.workspace_id));
+    if (!quien.length) continue;
+    const fila = crearEl("div", "ws-perms-row");
+    fila.append(
+      crearEl("strong", "", `${c.label}:`),
+      crearEl("span", "", quien.map((g) => `${g.subject_name}${g.subject_type === "group" ? " (grupo)" : ""}${g.workspace_id ? "" : " · todos"}`).join(", ")),
+    );
+    lista.append(fila);
+  }
+  if (!lista.children.length) lista.append(crearEl("p", "form-note", "Nadie tiene permisos sobre este espacio."));
+  caja.append(lista, crearEl("p", "form-note", "Se cambian en Ajustes → Permisos."));
+  return caja;
+}
+
 function seccionDeWebhook(w) {
   const caja = crearEl("div", "ws-webhook");
   caja.append(crearEl("strong", "", "Webhook saliente"));
@@ -3812,6 +3911,7 @@ function prepararPerfil() {
   if (usuario) usuario.textContent = me ? `@${me.username}` : "tu usuario";
   document.getElementById("btn-save-profile").disabled = false;
   selectorDePerfil.fijar(me?.avatar);
+  pintarQuePuedoHacer();
   setFormNote(profileAvatarNote, PROFILE_AVATAR_NOTE);
 }
 

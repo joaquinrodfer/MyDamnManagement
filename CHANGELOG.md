@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Qué puedo hacer (plan de roles, R5)
+- **Ajustes → Perfil → Qué puedo hacer:** tu rol, tus espacios (con tu rol en cada uno, y si es directo o por un grupo) y tus permisos, con dónde valen y de dónde te vienen.
+- **Ajustes → Espacios:** cada ficha dice quién tiene permisos sobre ese espacio.
+- Los textos de ayuda dejan claro que el administrador gestiona, pero no lee lo privado de nadie.
+
 ## Ver carga por espacio (plan de roles R4, C2 de la carga)
 - «Ver carga» se puede dar para uno o varios espacios: quien lo tiene ve a las personas de esos espacios, con todo lo suyo junto (lo de espacios que no ve sale como «Proyecto privado»).
 - La Carga del equipo tiene un selector **Espacio**: solo lo de ese espacio y la capacidad de cada persona según su dedicación a él (una persona al 60 % en Desarrollo cuenta 24 h de 40).
