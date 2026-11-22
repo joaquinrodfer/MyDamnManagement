@@ -2240,6 +2240,9 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios, permisos = nul
     cuerpo.append(etiqueta);
   }
 
+  // cómo cuenta la carga en el espacio (plan de la carga, C4 y C5)
+  if (esAdminDelEspacio && !w.personal_of) cuerpo.append(seccionDeCargaDelEspacio(w));
+
   // webhook saliente (plan H9): solo el administrador del espacio
   if (esAdminDelEspacio) cuerpo.append(seccionDeWebhook(w));
 
@@ -2290,6 +2293,97 @@ function seccionDePermisosDelEspacio(w, permisos) {
   }
   if (!lista.children.length) lista.append(crearEl("p", "form-note", "Nadie tiene permisos sobre este espacio."));
   caja.append(lista, crearEl("p", "form-note", "Se cambian en Ajustes → Permisos."));
+  return caja;
+}
+
+const UNIDADES_DE_ESFUERZO = [
+  ["hours", "Horas", null],
+  ["days", "Días", 8],
+  ["points", "Puntos", 4],
+  ["sizes", "Tallas (S, M, L…)", null],
+  ["tasks", "Número de tareas", 4],
+];
+
+/** Ficha del espacio → «Carga»: la unidad de esfuerzo y el semáforo (C4, C5). */
+function seccionDeCargaDelEspacio(w) {
+  const actual = { unit: "hours", hours_per_unit: null, sizes: { XS: 1, S: 2, M: 4, L: 8, XL: 16 }, default_hours: 0, warn: 70, over: 100, under: 0, ...(w.settings?.workload || {}) };
+  const caja = crearEl("div", "ws-webhook ws-carga");
+  caja.append(
+    crearEl("strong", "", "Carga del espacio"),
+    crearEl("p", "form-note", "Cómo se mide el esfuerzo de las tareas de este espacio y cuándo se pone en amarillo o en rojo la carga al mirarlo solo."),
+  );
+  const rejilla = crearEl("div", "ws-carga-grid");
+  const numero = (valor, min, max, paso = "0.5") => {
+    const i = crearEl("input", "wt-num");
+    i.type = "number";
+    i.min = String(min);
+    i.max = String(max);
+    i.step = paso;
+    if (valor != null) i.value = String(valor);
+    return i;
+  };
+  const unidad = crearEl("select");
+  for (const [v, t] of UNIDADES_DE_ESFUERZO) unidad.add(new Option(t, v, false, v === actual.unit));
+  const equivalencia = numero(actual.hours_per_unit, 0.1, 200);
+  const campoEquiv = campoDeCarga("Horas por unidad", equivalencia);
+  const tallas = crearEl("input");
+  tallas.type = "text";
+  tallas.value = Object.entries(actual.sizes).map(([k, v]) => `${k}=${v}`).join(", ");
+  tallas.placeholder = "S=2, M=4, L=8";
+  const campoTallas = campoDeCarga("Tallas (talla=horas)", tallas, "wt-span");
+  const porDefecto = numero(actual.default_hours, 0, 200);
+  const amarillo = numero(actual.warn, 0, 500, "1");
+  const rojo = numero(actual.over, 0, 500, "1");
+  const bajo = numero(actual.under, 0, 500, "1");
+  const pintarCampos = () => {
+    const def = UNIDADES_DE_ESFUERZO.find(([v]) => v === unidad.value);
+    campoEquiv.hidden = !def?.[2];
+    equivalencia.placeholder = def?.[2] ? String(def[2]) : "";
+    campoTallas.hidden = unidad.value !== "sizes";
+  };
+  unidad.addEventListener("change", pintarCampos);
+  pintarCampos();
+  rejilla.append(
+    campoDeCarga("Unidad de esfuerzo", unidad),
+    campoEquiv,
+    campoTallas,
+    campoDeCarga("Sin estimar cuenta (h)", porDefecto),
+    campoDeCarga("Amarillo desde (%)", amarillo),
+    campoDeCarga("Rojo por encima de (%)", rojo),
+    campoDeCarga("Bajo por debajo de (%)", bajo),
+  );
+  const nota = crearEl("p", "form-note");
+  const guardar = crearEl("button", "btn", "Guardar la carga");
+  guardar.type = "button";
+  guardar.addEventListener("click", async () => {
+    const mapa = {};
+    for (const parte of tallas.value.split(",")) {
+      const [k, v] = parte.split("=").map((x) => x.trim());
+      if (k && v && !Number.isNaN(Number(v.replace(",", ".")))) mapa[k] = Number(v.replace(",", "."));
+    }
+    const carga = {
+      unit: unidad.value,
+      hours_per_unit: equivalencia.value ? Number(equivalencia.value) : null,
+      default_hours: Number(porDefecto.value || 0),
+      warn: Number(amarillo.value || 70),
+      over: Number(rojo.value || 100),
+      under: Number(bajo.value || 0),
+      ...(Object.keys(mapa).length ? { sizes: mapa } : {}),
+    };
+    guardar.disabled = true;
+    try {
+      const nuevo = await api(`/workspaces/${w.id}`, { method: "PATCH", body: JSON.stringify({ settings: { workload: carga } }) });
+      w.settings = nuevo.settings;
+      setFormNote(nota, "Guardado. La carga ya cuenta así.", "ok");
+    } catch (e) {
+      setFormNote(nota, describeError(e), "error");
+    } finally {
+      guardar.disabled = false;
+    }
+  });
+  const acciones = crearEl("div", "ws-row");
+  acciones.append(guardar);
+  caja.append(rejilla, acciones, nota);
   return caja;
 }
 
@@ -5003,10 +5097,12 @@ function pintarCarga(caja, datos) {
 
   const leyenda = crearEl("div", "carga-leyenda");
   if (conCapacidad) {
+    const u = datos.thresholds || { warn: 70, over: 100, under: 0 };
     leyenda.innerHTML =
-      '<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el 70 %</span>' +
-      '<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>70–100 %</span>' +
-      '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>';
+      (u.under ? `<span><i style="background:color-mix(in srgb, var(--accent) 35%, transparent)"></i>por debajo del ${u.under} %</span>` : "") +
+      `<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el ${u.warn} %</span>` +
+      `<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>${u.warn}–${u.over} %</span>` +
+      `<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>más del ${u.over} %</span>`;
   }
   const nombreEspacio = (datos.workspaces || []).find((w) => w.id === datos.workspace_id)?.name;
   const ambito = [
@@ -5095,7 +5191,7 @@ function pintarCarga(caja, datos) {
       if (h > 0) {
         if (cap != null) {
           const ratio = cap > 0 ? h / cap : Infinity;
-          valor.classList.add(ratio > 1 ? "carga-celda--over" : ratio >= 0.7 ? "carga-celda--warn" : "carga-celda--ok");
+          valor.classList.add(claseDeSemaforo(ratio, datos.thresholds));
           boton.title = cap > 0 ? `${Math.round(ratio * 100)} % de ${fmtHorasJornada(cap)}` : "Sin horas disponibles";
         } else {
           valor.classList.add("carga-celda--neutral");
@@ -5128,6 +5224,16 @@ function pintarCarga(caja, datos) {
 
   // --- huecos
   caja.append(pintarHuecosDeCarga(datos));
+}
+
+/** El semáforo con los umbrales del espacio (C5): rojo, amarillo, bajo o bien. */
+function claseDeSemaforo(ratio, umbrales) {
+  const u = umbrales || { warn: 70, over: 100, under: 0 };
+  const pct = ratio * 100;
+  if (pct > u.over) return "carga-celda--over";
+  if (pct >= u.warn) return "carga-celda--warn";
+  if (u.under && pct < u.under) return "carga-celda--under";
+  return "carga-celda--ok";
 }
 
 function hoyDeCarga(escala, hoyIso) {
@@ -21658,13 +21764,14 @@ async function openTemplateDialog() {
 /** Los roles de cada tipo de base: tipo de columna que piden, si son
  * opcionales y qué hacen (plan H4). Espejo de `app/kinds.py`. */
 const ROLES_DE_TIPO = {
-  tasks: ["assignee", "status", "start", "end", "hours", "project"],
+  tasks: ["assignee", "status", "start", "end", "hours", "project", "size"],
   projects: ["assignee", "status", "start", "end", "estimate"],
 };
 const TIPO_DE_COLUMNA_DE_ROL = {
   assignee: "person", status: "select", start: "date", end: "date", hours: "number", project: "relation", estimate: "number",
+  size: "select",
 };
-const OPCIONALES_DE_ROL = new Set(["project", "estimate"]);
+const OPCIONALES_DE_ROL = new Set(["project", "estimate", "size"]);
 const AYUDA_DE_ROL = {
   assignee: "Quién hace el trabajo. Con varias personas, las horas se reparten como elijas más abajo.",
   status: "En qué punto está. Sus grupos (Pendiente, En curso, Hecho…) dicen qué cuenta como terminado.",
@@ -21673,6 +21780,7 @@ const AYUDA_DE_ROL = {
   hours: "Cuántas horas cuesta. Se reparten entre los días laborables, de inicio a fin.",
   project: "A qué proyecto pertenece (opcional). Las horas de sus tareas suman en el proyecto.",
   estimate: "Las horas que se prevén para el proyecto (opcional); se comparan con la suma de sus tareas.",
+  size: "Una talla (S, M, L…) que vale unas horas, si el espacio mide el esfuerzo en tallas (opcional).",
 };
 
 /** El diálogo del tipo de una base de Proyectos o de Tareas: qué columna hace de
@@ -21753,28 +21861,39 @@ async function abrirDialogoDeTipo(database) {
       .catch(() => {});
   }
   let reparto = database.kind.options?.hours_split || "full";
+  let enElTiempo = database.kind.options?.spread || "uniform";
   if (tipo === "tasks") {
-    const grupo = crearEl("fieldset", "kind-split");
-    grupo.append(crearEl("legend", "prop-field-label", "Horas con varios responsables"));
-    for (const [valor, texto, ayuda] of [
-      ["full", "Completas a cada uno", "Cada responsable cuenta todas las horas de la tarea."],
-      ["equal", "A partes iguales", "Las horas se dividen entre los responsables."],
-    ]) {
-      const etiqueta = crearEl("label", "kind-split-opt");
-      const radio = crearEl("input");
-      radio.type = "radio";
-      radio.name = "kind-split";
-      radio.value = valor;
-      radio.checked = reparto === valor;
-      radio.addEventListener("change", () => {
-        reparto = valor;
-      });
-      const texto2 = crearEl("span");
-      texto2.append(crearEl("strong", "", texto), crearEl("span", "prop-field-hint", ayuda));
-      etiqueta.append(radio, texto2);
-      grupo.append(etiqueta);
-    }
-    dialog.append(grupo);
+    const grupoDeRadios = (leyenda, nombre, opciones, actual, alCambiar) => {
+      const grupo = crearEl("fieldset", "kind-split");
+      grupo.append(crearEl("legend", "prop-field-label", leyenda));
+      for (const [valor, texto, ayuda] of opciones) {
+        const etiqueta = crearEl("label", "kind-split-opt");
+        const radio = crearEl("input");
+        radio.type = "radio";
+        radio.name = nombre;
+        radio.value = valor;
+        radio.checked = actual === valor;
+        radio.addEventListener("change", () => alCambiar(valor));
+        const texto2 = crearEl("span");
+        texto2.append(crearEl("strong", "", texto), crearEl("span", "prop-field-hint", ayuda));
+        etiqueta.append(radio, texto2);
+        grupo.append(etiqueta);
+      }
+      return grupo;
+    };
+    dialog.append(
+      grupoDeRadios("Horas con varios responsables", "kind-split", [
+        ["full", "Completas a cada uno", "Cada responsable cuenta todas las horas de la tarea."],
+        ["equal", "A partes iguales", "Las horas se dividen entre los responsables."],
+        ["dedication", "Según la dedicación", "Cada uno, en proporción a lo que dedica a este espacio."],
+      ], reparto, (v) => (reparto = v)),
+      grupoDeRadios("Horas en el tiempo", "kind-spread", [
+        ["uniform", "Repartidas", "Por igual en los días de trabajo de inicio a fin."],
+        ["start", "Al principio", "Todas el primer día de trabajo del rango."],
+        ["end", "Al final", "Todas el último día de trabajo del rango."],
+        ["due", "El día de entrega", "Todas en la fecha de fin, sea o no laborable."],
+      ], enElTiempo, (v) => (enElTiempo = v)),
+    );
   }
   dialog.append(aviso);
   const acciones = crearEl("div", "dialog-actions");
@@ -21801,7 +21920,10 @@ async function abrirDialogoDeTipo(database) {
   });
   guardar.addEventListener("click", async () => {
     const roles = {};
-    const cuerpo = { type: tipo, options: tipo === "tasks" ? { hours_split: reparto } : undefined };
+    const cuerpo = {
+      type: tipo,
+      options: tipo === "tasks" ? { hours_split: reparto, ...(enElTiempo !== "uniform" || database.kind.options?.spread ? { spread: enElTiempo } : {}) } : undefined,
+    };
     for (const rol of ROLES_DE_TIPO[tipo]) {
       const v = selects[rol].value;
       if (v === "__crear__") {
@@ -21892,12 +22014,17 @@ function abrirMenuDeTipo(ancla, database) {
       itemDeColumna("Completas a cada uno", {
         radio: true,
         marca: actual === "full" ? "✓" : "",
-        alElegir: () => poner({ type: "tasks", options: { hours_split: "full" } }, "Cada responsable cuenta las horas completas."),
+        alElegir: () => poner({ type: "tasks", options: { ...database.kind.options, hours_split: "full" } }, "Cada responsable cuenta las horas completas."),
       }),
       itemDeColumna("A partes iguales", {
         radio: true,
         marca: actual === "equal" ? "✓" : "",
-        alElegir: () => poner({ type: "tasks", options: { hours_split: "equal" } }, "Las horas se reparten a partes iguales entre los responsables."),
+        alElegir: () => poner({ type: "tasks", options: { ...database.kind.options, hours_split: "equal" } }, "Las horas se reparten a partes iguales entre los responsables."),
+      }),
+      itemDeColumna("Según la dedicación", {
+        radio: true,
+        marca: actual === "dedication" ? "✓" : "",
+        alElegir: () => poner({ type: "tasks", options: { ...database.kind.options, hours_split: "dedication" } }, "Las horas se reparten según lo que cada responsable dedica al espacio."),
       }),
     );
   } else if (database.kind.type === "projects" && !database.kind.roles?.estimate) {
@@ -21933,6 +22060,7 @@ const ETIQUETAS_DE_ROL = {
   hours: "Horas",
   project: "Proyecto",
   estimate: "Estimación",
+  size: "Talla",
 };
 function rolDeColumna(database, clave) {
   const roles = database?.kind?.roles;

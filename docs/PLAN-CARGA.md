@@ -83,15 +83,23 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   - Debajo, «Sin fecha» y «Sin estimar».
   - El CSV lleva fila, periodo, horas, capacidad y %. Va separado por «;» y con BOM, para Excel en español.
 
-### C4 — Unidad de esfuerzo
+### C4 — Unidad de esfuerzo (hecho)
 - Por espacio: horas, días, puntos (con equivalencia en horas), tallas
   (S/M/L… = X h) o número de tareas.
 - Peso por defecto para las tareas sin estimar.
+- **Cómo quedó:** en la ficha del espacio (Ajustes → Espacios), «Carga del espacio». Se guarda en `settings.workload` (`app/effort.py`).
+  - Las tallas usan una columna opcional «Talla» (rol `size`, de tipo selección) de la base de Tareas. Si no hay talla, el número de la columna de esfuerzo cuenta como horas.
+  - «Número de tareas» cuenta cada tarea abierta como N horas.
+  - Las tareas sin estimar con peso por defecto cuentan, y siguen saliendo en «Sin estimar».
 
-### C5 — Reglas por espacio y por base
+### C5 — Reglas por espacio y por base (hecho)
 - Umbrales del semáforo (p. ej. 80 / 100 / 120 %) y aviso de infrautilización.
 - Reparto en el tiempo: uniforme, al principio, al final, en el día de entrega.
 - Reparto entre responsables: completas, a partes iguales o % de dedicación.
+- **Cómo quedó:**
+  - **Umbrales:** amarillo desde, rojo por encima de e infrautilizado por debajo de (0 = sin aviso), en la misma sección del espacio. La vista los usa al filtrar por ese espacio; sin filtro, 70 y 100 %.
+  - **Reparto en el tiempo** (`spread`: repartidas, al principio, al final, el día de entrega) y **reparto según la dedicación** (`hours_split: dedication`): en el diálogo «Tipo de base…».
+  - `spread` solo se escribe en el `.md` si se cambia.
 
 ### C6 — Cualquier base cuenta
 - Una base de cualquier tipo puede contar para la carga declarando qué

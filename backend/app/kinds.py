@@ -20,8 +20,10 @@ Se declara en el frontmatter de la base, como la regla de «cerrado»:
 - `roles`: `{rol: clave de la propiedad}`. Las columnas de un rol **se pueden
   renombrar y ocultar, pero no borrar ni cambiar de tipo** mientras la base
   tenga el tipo (`check_schema`): se quitaría lo que el cálculo necesita.
-- `options`: ajustes del tipo (en Tareas, cómo se reparten las horas entre
-  varios responsables: `full` = completas a cada uno, `equal` = a partes iguales).
+- `options`: ajustes del tipo. En Tareas, `hours_split` (cómo se reparten las
+  horas entre varios responsables: `full` = completas a cada uno, `equal` = a
+  partes iguales, `dedication` = según su dedicación al espacio) y `spread`
+  (cómo se reparten en el tiempo: `uniform`, `start`, `end`, `due`; C5).
 
 Una fecha de la plantilla es un par de columnas (Inicio y Fin): la propiedad
 `date` del motor guarda un día, no un rango.
@@ -45,6 +47,7 @@ ROLE_TYPES = {
     "hours": "number",
     "project": "relation",
     "estimate": "number",
+    "size": "select",
 }
 
 ROLE_LABELS = {
@@ -55,6 +58,7 @@ ROLE_LABELS = {
     "hours": "Horas",
     "project": "Proyecto",
     "estimate": "Estimación (h)",
+    "size": "Talla",
 }
 
 # Nombres que suelen llevar esas columnas en bases ya hechas, para proponer la
@@ -67,6 +71,7 @@ ROLE_SYNONYMS = {
     "hours": ("horas", "esfuerzo", "estimación", "estimacion", "hours", "effort", "puntos"),
     "project": ("proyecto", "project"),
     "estimate": ("estimación", "estimacion", "horas estimadas", "presupuesto", "estimate"),
+    "size": ("talla", "tamaño", "tamano", "size", "t-shirt"),
 }
 
 # La ficha de cada tipo: roles obligatorios y opcionales y opciones con su valor
@@ -81,12 +86,19 @@ SPECS: dict[str, dict[str, Any]] = {
     "tasks": {
         "title": "Tareas",
         "required": ("assignee", "status", "start", "end", "hours"),
-        "optional": ("project",),
+        "optional": ("project", "size"),
         "options": {"hours_split": "full"},
+        # Opciones que solo se escriben si se cambian (sin ellas, lo de siempre).
+        "extra_options": {"spread": "uniform"},
     },
 }
 
-HOURS_SPLITS = ("full", "equal")
+# Cómo se reparten las horas entre varios responsables (C5): completas a cada
+# uno, a partes iguales o según la dedicación de cada uno al espacio.
+HOURS_SPLITS = ("full", "equal", "dedication")
+# Cómo se reparten en el tiempo (C5): por igual en los días de trabajo del
+# rango, todo el primero, todo el último o todo el día de entrega.
+SPREADS = ("uniform", "start", "end", "due")
 
 # Estados de partida de las bases tipadas, ya organizados en grupos (H3).
 DEFAULT_STATUS_OPTIONS = ["Por hacer", "En curso", "Bloqueada", "En revisión", "Hecha"]
@@ -155,10 +167,12 @@ def validate_options(kind_type: str, options: Any) -> dict[str, Any]:
     if not isinstance(options, dict):
         _fail("las opciones del tipo van como un objeto")
     for key, value in options.items():
-        if key not in base:
+        if key not in base and key not in spec(kind_type).get("extra_options", {}):
             _fail(f"el tipo {kind_type} no tiene la opción {key!r}")
         if key == "hours_split" and value not in HOURS_SPLITS:
-            _fail("hours_split es «full» (horas completas a cada uno) o «equal» (a partes iguales)")
+            _fail("hours_split es «full» (completas a cada uno), «equal» (a partes iguales) o «dedication» (según la dedicación)")
+        if key == "spread" and value not in SPREADS:
+            _fail("spread es «uniform», «start», «end» o «due»")
         base[key] = value
     return base
 

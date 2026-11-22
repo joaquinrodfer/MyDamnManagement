@@ -2,6 +2,16 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Reglas de la carga por espacio y por base (plan de la carga, C4 y C5)
+- **Unidad de esfuerzo por espacio** (Ajustes → Espacios → «Carga del espacio»):
+  - horas, días, puntos o número de tareas, con su equivalencia en horas;
+  - tallas (S, M, L… = X h), con una columna «Talla» en la base de Tareas.
+- **Tareas sin estimar:** se les puede dar un peso por defecto. Siguen saliendo en «Sin estimar» para que no se olviden.
+- **Semáforo por espacio:** desde qué % se pone amarillo, por encima de cuál rojo y, si quieres, un aviso de «por debajo» (infrautilización). Se aplica al mirar la carga de ese espacio.
+- **En cada base de Tareas** («Tipo de base…»):
+  - las horas con varios responsables se pueden repartir **según la dedicación** de cada uno al espacio;
+  - en el tiempo, las horas pueden ir repartidas, al principio, al final o el día de entrega.
+
 ## Carga del equipo, vista nueva (plan de la carga, C3)
 - **Escala:** por día, semana o mes, con ‹ Hoy › para moverse.
 - **Ver por:** persona, grupo, espacio o proyecto. Por persona o grupo, cada celda dice las horas frente a la capacidad real (jornada menos festivos y ausencias) con el semáforo; los días sin trabajo salen rayados.
