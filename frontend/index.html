@@ -6152,6 +6152,14 @@
   .carga-hueco[open] > summary { margin-bottom: 10px; }
   .carga-hueco strong { color: var(--ink); font-size: 13.5px; }
 
+  /* ---------- ayudas para planificar (C7) ---------- */
+  .person-load { font-variant-numeric: tabular-nums; color: var(--ink-muted); }
+  .person-load--warn { color: var(--warn); font-weight: 600; }
+  .person-load--over { color: var(--down); font-weight: 600; }
+  .home-load-alert { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-md); font-size: 12.5px; color: var(--ink); background: color-mix(in srgb, var(--down) 12%, transparent); border: 1px solid color-mix(in srgb, var(--down) 30%, transparent); }
+  .home-load-alert .svg-icon { width: 15px; height: 15px; flex: none; color: var(--down); margin-top: 1px; }
+  .home-load-note + .home-load-note { display: block; margin-top: 2px; }
+
   /* ---------- panel de avisos ---------- */
   .avisos-head { padding: 12px 14px 10px; font-size: 14px; }
   .avisos-todo {

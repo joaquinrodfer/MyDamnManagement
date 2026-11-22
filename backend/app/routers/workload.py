@@ -16,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app import acl, auth, effort, grants, workload, workload_grid
+from app import acl, auth, effort, grants, workload, workload_grid, worktime
 from app import workspaces as ws_mod
 from app.due import server_today
 from app.dependencies import get_current_user, get_repo
@@ -111,6 +111,38 @@ def get_workload_grid(
     informe["thresholds"] = effort.thresholds(cfg)
     informe["unit"] = {"key": cfg["unit"], "label": effort.UNITS[cfg["unit"]][0], "hours": effort.per_unit(cfg)}
     return informe
+
+
+@router.get("/workload/week")
+def get_week_load(
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """La carga de esta semana de cada persona, para elegir responsable (C7).
+
+    Solo de quien se puede ver: con «Ver carga», las personas de esos espacios
+    (o todas); sin él, solo uno mismo. Sin títulos: horas y capacidad."""
+    alcance = grants.scopes(repo.conn, user, "view_workload")
+    if alcance is None:
+        personas = None
+    else:
+        personas = grants.people_in(repo.conn, alcance) | {str(user.id)}
+    informe = workload.report(
+        repo.conn, visible=acl.visible_ids(repo.conn, user), today=server_today(), weeks=1, people=personas,
+    )
+    semana = informe["weeks"][0]
+    salida = {
+        p["id"]: {"hours": p["weeks"].get(semana, 0.0), "capacity": p["capacity_weeks"].get(semana, p["capacity"])}
+        for p in informe["people"]
+    }
+    # Quien no tiene nada esta semana también sale (con 0), si se le puede ver.
+    calendario = worktime.Calendar(repo.conn)
+    lunes = date.fromisoformat(semana)
+    for (uid,) in repo.conn.execute("SELECT id FROM users"):
+        if uid in salida or (personas is not None and uid not in personas):
+            continue
+        salida[uid] = {"hours": 0.0, "capacity": calendario.week(uid, lunes)["capacity"]}
+    return {"week": semana, "people": salida}
 
 
 @router.put("/workload/capacity/{user_id}")

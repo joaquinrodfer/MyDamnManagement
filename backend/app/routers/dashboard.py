@@ -108,9 +108,10 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
     Lo que quien pregunta no puede ver sale enmascarado, como en `/workload`.
     """
     informe = workload.report(
-        repo.conn, visible=acl.visible_ids(repo.conn, user), today=server_today(), weeks=1
+        repo.conn, visible=acl.visible_ids(repo.conn, user), today=server_today(), weeks=2
     )
-    semana = informe["weeks"][0]
+    semana, siguiente = informe["weeks"][0], informe["weeks"][1]
+    calendario = worktime.Calendar(repo.conn)
     yo = next((p for p in informe["people"] if p["id"] == str(user.id)), None)
     salida = {
         "week": semana,
@@ -120,9 +121,19 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
             # ausencias (una semana de vacaciones es capacidad 0).
             "capacity": (yo or {}).get("capacity_weeks", {}).get(semana)
             if yo
-            else worktime.Calendar(repo.conn).week(str(user.id), date.fromisoformat(semana))["capacity"],
+            else calendario.week(str(user.id), date.fromisoformat(semana))["capacity"],
             "tasks": (yo or {}).get("tasks", 0),
             "unscheduled": (yo or {}).get("unscheduled", 0.0),
+            # C7: lo que no tiene estimación y la semana que viene (para avisar
+            # de una sobrecarga antes de que llegue).
+            "unestimated": (yo or {}).get("unestimated", 0),
+            "next": {
+                "week": siguiente,
+                "hours": (yo or {}).get("weeks", {}).get(siguiente, 0.0),
+                "capacity": (yo or {}).get("capacity_weeks", {}).get(siguiente)
+                if yo
+                else calendario.week(str(user.id), date.fromisoformat(siguiente))["capacity"],
+            },
         },
         "team": None,
     }
@@ -137,6 +148,8 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
                 "avatar": p["avatar"],
                 "hours": p["weeks"].get(semana, 0.0),
                 "capacity": p["capacity_weeks"].get(semana, p["capacity"]),
+                "next_hours": p["weeks"].get(siguiente, 0.0),
+                "next_capacity": p["capacity_weeks"].get(siguiente, p["capacity"]),
             }
             for p in informe["people"]
             if dentro is None or p["id"] in dentro
