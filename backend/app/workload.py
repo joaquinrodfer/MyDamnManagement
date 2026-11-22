@@ -219,8 +219,15 @@ def report(
     visible: Optional[set[str]],
     today: date,
     weeks: int = 8,
+    people: Optional[set[str]] = None,
+    workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """La carga del equipo: ventana de `weeks` semanas desde la de `today`."""
+    """La carga del equipo: ventana de `weeks` semanas desde la de `today`.
+
+    - `people`: solo estas personas (quien ve la carga de unos espacios ve a
+      sus miembros, con todo lo suyo junto). `None`, todas.
+    - `workspace_id`: solo lo de ese espacio, y la capacidad de cada persona
+      por su dedicación a él (sin declarar, el 100 %)."""
     weeks = max(1, min(weeks, MAX_WEEKS))
     first = monday(today)
     window = [first + timedelta(weeks=i) for i in range(weeks)]
@@ -235,6 +242,10 @@ def report(
 
     per_person: dict[str, dict[str, Any]] = {}
     for piece in pieces(conn, visible, calendar):
+        if people is not None and piece["person_id"] not in people:
+            continue
+        if workspace_id is not None and piece["workspace_id"] != workspace_id:
+            continue
         piece = piece if piece["visible"] else mask(piece)
         piece.pop("visible", None)
         pid = piece["person_id"]
@@ -274,9 +285,12 @@ def report(
     people = []
     for row in per_person.values():
         row["tasks"] = len(row["tasks"])
+        parte = calendar.dedication(row["id"], workspace_id) / 100 if workspace_id else 1.0
+        if workspace_id:
+            row["capacity"] = round(row["capacity"] * parte, 2)
         for w, k in zip(window, keys):
             semana = calendar.week(row["id"], w)
-            row["capacity_weeks"][k] = semana["capacity"]
+            row["capacity_weeks"][k] = round(semana["capacity"] * parte, 2)
             if semana["holidays"] or semana["absences"]:
                 row["time_off"][k] = {"holidays": semana["holidays"], "absences": semana["absences"]}
         row["weeks"] = {k: round(v, 2) for k, v in row["weeks"].items()}

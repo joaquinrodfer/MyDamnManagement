@@ -2,6 +2,16 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Ver carga por espacio (plan de roles R4, C2 de la carga)
+- «Ver carga» se puede dar para uno o varios espacios: quien lo tiene ve a las personas de esos espacios, con todo lo suyo junto (lo de espacios que no ve sale como «Proyecto privado»).
+- La Carga del equipo tiene un selector **Espacio**: solo lo de ese espacio y la capacidad de cada persona según su dedicación a él (una persona al 60 % en Desarrollo cuenta 24 h de 40).
+- El equipo de «Mi semana», en el inicio, sigue la misma regla.
+
+## Gestionar personas (plan de roles, R3)
+- El botón **Jornada** (en Usuarios y en la Carga del equipo) solo sale para las personas que gestionas: todas, si tienes «Gestionar personas» en todos los espacios, o las de tus espacios.
+- Quien tiene «Gestionar personas» sin ser administrador ve en Ajustes el apartado **Usuarios** con esas personas y su jornada, sin poder dar de alta usuarios.
+- El tipo y la nota de una ausencia (una baja es un dato de salud) solo los ven la persona y quien la gestiona; en la carga solo cuentan los días.
+
 ## Permisos que se conceden (plan de roles, R2)
 - **Ajustes → Administración → Permisos:** cinco permisos que se dan a personas o a grupos, en todos los espacios o en uno: **Gestionar personas**, **Ver carga**, **Gestionar festivos**, **Ver auditoría** y **Copias de seguridad**. Conceder y retirar queda en la auditoría.
 - Ser administrador ya no los trae: gestiona usuarios, grupos, espacios y permisos. Los administradores que había los reciben todos, de forma explícita y retirable, para que nada cambie; uno nuevo empieza sin ninguno.

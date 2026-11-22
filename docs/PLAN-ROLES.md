@@ -95,14 +95,22 @@ Sigue siendo así:
   - El campo viejo `can_view_global_workload` del alta y la edición de usuarios se sigue aceptando y se traduce a «Ver carga» en todos.
   - Los festivos de un espacio, además de su administrador, los gestiona quien tiene «Gestionar festivos» en él, desde Ajustes → Calendario laboral.
 
-### R3 — «Gestionar personas» y la privacidad de las ausencias
+### R3 — «Gestionar personas» y la privacidad de las ausencias (hecho)
 - **Alcance:** jornada, dedicación y ausencias de otros, solo de las personas de los espacios del permiso.
 - **El tipo y la nota de una ausencia** solo los ven la persona y quien la gestiona. En la carga y en el resto sale «Ausente».
 - **Interfaz:** el botón «Jornada» de la lista de usuarios y el de la carga solo salen a quien tiene el permiso.
+- **Cómo quedó:**
+  - `GET /worktime/people` dice a quién gestiona cada uno; la carga marca cada persona con `manageable`.
+  - Quien tiene el permiso sin ser administrador ve en Ajustes el apartado «Usuarios» solo con las personas que gestiona y su «Jornada», sin el alta de usuarios.
+  - La carga solo cuenta los días de ausencia, nunca el tipo ni la nota; los ve la persona y quien la gestiona (`/absences`, `/worktime/users/{id}`).
 
-### R4 — «Ver carga» por espacio (es C2)
+### R4 — «Ver carga» por espacio (es C2) (hecho)
 - **Qué ve:** a las personas de esos espacios, combinada y por espacio y proyecto, con la dedicación aplicada al mirar un solo espacio.
-- **Sustituye** a `can_view_global_workload`, que se borra.
+- **Sustituye** a `can_view_global_workload`: desde R2 ya no se usa; la columna se queda sin leer y el campo del alta se traduce al permiso.
+- **Cómo quedó:**
+  - Con el permiso en unos espacios, la carga enseña a sus miembros con todo lo suyo junto; lo de espacios que no ve sale como «Proyecto privado [Espacio]».
+  - Un selector «Espacio» en la carga (`/workload?workspace=`) deja solo lo de ese espacio, con la capacidad de cada persona por su dedicación a él.
+  - El equipo de «Mi semana» del inicio sigue la misma regla.
 
 ### R5 — Que se entienda
 - **En el perfil de cada usuario,** «Qué puedo hacer»: su rol, sus permisos y de dónde le vienen (directo o por un grupo).

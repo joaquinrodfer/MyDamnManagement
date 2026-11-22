@@ -61,7 +61,7 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   y gratuito, sin clave): nacionales y autonómicos. Los locales, por .ics o a
   mano.
 
-### C2 — Permiso «Ver carga»
+### C2 — Permiso «Ver carga» (hecho, como R4)
 > Se hace dentro del plan de roles: fase R4 de `PLAN-ROLES.md`.
 
 - Se concede a un usuario o a un grupo, para uno o varios espacios (o todos:

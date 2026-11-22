@@ -85,6 +85,31 @@ def _ficha(repo: Repository, user_id: str) -> dict:
     }
 
 
+@router.get("/worktime/people")
+def manageable_people(
+    repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """Las personas cuya jornada, dedicación y ausencias puedo gestionar
+    («Gestionar personas»: todas, o las de los espacios del permiso). Sin el
+    permiso, lista vacía."""
+    alcance = grants.scopes(repo.conn, user, "manage_people")
+    filas = repo.conn.execute(
+        "SELECT id, username, display_name, color, avatar FROM users ORDER BY display_name COLLATE NOCASE"
+    ).fetchall()
+    if alcance is not None:
+        dentro = grants.people_in(repo.conn, alcance)
+        filas = [r for r in filas if r["id"] in dentro]
+    return {
+        "all": alcance is None,
+        "people": [
+            {"id": r["id"], "username": r["username"], "display_name": r["display_name"],
+             "color": r["color"], "avatar": auth.avatar_of(r)}
+            for r in filas
+        ],
+    }
+
+
 @router.get("/worktime/users/{user_id}")
 def get_worktime(
     user_id: str,
