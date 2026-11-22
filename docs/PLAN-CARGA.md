@@ -70,12 +70,18 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
   y desglosada por espacio y proyecto. Cada persona sigue viendo siempre la
   suya.
 
-### C3 — Nueva vista de la carga
+### C3 — Nueva vista de la carga (hecho)
 - Escala: día, semana, mes. Agrupación: general, por espacio, por proyecto,
   por persona (y por grupo).
 - Mapa de calor persona × periodo con el semáforo; al pulsar una celda, las
   tareas que la llenan.
 - Huecos visibles: «sin fecha» y «sin estimar». Exportar a CSV.
+- **Cómo quedó:** `GET /workload/grid?scale=&group=&start=&periods=&workspace=`, con los mismos permisos que `/workload`.
+  - Día (14 por defecto), semana (8) o mes (6), con ‹ Hoy › para moverse.
+  - Por persona, grupo, espacio o proyecto. El semáforo solo sale por persona o grupo: por espacio o proyecto no hay una capacidad con la que comparar.
+  - Al pulsar una celda, se ven las tareas que la llenan, con enlace a cada una.
+  - Debajo, «Sin fecha» y «Sin estimar».
+  - El CSV lleva fila, periodo, horas, capacidad y %. Va separado por «;» y con BOM, para Excel en español.
 
 ### C4 — Unidad de esfuerzo
 - Por espacio: horas, días, puntos (con equivalencia en horas), tallas

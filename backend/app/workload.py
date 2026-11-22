@@ -113,8 +113,12 @@ def pieces(
     conn: sqlite3.Connection,
     visible: Optional[set[str]],
     calendar: Optional[worktime.Calendar] = None,
+    by_day: bool = False,
 ) -> list[dict[str, Any]]:
     """Todas las piezas de carga (sin enmascarar los títulos que no se ven).
+
+    Con `by_day`, una pieza por persona, tarea y DÍA (con `day`), para la
+    vista por días y meses (C3); `estimated` dice si la tarea tiene horas.
 
     Las horas de cada persona se reparten en los días que ESA persona trabaja
     (`worktime.Calendar.spread`: su jornada, sin festivos ni ausencias) y se
@@ -178,6 +182,22 @@ def pieces(
         share = t["hours"] / len(t["people"]) if t["split"] == "equal" else t["hours"]
         project_title = titles.get(t["projects"][0]) if t["projects"] else None
         for person in t["people"]:
+            if by_day:
+                for dia, h in calendar.spread(person, t["start"], t["end"], share) or [(None, 0.0)]:
+                    out.append({
+                        "person_id": person,
+                        "workspace_id": t["workspace_id"], "workspace_name": t["workspace_name"],
+                        "project": project_title, "project_id": t["projects"][0] if t["projects"] else None,
+                        "base_id": t["base_id"], "base_title": t["base_title"],
+                        "row_id": t["row_id"], "row_title": t["row_title"],
+                        "day": dia.isoformat() if dia else None,
+                        "hours": round(h, 4),
+                        "estimated": t["hours"] > 0,
+                        "start": t["start"].isoformat() if t["start"] else None,
+                        "end": t["end"].isoformat() if t["end"] else None,
+                        "visible": t["visible"],
+                    })
+                continue
             por_semana: dict[Optional[date], float] = defaultdict(float)
             for dia, h in calendar.spread(person, t["start"], t["end"], share) or [(None, 0.0)]:
                 por_semana[monday(dia) if dia else None] += h
