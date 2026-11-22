@@ -2,6 +2,9 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## «Apunta algo» desde cualquier sitio
+- **Abajo del panel izquierdo**, siempre a mano, un botón «Apunta algo». Lo que escribas va a la bandeja con Intro, como en el inicio.
+- **Con el panel cerrado**, un botón flotante «+» abajo a la izquierda hace lo mismo. En el móvil no cambia nada.
 ## Ayudas para planificar (plan de la carga, C7)
 - **Al elegir responsable** de una tarea, junto a cada persona sale su carga de esta semana frente a su capacidad («32 h / 40 h»), en amarillo o rojo si va justa o pasada. Solo de quien puedes ver la carga; sin el permiso, solo la tuya.
 - **«Mi semana»**, en el inicio, avisa si la semana que viene vas a pasarte de tu capacidad, y lo mismo con las personas del equipo que ves. También dice cuántas tareas tuyas no tienen estimación.

@@ -706,6 +706,24 @@ function capturaDeInicio() {
   return form;
 }
 
+/** «Apunta algo» desde cualquier sitio: el botón de abajo del panel o, con el
+ * panel cerrado, el «+» flotante. Abre la misma captura que el inicio. */
+function abrirApunta(ancla) {
+  if (ancla.getAttribute("aria-expanded") === "true") {
+    cerrarPanelDeColumna();
+    return;
+  }
+  const panel = crearEl("div", "db-col-menu apunta-panel");
+  panel.setAttribute("role", "dialog");
+  const form = capturaDeInicio();
+  panel.append(form, crearEl("p", "apunta-panel-nota", "Intro lo guarda en la bandeja. Esc cierra."));
+  const input = form.querySelector("input");
+  abrirPanelFlotante(ancla, panel, { etiqueta: "Apunta algo", foco: "input" });
+  setTimeout(() => input?.focus(), 0);
+}
+document.getElementById("btn-apunta")?.addEventListener("click", (e) => abrirApunta(e.currentTarget));
+document.getElementById("btn-apunta-fab")?.addEventListener("click", (e) => abrirApunta(e.currentTarget));
+
 /** La línea de resumen bajo el saludo: lo que hay que mirar hoy. */
 function resumenDeInicio(datos) {
   const counts = datos.tasks?.counts || {};

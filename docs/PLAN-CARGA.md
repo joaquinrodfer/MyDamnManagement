@@ -125,7 +125,7 @@ Gana el más concreto. Sin tocar nada, los valores de hoy.
 ## Para más adelante (anotado, no planificado)
 
 - **Replantear los roles:** ya planificado en `PLAN-ROLES.md` (2026-11-22).
-- **Botón de «Apunta algo» en el panel izquierdo:** abajo a la izquierda del
-  panel desplegado. Con el panel cerrado, un botón flotante con «+» abajo a la
-  izquierda que hace lo mismo.
+- **Botón de «Apunta algo» en el panel izquierdo** (hecho, 2026-11-22): abajo
+  del panel desplegado. Con el panel cerrado, un botón flotante con «+» abajo
+  a la izquierda que hace lo mismo. En el móvil no sale.
 - Horas reales (registro de tiempo): descartado por ahora.

@@ -6152,6 +6152,23 @@
   .carga-hueco[open] > summary { margin-bottom: 10px; }
   .carga-hueco strong { color: var(--ink); font-size: 13.5px; }
 
+  /* «Apunta algo» (abajo del panel y, con el panel cerrado, flotante) */
+  #nav-sections { flex: 1 0 auto; }
+  .sidebar-footer { position: sticky; bottom: 0; padding: 8px 10px 10px; background: var(--panel); border-top: 1px solid color-mix(in srgb, var(--panel-border) 70%, transparent); }
+  .sidebar-apunta { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: var(--radius-md); border: 1px dashed var(--panel-border); background: none; color: var(--ink-muted); font: inherit; font-size: 13px; cursor: pointer; }
+  .sidebar-apunta:hover { color: var(--ink); background: var(--menu-hover); border-style: solid; }
+  .sidebar-apunta:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .sidebar-apunta .svg-icon { width: 16px; height: 16px; }
+  .apunta-fab { display: none; position: fixed; left: 18px; bottom: 18px; z-index: 40; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--panel-border); background: var(--accent); color: var(--accent-contrast, #fff); box-shadow: var(--shadow-card); cursor: pointer; align-items: center; justify-content: center; }
+  .apunta-fab .svg-icon { width: 20px; height: 20px; }
+  .apunta-fab:hover { filter: brightness(1.08); }
+  .apunta-fab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .layout.sidebar-collapsed:not(.sidebar-peek) > .apunta-fab { display: inline-flex; }
+  @media (max-width: 768px) { .apunta-fab, .sidebar-footer { display: none !important; } }
+  .apunta-panel { padding: 10px; width: 340px; max-width: calc(100vw - 24px); }
+  .apunta-panel .home-capture { margin: 0; }
+  .apunta-panel .home-capture input:focus, .apunta-panel .home-capture input:focus-visible { outline: none; box-shadow: none; }
+  .apunta-panel-nota { margin: 6px 2px 0; font-size: 11.5px; color: var(--ink-muted); }
   /* ---------- ayudas para planificar (C7) ---------- */
   .person-load { font-variant-numeric: tabular-nums; color: var(--ink-muted); }
   .person-load--warn { color: var(--warn); font-weight: 600; }
@@ -6942,7 +6959,18 @@
 
       </div>
 
+      <!-- «Apunta algo»: siempre abajo del panel; lo que escribas va a la
+           bandeja. Con el panel cerrado, el botón flotante «+» hace lo mismo. -->
+      <div class="sidebar-footer">
+        <button type="button" class="sidebar-apunta" id="btn-apunta" aria-haspopup="dialog" aria-expanded="false">
+          <svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Apunta algo</span>
+        </button>
+      </div>
+
     </aside>
+    <button type="button" class="apunta-fab" id="btn-apunta-fab" aria-haspopup="dialog" aria-expanded="false" aria-label="Apunta algo" title="Apunta algo">
+      <svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>
+    </button>
 
     <!-- Fondo del cajón en móvil (P14): tapa el contenido y, al tocarlo, cierra
          la barra. En escritorio este div no está (lo esconde el CSS). -->
