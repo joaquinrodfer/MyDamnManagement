@@ -6628,6 +6628,15 @@
   .perm-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .perm-form select { flex: 1 1 180px; min-width: 0; }
   .perm-fixed { flex: 1 1 140px; font-size: 12.5px; color: var(--ink-muted); }
+  .perm-mine { display: flex; flex-direction: column; gap: 14px; }
+  .perm-mine-block { display: flex; flex-direction: column; gap: 6px; }
+  .perm-mine-label { margin: 0; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-muted); }
+  .perm-mine-role { display: flex; gap: 12px; align-items: flex-start; }
+  .perm-via { font-size: 12px; color: var(--ink-muted); }
+  .perm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ws-perms { display: flex; flex-direction: column; gap: 6px; }
+  .ws-perms-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12.5px; }
+  .ws-perms-row strong { font-weight: 600; color: var(--ink); }
   .wt-card { border: 1px solid var(--panel-border); border-radius: 12px; padding: 14px; background: color-mix(in srgb, var(--bg) 30%, var(--surface-elevated)); }
   .wt-card-title { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--ink); }
   .wt-form-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: end; }
@@ -7192,6 +7201,13 @@
             </form>
           </div>
 
+          <!-- Qué puedo hacer (plan de roles, R5): rol, espacios y permisos con
+               su origen. -->
+          <div class="settings-group" id="profile-perms-group">
+            <h5>Qué puedo hacer</h5>
+            <div id="profile-perms" class="perm-mine"></div>
+          </div>
+
         </section>
 
         <section class="settings-section" data-section="tokens" aria-labelledby="settings-tokens-title" hidden>
@@ -7226,7 +7242,7 @@
         <!-- Administración (solo admin), un apartado por tema. -->
         <section class="settings-section" data-section="users" aria-labelledby="settings-users-title" hidden>
           <h4 id="settings-users-title">Usuarios</h4>
-          <p class="settings-lead">Quién entra en Notemil. La jornada, la dedicación y las ausencias de cada persona, en «Jornada».</p>
+          <p class="settings-lead">Quién entra en Notemil. Ser administrador sirve para gestionar usuarios, grupos y espacios, no para leer lo privado de nadie. La jornada, la dedicación y las ausencias de cada persona, en «Jornada», para quien tiene «Gestionar personas».</p>
           <div class="settings-group">
             <p class="form-note" id="users-note"></p>
             <div class="users-list" id="users-list"></div>

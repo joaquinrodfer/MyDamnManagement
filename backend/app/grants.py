@@ -245,3 +245,35 @@ def migrate_from_admins(conn: sqlite3.Connection) -> None:
             "SELECT id FROM users WHERE can_view_global_workload = 1 AND is_admin = 0"
         ).fetchall():
             grant(conn, "view_workload", "user", uid, None)
+
+
+def explain(conn: sqlite3.Connection, user: Any) -> list[dict[str, Any]]:
+    """Mis permisos y de dónde me vienen (plan de roles, R5): por cada permiso
+    que tengo, cada concesión con su alcance y si es directa o por un grupo."""
+    uid = str(getattr(user, "id", user))
+    cond, args = _subjects_sql(uid)
+    filas = conn.execute(
+        "SELECT g.capability, g.subject_type, gr.name AS group_name, g.workspace_id, w.name AS workspace_name"
+        " FROM grants g LEFT JOIN groups gr ON g.subject_type = 'group' AND gr.id = g.subject_id"
+        " LEFT JOIN workspaces w ON w.id = g.workspace_id"
+        f" WHERE {cond} ORDER BY g.workspace_id IS NOT NULL, w.name COLLATE NOCASE",
+        args,
+    ).fetchall()
+    salida = []
+    for key, label, ayuda, _scoped in CAPABILITIES:
+        propias = [f for f in filas if f["capability"] == key]
+        if not propias:
+            continue
+        salida.append({
+            "key": key, "label": label, "help": ayuda,
+            "grants": [
+                {
+                    "workspace_id": f["workspace_id"],
+                    "workspace_name": f["workspace_name"],
+                    "via": "group" if f["subject_type"] == "group" else "user",
+                    "group_name": f["group_name"],
+                }
+                for f in propias
+            ],
+        })
+    return salida

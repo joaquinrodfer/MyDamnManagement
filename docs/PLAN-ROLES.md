@@ -112,10 +112,14 @@ Sigue siendo así:
   - Un selector «Espacio» en la carga (`/workload?workspace=`) deja solo lo de ese espacio, con la capacidad de cada persona por su dedicación a él.
   - El equipo de «Mi semana» del inicio sigue la misma regla.
 
-### R5 — Que se entienda
+### R5 — Que se entienda (hecho)
 - **En el perfil de cada usuario,** «Qué puedo hacer»: su rol, sus permisos y de dónde le vienen (directo o por un grupo).
 - **En la ficha de un espacio,** quién tiene permisos sobre él.
 - **Textos de ayuda** que dejan claro que el administrador no lee lo privado.
+- **Cómo quedó:**
+  - En Ajustes → Perfil, «Qué puedo hacer» (`GET /auth/me/permissions`): rol, espacios con el rol en cada uno y si viene directo o por un grupo, y los permisos con su alcance y su origen.
+  - En Ajustes → Espacios, cada ficha dice quién tiene permisos sobre ese espacio (los de ese espacio y los de todos).
+  - Los textos de Usuarios, Permisos y del alta explican que el administrador gestiona pero no lee lo privado.
 
 ## Para más adelante (anotado, no planificado)
 
