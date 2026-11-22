@@ -1455,13 +1455,16 @@ function fijarPestana(n) {
  * hay sin leer (0 lo apaga). Lo llamará el panel de notificaciones cuando
  * exista; hasta entonces nadie lo enciende.
  */
+let avisosSinLeer = 0;
+let chatSinLeerTotal = 0; // lo pone el chat (`fijarSinLeerDelChat`)
 function fijarMarcaSinLeer(n) {
+  avisosSinLeer = Number(n) || 0;
   const marca = document.querySelector("#sidebar-brand .np-mark");
   const aviso = document.getElementById("brand-unread");
   const hay = Number(n) > 0;
   if (marca) marca.dataset.unread = hay ? "true" : "false";
   if (aviso) aviso.textContent = hay ? (n === 1 ? "1 aviso sin leer" : `${n} avisos sin leer`) : "";
-  fijarPestana(n);
+  fijarPestana(avisosSinLeer + chatSinLeerTotal);
 }
 
 /** Mis permisos concedidos (plan de roles, R2): `"all"`, una lista de espacios o nada. */
@@ -2302,6 +2305,30 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios, permisos = nul
     });
     etiqueta.append(chk, " Sus proyectos aceptan tareas de otros espacios");
     cuerpo.append(etiqueta);
+  }
+
+  // quién ve el canal de chat del espacio (docs/PLAN-CHAT.md)
+  if (esAdminDelEspacio && !w.personal_of) {
+    const sel = crearEl("select");
+    for (const [v, t] of [
+      ["viewer", "Todos los miembros (también lectores)"],
+      ["editor", "Editores y administradores"],
+      ["admin", "Solo administradores"],
+    ]) {
+      sel.add(new Option(t, v, false, v === (w.settings?.chat_min_role || "editor")));
+    }
+    sel.addEventListener("change", async () => {
+      try {
+        const nuevo = await api(`/workspaces/${w.id}`, { method: "PATCH", body: JSON.stringify({ settings: { chat_min_role: sel.value } }) });
+        w.settings = nuevo.settings;
+        setFormNote(wsNota, "Guardado: el chat del espacio lo ven ahora esas personas.", "ok");
+      } catch (e) {
+        setFormNote(wsNota, describeError(e), "error");
+      }
+    });
+    const campo = crearEl("label", "ws-row ws-chat-role");
+    campo.append(crearEl("span", "", "Quién ve el chat del espacio"), sel);
+    cuerpo.append(campo);
   }
 
   // cómo cuenta la carga en el espacio (plan de la carga, C4 y C5)
@@ -4802,7 +4829,23 @@ function pintarPresencia(datos) {
       const cuerpo = crearEl("div", "members-group-body");
       cuerpo.setAttribute("role", "list");
       cuerpo.hidden = !abierto;
-      for (const m of w.members) cuerpo.append(filaDeMiembro(m));
+      for (const m of w.members) {
+        const fila = filaDeMiembro(m);
+        if (m.you || !m.id) {
+          cuerpo.append(fila);
+          continue;
+        }
+        // «Escribir»: abre (o reutiliza) el directo con esa persona.
+        const linea = crearEl("div", "member-line");
+        const escribir = crearEl("button", "icon-btn member-chat-btn");
+        escribir.type = "button";
+        escribir.innerHTML = svgIcon("i-message");
+        escribir.title = `Escribir a ${m.display_name}`;
+        escribir.setAttribute("aria-label", `Escribir a ${m.display_name}`);
+        escribir.addEventListener("click", () => escribirA(m.id));
+        linea.append(fila, escribir);
+        cuerpo.append(linea);
+      }
       cab.addEventListener("click", () => {
         const p = gruposPlegados();
         cuerpo.hidden = !cuerpo.hidden;
@@ -4980,8 +5023,10 @@ function initAvisos() {
     await cargarAvisos();
   });
   cargarAvisos();
+  contarSinLeerDelChat();
   // Respaldo del canal de eventos: por si la conexión se cae sin que nadie se entere.
   setInterval(cargarAvisos, 60000);
+  setInterval(contarSinLeerDelChat, 60000);
 }
 
 /** «Avisos de esta página…» del «⋯»: lee el modo actual y abre el menú de avisos
@@ -9223,6 +9268,648 @@ function refrescarBaseAbierta() {
   }, 250);
 }
 
+// ======================================================= chat del equipo
+// docs/PLAN-CHAT.md. En el panel derecho, pestaña «Chat»: la lista de
+// conversaciones (canales de mis espacios y directos) o una abierta. Llega en
+// vivo por `/events` (`event: chat`).
+
+const CHAT_TAB_KEY = "notemil:panel-derecho";
+const chatUI = {
+  convs: [],
+  actual: null, // conversación abierta
+  mensajes: [],
+  hayMasAntes: false,
+  editando: null, // id del mensaje que se edita
+  vista: "lista", // lista | conversacion | nuevo
+  sinLeer: 0,
+};
+
+function chatVisible() {
+  return document.getElementById("chat-pane")?.hidden === false && !miembrosOcultos();
+}
+
+function mostrarPestanaLateral(nombre, { guardar = true, cargar = true } = {}) {
+  const esChat = nombre === "chat";
+  document.getElementById("side-tab-members")?.setAttribute("aria-selected", String(!esChat));
+  document.getElementById("side-tab-chat")?.setAttribute("aria-selected", String(esChat));
+  const lista = document.getElementById("members-list");
+  const panel = document.getElementById("chat-pane");
+  if (lista) lista.hidden = esChat;
+  if (panel) panel.hidden = !esChat;
+  document.getElementById("members-aside")?.classList.toggle("is-chat", esChat);
+  if (guardar) {
+    try {
+      localStorage.setItem(CHAT_TAB_KEY, nombre);
+    } catch {
+      /* sin almacenamiento */
+    }
+  }
+  if (esChat && cargar) {
+    if (chatUI.vista === "conversacion" && chatUI.actual) abrirConversacion(chatUI.actual.id);
+    else cargarChat();
+  }
+}
+
+document.getElementById("side-tab-members")?.addEventListener("click", () => mostrarPestanaLateral("members"));
+document.getElementById("side-tab-chat")?.addEventListener("click", () => mostrarPestanaLateral("chat"));
+
+/** Abre el panel derecho en el chat (desde «Escribir» de un miembro, por ejemplo). */
+function abrirPanelDeChat() {
+  if (miembrosOcultos()) setMiembrosOcultos(false, { animar: true });
+  mostrarPestanaLateral("chat");
+}
+
+function fijarSinLeerDelChat(n) {
+  chatUI.sinLeer = Number(n) || 0;
+  chatSinLeerTotal = chatUI.sinLeer;
+  const badge = document.getElementById("chat-badge");
+  if (badge) {
+    badge.hidden = chatUI.sinLeer <= 0;
+    badge.textContent = chatUI.sinLeer > 99 ? "99+" : String(chatUI.sinLeer);
+  }
+  fijarPestana(avisosSinLeer + chatUI.sinLeer);
+}
+
+async function contarSinLeerDelChat() {
+  try {
+    const r = await api("/chat/unread");
+    fijarSinLeerDelChat(r.unread);
+    const panel = document.getElementById("chat-pane");
+    if (panel && !panel.hidden && chatUI.vista === "lista") cargarChat();
+  } catch {
+    /* sin sesión o sin red: el contador se queda como estaba */
+  }
+}
+
+async function cargarChat() {
+  try {
+    chatUI.convs = await api("/chat/conversations");
+  } catch (e) {
+    if (chatUI.vista === "lista") pintarChatError(describeError(e));
+    return;
+  }
+  fijarSinLeerDelChat(chatUI.convs.reduce((n, c) => n + (c.unread || 0), 0));
+  if (chatUI.vista === "lista") pintarListaDeChat();
+}
+
+function pintarChatError(texto) {
+  document.getElementById("chat-pane")?.replaceChildren(crearEl("p", "chat-empty form-error", texto));
+}
+
+function inicialesDe(persona) {
+  return (persona?.display_name || persona?.username || "?").trim().charAt(0).toUpperCase();
+}
+
+function avatarDeChat(persona) {
+  const img = avatarImg(persona?.avatar, "");
+  if (img) return img;
+  const ini = crearEl("span", "chat-av-ini", inicialesDe(persona));
+  ini.style.background = persona?.color || "var(--ink-muted)";
+  return ini;
+}
+
+function horaDeChat(iso) {
+  const d = new Date(iso);
+  const hoy = new Date();
+  if (d.toDateString() === hoy.toDateString()) return d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+}
+
+function pintarListaDeChat() {
+  chatUI.vista = "lista";
+  const panel = document.getElementById("chat-pane");
+  if (!panel) return;
+  const cab = crearEl("div", "chat-list-head");
+  cab.append(crearEl("span", "home-task-group-head", "Conversaciones"));
+  const nuevo = crearEl("button", "icon-btn");
+  nuevo.type = "button";
+  nuevo.innerHTML = svgIcon("i-plus");
+  nuevo.title = "Mensaje directo nuevo";
+  nuevo.setAttribute("aria-label", "Mensaje directo nuevo");
+  nuevo.addEventListener("click", () => pintarSelectorDeGente());
+  cab.append(nuevo);
+  const lista = crearEl("div", "chat-list");
+  const canales = chatUI.convs.filter((c) => c.kind === "workspace");
+  const directos = chatUI.convs.filter((c) => c.kind === "direct");
+  if (!chatUI.convs.length) {
+    lista.append(crearEl("p", "chat-empty", "Aquí saldrán los canales de tus espacios y tus mensajes directos. Empieza uno con «+»."));
+  }
+  if (canales.length) lista.append(crearEl("div", "chat-section-label", "Espacios"));
+  for (const c of canales) lista.append(itemDeChat(c));
+  if (directos.length) lista.append(crearEl("div", "chat-section-label", "Directos"));
+  for (const c of directos) lista.append(itemDeChat(c));
+  panel.replaceChildren(cab, lista);
+}
+
+function itemDeChat(c) {
+  const b = crearEl("button", `chat-item${c.unread ? " has-unread" : ""}`);
+  b.type = "button";
+  if (c.kind === "workspace") {
+    b.append(iconoDeEspacio({ name: c.title }));
+  } else {
+    const yo = sessionUser.me?.id;
+    const otros = (c.members || []).filter((p) => p.id !== yo);
+    const avs = crearEl("span", `chat-item-avs${otros.length > 1 ? " is-group" : ""}`);
+    for (const p of (otros.length ? otros : c.members || []).slice(0, 2)) avs.append(avatarDeChat(p));
+    b.append(avs);
+  }
+  const texto = crearEl("span", "chat-item-text");
+  texto.append(crearEl("span", "chat-item-title", c.kind === "workspace" ? `# ${c.title}` : c.title));
+  let ultimo = "Sin mensajes todavía";
+  if (c.last) {
+    const quien = c.last.user_id === sessionUser.me?.id ? "Tú" : (c.last.author_name || "Alguien");
+    const limpio = (c.last.body || "")
+      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, t, a) => a || t)
+      .replace(/[*`>]/g, "")
+      .trim();
+    ultimo = c.last.deleted ? `${quien}: mensaje borrado` : `${quien}: ${limpio || "adjunto"}`;
+  }
+  texto.append(crearEl("span", "chat-item-last", ultimo));
+  const lado = crearEl("span", "chat-item-side");
+  if (c.last) lado.append(crearEl("span", "chat-item-time", horaDeChat(c.last.created_at)));
+  if (c.unread) lado.append(crearEl("span", "chat-badge", c.unread > 99 ? "99+" : String(c.unread)));
+  b.append(texto, lado);
+  b.addEventListener("click", () => abrirConversacion(c.id));
+  return b;
+}
+
+/** «Mensaje directo nuevo»: elegir personas y abrir (o reutilizar) el directo. */
+async function pintarSelectorDeGente(alElegir = null, titulo = "Mensaje directo nuevo") {
+  chatUI.vista = "nuevo";
+  const panel = document.getElementById("chat-pane");
+  if (!panel) return;
+  const cab = crearEl("div", "chat-conv-head");
+  const volver = crearEl("button", "icon-btn");
+  volver.type = "button";
+  volver.innerHTML = svgIcon("i-arrow-left");
+  volver.setAttribute("aria-label", "Volver");
+  volver.addEventListener("click", () => (chatUI.actual && alElegir ? abrirConversacion(chatUI.actual.id) : pintarListaDeChat()));
+  cab.append(volver, crearEl("span", "chat-conv-title", titulo));
+  const caja = crearEl("div", "chat-picker");
+  const buscar = crearEl("input");
+  buscar.type = "search";
+  buscar.placeholder = "Buscar persona…";
+  const lista = crearEl("div", "chat-picker-list");
+  const abrir = crearEl("button", "btn btn-primary", "Abrir conversación");
+  abrir.type = "button";
+  abrir.disabled = true;
+  const elegidas = new Set();
+  let gente = [];
+  try {
+    gente = (await cargarPersonas()).filter((p) => String(p.id) !== String(sessionUser.me?.id));
+  } catch (e) {
+    lista.append(crearEl("p", "chat-empty", describeError(e)));
+  }
+  const pintar = () => {
+    const q = plegarTexto(buscar.value.trim());
+    lista.replaceChildren();
+    for (const p of gente) {
+      if (q && !plegarTexto(`${p.display_name} ${p.username}`).includes(q)) continue;
+      const fila = crearEl("label", "chat-picker-opt");
+      const caja2 = crearEl("input");
+      caja2.type = "checkbox";
+      caja2.checked = elegidas.has(String(p.id));
+      caja2.addEventListener("change", () => {
+        if (caja2.checked) elegidas.add(String(p.id));
+        else elegidas.delete(String(p.id));
+        abrir.disabled = !elegidas.size;
+      });
+      fila.append(caja2, avatarDeChat(p), crearEl("span", "", p.display_name || p.username));
+      lista.append(fila);
+    }
+  };
+  buscar.addEventListener("input", pintar);
+  pintar();
+  abrir.addEventListener("click", async () => {
+    abrir.disabled = true;
+    try {
+      if (alElegir) await alElegir([...elegidas]);
+      else {
+        const conv = await api("/chat/direct", { method: "POST", body: JSON.stringify({ user_ids: [...elegidas] }) });
+        await abrirConversacion(conv.id);
+      }
+    } catch (e) {
+      reportError("No se pudo abrir la conversación", e);
+      abrir.disabled = false;
+    }
+  });
+  caja.append(buscar, lista, abrir);
+  panel.replaceChildren(cab, caja);
+  buscar.focus();
+}
+
+/** Abrir (o crear) el directo con una persona, desde «Miembros». */
+async function escribirA(personaId) {
+  try {
+    const conv = await api("/chat/direct", { method: "POST", body: JSON.stringify({ user_ids: [personaId] }) });
+    abrirPanelDeChat();
+    await abrirConversacion(conv.id);
+  } catch (e) {
+    reportError("No se pudo abrir la conversación", e);
+  }
+}
+
+async function abrirConversacion(id) {
+  const panel = document.getElementById("chat-pane");
+  if (!panel) return;
+  let conv = chatUI.convs.find((c) => c.id === id);
+  if (!conv) {
+    await cargarChat();
+    conv = chatUI.convs.find((c) => c.id === id);
+  }
+  if (!conv) {
+    pintarListaDeChat();
+    return;
+  }
+  chatUI.vista = "conversacion";
+  chatUI.actual = conv;
+  chatUI.editando = null;
+  let datos;
+  try {
+    datos = await api(`/chat/conversations/${id}/messages`);
+  } catch (e) {
+    pintarChatError(describeError(e));
+    return;
+  }
+  chatUI.mensajes = datos.messages;
+  chatUI.hayMasAntes = datos.messages.length >= 50;
+  pintarConversacion({ alFinal: true });
+  marcarLeida();
+}
+
+function marcarLeida() {
+  const c = chatUI.actual;
+  if (!c || !chatVisible()) return;
+  const ultimo = chatUI.mensajes[chatUI.mensajes.length - 1];
+  if (!c.unread && !ultimo) return;
+  api(`/chat/conversations/${c.id}/read`, { method: "POST", body: JSON.stringify({ last_id: ultimo?.id ?? null }) })
+    .then(() => {
+      c.unread = 0;
+      fijarSinLeerDelChat(chatUI.convs.reduce((n, x) => n + (x.unread || 0), 0));
+    })
+    .catch(() => {});
+}
+
+function pintarConversacion({ alFinal = false } = {}) {
+  const panel = document.getElementById("chat-pane");
+  const c = chatUI.actual;
+  if (!panel || !c) return;
+  const cab = crearEl("div", "chat-conv-head");
+  const volver = crearEl("button", "icon-btn");
+  volver.type = "button";
+  volver.innerHTML = svgIcon("i-arrow-left");
+  volver.setAttribute("aria-label", "Volver a las conversaciones");
+  volver.addEventListener("click", () => {
+    chatUI.actual = null;
+    pintarListaDeChat();
+    cargarChat();
+  });
+  const titulo = crearEl("span", "chat-conv-title", c.kind === "workspace" ? `# ${c.title}` : c.title);
+  if (c.kind === "workspace") {
+    const quien = { viewer: "Todos los miembros del espacio", editor: "Editores y administradores del espacio", admin: "Administradores del espacio" }[c.min_role] || "";
+    titulo.append(crearEl("span", "chat-conv-sub", quien));
+  } else {
+    titulo.append(crearEl("span", "chat-conv-sub", `${(c.members || []).length} personas`));
+  }
+  cab.append(volver, titulo);
+  if (c.kind === "direct") {
+    const anadir = crearEl("button", "icon-btn");
+    anadir.type = "button";
+    anadir.innerHTML = svgIcon("i-user-plus");
+    anadir.title = "Añadir personas";
+    anadir.setAttribute("aria-label", "Añadir personas");
+    anadir.addEventListener("click", () =>
+      pintarSelectorDeGente(async (ids) => {
+        await api(`/chat/conversations/${c.id}/members`, { method: "POST", body: JSON.stringify({ user_ids: ids }) });
+        await cargarChat();
+        await abrirConversacion(c.id);
+      }, "Añadir personas"),
+    );
+    const salir = crearEl("button", "icon-btn");
+    salir.type = "button";
+    salir.innerHTML = svgIcon("i-logout");
+    salir.title = "Salir de la conversación";
+    salir.setAttribute("aria-label", "Salir de la conversación");
+    salir.addEventListener("click", async () => {
+      if (!confirm("¿Salir de esta conversación? Dejarás de verla.")) return;
+      try {
+        await api(`/chat/conversations/${c.id}/members/me`, { method: "DELETE" });
+        chatUI.actual = null;
+        await cargarChat();
+        pintarListaDeChat();
+      } catch (e) {
+        reportError("No se pudo salir", e);
+      }
+    });
+    cab.append(anadir, salir);
+  }
+  const caja = crearEl("div", "chat-msgs");
+  caja.setAttribute("role", "log");
+  caja.setAttribute("aria-live", "polite");
+  if (chatUI.hayMasAntes) {
+    const mas = crearEl("button", "btn chat-more", "Mensajes anteriores");
+    mas.type = "button";
+    mas.addEventListener("click", () => cargarAnteriores(caja));
+    caja.append(mas);
+  }
+  pintarMensajes(caja);
+  if (!chatUI.mensajes.length) caja.append(crearEl("p", "chat-empty", "Todavía no hay mensajes. Escribe el primero."));
+  panel.replaceChildren(cab, caja, compositorDeChat());
+  if (alFinal) caja.scrollTop = caja.scrollHeight;
+}
+
+async function cargarAnteriores(caja) {
+  const primero = chatUI.mensajes[0];
+  if (!primero) return;
+  const alto = caja.scrollHeight;
+  try {
+    const datos = await api(`/chat/conversations/${chatUI.actual.id}/messages?before=${primero.id}`);
+    chatUI.mensajes = [...datos.messages, ...chatUI.mensajes];
+    chatUI.hayMasAntes = datos.messages.length >= 50;
+  } catch (e) {
+    reportError("No se pudieron cargar más mensajes", e);
+    return;
+  }
+  pintarConversacion();
+  const nueva = document.querySelector("#chat-pane .chat-msgs");
+  if (nueva) nueva.scrollTop = nueva.scrollHeight - alto;
+}
+
+function pintarMensajes(caja) {
+  let anterior = null;
+  for (const m of chatUI.mensajes) {
+    const dia = new Date(m.created_at).toDateString();
+    if (!anterior || new Date(anterior.created_at).toDateString() !== dia) {
+      caja.append(
+        crearEl("div", "chat-day", new Date(m.created_at).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })),
+      );
+      anterior = null;
+    }
+    const seguido =
+      anterior && anterior.user_id === m.user_id && new Date(m.created_at) - new Date(anterior.created_at) < 5 * 60 * 1000;
+    caja.append(mensajeDeChat(m, !seguido));
+    anterior = m;
+  }
+}
+
+/** Texto de un mensaje: Markdown corto, sin HTML de quien escribe. */
+function htmlDeChat(texto) {
+  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const enLinea = (t) => {
+    let h = esc(t);
+    h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    h = h.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    h = h.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    h = h.replace(/\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)]/g, (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+    h = h.replace(/\[\[([^\]|\n]+)(?:\|([^\]\n]+))?\]\]/g, (_m, t, a) => `<a href="#" class="chat-page-link" data-title="${t.trim()}">${a ? a.trim() : t.trim()}</a>`);
+    h = h.replace(/(^|[^\w@])@([A-Za-z0-9_.-]{2,40})/g, '$1<span class="chat-mention">@$2</span>');
+    return h;
+  };
+  const lineas = texto.split("\n");
+  const partes = [];
+  let cita = [];
+  const cerrarCita = () => {
+    if (cita.length) partes.push(`<blockquote>${cita.map(enLinea).join("\n")}</blockquote>`);
+    cita = [];
+  };
+  for (const l of lineas) {
+    if (/^&gt;|^>/.test(l)) cita.push(l.replace(/^>\s?/, ""));
+    else {
+      cerrarCita();
+      partes.push(enLinea(l));
+    }
+  }
+  cerrarCita();
+  return partes.join("\n").replace(/<\/blockquote>\n/g, "</blockquote>");
+}
+
+function mensajeDeChat(m, primero) {
+  const fila = crearEl("div", `chat-msg${primero ? " is-first" : ""}${m.deleted ? " is-deleted" : ""}`);
+  fila.dataset.id = String(m.id);
+  const av = avatarDeChat(m.author);
+  av.classList.add("chat-msg-av");
+  const meta = crearEl("div", "chat-msg-meta");
+  meta.append(crearEl("strong", "", m.author?.display_name || "(ya no está)"), crearEl("span", "", horaDeChat(m.created_at)));
+  meta.title = new Date(m.created_at).toLocaleString("es-ES");
+  const cuerpo = crearEl("div", "chat-msg-body");
+  if (m.deleted) cuerpo.textContent = "Mensaje borrado";
+  else {
+    cuerpo.innerHTML = htmlDeChat(m.body || "");
+    if (m.edited_at) cuerpo.append(crearEl("span", "chat-edited", "(editado)"));
+    adjuntosDeMensaje(cuerpo, m);
+  }
+  fila.append(av, meta, cuerpo);
+  if (!m.deleted) fila.append(accionesDeMensaje(m));
+  return fila;
+}
+
+/** Los adjuntos de un mensaje (CH3); aquí, sin nada. */
+function adjuntosDeMensaje(_cuerpo, _m) {}
+
+function botonDeAccion(icono, texto, alPulsar) {
+  const b = crearEl("button", "icon-btn");
+  b.type = "button";
+  b.innerHTML = svgIcon(icono);
+  b.title = texto;
+  b.setAttribute("aria-label", texto);
+  b.addEventListener("click", alPulsar);
+  return b;
+}
+
+function accionesDeMensaje(m) {
+  const caja = crearEl("div", "chat-msg-actions");
+  caja.append(
+    botonDeAccion("i-quote", "Citar", () => {
+      const t = document.querySelector("#chat-pane .chat-compose textarea");
+      if (!t) return;
+      const cita = (m.body || "").split("\n").map((l) => `> ${l}`).join("\n");
+      t.value = `${cita}\n${t.value}`;
+      t.focus();
+      t.dispatchEvent(new Event("input"));
+    }),
+  );
+  for (const extra of accionesExtraDeMensaje(m)) caja.append(extra);
+  if (m.user_id === sessionUser.me?.id) {
+    caja.append(
+      botonDeAccion("i-pencil", "Editar", () => {
+        chatUI.editando = m.id;
+        const t = document.querySelector("#chat-pane .chat-compose textarea");
+        if (!t) return;
+        t.value = m.body || "";
+        t.focus();
+        t.dispatchEvent(new Event("input"));
+        const nota = document.querySelector("#chat-pane .chat-compose-note");
+        if (nota) {
+          nota.textContent = "Editando un mensaje · Esc cancela";
+          nota.classList.add("is-editing");
+        }
+      }),
+      botonDeAccion("i-trash", "Borrar", async () => {
+        if (!confirm("¿Borrar este mensaje?")) return;
+        try {
+          await api(`/chat/messages/${m.id}`, { method: "DELETE" });
+        } catch (e) {
+          reportError("No se pudo borrar el mensaje", e);
+        }
+      }),
+    );
+  }
+  return caja;
+}
+
+/** Acciones que añaden fases posteriores (convertir en tarea, CH4). */
+function accionesExtraDeMensaje(_m) {
+  return [];
+}
+
+function compositorDeChat() {
+  const c = chatUI.actual;
+  const caja = crearEl("div", "chat-compose");
+  const box = crearEl("div", "chat-compose-box");
+  const t = crearEl("textarea");
+  t.rows = 1;
+  t.placeholder = c.kind === "workspace" ? `Escribe en # ${c.title}…` : `Escribe a ${c.title}…`;
+  t.setAttribute("aria-label", "Escribir un mensaje");
+  const ajustar = () => {
+    t.style.height = "auto";
+    t.style.height = `${Math.min(t.scrollHeight, 140)}px`;
+  };
+  t.addEventListener("input", ajustar);
+  const enviar = botonDeAccion("i-send", "Enviar (Intro)", () => enviarMensaje(t));
+  const nota = crearEl("div", "chat-compose-note", "Intro envía · Mayús+Intro, nueva línea");
+  t.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !t.dataset.autocompletando) {
+      e.preventDefault();
+      enviarMensaje(t);
+    } else if (e.key === "Escape" && chatUI.editando) {
+      e.preventDefault();
+      chatUI.editando = null;
+      t.value = "";
+      ajustar();
+      nota.textContent = "Intro envía · Mayús+Intro, nueva línea";
+      nota.classList.remove("is-editing");
+    }
+  });
+  box.append(...herramientasDelCompositor(t), t, enviar);
+  caja.append(box, nota);
+  prepararCompositor(t, caja);
+  return caja;
+}
+
+/** Botones a la izquierda del cuadro (adjuntar, CH3). */
+function herramientasDelCompositor(_t) {
+  return [];
+}
+/** Lo que se engancha al cuadro de escribir (autocompletar, CH3). */
+function prepararCompositor(_t, _caja) {}
+/** Adjuntos pendientes de enviar (CH3). */
+let chatAdjuntos = [];
+
+async function enviarMensaje(t) {
+  const c = chatUI.actual;
+  const texto = t.value.trim();
+  if (!c || (!texto && !chatAdjuntos.length)) return;
+  t.disabled = true;
+  try {
+    if (chatUI.editando) {
+      await api(`/chat/messages/${chatUI.editando}`, { method: "PATCH", body: JSON.stringify({ body: texto }) });
+      chatUI.editando = null;
+    } else {
+      const msg = await api(`/chat/conversations/${c.id}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ body: texto, attachments: chatAdjuntos }),
+      });
+      recibirMensaje(msg);
+    }
+    t.value = "";
+    chatAdjuntos = [];
+    t.dispatchEvent(new Event("input"));
+    const nota = document.querySelector("#chat-pane .chat-compose-note");
+    if (nota) {
+      nota.textContent = "Intro envía · Mayús+Intro, nueva línea";
+      nota.classList.remove("is-editing");
+    }
+    document.querySelector("#chat-pane .chat-adjuntos")?.replaceChildren();
+  } catch (e) {
+    reportError("No se pudo enviar el mensaje", e);
+  } finally {
+    t.disabled = false;
+    t.focus();
+  }
+}
+
+/** Un mensaje nuevo (propio o de otro) en la conversación abierta. */
+function recibirMensaje(msg) {
+  if (!chatUI.actual || msg.conversation_id !== chatUI.actual.id) return false;
+  if (chatUI.mensajes.some((m) => m.id === msg.id)) return true;
+  chatUI.mensajes.push(msg);
+  const caja = document.querySelector("#chat-pane .chat-msgs");
+  if (!caja || chatUI.vista !== "conversacion") return true;
+  const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 80;
+  caja.querySelector(".chat-empty")?.remove();
+  const anterior = chatUI.mensajes[chatUI.mensajes.length - 2];
+  const seguido =
+    anterior && anterior.user_id === msg.user_id && new Date(msg.created_at) - new Date(anterior.created_at) < 5 * 60 * 1000;
+  caja.append(mensajeDeChat(msg, !seguido));
+  if (abajo || msg.user_id === sessionUser.me?.id) caja.scrollTop = caja.scrollHeight;
+  return true;
+}
+
+function reemplazarMensaje(msg) {
+  const i = chatUI.mensajes.findIndex((m) => m.id === msg.id);
+  if (i < 0) return;
+  chatUI.mensajes[i] = msg;
+  const viejo = document.querySelector(`#chat-pane .chat-msg[data-id="${msg.id}"]`);
+  if (viejo) viejo.replaceWith(mensajeDeChat(msg, viejo.classList.contains("is-first")));
+}
+
+/** `event: chat` de `/events`. */
+function alEventoDeChat(ev) {
+  if (ev.action === "message") {
+    const abierta = chatUI.actual && ev.conversation_id === chatUI.actual.id && chatUI.vista === "conversacion";
+    if (abierta && chatVisible()) {
+      recibirMensaje(ev.message);
+      marcarLeida();
+      return;
+    }
+    if (abierta) recibirMensaje(ev.message);
+    cargarChat();
+    return;
+  }
+  if (ev.action === "edited" || ev.action === "deleted") {
+    if (chatUI.actual && ev.conversation_id === chatUI.actual.id) reemplazarMensaje(ev.message);
+    if (chatUI.vista === "lista") cargarChat();
+    return;
+  }
+  if (ev.action === "members") cargarChat();
+  alEventoDeChatExtra(ev);
+}
+/** Eventos que añaden fases posteriores («está escribiendo…», CH4). */
+function alEventoDeChatExtra(_ev) {}
+
+// Un `[[Página]]` de un mensaje abre esa página (por su título).
+document.getElementById("chat-pane")?.addEventListener("click", (e) => {
+  const a = e.target.closest?.(".chat-page-link");
+  if (!a) return;
+  e.preventDefault();
+  const clave = plegarTexto(a.dataset.title || "");
+  const nodo = [...state.pagesById.values()].find((n) => plegarTexto(n.title || "") === clave);
+  if (nodo) navigateToPage(nodo.id);
+  else showError(`No encuentro la página «${a.dataset.title}» (o no puedes verla)`, "info");
+});
+
+// La pestaña que se dejó abierta y el contador, al entrar.
+(() => {
+  let guardada = "members";
+  try {
+    guardada = localStorage.getItem(CHAT_TAB_KEY) || "members";
+  } catch {
+    /* nada */
+  }
+  // Sin cargar todavía: aún no hay sesión. Lo carga el primer recuento.
+  if (guardada === "chat") mostrarPestanaLateral("chat", { guardar: false, cargar: false });
+})();
+
 function connectVaultEvents() {
   if (typeof EventSource === "undefined") return; // sin SSE, sin avisos en vivo
   try {
@@ -9258,6 +9945,14 @@ function connectVaultEvents() {
   vaultEvents.addEventListener("notification", () => cargarAvisos());
   // `event: presence` (plan H7): alguien se conectó, cambió de página o de estado.
   vaultEvents.addEventListener("presence", () => cargarPresencia());
+  // `event: chat`: un mensaje nuevo, editado o borrado en una conversación mía.
+  vaultEvents.addEventListener("chat", (ev) => {
+    try {
+      alEventoDeChat(JSON.parse(ev.data));
+    } catch {
+      /* evento roto: el siguiente vale */
+    }
+  });
   // `event: database` (M2): una base incrustada ha cambiado en otra ventana.
   vaultEvents.addEventListener("database", (ev) => {
     let data;

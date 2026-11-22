@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -96,6 +96,58 @@ GRANTS_INDEX_SQL = (
     "CREATE UNIQUE INDEX IF NOT EXISTS grants_unique ON grants"
     "(capability, subject_type, subject_id, COALESCE(workspace_id, ''))"
 )
+
+# El chat del equipo (v24, `docs/PLAN-CHAT.md`): conversaciones (canal de
+# espacio o directo), participantes de los directos, mensajes, hasta dónde ha
+# leído cada uno y su buscador. No es contenido del vault.
+CHAT_SQL = """CREATE TABLE IF NOT EXISTS chat_conversations (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL CHECK (kind IN ('workspace', 'direct')),
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    title        TEXT,
+    created_at   TEXT NOT NULL,
+    created_by   TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS chat_conversations_workspace ON chat_conversations(workspace_id) WHERE kind = 'workspace';
+CREATE TABLE IF NOT EXISTS chat_members (
+    conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL,
+    joined_at       TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS chat_members_user ON chat_members(user_id);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id  TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    user_id          TEXT NOT NULL,
+    body             TEXT NOT NULL DEFAULT '',
+    attachments_json TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL,
+    edited_at        TEXT,
+    deleted          INTEGER NOT NULL DEFAULT 0,
+    task_id          TEXT
+);
+CREATE INDEX IF NOT EXISTS chat_messages_conv ON chat_messages(conversation_id, id);
+CREATE TABLE IF NOT EXISTS chat_reads (
+    conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL,
+    last_read_id    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (conversation_id, user_id)
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(
+    body, content = 'chat_messages', content_rowid = 'id', tokenize = "unicode61 remove_diacritics 2"
+);
+CREATE TRIGGER IF NOT EXISTS chat_fts_ai AFTER INSERT ON chat_messages BEGIN
+    INSERT INTO chat_fts(rowid, body) VALUES (new.id, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS chat_fts_ad AFTER DELETE ON chat_messages BEGIN
+    INSERT INTO chat_fts(chat_fts, rowid, body) VALUES ('delete', old.id, old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS chat_fts_au AFTER UPDATE OF body ON chat_messages BEGIN
+    INSERT INTO chat_fts(chat_fts, rowid, body) VALUES ('delete', old.id, old.body);
+    INSERT INTO chat_fts(rowid, body) VALUES (new.id, new.body);
+END;
+"""
 
 # Migraciones futuras: {versión_destino: [sql, ...]}. Se aplican en orden.
 MIGRATIONS: dict[int, list[str]] = {
@@ -489,6 +541,8 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS grants_subject ON grants(subject_type, subject_id)",
         lambda conn: _migrate_grants(conn),
     ],
+    # v24: el chat del equipo (ver `CHAT_SQL`).
+    24: [lambda conn: conn.executescript(CHAT_SQL)],
 }
 
 
@@ -946,7 +1000,56 @@ CREATE TABLE grants (
 CREATE UNIQUE INDEX grants_unique ON grants(capability, subject_type, subject_id, COALESCE(workspace_id, ''));
 CREATE INDEX grants_subject ON grants(subject_type, subject_id);
 
-PRAGMA user_version = 23;
+-- Chat del equipo (v24). Ver la migración 24.
+CREATE TABLE chat_conversations (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL CHECK (kind IN ('workspace', 'direct')),
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    title        TEXT,
+    created_at   TEXT NOT NULL,
+    created_by   TEXT
+);
+CREATE UNIQUE INDEX chat_conversations_workspace ON chat_conversations(workspace_id) WHERE kind = 'workspace';
+CREATE TABLE chat_members (
+    conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL,
+    joined_at       TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, user_id)
+);
+CREATE INDEX chat_members_user ON chat_members(user_id);
+CREATE TABLE chat_messages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id  TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    user_id          TEXT NOT NULL,
+    body             TEXT NOT NULL DEFAULT '',
+    attachments_json TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL,
+    edited_at        TEXT,
+    deleted          INTEGER NOT NULL DEFAULT 0,
+    task_id          TEXT
+);
+CREATE INDEX chat_messages_conv ON chat_messages(conversation_id, id);
+CREATE TABLE chat_reads (
+    conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL,
+    last_read_id    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (conversation_id, user_id)
+);
+CREATE VIRTUAL TABLE chat_fts USING fts5(
+    body, content = 'chat_messages', content_rowid = 'id', tokenize = "unicode61 remove_diacritics 2"
+);
+CREATE TRIGGER chat_fts_ai AFTER INSERT ON chat_messages BEGIN
+    INSERT INTO chat_fts(rowid, body) VALUES (new.id, new.body);
+END;
+CREATE TRIGGER chat_fts_ad AFTER DELETE ON chat_messages BEGIN
+    INSERT INTO chat_fts(chat_fts, rowid, body) VALUES ('delete', old.id, old.body);
+END;
+CREATE TRIGGER chat_fts_au AFTER UPDATE OF body ON chat_messages BEGIN
+    INSERT INTO chat_fts(chat_fts, rowid, body) VALUES ('delete', old.id, old.body);
+    INSERT INTO chat_fts(rowid, body) VALUES (new.id, new.body);
+END;
+
+PRAGMA user_version = 24;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1456,6 +1559,11 @@ DUMP_EXCLUDED = {
     "absences",
     # Permisos que se conceden (v23): como `acl`, no están en el `.md`.
     "grants",
+    # El chat (v24): conversaciones de la app, no están en el `.md`.
+    "chat_conversations",
+    "chat_members",
+    "chat_messages",
+    "chat_reads",
 }
 
 
@@ -1496,7 +1604,7 @@ def dump_hash(path: str) -> tuple[str, dict[str, int]]:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
                 " AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
-            if not r[0].startswith("pages_fts_") and r[0] not in DUMP_EXCLUDED
+            if not r[0].startswith(("pages_fts_", "chat_fts")) and r[0] not in DUMP_EXCLUDED
         ]
         for table in tables:
             skip = DUMP_EXCLUDED_COLUMNS.get(table, set())
