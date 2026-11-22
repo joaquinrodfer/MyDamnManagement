@@ -1,6 +1,6 @@
 """Carga del equipo (plan H5): `GET /workload`.
 
-Solo para el superadministrador y para quien tiene `can_view_global_workload`.
+Para quien tiene el permiso «Ver carga» (`app.grants`).
 Abarca **todos** los espacios; los títulos de lo que quien pregunta no puede ver
 salen enmascarados (ver `app.workload`).
 """
@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app import acl, auth, workload
+from app import acl, auth, grants, workload
 from app.due import server_today
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
@@ -20,9 +20,9 @@ from app.repository import Repository
 router = APIRouter(tags=["workload"])
 
 
-def _allowed(user: auth.User) -> None:
-    if not (user.is_admin or user.can_view_global_workload):
-        raise HTTPException(403, "no tienes permiso para ver la carga del equipo")
+def _allowed(repo: Repository, user: auth.User) -> None:
+    if not grants.can(repo.conn, user, "view_workload"):
+        raise HTTPException(403, "ver la carga del equipo pide el permiso «Ver carga»")
 
 
 class CapacityIn(BaseModel):
@@ -36,7 +36,7 @@ def get_workload(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    _allowed(user)
+    _allowed(repo, user)
     # La carga mira todos los espacios: sin el filtro del espacio activo.
     visible = acl.visible_ids(repo.conn, user)
     return workload.report(repo.conn, visible=visible, today=server_today(), weeks=weeks)
@@ -49,8 +49,8 @@ def put_capacity(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    if not user.is_admin:
-        raise HTTPException(403, "solo un administrador cambia la capacidad semanal")
+    if not grants.can_for_person(repo.conn, user, "manage_people", user_id):
+        raise HTTPException(403, "cambiar la capacidad pide el permiso «Gestionar personas»")
     if repo.conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None:
         raise HTTPException(404, "no existe ese usuario")
     caps = workload.set_capacity(repo.conn, user_id, payload.hours)

@@ -180,7 +180,7 @@ def signed_in(
     token = auth.open_session(
         conn, user.id, user_agent=request.headers.get("user-agent")
     )
-    response = JSONResponse(user.as_dict(), status_code=status_code)
+    response = JSONResponse(me_dict(conn, user), status_code=status_code)
     response.set_cookie(value=token, **_cookie_kwargs(request))
     return response
 
@@ -263,10 +263,18 @@ def login(
     return signed_in(conn, request, user)
 
 
+def me_dict(conn: sqlite3.Connection, user: auth.User) -> dict:
+    """El usuario y sus permisos (`{permiso: "all" | [espacios]}`, plan de roles R2)."""
+    from app import grants
+
+    return {**user.as_dict(), "capabilities": grants.summary(conn, user)}
+
+
 @router.get("/me")
-def me(user: auth.User = Depends(get_current_user)):
-    """Quién está detrás de la sesión. Lo usan el panel y la pantalla de login."""
-    return user.as_dict()
+def me(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)):
+    """Quién está detrás de la sesión y qué permisos tiene. Lo usan el panel y
+    la pantalla de login."""
+    return me_dict(conn, user)
 
 
 @router.patch("/me")
@@ -290,7 +298,7 @@ def update_me(
         raise HTTPException(400, str(exc)) from exc
     if actualizado is None:
         raise HTTPException(404, "el usuario de la sesión ya no existe")
-    return actualizado.as_dict()
+    return me_dict(conn, actualizado)
 
 
 @router.post("/logout", status_code=204)

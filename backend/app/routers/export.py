@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from app import audit, auth
+from app import audit, auth, grants
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
@@ -44,8 +44,8 @@ def post_export(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    if not user.is_admin:
-        raise HTTPException(403, "solo un administrador puede exportar el vault entero")
+    if not grants.can(repo.conn, user, "backups"):
+        raise HTTPException(403, "exportar el vault entero pide el permiso «Copias de seguridad»")
     fmt = (payload or ExportRequest()).format
     audit.record(repo.conn, user, "vault.exported", target_type="vault", metadata={"format": fmt})
     stamp = _stamp()

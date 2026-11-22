@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from app import audit, auth, backup
+from app import audit, auth, backup, grants
 from app import index as index_mod
 from app.config import settings
 from app.dependencies import get_current_user, get_repo
@@ -28,9 +28,9 @@ from app.repository import Repository
 router = APIRouter(tags=["backups"])
 
 
-def _admin(user: auth.User = Depends(get_current_user)) -> auth.User:
-    if not user.is_admin:
-        raise HTTPException(403, "solo un administrador gestiona las copias de seguridad")
+def _admin(user: auth.User = Depends(get_current_user), repo: Repository = Depends(get_repo)) -> auth.User:
+    if not grants.can(repo.conn, user, "backups"):
+        raise HTTPException(403, "hace falta el permiso «Copias de seguridad»")
     return user
 
 

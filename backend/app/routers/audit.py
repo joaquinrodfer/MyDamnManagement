@@ -1,4 +1,4 @@
-"""`GET /audit`: el registro de auditoría (plan H8). Solo superadministrador."""
+"""`GET /audit`: el registro de auditoría (plan H8). Con el permiso «Ver auditoría»."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app import audit, auth
+from app import audit, auth, grants
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
 
@@ -25,8 +25,8 @@ def get_audit(
     repo: Repository = Depends(get_repo),
     user: auth.User = Depends(get_current_user),
 ):
-    if not user.is_admin:
-        raise HTTPException(403, "solo un administrador puede ver la auditoría")
+    if not grants.can(repo.conn, user, "view_audit"):
+        raise HTTPException(403, "hace falta el permiso «Ver auditoría»")
     result = audit.query(
         repo.conn, action=action, actor_id=actor, workspace_id=workspace,
         since=since, until=until, limit=limit, offset=offset,

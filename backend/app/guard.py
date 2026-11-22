@@ -10,8 +10,8 @@ ruta lleva su propio `if` de permisos. Decide, para cada petición:
 2. **Con qué nivel**: leer (`GET`) pide `view`; escribir, `edit`; cambiar los
    permisos (`PUT /acl/...`), `owner`; y meter algo dentro de otra página
    (`parent_id`), `edit` sobre esa página.
-3. **Lo que es solo de administración**: la papelera y `POST /reindex` (hablan
-   del vault entero, no de una página).
+3. **Lo que habla del vault entero**: `POST /reindex` es del administrador; la
+   papelera, de quien tiene «Copias de seguridad» (`app.grants`).
 
 Sin sesión (las rutas públicas, la puerta de los agentes con su token) no se
 comprueba nada: lo decide el middleware. El administrador pasa por las mismas
@@ -36,7 +36,9 @@ from app.index import open_index
 READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 # Rutas del vault entero: solo administradores.
-ADMIN_PREFIXES = ("/trash", "/reindex")
+ADMIN_PREFIXES = ("/reindex",)
+# La papelera: con el permiso «Copias de seguridad» (plan de roles, R2).
+TRASH_PREFIX = "/trash"
 
 # Rutas que crean o mueven y traen la página madre en el cuerpo JSON.
 PARENT_IN_BODY = {
@@ -54,6 +56,17 @@ async def guard(request: Request) -> None:
     path = request.url.path
     method = request.method.upper()
 
+    if path.startswith(TRASH_PREFIX):
+        # La papelera lleva lo borrado de todos: va con «Copias de seguridad».
+        from app import grants
+
+        conn = open_index(settings.index_path)
+        try:
+            if grants.can(conn, user, "backups"):
+                return
+        finally:
+            conn.close()
+        raise HTTPException(403, "hace falta el permiso «Copias de seguridad»")
     if path.startswith(ADMIN_PREFIXES):
         if getattr(user, "is_admin", False):
             return

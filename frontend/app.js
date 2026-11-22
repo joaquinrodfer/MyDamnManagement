@@ -1400,6 +1400,18 @@ function fijarMarcaSinLeer(n) {
   fijarPestana(n);
 }
 
+/** Mis permisos concedidos (plan de roles, R2): `"all"`, una lista de espacios o nada. */
+function miPermiso(clave) {
+  return sessionUser.me?.capabilities?.[clave];
+}
+function tengoPermiso(clave) {
+  const v = miPermiso(clave);
+  return v === "all" || (Array.isArray(v) && v.length > 0);
+}
+function tengoPermisoEnTodos(clave) {
+  return miPermiso(clave) === "all";
+}
+
 function paintUserChip() {
   const wrap = document.getElementById("user-chip-wrap");
   const chip = document.getElementById("user-chip");
@@ -1426,11 +1438,22 @@ function paintUserChip() {
   chip.querySelector(".user-chip-name").textContent = me.display_name;
   chip.title = `${me.display_name} (@${me.username})${me.is_admin ? " · administrador" : ""}`;
   chip.setAttribute("aria-label", `Tu cuenta: ${me.display_name}. Abrir el menú`);
-  // «Administración» solo existe para un admin: a los demás no se les enseña
-  // un apartado que solo puede dar 403.
-  document.querySelectorAll(".settings-nav [data-admin]").forEach((el) => {
-    el.hidden = !me.is_admin;
+  // «Administración»: cada apartado, a quien le toca (el administrador o quien
+  // tiene el permiso). A los demás no se les enseña algo que solo da 403.
+  const visibles = {
+    users: me.is_admin,
+    groups: me.is_admin,
+    workspaces: me.is_admin,
+    permisos: me.is_admin,
+    holidays: me.is_admin || tengoPermiso("manage_holidays"),
+    audit: tengoPermisoEnTodos("view_audit"),
+    backups: tengoPermisoEnTodos("backups"),
+  };
+  document.querySelectorAll(".settings-nav .settings-tab[data-admin]").forEach((el) => {
+    el.hidden = !visibles[el.dataset.section];
   });
+  const grupo = document.querySelector(".settings-nav .settings-nav-group[data-admin]");
+  if (grupo) grupo.hidden = !Object.values(visibles).some(Boolean);
 }
 
 function initUserChip() {
@@ -1632,29 +1655,8 @@ function renderUsers(users) {
       badge.className = "user-admin-badge";
       badge.textContent = "admin";
       row.appendChild(badge);
-    } else if (u.id && sessionUser.me?.is_admin) {
-      // El administrador ya lo ve todo; al resto se le puede dar la carga global.
-      const etiqueta = document.createElement("label");
-      etiqueta.className = "user-workload";
-      const caja = document.createElement("input");
-      caja.type = "checkbox";
-      caja.checked = u.can_view_global_workload === true;
-      caja.addEventListener("change", async () => {
-        try {
-          const nuevo = await api(`/auth/users/${u.id}`, {
-            method: "PATCH",
-            body: JSON.stringify({ can_view_global_workload: caja.checked }),
-          });
-          rememberUser(nuevo);
-        } catch (e) {
-          caja.checked = !caja.checked;
-          reportError("No se pudo cambiar el permiso", e);
-        }
-      });
-      etiqueta.append(caja, "Carga global");
-      row.appendChild(etiqueta);
     }
-    if (u.id && sessionUser.me?.is_admin) {
+    if (u.id && tengoPermiso("manage_people")) {
       const jornada = document.createElement("button");
       jornada.type = "button";
       jornada.className = "btn user-jornada";
@@ -1764,6 +1766,163 @@ async function cargarAdministracionDeEspacios() {
   } catch (e) {
     if (e?.status === 401) return;
     setFormNote(wsNota, e?.message || "No se pudieron leer los espacios.", "error");
+  }
+}
+
+// ------------------------------------------- permisos (plan de roles, R2)
+
+const CAPACIDAD_ICONOS = {
+  manage_people: "i-users",
+  view_workload: "i-chart",
+  manage_holidays: "i-calendar",
+  view_audit: "i-list",
+  backups: "i-archive",
+};
+
+/** Ajustes → Administración → Permisos: quién tiene cada permiso y dónde. */
+async function cargarPermisos() {
+  const caja = document.getElementById("permisos-admin");
+  const nota = document.getElementById("permisos-note");
+  if (!caja) return;
+  try {
+    const [datos, usuarios, grupos, espacios] = await Promise.all([
+      api("/grants"),
+      api("/auth/users").catch(() => []),
+      api("/groups").catch(() => []),
+      api("/workspaces?manage=1").catch(() => []),
+    ]);
+    const ctx = { usuarios, grupos, espacios: espacios.filter((w) => !w.personal_of), nota };
+    caja.replaceChildren(
+      ...datos.capabilities.map((c) => tarjetaDePermiso(c, datos.grants.filter((g) => g.capability === c.key), ctx)),
+    );
+  } catch (e) {
+    if (e?.status === 401) return;
+    setFormNote(nota, describeError(e), "error");
+  }
+}
+
+function tarjetaDePermiso(cap, concedidos, ctx) {
+  const tarjeta = crearEl("div", "perm-card");
+  const cabeza = crearEl("div", "perm-head");
+  const icono = crearEl("span", "perm-icon");
+  icono.innerHTML = svgIcon(CAPACIDAD_ICONOS[cap.key] || "i-key");
+  const textos = crearEl("div", "perm-texts");
+  textos.append(crearEl("strong", "perm-title", cap.label), crearEl("span", "perm-help", cap.help));
+  cabeza.append(icono, textos);
+  tarjeta.append(cabeza);
+
+  const lista = crearEl("ul", "perm-list");
+  if (!concedidos.length) lista.append(crearEl("li", "perm-empty", "Nadie lo tiene."));
+  for (const g of concedidos) {
+    const fila = crearEl("li", "perm-row");
+    const marca = crearEl("span", g.subject_type === "group" ? "perm-subject perm-subject--group" : "perm-subject");
+    if (g.subject_type === "group") marca.innerHTML = svgIcon("i-users-group");
+    else {
+      const punto = crearEl("span", "user-dot");
+      punto.style.background = g.color || "var(--ink-muted)";
+      marca.append(punto);
+    }
+    marca.append(crearEl("span", "perm-name", g.subject_name));
+    if (g.subject_type === "group") marca.append(crearEl("span", "perm-kind", "grupo"));
+    const alcance = crearEl("span", g.workspace_id ? "perm-scope" : "perm-scope perm-scope--all", g.workspace_id ? g.workspace_name || "(espacio borrado)" : "Todos los espacios");
+    const quitar = botonQuitarDeCarga("Retirar este permiso", `Retirar ${cap.label} a ${g.subject_name}`, async () => {
+      if (!confirm(`¿Retirar «${cap.label}» a ${g.subject_name}?`)) return;
+      try {
+        await api(`/grants/${g.id}`, { method: "DELETE" });
+        setFormNote(ctx.nota, "Permiso retirado.", "ok");
+        await refrescarTrasPermisos();
+      } catch (e) {
+        setFormNote(ctx.nota, describeError(e), "error");
+      }
+    });
+    fila.append(marca, alcance, quitar);
+    lista.append(fila);
+  }
+  tarjeta.append(lista);
+
+  // Conceder: a quién y dónde.
+  const form = crearEl("form", "perm-form");
+  const quien = crearEl("select");
+  quien.setAttribute("aria-label", `A quién dar «${cap.label}»`);
+  quien.add(new Option("Elige persona o grupo…", ""));
+  const personas = document.createElement("optgroup");
+  personas.label = "Personas";
+  [...ctx.usuarios]
+    .sort((a, b) => (a.display_name || "").localeCompare(b.display_name || "", "es"))
+    .forEach((u) => personas.append(new Option(u.display_name, `user:${u.id}`)));
+  const grupos = document.createElement("optgroup");
+  grupos.label = "Grupos";
+  ctx.grupos.forEach((gr) => grupos.append(new Option(gr.name, `group:${gr.id}`)));
+  if (personas.children.length) quien.append(personas);
+  if (grupos.children.length) quien.append(grupos);
+  form.append(quien);
+  let donde = null;
+  if (cap.scoped) {
+    donde = crearEl("select");
+    donde.setAttribute("aria-label", "En qué espacios");
+    donde.add(new Option("Todos los espacios", ""));
+    ctx.espacios.forEach((w) => donde.add(new Option(w.name, w.id)));
+    form.append(donde);
+  } else {
+    form.append(crearEl("span", "perm-fixed", "Todos los espacios"));
+  }
+  const dar = crearEl("button", "btn", "Conceder");
+  dar.type = "submit";
+  form.append(dar);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!quien.value) return setFormNote(ctx.nota, "Elige a quién se lo das.", "error");
+    const [tipo, id] = quien.value.split(":");
+    dar.disabled = true;
+    try {
+      await api("/grants", {
+        method: "POST",
+        body: JSON.stringify({ capability: cap.key, subject_type: tipo, subject_id: id, workspace_id: donde?.value || null }),
+      });
+      setFormNote(ctx.nota, `«${cap.label}» concedido.`, "ok");
+      await refrescarTrasPermisos();
+    } catch (e) {
+      setFormNote(ctx.nota, describeError(e), "error");
+    } finally {
+      dar.disabled = false;
+    }
+  });
+  tarjeta.append(form);
+  return tarjeta;
+}
+
+/** Calendario laboral: los comunes (si puedo) y un botón por espacio que gestiono. */
+async function cargarAmbitosDeFestivos() {
+  const grupo = document.getElementById("holidays-spaces-group");
+  const caja = document.getElementById("holidays-spaces");
+  const comunes = document.getElementById("holidays-group");
+  if (!grupo || !caja) return;
+  try {
+    const ambitos = await api("/holidays/scopes");
+    if (comunes) comunes.hidden = !ambitos.common && !sessionUser.me?.is_admin;
+    caja.replaceChildren(
+      ...ambitos.workspaces.map((w) => {
+        const b = crearEl("button", "btn", `${w.name}…`);
+        b.type = "button";
+        b.addEventListener("click", () => abrirFestivos(w.id, w.name));
+        return b;
+      }),
+    );
+    grupo.hidden = ambitos.workspaces.length === 0;
+  } catch {
+    grupo.hidden = true;
+  }
+}
+
+/** Tras conceder o retirar: la lista y, por si me afecta a mí, mis permisos. */
+async function refrescarTrasPermisos() {
+  await cargarPermisos();
+  try {
+    sessionUser.me = await api("/auth/me");
+    paintUserChip();
+    pintarBotonDeCarga();
+  } catch {
+    /* sin sesión: lo resuelve el resto de la app */
   }
 }
 
@@ -2438,7 +2597,6 @@ newUserForm?.addEventListener("submit", async (event) => {
   const displayName = document.getElementById("nu-display").value.trim();
   const password = document.getElementById("nu-password").value;
   const isAdmin = document.getElementById("nu-admin").checked;
-  const verCarga = document.getElementById("nu-workload")?.checked === true;
 
   if (!username) {
     return setFormNote(newUserNote, "El usuario no puede estar vacío.", "error");
@@ -2464,7 +2622,6 @@ newUserForm?.addEventListener("submit", async (event) => {
         username,
         display_name: displayName,
         password,
-        can_view_global_workload: verCarga,
         is_admin: isAdmin,
         ...(selectorDeAlta.valor ? { avatar: selectorDeAlta.valor } : {}),
       }),
@@ -3578,6 +3735,8 @@ function mostrarApartadoDeAjustes(nombre) {
   if (nombre === "users") cargarUsuariosDeAjustes();
   if (nombre === "groups" || nombre === "workspaces") cargarAdministracionDeEspacios();
   if (nombre === "audit") prepararAuditoria();
+  if (nombre === "permisos") cargarPermisos();
+  if (nombre === "holidays") cargarAmbitosDeFestivos();
   if (nombre === "backups") cargarCopias();
 }
 
@@ -4554,7 +4713,7 @@ function abrirMenuDeAvisos(ancla, pageId, modoActual, alCambiar) {
 
 function pintarBotonDeCarga() {
   const nav = document.getElementById("workload-nav");
-  if (nav) nav.hidden = !(sessionUser.me?.is_admin || sessionUser.me?.can_view_global_workload);
+  if (nav) nav.hidden = !tengoPermiso("view_workload");
 }
 
 let cargaSemanas = 8;
@@ -4580,7 +4739,7 @@ async function showCarga() {
 }
 
 function pintarCarga(caja, datos) {
-  const esAdmin = Boolean(sessionUser.me?.is_admin);
+  const esAdmin = tengoPermiso("manage_people");
   const fmtH = (h) => (h ? `${Math.round(h * 10) / 10} h` : "–");
   const fmtSemana = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", { day: "numeric", month: "short" });
   caja.replaceChildren(crearEl("h1", "my-tasks-title", "Carga del equipo"));
@@ -4948,7 +5107,7 @@ async function abrirMisAusencias() {
       jornada.innerHTML = svgIcon("i-calendar");
       const t = crearEl("div");
       t.append(crearEl("strong", "", `Tu jornada: ${fmtHorasJornada(f.weekly)} a la semana`), crearEl("span", "", resumenDeJornada(f.schedule)));
-      if (!me.is_admin) t.append(crearEl("span", "wt-item-note", "La cambia un administrador."));
+      if (!tengoPermiso("manage_people")) t.append(crearEl("span", "wt-item-note", "La cambia quien gestiona a las personas."));
       jornada.append(t);
       jornada.hidden = false;
     })
