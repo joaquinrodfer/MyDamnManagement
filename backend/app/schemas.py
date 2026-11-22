@@ -309,7 +309,7 @@ class KindSet(BaseModel):
     proyecto; `project_database` enlaza las tareas con una base de Proyectos.
     """
 
-    type: Literal["projects", "tasks"]
+    type: Literal["projects", "tasks", "workload"]
     roles: Optional[dict[str, str]] = None
     options: Optional[dict[str, Any]] = None
     estimate: bool = False

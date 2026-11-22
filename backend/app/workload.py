@@ -138,7 +138,7 @@ def pieces(
     reglas: dict[str, dict[str, Any]] = {}
     for base in bases:
         kind = json.loads(base["kind_json"] or "null") or {}
-        if kind.get("type") != "tasks":
+        if kind.get("type") not in ("tasks", "workload"):
             continue
         roles = kind.get("roles") or {}
         if not roles.get("assignee"):

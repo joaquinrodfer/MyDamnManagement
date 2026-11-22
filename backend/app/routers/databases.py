@@ -496,7 +496,7 @@ def set_kind(
     nuevas: list[dict] = []
     for role in s["required"]:
         if role not in roles:
-            col = kind_rules.new_column(role, names, multiple_people=(kind_type == "tasks"))
+            col = kind_rules.new_column(role, names, multiple_people=(kind_type in kind_rules.WORKLOAD_TYPES))
             nuevas.append((role, col))
     if "estimate" in s["optional"] and payload.estimate and "estimate" not in roles:
         nuevas.append(("estimate", kind_rules.new_column("estimate", names)))
@@ -514,7 +514,7 @@ def set_kind(
         for (role, _col), prop in zip(nuevas, nuevo_schema[len(schema):]):
             roles[role] = prop["key"]
     kind_rules.check_roles(kind_type, roles, nuevo_schema)
-    if kind_type == "tasks" and roles.get("project"):
+    if kind_type in kind_rules.WORKLOAD_TYPES and roles.get("project"):
         col = next(p for p in nuevo_schema if p["key"] == roles["project"])
         target = col.get("target_database")
         destino = repo.get_database(uuid.UUID(str(target))) if target else None
@@ -525,11 +525,12 @@ def set_kind(
                 "elige otra columna o crea una nueva enlazada a tu base de Proyectos.",
             )
 
-    # El estado tiene que decir qué es «hecho»: si la base no lo declara, grupos de partida.
-    status = next(p for p in nuevo_schema if p["key"] == roles["status"])
-    regla = db_def.closed if db_def.closed and db_def.closed.get(closed.PROPERTY_KEY) == roles["status"] else None
+    # El estado tiene que decir qué es «hecho»: si la base no lo declara, grupos
+    # de partida. Una base de «Cuenta para la carga» sin estado: todo abierto.
     nueva_regla = Ellipsis
-    if regla is None:
+    status = next((p for p in nuevo_schema if p["key"] == roles.get("status")), None)
+    regla = db_def.closed if status and db_def.closed and db_def.closed.get(closed.PROPERTY_KEY) == roles["status"] else None
+    if status is not None and regla is None:
         grupos = kind_rules.default_groups_for(status.get("options") or [])
         if grupos is None:
             status["options"] = [*(status.get("options") or []), "Hecha"]
