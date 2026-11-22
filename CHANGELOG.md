@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Chat: menciones, enlaces y adjuntos (plan del chat, CH3)
+- **`@persona`** se autocompleta al escribir. A quien nombras y puede ver la conversación le llega un aviso en la campana; al pulsarlo se abre esa conversación.
+- **`[[Página]]`** también se autocompleta. En el mensaje es un enlace que abre la página y enseña su vista previa al pasar el ratón.
+- **Adjuntos:** con el clip, pegando una imagen o soltando archivos. Las imágenes se ven dentro del mensaje; lo demás, como un archivo con su tamaño.
+
 ## Chat del equipo: canales y mensajes directos (plan del chat, CH1 y CH2)
 - **Pestaña «Chat»** en el panel derecho, junto a «Miembros». Cada espacio tiene su canal y, además, hay mensajes directos con una o varias personas (hasta 8).
 - **Quién ve el canal de un espacio:** por defecto sus editores y administradores; un lector no. Se cambia en Ajustes → Espacios → «Quién ve el chat del espacio» (todos los miembros, editores o solo administradores). El administrador de Notemil no lee canales de espacios en los que no está ni directos ajenos.

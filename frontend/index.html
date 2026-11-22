@@ -6609,6 +6609,24 @@
   .chat-page-link { text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
   .ws-chat-role { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .ws-chat-role select { min-width: 220px; }
+  .chat-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; white-space: normal; }
+  .chat-file-img img { display: block; max-width: 240px; max-height: 200px; border-radius: var(--radius-md); border: 1px solid var(--panel-border); }
+  .chat-file { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--panel-border); border-radius: var(--radius-md); text-decoration: none; color: var(--ink) !important; font-size: 12.5px; }
+  .chat-file small { color: var(--ink-muted); }
+  .chat-file .svg-icon { width: 14px; height: 14px; color: var(--ink-muted); }
+  .chat-adjuntos { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chat-adjuntos:empty { display: none; }
+  .chat-adjunto { display: inline-flex; align-items: center; gap: 4px; padding: 2px 2px 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 7%, transparent); font-size: 12px; max-width: 100%; }
+  .chat-adjunto > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  .chat-adjunto .icon-btn { width: 20px; height: 20px; }
+  .chat-compose { position: relative; }
+  .chat-suggest { position: absolute; left: 10px; right: 10px; bottom: calc(100% - 4px); z-index: 5; background: var(--surface-elevated); border: 1px solid var(--panel-border); border-radius: var(--radius-md); box-shadow: var(--shadow-float); padding: 4px; display: flex; flex-direction: column; }
+  .chat-suggest[hidden] { display: none; }
+  .chat-suggest-opt { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .chat-suggest-opt img, .chat-suggest-opt .chat-av-ini { width: 20px; height: 20px; border-radius: 50%; font-size: 10px; }
+  .chat-suggest-opt .svg-icon { width: 15px; height: 15px; color: var(--ink-muted); }
+  .chat-suggest-opt small { margin-left: auto; color: var(--ink-muted); font-size: 11.5px; }
+  .chat-suggest-opt.is-active, .chat-suggest-opt:hover { background: var(--menu-hover); }
   .member-chat-btn { opacity: 0; margin-left: auto; flex: none; width: 26px; height: 26px; }
   .member-line { display: flex; align-items: center; }
   .member-line > .member { flex: 1; min-width: 0; }

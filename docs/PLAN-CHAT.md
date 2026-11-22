@@ -74,7 +74,7 @@ Todo va en el índice, como `notifications`; no va al vault, porque no son notas
 - Crear un directo (1 a 1 o grupo pequeño), añadir y salir.
 - «Escribir» desde la ficha de una persona en «Miembros».
 
-### CH3 — Menciones, enlaces y adjuntos
+### CH3 — Menciones, enlaces y adjuntos (hecho)
 - `@usuario` con autocompletado y aviso `chat_mention` (migración de `notifications`).
 - `[[Página]]` con la misma vista previa y clic que en el editor.
 - Adjuntar archivos e imágenes; las imágenes se ven dentro del mensaje.

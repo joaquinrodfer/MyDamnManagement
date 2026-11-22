@@ -628,7 +628,8 @@ function seccionParaTi(avisosDelInicio, alCambiar) {
       api("/notifications/read", { method: "POST", body: JSON.stringify({ ids: [a.id] }) })
         .then(() => cargarAvisos?.())
         .catch(() => {});
-      if (a.page_id) navigateToPage(a.page_id);
+      if (a.conversation_id) abrirMencionDelChat(a.conversation_id);
+      else if (a.page_id) navigateToPage(a.page_id);
     });
     seccion.append(item);
   }
@@ -4958,6 +4959,7 @@ const ICONOS_DE_AVISO = {
   deadline_soon: "i-clock",
   deadline_overdue: "i-alert",
   page_update: "i-pencil",
+  chat_mention: "i-message",
 };
 
 function pintarPanelDeAvisos() {
@@ -5000,7 +5002,8 @@ function pintarPanelDeAvisos() {
       if (!a.is_read) {
         api("/notifications/read", { method: "POST", body: JSON.stringify({ ids: [a.id] }) }).then(cargarAvisos).catch(() => {});
       }
-      if (a.page_id) navigateToPage(a.page_id);
+      if (a.conversation_id) abrirMencionDelChat(a.conversation_id);
+      else if (a.page_id) navigateToPage(a.page_id);
     });
     panel.append(item);
   }
@@ -9703,8 +9706,47 @@ function mensajeDeChat(m, primero) {
   return fila;
 }
 
-/** Los adjuntos de un mensaje (CH3); aquí, sin nada. */
-function adjuntosDeMensaje(_cuerpo, _m) {}
+/** Los adjuntos de un mensaje (CH3): imágenes en línea, lo demás como enlace. */
+function adjuntosDeMensaje(cuerpo, m) {
+  if (!m.attachments?.length) return;
+  const caja = crearEl("div", "chat-files");
+  for (const a of m.attachments) {
+    if (a.type === "image") {
+      const enlace = crearEl("a", "chat-file-img");
+      enlace.href = a.url;
+      enlace.target = "_blank";
+      enlace.rel = "noopener";
+      const img = crearEl("img");
+      img.src = a.url;
+      img.alt = a.name || "imagen";
+      img.loading = "lazy";
+      enlace.append(img);
+      caja.append(enlace);
+    } else {
+      const enlace = crearEl("a", "chat-file");
+      enlace.href = a.url;
+      enlace.target = "_blank";
+      enlace.rel = "noopener";
+      enlace.innerHTML = svgIcon("i-paperclip");
+      enlace.append(crearEl("span", "", a.name || "archivo"));
+      if (a.size) enlace.append(crearEl("small", "", tamanoLegible(a.size)));
+      caja.append(enlace);
+    }
+  }
+  cuerpo.append(caja);
+}
+
+function tamanoLegible(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1).replace(".", ",")} MB`;
+}
+
+/** Desde un aviso de mención: abre el chat en esa conversación. */
+async function abrirMencionDelChat(conversationId) {
+  abrirPanelDeChat();
+  await abrirConversacion(conversationId);
+}
 
 function botonDeAccion(icono, texto, alPulsar) {
   const b = crearEl("button", "icon-btn");
@@ -9796,14 +9838,182 @@ function compositorDeChat() {
   return caja;
 }
 
-/** Botones a la izquierda del cuadro (adjuntar, CH3). */
-function herramientasDelCompositor(_t) {
-  return [];
-}
-/** Lo que se engancha al cuadro de escribir (autocompletar, CH3). */
-function prepararCompositor(_t, _caja) {}
-/** Adjuntos pendientes de enviar (CH3). */
+/** Adjuntos subidos y pendientes de enviar con el próximo mensaje (CH3). */
 let chatAdjuntos = [];
+
+function pintarAdjuntosPendientes() {
+  const caja = document.querySelector("#chat-pane .chat-adjuntos");
+  if (!caja) return;
+  caja.replaceChildren(
+    ...chatAdjuntos.map((a, i) => {
+      const chip = crearEl("span", "chat-adjunto");
+      chip.append(crearEl("span", "", a.name));
+      const quitar = botonDeAccion("i-x", `Quitar ${a.name}`, () => {
+        chatAdjuntos.splice(i, 1);
+        pintarAdjuntosPendientes();
+      });
+      chip.append(quitar);
+      return chip;
+    }),
+  );
+}
+
+async function subirAdjuntosDelChat(files) {
+  const c = chatUI.actual;
+  if (!c) return;
+  for (const file of files) {
+    const aviso = showError(`Subiendo «${file.name || "archivo"}»…`, "info", { sticky: true });
+    const fd = new FormData();
+    fd.append("file", file, file.name || "imagen.png");
+    try {
+      const res = await fetch(`/chat/conversations/${c.id}/files`, { method: "POST", body: fd });
+      if (sesionExpirada(res)) throw new Error("sesión caducada");
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+      chatAdjuntos.push(data);
+      pintarAdjuntosPendientes();
+    } catch (e) {
+      reportError(`No se pudo subir «${file.name || "el archivo"}»`, e);
+    } finally {
+      aviso?.querySelector?.(".error-toast-close, button")?.click();
+    }
+  }
+}
+
+/** Botones a la izquierda del cuadro: adjuntar. */
+function herramientasDelCompositor(_t) {
+  const input = crearEl("input");
+  input.type = "file";
+  input.multiple = true;
+  input.hidden = true;
+  input.addEventListener("change", () => {
+    subirAdjuntosDelChat([...input.files]);
+    input.value = "";
+  });
+  const boton = botonDeAccion("i-paperclip", "Adjuntar archivos", () => input.click());
+  boton.append(input);
+  return [boton];
+}
+
+/** Autocompletar `@persona` y `[[Página]]`, pegar imágenes y soltar archivos. */
+function prepararCompositor(t, caja) {
+  chatAdjuntos = [];
+  const pendientes = crearEl("div", "chat-adjuntos");
+  caja.prepend(pendientes);
+  const menu = crearEl("div", "chat-suggest");
+  menu.setAttribute("role", "listbox");
+  menu.hidden = true;
+  caja.prepend(menu);
+  let opciones = [];
+  let activa = 0;
+  let disparo = null; // {tipo, desde}
+
+  const cerrar = () => {
+    menu.hidden = true;
+    opciones = [];
+    disparo = null;
+    delete t.dataset.autocompletando;
+  };
+  const elegir = (op) => {
+    if (!disparo) return;
+    const antes = t.value.slice(0, disparo.desde);
+    const despues = t.value.slice(t.selectionStart);
+    const texto = disparo.tipo === "@" ? `@${op.valor} ` : `[[${op.valor}]] `;
+    t.value = antes + texto + despues;
+    const pos = (antes + texto).length;
+    t.setSelectionRange(pos, pos);
+    cerrar();
+    t.dispatchEvent(new Event("input"));
+    t.focus();
+  };
+  const pintar = () => {
+    menu.replaceChildren();
+    if (!opciones.length) {
+      cerrar();
+      return;
+    }
+    opciones.forEach((op, i) => {
+      const b = crearEl("button", `chat-suggest-opt${i === activa ? " is-active" : ""}`);
+      b.type = "button";
+      b.setAttribute("role", "option");
+      if (op.persona) b.append(avatarDeChat(op.persona));
+      else b.insertAdjacentHTML("beforeend", svgIcon("i-file-text"));
+      b.append(crearEl("span", "", op.texto));
+      if (op.extra) b.append(crearEl("small", "", op.extra));
+      b.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        elegir(op);
+      });
+      menu.append(b);
+    });
+    menu.hidden = false;
+    t.dataset.autocompletando = "1";
+  };
+  const actualizar = async () => {
+    const hasta = t.selectionStart;
+    const previo = t.value.slice(0, hasta);
+    const arroba = /(^|[\s(])@([\w.-]{0,30})$/.exec(previo);
+    const pagina = /\[\[([^\]\n]{0,60})$/.exec(previo);
+    if (arroba) {
+      disparo = { tipo: "@", desde: hasta - arroba[2].length - 1 };
+      const q = plegarTexto(arroba[2]);
+      const c = chatUI.actual;
+      let gente = c?.kind === "direct" ? c.members || [] : [...personasCache.values()];
+      if (!gente.length) gente = await cargarPersonas().catch(() => []);
+      opciones = gente
+        .filter((p) => p.username && (!q || plegarTexto(`${p.display_name} ${p.username}`).includes(q)))
+        .slice(0, 6)
+        .map((p) => ({ valor: p.username, texto: p.display_name || p.username, extra: `@${p.username}`, persona: p }));
+    } else if (pagina) {
+      disparo = { tipo: "[[", desde: hasta - pagina[1].length - 2 };
+      const q = plegarTexto(pagina[1]);
+      opciones = listPageEntries()
+        .filter((p) => !q || plegarTexto(p.title).includes(q))
+        .slice(0, 6)
+        .map((p) => ({ valor: p.title, texto: p.title }));
+    } else {
+      cerrar();
+      return;
+    }
+    activa = 0;
+    pintar();
+  };
+  t.addEventListener("input", actualizar);
+  t.addEventListener("click", actualizar);
+  t.addEventListener("blur", () => setTimeout(cerrar, 120));
+  t.addEventListener("keydown", (e) => {
+    if (menu.hidden || !opciones.length) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      activa = (activa + (e.key === "ArrowDown" ? 1 : opciones.length - 1)) % opciones.length;
+      pintar();
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      elegir(opciones[activa]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      cerrar();
+    }
+  });
+  t.addEventListener("paste", (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length) {
+      e.preventDefault();
+      subirAdjuntosDelChat(files);
+    }
+  });
+  caja.addEventListener("dragover", (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) e.preventDefault();
+  });
+  caja.addEventListener("drop", (e) => {
+    const files = [...(e.dataTransfer?.files || [])];
+    if (!files.length) return;
+    e.preventDefault();
+    subirAdjuntosDelChat(files);
+  });
+}
 
 async function enviarMensaje(t) {
   const c = chatUI.actual;
@@ -9896,6 +10106,23 @@ document.getElementById("chat-pane")?.addEventListener("click", (e) => {
   const nodo = [...state.pagesById.values()].find((n) => plegarTexto(n.title || "") === clave);
   if (nodo) navigateToPage(nodo.id);
   else showError(`No encuentro la página «${a.dataset.title}» (o no puedes verla)`, "info");
+});
+
+// Pasar el ratón por un `[[Página]]` de un mensaje: la vista previa de siempre.
+function nodoPorTitulo(titulo) {
+  const clave = plegarTexto(titulo || "");
+  return [...state.pagesById.values()].find((n) => plegarTexto(n.title || "") === clave);
+}
+document.getElementById("chat-pane")?.addEventListener("mouseover", (e) => {
+  const a = e.target.closest?.(".chat-page-link");
+  if (!a || a.dataset.previa) return;
+  a.dataset.previa = "1";
+  const nodo = nodoPorTitulo(a.dataset.title);
+  if (nodo) startLinkPreview(nodo.id, a.getBoundingClientRect());
+  a.addEventListener("mouseleave", () => {
+    delete a.dataset.previa;
+    stopLinkPreview();
+  }, { once: true });
 });
 
 // La pestaña que se dejó abierta y el contador, al entrar.

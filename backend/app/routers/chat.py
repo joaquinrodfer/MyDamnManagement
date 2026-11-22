@@ -14,10 +14,14 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from app import auth, chat
+from app.config import settings
+from app.vault import attachments
 from app.dependencies import get_current_user, get_repo
 from app.repository import Repository
 
@@ -162,3 +166,31 @@ def leave(conversation_id: str, repo: Repository = Depends(get_repo), user: auth
         _err(exc)
     chat.publish(repo.conn, conv, "members")
     return Response(status_code=204)
+
+
+@router.post("/conversations/{conversation_id}/files", status_code=201)
+async def upload_file(
+    conversation_id: str, file: UploadFile, repo: Repository = Depends(get_repo),
+    user: auth.User = Depends(get_current_user),
+):
+    """Sube un adjunto para un mensaje (CH3). Va a `_attachments/`, como los de
+    las páginas, y se sirve igual (`/files/...`): por bytes, nunca por nombre."""
+    from app.routers.pages import MAX_FILE_BYTES
+
+    _conv(repo, user, conversation_id)
+    data = await file.read(MAX_FILE_BYTES + 1)
+    if len(data) > MAX_FILE_BYTES:
+        raise HTTPException(413, f"Máximo {MAX_FILE_BYTES // (1024 * 1024)} MB por archivo")
+    if not data:
+        raise HTTPException(400, "El archivo está vacío")
+    nombre = os.path.basename(file.filename or "") or "archivo"
+    ext = attachments.detect_image_format(data)
+    if ext is not None:
+        kind = "image"
+    else:
+        ext = attachments.detect_media_format(data)
+        kind = attachments.MEDIA_KINDS[ext][0] if ext is not None else "file"
+        if ext is None:
+            ext = attachments.other_ext(nombre)
+    rel = attachments.save_file(settings.vault_path, nombre, data, ext)
+    return {"url": attachments.url_for(rel), "name": nombre, "size": len(data), "type": kind}

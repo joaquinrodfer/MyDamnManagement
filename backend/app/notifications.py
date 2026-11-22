@@ -37,7 +37,7 @@ from app.events import bus
 
 log = logging.getLogger("app.notifications")
 
-TYPES = ("mention", "task_assigned", "deadline_soon", "deadline_overdue", "page_update")
+TYPES = ("mention", "task_assigned", "deadline_soon", "deadline_overdue", "page_update", "chat_mention")
 MODES = ("all", "mentions_only", "muted")
 DEFAULT_MODE = "mentions_only"
 
@@ -100,6 +100,8 @@ def notify(
     *,
     page_id: Optional[str] = None,
     dedupe_key: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> bool:
     """Crea un aviso si procede; devuelve si se creó.
 
@@ -111,7 +113,6 @@ def notify(
     person = _person(conn, user_id)
     if person is None:
         return False
-    workspace_id = None
     if page_id:
         row = conn.execute("SELECT workspace_id FROM pages WHERE id = ?", (str(page_id),)).fetchone()
         if row is None:
@@ -128,11 +129,11 @@ def notify(
         return False
     cur = conn.execute(
         "INSERT OR IGNORE INTO notifications"
-        " (id, user_id, workspace_id, page_id, type, message, is_read, created_at, dedupe_key)"
-        " VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+        " (id, user_id, workspace_id, page_id, type, message, is_read, created_at, dedupe_key, conversation_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
         (
             str(uuid.uuid4()), str(user_id), workspace_id, str(page_id) if page_id else None,
-            type_, message[:300], _now().isoformat(), dedupe_key,
+            type_, message[:300], _now().isoformat(), dedupe_key, conversation_id,
         ),
     )
     if cur.rowcount:
@@ -247,7 +248,7 @@ def list_for(
 ) -> dict[str, Any]:
     where = "n.user_id = ?" + (" AND n.is_read = 0" if unread_only else "")
     rows = conn.execute(
-        "SELECT n.id, n.type, n.message, n.page_id, n.workspace_id, n.is_read, n.created_at,"
+        "SELECT n.id, n.type, n.message, n.page_id, n.workspace_id, n.is_read, n.created_at, n.conversation_id,"
         " p.title AS page_title, p.type AS page_type, p.parent_id AS parent_id,"
         " d.id AS database_id, w.name AS workspace_name"
         " FROM notifications n LEFT JOIN pages p ON p.id = n.page_id"
@@ -264,6 +265,7 @@ def list_for(
                 "page_id": r["page_id"], "page_title": r["page_title"],
                 "workspace_id": r["workspace_id"], "workspace_name": r["workspace_name"],
                 "is_read": bool(r["is_read"]), "created_at": r["created_at"],
+                "conversation_id": r["conversation_id"],
             }
             for r in rows
         ],

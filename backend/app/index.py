@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -543,6 +543,10 @@ MIGRATIONS: dict[int, list[str]] = {
     ],
     # v24: el chat del equipo (ver `CHAT_SQL`).
     24: [lambda conn: conn.executescript(CHAT_SQL)],
+    # v25 (chat, CH3): un aviso puede ser una mención en el chat
+    # (`chat_mention`) y llevar a su conversación (`conversation_id`). SQLite no
+    # cambia un CHECK: se rehace la tabla, conservando todo.
+    25: [lambda conn: _rebuild_notifications_for_chat(conn)],
 }
 
 
@@ -550,6 +554,40 @@ def _migrate_grants(conn: sqlite3.Connection) -> None:
     from app import grants  # import tardío: `grants` no importa este módulo
 
     grants.migrate_from_admins(conn)
+
+
+NOTIFICATIONS_SQL = """CREATE TABLE notifications (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    workspace_id    TEXT,
+    page_id         TEXT,
+    type            TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update', 'chat_mention')),
+    message         TEXT NOT NULL,
+    is_read         INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    dedupe_key      TEXT,
+    conversation_id TEXT
+)"""
+
+
+def _rebuild_notifications_for_chat(conn: sqlite3.Connection) -> None:
+    """Migración 25: `notifications` admite `chat_mention` y `conversation_id`."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'notifications'").fetchone()
+    if sql is None or "chat_mention" in sql[0]:
+        return
+    conn.execute("ALTER TABLE notifications RENAME TO notifications_old")
+    conn.execute("DROP INDEX IF EXISTS notifications_user")
+    conn.execute("DROP INDEX IF EXISTS notifications_dedupe")
+    conn.execute(NOTIFICATIONS_SQL)
+    conn.execute(
+        "INSERT INTO notifications (id, user_id, workspace_id, page_id, type, message, is_read, created_at, dedupe_key)"
+        " SELECT id, user_id, workspace_id, page_id, type, message, is_read, created_at, dedupe_key FROM notifications_old"
+    )
+    conn.execute("DROP TABLE notifications_old")
+    conn.execute("CREATE INDEX notifications_user ON notifications(user_id, is_read, created_at)")
+    conn.execute(
+        "CREATE UNIQUE INDEX notifications_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL"
+    )
 
 
 def _rebuild_acl_with_groups(conn: sqlite3.Connection) -> None:
@@ -853,15 +891,16 @@ CREATE TABLE database_kinds (
 
 -- Avisos y suscripciones por página (v16, plan H6). Ver la migración 16.
 CREATE TABLE notifications (
-    id           TEXT PRIMARY KEY,
-    user_id      TEXT NOT NULL,
-    workspace_id TEXT,
-    page_id      TEXT,
-    type         TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update')),
-    message      TEXT NOT NULL,
-    is_read      INTEGER NOT NULL DEFAULT 0,
-    created_at   TEXT NOT NULL,
-    dedupe_key   TEXT
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    workspace_id    TEXT,
+    page_id         TEXT,
+    type            TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update', 'chat_mention')),
+    message         TEXT NOT NULL,
+    is_read         INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    dedupe_key      TEXT,
+    conversation_id TEXT
 );
 CREATE TABLE page_subscriptions (
     user_id TEXT NOT NULL,
@@ -1049,7 +1088,7 @@ CREATE TRIGGER chat_fts_au AFTER UPDATE OF body ON chat_messages BEGIN
     INSERT INTO chat_fts(rowid, body) VALUES (new.id, new.body);
 END;
 
-PRAGMA user_version = 24;
+PRAGMA user_version = 25;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
