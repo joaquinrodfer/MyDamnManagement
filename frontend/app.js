@@ -1341,10 +1341,49 @@ function marcaNotemil({ variante = "color", tamano = 28, sinLeer = false } = {})
   return svg;
 }
 
-/** La marca de la cabecera de la barra lateral, a 28 px. */
+/** La marca de la cabecera de la barra lateral, a 34 px. */
 function montarMarca() {
   const hueco = document.getElementById("brand-mark");
-  if (hueco) hueco.replaceWith(marcaNotemil({ tamano: 28 }));
+  if (hueco) hueco.replaceWith(marcaNotemil({ tamano: 34 }));
+}
+
+// El icono y el título de la pestaña del navegador dicen cuántos avisos hay
+// sin leer: «(3) Notemil» y el punto rojo de la marca con el número dentro.
+const TITULO_BASE = "Notemil";
+let faviconOriginal = null;
+
+function iconoDePestana(n) {
+  const cifra = n > 99 ? "99+" : String(n);
+  const tamano = cifra.length >= 3 ? 20 : cifra.length === 2 ? 26 : 32;
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    '<rect x=".5" y=".5" width="63" height="63" rx="15" fill="#1C2142" stroke="#333A6B"/>' +
+    '<path d="M14 50V22L33 50V35" stroke="#9AA2FF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>' +
+    '<circle cx="44" cy="20" r="19" fill="#FF4D4D" stroke="#1C2142" stroke-width="3"/>' +
+    `<text x="44" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,Arial,sans-serif" font-weight="700" font-size="${tamano}" fill="#fff">${cifra}</text>` +
+    "</svg>"
+  );
+}
+
+function fijarPestana(n) {
+  const hay = Number(n) > 0;
+  document.title = hay ? `(${n > 99 ? "99+" : n}) ${TITULO_BASE}` : TITULO_BASE;
+  const enlaces = [...document.querySelectorAll('link[rel="icon"]')];
+  if (!faviconOriginal) faviconOriginal = enlaces.map((l) => [l, l.getAttribute("href"), l.getAttribute("type")]);
+  if (hay) {
+    const url = `data:image/svg+xml,${encodeURIComponent(iconoDePestana(Number(n)))}`;
+    // Los dos (el .ico y el SVG): cada navegador elige uno distinto.
+    for (const l of enlaces) {
+      l.setAttribute("href", url);
+      l.setAttribute("type", "image/svg+xml");
+    }
+  } else {
+    for (const [l, href, type] of faviconOriginal) {
+      l.setAttribute("href", href);
+      if (type) l.setAttribute("type", type);
+      else l.removeAttribute("type");
+    }
+  }
 }
 
 /**
@@ -1358,6 +1397,7 @@ function fijarMarcaSinLeer(n) {
   const hay = Number(n) > 0;
   if (marca) marca.dataset.unread = hay ? "true" : "false";
   if (aviso) aviso.textContent = hay ? (n === 1 ? "1 aviso sin leer" : `${n} avisos sin leer`) : "";
+  fijarPestana(n);
 }
 
 function paintUserChip() {
@@ -7613,7 +7653,7 @@ function renderNote(page, backlinks) {
         scheduleSave();
         renderOutline();
       }),
-    onWikilinkHover: (pageId, rect) => startLinkPreview(pageId, rect),
+    onWikilinkHover: (pageId, rect, el) => startLinkPreview(pageId, rect, el),
     onWikilinkHoverEnd: () => stopLinkPreview(),
     onSlashMenu: (menuState) => renderSlashMenu(menuState),
     onListDatabases: listDatabaseEntries,
@@ -8969,55 +9009,101 @@ function updateNavButtons() {
 
 // -------------------------------------------------- vista previa al pasar el ratón
 
+// La caché dura poco: una página recién creada se ve vacía la primera vez y,
+// si se guardara para siempre, seguiría diciendo «Sin contenido» aunque ya lo
+// tenga.
 const pagePreviewCache = new Map();
+const PREVIEW_TTL_MS = 15000;
 let linkPreviewEl = null;
 let hoverToken = 0;
+let previewCloseTimer = null;
 
-function stopLinkPreview() {
-  hoverToken++; // invalida cualquier fetch en curso de un hover ya terminado
-  if (linkPreviewEl) {
-    linkPreviewEl.remove();
-    linkPreviewEl = null;
-  }
+/** Texto legible de un cuerpo Markdown para la vista previa. */
+function textoDeVistaPrevia(md) {
+  return String(md || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+    .replace(/\[\[([^\]]+)\]\]/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?/gm, "")
+    .replace(/[*_~`]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-async function startLinkPreview(pageId, rect) {
+function stopLinkPreview({ now = false } = {}) {
+  clearTimeout(previewCloseTimer);
+  const cerrar = () => {
+    hoverToken++; // invalida cualquier fetch en curso de un hover ya terminado
+    if (linkPreviewEl) {
+      linkPreviewEl.remove();
+      linkPreviewEl = null;
+    }
+  };
+  // Un margen para que el ratón llegue a la tarjeta (y a «Editar») sin que
+  // se cierre por el camino.
+  if (now || !linkPreviewEl) cerrar();
+  else previewCloseTimer = setTimeout(cerrar, 260);
+}
+
+async function startLinkPreview(pageId, rect, linkEl = null) {
+  clearTimeout(previewCloseTimer);
   const token = ++hoverToken;
 
-  let data = pagePreviewCache.get(pageId);
+  const guardada = pagePreviewCache.get(pageId);
+  let data = guardada && Date.now() - guardada.at < PREVIEW_TTL_MS ? guardada.data : null;
   if (!data) {
     try {
       data = await api(`/pages/${pageId}`);
-      pagePreviewCache.set(pageId, data);
+      pagePreviewCache.set(pageId, { data, at: Date.now() });
     } catch {
       return;
     }
   }
   if (token !== hoverToken) return; // el ratón ya se fue de ahí mientras se cargaba
 
-  // Nunca puede haber dos tarjetas vivas a la vez: un clic sin Ctrl sobre un
-  // wikilink resuelto lo sustituye por su marcado en crudo bajo el propio
-  // ratón (ver WikilinkWidget/buildWikilinkDecorations en entry.js), lo que
-  // dispara un mouseover nuevo del navegador sin que el hover anterior se
-  // haya cerrado -- sin este remove(), la tarjeta vieja queda huérfana en
-  // el DOM para siempre (issue #1 en GitHub).
+  // Nunca puede haber dos tarjetas vivas a la vez.
   linkPreviewEl?.remove();
 
   const card = document.createElement("div");
   card.className = "mdm-link-preview";
 
-  const title = document.createElement("div");
+  const cab = document.createElement("div");
+  cab.className = "mdm-link-preview-head";
+  const title = document.createElement("button");
+  title.type = "button";
   title.className = "mdm-link-preview-title";
+  title.title = "Abrir la página";
   const titleIcon = document.createElement("span");
   paintPageIcon(titleIcon, data.type || "note", data.icon);
-  title.append(titleIcon, ` ${data.title}`);
+  title.append(titleIcon, crearEl("span", "", data.title || "Sin título"));
+  title.addEventListener("click", () => {
+    stopLinkPreview({ now: true });
+    navigateToPage(pageId);
+  });
+  cab.append(title);
+  const editor = state.editor;
+  if (linkEl && editor?.wikilinkAt?.(linkEl)) {
+    const editar = crearEl("button", "mdm-link-preview-edit");
+    editar.type = "button";
+    editar.innerHTML = `${svgIcon("i-pencil")}<span>Editar</span>`;
+    editar.title = "Cambiar el texto del enlace o la página a la que lleva";
+    editar.addEventListener("click", () => pintarEdicionDeEnlace(card, linkEl, editor));
+    cab.append(editar);
+  }
 
   const body = document.createElement("div");
   body.className = "mdm-link-preview-body";
-  const snippet = (data.body_markdown || "").trim();
-  body.textContent = snippet ? snippet.slice(0, 220) : "Sin contenido.";
+  const snippet = textoDeVistaPrevia(data.body_markdown);
+  body.textContent = snippet ? (snippet.length > 220 ? `${snippet.slice(0, 220)}…` : snippet) : "Sin contenido.";
+  if (!snippet) body.classList.add("is-empty");
 
-  card.append(title, body);
+  card.append(cab, body);
+  card.addEventListener("mouseenter", () => clearTimeout(previewCloseTimer));
+  card.addEventListener("mouseleave", () => {
+    if (!card.classList.contains("is-editing")) stopLinkPreview();
+  });
   document.body.appendChild(card);
 
   let left = rect.left;
@@ -9029,6 +9115,108 @@ async function startLinkPreview(pageId, rect) {
   card.style.top = `${top}px`;
 
   linkPreviewEl = card;
+}
+
+/** «Editar» de la vista previa: el texto que se ve y la página enlazada. */
+function pintarEdicionDeEnlace(card, linkEl, editor) {
+  const actual = editor.wikilinkAt(linkEl);
+  if (!actual) return stopLinkPreview({ now: true });
+  card.classList.add("is-editing");
+  const form = crearEl("form", "mdm-link-edit");
+  const texto = crearEl("input");
+  texto.type = "text";
+  texto.value = actual.alias || "";
+  texto.placeholder = actual.title;
+  const campoTexto = crearEl("label", "mdm-link-edit-field");
+  campoTexto.append(crearEl("span", "", "Texto del enlace"), texto);
+
+  let destino = actual.title;
+  const buscar = crearEl("input");
+  buscar.type = "search";
+  buscar.value = actual.title;
+  buscar.setAttribute("autocomplete", "off");
+  const lista = crearEl("div", "mdm-link-edit-results");
+  lista.setAttribute("role", "listbox");
+  const campoDestino = crearEl("label", "mdm-link-edit-field");
+  campoDestino.append(crearEl("span", "", "Página enlazada"), buscar);
+  const paginas = listPageEntries().filter((p) => p.title);
+  const pintarResultados = () => {
+    const q = plegarTexto(buscar.value);
+    const hits = paginas
+      .filter((p) => !q || plegarTexto(p.title).includes(q))
+      .slice(0, 6);
+    lista.replaceChildren(
+      ...hits.map((p) => {
+        const b = crearEl("button", "mdm-link-edit-hit");
+        b.type = "button";
+        b.setAttribute("role", "option");
+        b.setAttribute("aria-selected", String(p.title === destino));
+        const ic = document.createElement("span");
+        paintPageIcon(ic, p.type || "note", p.icon);
+        b.append(ic, crearEl("span", "", p.title));
+        b.addEventListener("click", () => {
+          destino = p.title;
+          buscar.value = p.title;
+          pintarResultados();
+        });
+        return b;
+      }),
+    );
+    if (!hits.length) lista.append(crearEl("p", "mdm-link-edit-empty", "Ninguna página con ese nombre."));
+  };
+  buscar.addEventListener("input", () => {
+    destino = paginas.some((p) => p.title === buscar.value.trim()) ? buscar.value.trim() : "";
+    pintarResultados();
+  });
+  pintarResultados();
+
+  const acciones = crearEl("div", "mdm-link-edit-actions");
+  const quitar = crearEl("button", "btn btn-ghost", "Quitar enlace");
+  quitar.type = "button";
+  quitar.title = "Deja solo el texto, sin enlace";
+  const cancelar = crearEl("button", "btn", "Cancelar");
+  cancelar.type = "button";
+  const guardar = crearEl("button", "btn btn-primary", "Guardar");
+  guardar.type = "submit";
+  acciones.append(quitar, crearEl("span", "mdm-link-edit-gap"), cancelar, guardar);
+  const nota = crearEl("p", "mdm-link-edit-note");
+
+  quitar.addEventListener("click", () => {
+    editor.replaceWikilinkAt(linkEl, "", texto.value || actual.alias || actual.title);
+    stopLinkPreview({ now: true });
+  });
+  cancelar.addEventListener("click", () => stopLinkPreview({ now: true }));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    if (!destino) {
+      nota.textContent = "Elige una página de la lista.";
+      return;
+    }
+    editor.replaceWikilinkAt(linkEl, destino, texto.value);
+    stopLinkPreview({ now: true });
+  });
+  form.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      stopLinkPreview({ now: true });
+    }
+  });
+  form.append(campoTexto, campoDestino, lista, nota, acciones);
+  card.querySelector(".mdm-link-preview-body")?.replaceWith(form);
+  card.querySelector(".mdm-link-preview-edit")?.remove();
+  // Que la tarjeta, ahora más alta, siga dentro de la ventana.
+  const r = card.getBoundingClientRect();
+  if (r.bottom > window.innerHeight - 8) card.style.top = `${Math.max(8, window.innerHeight - r.height - 8)}px`;
+  texto.focus();
+  // Un clic fuera la cierra.
+  const fuera = (ev) => {
+    if (!card.isConnected) return document.removeEventListener("mousedown", fuera, true);
+    if (!card.contains(ev.target)) {
+      document.removeEventListener("mousedown", fuera, true);
+      stopLinkPreview({ now: true });
+    }
+  };
+  document.addEventListener("mousedown", fuera, true);
 }
 
 // -------------------------------------------------------------------- menú "/"

@@ -165,6 +165,28 @@ function buildWikilinkDecorations(view, resolvePage) {
   return Decoration.set(ranges, true);
 }
 
+/** El tramo `[[…]]` del documento que pinta el elemento `el`, o null. */
+function wikilinkRangeAt(view, el) {
+  if (!el || !el.isConnected) return null;
+  let pos;
+  try {
+    pos = view.posAtDOM(el);
+  } catch {
+    return null;
+  }
+  const line = view.state.doc.lineAt(pos);
+  WIKILINK_RE.lastIndex = 0;
+  let m;
+  while ((m = WIKILINK_RE.exec(line.text))) {
+    const from = line.from + m.index;
+    const to = from + m[0].length;
+    if (pos >= from && pos <= to) {
+      return { from, to, title: m[1].trim(), alias: m[2] ? m[2].trim() : null };
+    }
+  }
+  return null;
+}
+
 function wikilinkPlugin(resolvePage) {
   return ViewPlugin.fromClass(
     class {
@@ -184,10 +206,15 @@ function wikilinkPlugin(resolvePage) {
 function wikilinkClickHandler(onNavigate) {
   return EditorView.domEventHandlers({
     mousedown(event) {
-      if (!(event.ctrlKey || event.metaKey)) return false;
+      if (event.button !== 0) return false;
       const target = event.target;
       if (!(target instanceof HTMLElement)) return false;
-      const link = target.closest("[data-page-id]");
+      // El enlace pintado (sin corchetes) se comporta como un enlace: un clic
+      // entra en la página. Para cambiarlo está «Editar» en la vista previa
+      // (o las flechas, que entran en el texto crudo). En crudo, Ctrl+clic.
+      const pintado = target.closest(".cm-mdm-wikilink-rendered");
+      if (!pintado && !(event.ctrlKey || event.metaKey)) return false;
+      const link = pintado || target.closest("[data-page-id]");
       if (!link) return false;
       const pageId = link.dataset.pageId;
       if (!pageId) return false;
@@ -211,7 +238,7 @@ function wikilinkHoverHandler(onHover, onHoverEnd) {
       const pageId = link.dataset.pageId;
       const rect = link.getBoundingClientRect();
       clearTimeout(timer);
-      timer = setTimeout(() => onHover?.(pageId, rect), HOVER_DELAY_MS);
+      timer = setTimeout(() => onHover?.(pageId, rect, link), HOVER_DELAY_MS);
       return false;
     },
     mouseout(event) {
@@ -795,6 +822,9 @@ const SLASH_EXTRA_COMMANDS = [
   { type: "file", label: "Archivo", abbrev: "archivo" },
 ];
 const SLASH_MENU_OPTIONS = [...BLOCK_TYPES, ...SLASH_EXTRA_COMMANDS];
+// Lo que el menú "/" ofrece dentro de una lista o una cita: lo que se escribe
+// en línea, sin cambiar el tipo de bloque.
+const INLINE_SLASH_TYPES = new Set(["page"]);
 
 // Los bloques del documento. El cálculo vive en block-ranges.js para que
 // los tests de `node --test` lo usen sobre un árbol de verdad (el mismo
@@ -3182,10 +3212,12 @@ async function createPageFromName(view, from, to, onCreatePage, onOpenPage) {
   // quedarse de párrafo suelto en la nota que se deja. Si mientras se creaba el
   // usuario siguió escribiendo en ese tramo, no se pisa: se navega igual y su
   // texto se queda (el guardado de al lado lo escribe tal cual).
+  // El nombre tecleado se convierte en el enlace a la página nueva: la madre
+  // la sigue mencionando (antes se borraba y la madre se quedaba sin nada).
   const doc = view.state.doc;
   const fin = Math.min(to, doc.length);
   if (fin >= from && doc.sliceString(from, fin) === escrito) {
-    view.dispatch({ changes: { from, to: fin, insert: "" } });
+    view.dispatch({ changes: { from, to: fin, insert: linkMarkup(created.title) } });
   }
   // Espera al guardado de la nota anterior ANTES de navegar: es la promesa que
   // hace que «/page no pierde ni una letra» sea verdad y no una carrera con el
@@ -3319,7 +3351,7 @@ function slashMenuExtension({
       }
 
       get filteredOptions() {
-        const all = SLASH_MENU_OPTIONS;
+        const all = this.inline ? SLASH_MENU_OPTIONS.filter((o) => INLINE_SLASH_TYPES.has(o.type)) : SLASH_MENU_OPTIONS;
         const q = this.query.trim().toLowerCase();
         if (!q) return all;
         return all.filter((t) => t.abbrev.startsWith(q) || t.label.toLowerCase().includes(q));
@@ -3430,7 +3462,12 @@ function slashMenuExtension({
           if (this.mode || inserted.toString() !== "/") return;
           const line = update.state.doc.lineAt(fromB);
           const beforeSlash = update.state.doc.sliceString(line.from, fromB);
-          if (beforeSlash.trim() !== "") return; // solo dispara al principio de un bloque vacío
+          // Al principio de un bloque vacío, o detrás de la marca de una lista,
+          // tarea o cita («- », «1. », «- [ ] », «> »): ahí solo se ofrece lo
+          // que va en línea (una página es un enlace), no cambiar de bloque.
+          const enLinea = /^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)?$/.test(beforeSlash);
+          if (beforeSlash.trim() !== "" && !enLinea) return;
+          this.inline = beforeSlash.trim() !== "";
           this.mode = "menu";
           this.from = fromB;
           this.selectedIndex = 0;
@@ -5075,6 +5112,23 @@ export function createNoteEditor({
     // editor no los manda siquiera.
     getValue: () => {
       return canonicalBody(durableDoc());
+    },
+    /** El wikilink que pinta `el` (el enlace bajo el ratón): `{title, alias}`
+     * o null si ya no está. */
+    wikilinkAt(el) {
+      const hit = wikilinkRangeAt(view, el);
+      return hit ? { title: hit.title, alias: hit.alias } : null;
+    },
+    /** Cambia ese wikilink: otra página y/o el texto que se ve. Con `title`
+     * vacío lo quita y deja solo el texto. Devuelve si lo hizo. */
+    replaceWikilinkAt(el, title, alias) {
+      const hit = wikilinkRangeAt(view, el);
+      if (!hit) return false;
+      const t = (title || "").trim();
+      const a = (alias || "").trim();
+      const insert = !t ? a || hit.alias || hit.title : a && a !== t ? `[[${t}|${a}]]` : `[[${t}]]`;
+      view.dispatch({ changes: { from: hit.from, to: hit.to, insert } });
+      return true;
     },
     /** Destinos posibles de un wikilink -- `[{id, title, type}]` con todas
      * las notas y bases de datos del vault. La app la llama al cargar el
