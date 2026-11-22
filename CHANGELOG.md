@@ -2,6 +2,10 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Repaso de «Mi semana» y «Apunta algo»
+- **«Mi semana»:** los datos van en filas de etiqueta y valor (tareas con horas, sin fechas, semana que viene, sin estimar), con la semana que viene en rojo si te pasas. En «Equipo» ya no hay recuadro: un aviso pequeño junto al título y un icono al lado del nombre de quien se pasa, con las barras alineadas.
+- **«Apunta algo» flotante:** sin marcos ni recuadro. Solo el texto de ayuda y el cursor esperando a que escribas.
+
 ## El panel izquierdo crece al fijarlo
 - Con el panel asomando (flotante) y pulsando ☰ para dejarlo fijo, la tarjeta flotante **crece hasta ser la columna**: sube hasta arriba y se estira mientras el contenido se desliza para hacerle sitio. Antes se escondía y volvía a entrar.
 - Con «reducir movimiento» activado en el sistema, cambia sin animación, como antes.

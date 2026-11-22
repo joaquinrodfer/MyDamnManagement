@@ -718,6 +718,7 @@ function abrirApunta(ancla) {
   const form = capturaDeInicio();
   panel.append(form, crearEl("p", "apunta-panel-nota", "Intro lo guarda en la bandeja. Esc cierra."));
   const input = form.querySelector("input");
+  if (input) input.placeholder = "Apunta algo…";
   abrirPanelFlotante(ancla, panel, { etiqueta: "Apunta algo", foco: "input" });
   setTimeout(() => input?.focus(), 0);
 }
@@ -809,49 +810,48 @@ function seccionMiSemana(semana) {
   const cifras = crearEl("div", "home-load-figures");
   cifras.append(crearEl("strong", "", horasCortas(yo.hours)), crearEl("span", "", ` de ${horasCortas(yo.capacity)}`));
   fila.append(cifras, barraDeCarga(yo.hours, yo.capacity));
-  const pie = yo.tasks
-    ? `${yo.tasks} ${yo.tasks === 1 ? "tarea" : "tareas"} con horas${yo.unscheduled ? ` · ${horasCortas(yo.unscheduled)} sin fechas` : ""}`
-    : "Sin horas asignadas esta semana en bases de Proyectos o de Tareas.";
-  fila.append(crearEl("small", "home-load-note", pie));
-  // C7: avisar antes de que llegue la semana que viene, y lo que falta estimar.
+  // Lo demás, en filas de dato: etiqueta a la izquierda, valor a la derecha.
+  const datos = crearEl("dl", "home-load-stats");
+  const dato = (etiqueta, valor, clase = "") => {
+    const fila = crearEl("div", `home-load-stat ${clase}`.trim());
+    fila.append(crearEl("dt", "", etiqueta), crearEl("dd", "", valor));
+    datos.append(fila);
+    return fila;
+  };
+  if (yo.tasks) {
+    dato("Tareas con horas", String(yo.tasks));
+    if (yo.unscheduled) dato("Sin fechas", horasCortas(yo.unscheduled));
+  }
+  // C7: la semana que viene (en rojo si te pasas) y lo que falta estimar.
   const sig = yo.next;
-  if (sig && sig.hours > 0 && sig.hours > sig.capacity) {
-    const aviso = crearEl("p", "home-load-alert");
-    aviso.innerHTML = svgIcon("i-alert");
-    aviso.append(
-      `La semana que viene tienes ${horasCortas(sig.hours)} para ${horasCortas(sig.capacity)}` +
-        (sig.capacity > 0 ? ` (${Math.round((sig.hours / sig.capacity) * 100)} %).` : "."),
-    );
-    fila.append(aviso);
-  } else if (sig) {
-    fila.append(crearEl("small", "home-load-note", `La semana que viene: ${horasCortas(sig.hours)} de ${horasCortas(sig.capacity)}.`));
+  if (sig) {
+    const pasa = sig.hours > 0 && sig.hours > sig.capacity;
+    const fila = dato("Semana que viene", `${horasCortas(sig.hours)} de ${horasCortas(sig.capacity)}`, pasa ? "is-over" : "");
+    if (pasa) {
+      fila.querySelector("dt").insertAdjacentHTML("afterbegin", svgIcon("i-alert"));
+      fila.title = sig.capacity > 0 ? `Vas al ${Math.round((sig.hours / sig.capacity) * 100)} % de tu capacidad` : "No tienes horas disponibles";
+    }
   }
-  if (yo.unestimated) {
-    fila.append(
-      crearEl(
-        "small",
-        "home-load-note",
-        `${yo.unestimated} ${yo.unestimated === 1 ? "tarea tuya no tiene" : "tareas tuyas no tienen"} estimación: no cuentan en la carga.`,
-      ),
-    );
-  }
+  if (yo.unestimated) dato("Sin estimar", `${yo.unestimated} ${yo.unestimated === 1 ? "tarea" : "tareas"}`, "is-muted");
+  if (!yo.tasks) fila.append(crearEl("p", "home-load-note", "Sin horas asignadas esta semana."));
+  fila.append(datos);
   seccion.append(fila);
 
   const equipo = (semana?.team || []).filter((p) => p.id !== sessionUser.me?.id);
   if (equipo.length) {
     const lista = crearEl("div", "home-load-team");
-    lista.append(crearEl("div", "home-task-group-head", "Equipo"));
+    const cab = crearEl("div", "home-load-team-head");
+    cab.append(crearEl("span", "home-task-group-head", "Equipo"));
     const sobrecargados = equipo.filter((p) => p.next_hours > 0 && p.next_hours > p.next_capacity);
     if (sobrecargados.length) {
-      const aviso = crearEl("p", "home-load-alert");
+      const aviso = crearEl("span", "home-load-team-alert");
       aviso.innerHTML = svgIcon("i-alert");
       aviso.append(
-        sobrecargados.length === 1
-          ? `${sobrecargados[0].name} pasa de su capacidad la semana que viene.`
-          : `${sobrecargados.length} personas pasan de su capacidad la semana que viene: ${sobrecargados.map((p) => p.name).join(", ")}.`,
+        sobrecargados.length === 1 ? "1 se pasa la semana que viene" : `${sobrecargados.length} se pasan la semana que viene`,
       );
-      lista.append(aviso);
+      cab.append(aviso);
     }
+    lista.append(cab);
     equipo
       .slice()
       .sort((a, b) => b.hours / (b.capacity || 1) - a.hours / (a.capacity || 1))
@@ -860,9 +860,22 @@ function seccionMiSemana(semana) {
         const f = crearEl("div", "home-load-person");
         const av = avatarImg(p.avatar, "home-load-avatar");
         if (av) f.append(av);
-        f.append(crearEl("span", "home-load-name", p.name));
+        // Nombre y aviso juntos, en una caja de ancho fijo: las barras quedan alineadas.
+        const quien = crearEl("span", "home-load-who");
+        const nombre = crearEl("span", "home-load-name", p.name);
+        nombre.title = p.name;
+        quien.append(nombre);
+        if (p.next_hours > 0 && p.next_hours > p.next_capacity) {
+          const marca = crearEl("span", "home-load-next-over");
+          marca.innerHTML = svgIcon("i-alert");
+          marca.title = `La semana que viene: ${horasCortas(p.next_hours)} de ${horasCortas(p.next_capacity)}`;
+          quien.append(marca);
+        }
+        f.append(quien);
         f.append(barraDeCarga(p.hours, p.capacity));
-        f.append(crearEl("span", "home-load-hours", horasCortas(p.hours)));
+        const horas = crearEl("span", "home-load-hours", horasCortas(p.hours));
+        horas.title = `${horasCortas(p.hours)} de ${horasCortas(p.capacity)} esta semana`;
+        f.append(horas);
         lista.append(f);
       });
     seccion.append(lista);
