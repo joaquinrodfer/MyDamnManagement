@@ -126,7 +126,9 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
         },
         "team": None,
     }
-    if grants.can(repo.conn, user, "view_workload"):
+    alcance = grants.scopes(repo.conn, user, "view_workload")
+    if alcance is None or alcance:
+        dentro = None if alcance is None else grants.people_in(repo.conn, alcance)
         salida["team"] = [
             {
                 "id": p["id"],
@@ -137,5 +139,6 @@ def _mi_semana(repo: Repository, user: auth.User) -> dict:
                 "capacity": p["capacity_weeks"].get(semana, p["capacity"]),
             }
             for p in informe["people"]
+            if dentro is None or p["id"] in dentro
         ]
     return salida

@@ -1441,7 +1441,7 @@ function paintUserChip() {
   // «Administración»: cada apartado, a quien le toca (el administrador o quien
   // tiene el permiso). A los demás no se les enseña algo que solo da 403.
   const visibles = {
-    users: me.is_admin,
+    users: me.is_admin || tengoPermiso("manage_people"),
     groups: me.is_admin,
     workspaces: me.is_admin,
     permisos: me.is_admin,
@@ -1656,7 +1656,7 @@ function renderUsers(users) {
       badge.textContent = "admin";
       row.appendChild(badge);
     }
-    if (u.id && tengoPermiso("manage_people")) {
+    if (u.id && personasGestionables.has(u.id)) {
       const jornada = document.createElement("button");
       jornada.type = "button";
       jornada.className = "btn user-jornada";
@@ -1680,7 +1680,26 @@ function renderKnownUsers() {
 }
 
 /** Pide la lista al servidor y la pinta; si falla, el respaldo local. */
+// A quién puedo abrir la «Jornada» («Gestionar personas», R3).
+let personasGestionables = new Set();
+
+async function leerPersonasGestionables() {
+  if (!tengoPermiso("manage_people")) {
+    personasGestionables = new Set();
+    return [];
+  }
+  try {
+    const r = await api("/worktime/people");
+    personasGestionables = new Set(r.people.map((p) => p.id));
+    return r.people;
+  } catch {
+    personasGestionables = new Set();
+    return [];
+  }
+}
+
 async function recargarListaDeUsuarios() {
+  if (!sessionUser.me?.is_admin) return cargarUsuariosDeAjustes();
   try {
     const fetched = await api("/auth/users");
     if (Array.isArray(fetched)) {
@@ -1699,6 +1718,16 @@ async function recargarListaDeUsuarios() {
 /** El apartado «Administración»: el formulario limpio y la lista del servidor. */
 async function cargarUsuariosDeAjustes() {
   if (!usersList || !newUserForm) return;
+  const gestionables = await leerPersonasGestionables();
+  // Sin ser administrador (solo «Gestionar personas»): las personas que
+  // gestiono, sin alta de usuarios.
+  const esAdmin = Boolean(sessionUser.me?.is_admin);
+  document.getElementById("new-user-group")?.toggleAttribute("hidden", !esAdmin);
+  if (!esAdmin) {
+    renderUsers(gestionables);
+    setFormNote(usersNote, gestionables.length ? "" : "No gestionas a nadie todavía.");
+    return;
+  }
   newUserForm.reset();
   selectorDeAlta.fijar(null);
   setFormNote(newUserNote, NEW_USER_NOTE);
@@ -4717,6 +4746,7 @@ function pintarBotonDeCarga() {
 }
 
 let cargaSemanas = 8;
+let cargaEspacio = ""; // "" = todos los que puedo ver
 
 async function showCarga() {
   state.current = { kind: "workload", id: null };
@@ -4730,7 +4760,8 @@ async function showCarga() {
   caja.append(crearEl("p", "form-note", "Cargando…"));
   let datos;
   try {
-    datos = await api(`/workload?weeks=${cargaSemanas}`);
+    const espacio = cargaEspacio ? `&workspace=${encodeURIComponent(cargaEspacio)}` : "";
+    datos = await api(`/workload?weeks=${cargaSemanas}${espacio}`);
   } catch (e) {
     caja.replaceChildren(crearEl("h1", "my-tasks-title", "Carga del equipo"), crearEl("p", "form-note form-error", describeError(e)));
     return;
@@ -4739,7 +4770,6 @@ async function showCarga() {
 }
 
 function pintarCarga(caja, datos) {
-  const esAdmin = tengoPermiso("manage_people");
   const fmtH = (h) => (h ? `${Math.round(h * 10) / 10} h` : "–");
   const fmtSemana = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("es-ES", { day: "numeric", month: "short" });
   caja.replaceChildren(crearEl("h1", "my-tasks-title", "Carga del equipo"));
@@ -4753,13 +4783,30 @@ function pintarCarga(caja, datos) {
     showCarga();
   });
   etiqueta.append(selector);
+  // Por espacio (R4): solo lo de ese espacio y la capacidad por la dedicación.
+  const etiquetaEspacio = crearEl("label", "carga-semanas", "Espacio ");
+  const selEspacio = crearEl("select");
+  const todos = tengoPermisoEnTodos("view_workload");
+  selEspacio.add(new Option(todos ? "Todos" : "Todos los míos", ""));
+  for (const w of datos.workspaces || []) selEspacio.add(new Option(w.name, w.id, false, w.id === cargaEspacio));
+  selEspacio.addEventListener("change", () => {
+    cargaEspacio = selEspacio.value;
+    showCarga();
+  });
+  etiquetaEspacio.append(selEspacio);
   const leyenda = crearEl("span", "carga-leyenda");
   leyenda.innerHTML =
     '<span><i style="background:color-mix(in srgb, var(--ok) 40%, transparent)"></i>hasta el 70 %</span>' +
     '<span><i style="background:color-mix(in srgb, var(--warn) 45%, transparent)"></i>70–100 %</span>' +
     '<span><i style="background:color-mix(in srgb, var(--down) 50%, transparent)"></i>pasa de la capacidad</span>' +
     '<span title="Debajo, las horas que le quedan esa semana"><i class="carga-leyenda-off"></i>con festivos o ausencias</span>';
-  herramientas.append(etiqueta, leyenda, crearEl("span", "carga-ambito", "Solo tareas sin cerrar, de todos los espacios."));
+  const nombreEspacio = (datos.workspaces || []).find((w) => w.id === datos.workspace_id)?.name;
+  const ambito = nombreEspacio
+    ? `Solo tareas sin cerrar de ${nombreEspacio}; la capacidad, según la dedicación de cada persona a ese espacio.`
+    : todos
+      ? "Solo tareas sin cerrar, de todos los espacios."
+      : "Las personas de tus espacios, con todas sus tareas sin cerrar.";
+  herramientas.append(etiqueta, etiquetaEspacio, leyenda, crearEl("span", "carga-ambito", ambito));
   caja.append(herramientas);
 
   if (!datos.people.length) {
@@ -4798,7 +4845,7 @@ function pintarCarga(caja, datos) {
     textoCap.title = `Jornada: ${resumenDeJornada(p.schedule || [])}`;
     cajaCap.append(textoCap);
     celdaCap.append(cajaCap);
-    if (esAdmin) {
+    if (p.manageable) {
       const jornada = crearEl("button", "icon-btn carga-cap-edit");
       jornada.type = "button";
       jornada.innerHTML = svgIcon("i-calendar");
