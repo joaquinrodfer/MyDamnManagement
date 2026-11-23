@@ -7057,6 +7057,16 @@
   /* El botón «Jornada» de la lista de usuarios. */
   .user-jornada { min-height: 30px; padding: 3px 10px; font-size: 12.5px; gap: 6px; }
   .user-jornada .svg-icon { width: 14px; height: 14px; }
+  .user-row .user-jornada + .user-jornada { margin-left: 4px; }
+  .user-row .user-reset { margin-left: auto; }
+  .user-row .user-jornada:first-of-type:not(.user-reset) { margin-left: auto; }
+  .invite-list { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; padding: 0 20px 16px; }
+  .invite-list:empty { display: none; }
+  .invite-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-sm); font-size: 12.5px; }
+  .invite-row:hover { background: var(--row-hover); }
+  .invite-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .invite-row-text small { color: var(--ink-muted); margin-left: 6px; }
+  .ask-dialog-input[readonly] { font-family: var(--font-mono, monospace); font-size: 12px; }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
@@ -7591,6 +7601,35 @@
             <p class="form-note" id="users-note"></p>
             <div class="users-list" id="users-list"></div>
           </div>
+          <!-- Invitar con un enlace (bloque 1 del equipo): quien lo abre elige su
+               usuario y su contraseña y entra ya en el espacio. Sin correo: el
+               enlace se pasa por donde se quiera. -->
+          <details class="settings-group settings-fold" id="invite-group">
+            <summary><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-user-plus"/></svg><span>Invitar con un enlace</span></summary>
+            <form id="form-invite" novalidate>
+              <div class="field">
+                <label for="inv-ws">Espacio</label>
+                <select id="inv-ws"></select>
+              </div>
+              <div class="field">
+                <label for="inv-role">Rol en el espacio</label>
+                <select id="inv-role">
+                  <option value="editor">Editor</option>
+                  <option value="viewer">Lector</option>
+                  <option value="admin">Administrador del espacio</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="inv-name">Nombre (opcional)</label>
+                <input type="text" id="inv-name" placeholder="Marta" autocomplete="off" />
+              </div>
+              <p class="form-note" id="inv-note">El enlace vale 7 días y una sola vez. Quien lo abra elige su usuario y su contraseña.</p>
+              <div class="dialog-actions">
+                <button type="submit" class="btn btn-primary" id="btn-create-invite">Crear enlace</button>
+              </div>
+            </form>
+            <div class="invite-list" id="invite-list"></div>
+          </details>
           <details class="settings-group settings-fold" id="new-user-group">
             <summary><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Nuevo usuario</span></summary>
             <form id="form-new-user" novalidate>

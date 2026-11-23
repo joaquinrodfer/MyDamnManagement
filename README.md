@@ -692,6 +692,16 @@ Además del log de uvicorn está el de la app, con sus propios loggers `mdm.*` (
 - **Programarla:** con `BACKUP_DIR` apuntando a una carpeta (en producción, `/data/backups`, dentro del volumen `mdm_data`), el apartado deja elegir «cada día» o «cada semana» y cuántas conservar (las N últimas). Las copias se listan y se descargan desde ahí. Un volumen o un disco distinto del de la app es mejor: una copia en el mismo disco no protege del disco.
 - **Antes de cada migración del esquema**, la app guarda el índice tal como estaba (`index.sqlite.antes-de-vN-desde-vM`, en `BACKUP_DIR` o junto al índice). Volver atrás un despliegue **no** deshace una migración: hay que volver a la versión anterior del código **y** devolver esa copia a `INDEX_PATH`.
 
+- **Por defecto, una al día:** con `BACKUP_DIR` puesto y sin elegir nada, se hace una copia diaria y se guardan las 14 últimas.
+
+**Comprobar que una copia vale** (sin tocar nada; conviene hacerlo de vez en cuando):
+
+```bash
+python backend/scripts/restaurar_copia.py notemil-copia-AAAA-MM-DDThh-mm-ssZ.tar.gz --comprobar
+```
+
+La saca a una carpeta temporal y comprueba el número de ficheros del vault, la integridad del índice y que páginas, usuarios y versión coinciden con el manifiesto. Con `--en CARPETA_VACIA` la deja restaurada ahí, lista para arrancar Notemil con `VAULT_PATH=CARPETA/vault INDEX_PATH=CARPETA/index.sqlite`.
+
 **Restaurar una copia de la app:**
 
 ```bash

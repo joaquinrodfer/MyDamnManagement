@@ -2,6 +2,16 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Listo para un equipo: invitaciones, contraseña nueva, HTTPS y copias
+- **Invitar con un enlace** (Ajustes → Usuarios):
+  - eliges el espacio y el rol, y quien lo abre pone su usuario y su contraseña y entra ya dentro;
+  - el enlace vale 7 días y una sola vez;
+  - las invitaciones pendientes se ven en una lista y se pueden anular.
+- **Contraseña olvidada:** en cada persona, «Contraseña» crea un enlace de 24 horas y un solo uso. Al usarlo se cierran sus sesiones, y crear otro anula los anteriores. Notemil no manda correo: el enlace se pasa por donde quieras.
+- **HTTPS:** con `PUBLIC_URL`, quien entra por HTTP directo (la IP y el puerto) se manda a la dirección con HTTPS.
+- **Copias:** con `BACKUP_DIR`, una copia al día por defecto y se guardan las 14 últimas. `backend/scripts/restaurar_copia.py` comprueba o restaura una copia.
+- **Sin pop-ups del navegador** también en estos avisos: «Copiar enlace» en un diálogo propio.
+
 ## Fichas de tarea, subtareas y proyecto en la carga
 - **Responsables y relaciones en la ficha de una fila:**
   - se ven como en la tabla: avatar y nombre, o el título de la fila enlazada;

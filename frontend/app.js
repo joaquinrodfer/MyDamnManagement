@@ -1733,6 +1733,24 @@ function renderUsers(users) {
       jornada.addEventListener("click", () => abrirJornada(u));
       row.appendChild(jornada);
     }
+    // Contraseña olvidada: un enlace de un solo uso (24 h) para ponerse otra.
+    if (u.id && sessionUser.me?.is_admin && u.id !== sessionUser.me?.id) {
+      const clave = document.createElement("button");
+      clave.type = "button";
+      clave.className = "btn user-jornada" + (personasGestionables.has(u.id) ? "" : " user-reset");
+      clave.innerHTML = `${svgIcon("i-key")}<span>Contraseña</span>`;
+      clave.title = `Enlace para que ${u.display_name} ponga una contraseña nueva`;
+      clave.addEventListener("click", async () => {
+        if (!(await confirmar(`¿Crear un enlace de contraseña nueva para ${u.display_name}?\n\nVale 24 horas y una sola vez; al usarlo se cierran sus sesiones abiertas. Los enlaces anteriores dejan de valer.`, { aceptar: "Crear enlace" }))) return;
+        try {
+          const link = await api(`/auth/users/${u.id}/reset-link`, { method: "POST" });
+          await mostrarEnlace(`Enlace de contraseña nueva para ${u.display_name}\n\nPásaselo por donde quieras. Vale hasta ${new Date(link.expires_at).toLocaleString("es-ES")}.`, location.origin + link.path);
+        } catch (e) {
+          reportError("No se pudo crear el enlace", e);
+        }
+      });
+      row.appendChild(clave);
+    }
     usersList.appendChild(row);
   });
   paintUsersNote();
@@ -1813,6 +1831,7 @@ async function cargarUsuariosDeAjustes() {
       renderUsers(fetched);
     }
     setFormNote(usersNote, "");
+    cargarInvitaciones();
   } catch (e) {
     if (e?.status === 401) return;
     usersListUnavailable = true;
@@ -1853,6 +1872,7 @@ function dialogoPropio({ texto, aceptar = "Aceptar", cancelar = "Cancelar", peli
       input.value = campo.valor || "";
       if (campo.max) input.maxLength = campo.max;
       if (campo.placeholder) input.placeholder = campo.placeholder;
+      if (campo.soloLectura) input.readOnly = true;
       dialogo.append(input);
     }
     const acciones = crearEl("div", "dialog-actions");
@@ -1912,6 +1932,24 @@ function confirmar(texto, opciones = {}) {
 /** Un aviso con un solo botón. */
 function avisar(texto) {
   return dialogoPropio({ texto, aceptar: "Entendido", cancelar: null });
+}
+
+/** Enseña un enlace para pasárselo a alguien, con «Copiar enlace». */
+async function mostrarEnlace(texto, url) {
+  const r = await dialogoPropio({ texto, aceptar: "Copiar enlace", cancelar: "Cerrar", campo: { valor: url, soloLectura: true } });
+  if (r === null) return;
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch {
+    // Sin portapapeles (HTTP sin cifrar): el viejo `execCommand`.
+    const t = crearEl("textarea");
+    t.value = url;
+    document.body.append(t);
+    t.select();
+    document.execCommand("copy");
+    t.remove();
+  }
+  showError("Enlace copiado", "info");
 }
 
 /** Pide una línea de texto → el texto o null si se cancela. */
@@ -3017,6 +3055,70 @@ document.getElementById("btn-backup-run")?.addEventListener("click", async (ev) 
     setFormNote(copiasNota, `Copia hecha: ${hecho.made.name}.`, "ok");
   } catch (e) {
     setFormNote(copiasNota, e?.message || "No se pudo hacer la copia.", "error");
+  } finally {
+    boton.disabled = false;
+  }
+});
+
+// ------------------------------------------- invitar con un enlace (bloque 1)
+
+const ROL_LEGIBLE = { admin: "administrador", editor: "editor", viewer: "lector" };
+
+async function cargarInvitaciones() {
+  const lista = document.getElementById("invite-list");
+  const espacios = document.getElementById("inv-ws");
+  if (!lista || !espacios) return;
+  if (!espacios.options.length) {
+    espacios.add(new Option("Ninguno (solo su espacio personal)", ""));
+    for (const w of state.workspaces || []) {
+      if (w.settings?.personal_of) continue; // el personal de cada uno no se comparte
+      espacios.add(new Option(w.name, w.id));
+    }
+  }
+  let pendientes = [];
+  try {
+    pendientes = await api("/auth/invites");
+  } catch {
+    return;
+  }
+  lista.replaceChildren();
+  if (pendientes.length) lista.append(crearEl("div", "home-task-group-head", "Pendientes"));
+  for (const inv of pendientes) {
+    const fila = crearEl("div", "invite-row");
+    const texto = crearEl("span", "invite-row-text", inv.display_name || "Sin nombre");
+    const donde = inv.workspace_name ? `${inv.workspace_name} · ${ROL_LEGIBLE[inv.role] || inv.role}` : "sin espacio";
+    texto.append(crearEl("small", "", `${donde} · hasta ${new Date(inv.expires_at).toLocaleDateString("es-ES")}`));
+    const anular = botonDeAccion("i-x", "Anular la invitación", async () => {
+      if (!(await confirmar(`¿Anular la invitación${inv.display_name ? ` de ${inv.display_name}` : ""}?\n\nEl enlace dejará de valer.`, { aceptar: "Anular", peligro: true }))) return;
+      try {
+        await api(`/auth/invites/${inv.id}`, { method: "DELETE" });
+        cargarInvitaciones();
+      } catch (e) {
+        reportError("No se pudo anular", e);
+      }
+    });
+    fila.append(texto, anular);
+    lista.append(fila);
+  }
+}
+
+document.getElementById("form-invite")?.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const nota = document.getElementById("inv-note");
+  const boton = document.getElementById("btn-create-invite");
+  const wid = document.getElementById("inv-ws").value || null;
+  const nombre = document.getElementById("inv-name").value.trim();
+  boton.disabled = true;
+  try {
+    const link = await api("/auth/invites", {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: wid, role: document.getElementById("inv-role").value, display_name: nombre || null }),
+    });
+    document.getElementById("inv-name").value = "";
+    cargarInvitaciones();
+    await mostrarEnlace(`Invitación${nombre ? ` para ${nombre}` : ""}\n\nPásale este enlace. Vale 7 días y una sola vez.`, location.origin + link.path);
+  } catch (e) {
+    setFormNote(nota, describeError(e), "error");
   } finally {
     boton.disabled = false;
   }

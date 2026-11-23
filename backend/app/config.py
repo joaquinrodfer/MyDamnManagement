@@ -158,6 +158,13 @@ class Settings(BaseSettings):
     # despliegue que quiera avisar a un servicio de su propia red (n8n en casa).
     webhook_allow_private: bool = False
 
+    # --- Dirección pública (bloque 1 del equipo) ---------------------------
+    # La URL buena, con HTTPS (`https://equipo.tailnet.ts.net`). Si está puesta,
+    # quien entra por HTTP directo (la IP y el puerto) se redirige ahí: por
+    # HTTP la contraseña viaja en claro. Lo que llega del proxy
+    # (`X-Forwarded-Proto: https`) y lo de 127.0.0.1 (healthcheck) no se toca.
+    public_url: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

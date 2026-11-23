@@ -72,7 +72,7 @@ def test_solo_un_administrador(client, carpeta):
 
 def test_programadas_se_guardan_y_se_podan(client, carpeta):
     estado = client.get("/backups").json()
-    assert estado["configured"] and estado["frequency"] == "off" and estado["files"] == []
+    assert estado["configured"] and estado["frequency"] == "daily" and estado["files"] == []
 
     assert client.put("/backups/settings", json={"frequency": "daily", "keep": 2}).json()["frequency"] == "daily"
     # Tres copias con nombres de segundos distintos: se quedan las 2 últimas.
@@ -103,7 +103,11 @@ def test_cuando_toca(client, carpeta):
 
     conn = open_index(settings.index_path)
     try:
-        assert backup.is_due(conn) is False  # apagado
+        # Con BACKUP_DIR y sin elegir nada: una al día (y nunca se ha hecho).
+        assert backup.get_settings(conn)["frequency"] == "daily"
+        assert backup.is_due(conn) is True
+        client.put("/backups/settings", json={"frequency": "off", "keep": 3})
+        assert backup.is_due(conn) is False  # apagada a mano
         client.put("/backups/settings", json={"frequency": "weekly", "keep": 3})
         assert backup.is_due(conn) is True  # nunca se ha hecho
         client.post("/backups/run")

@@ -256,6 +256,10 @@ async def session_is_required(request: Request, call_next):
         or COVER_PATH.fullmatch(path)
         or path == "/agent"
         or path.startswith("/agent/")
+        # Enlaces de invitación y de contraseña nueva: los abre quien aún no
+        # tiene sesión. El token es la credencial (ver `app/access_links.py`).
+        or path.startswith("/enlace/")
+        or path.startswith("/auth/link/")
     ):
         return await call_next(request)
 
@@ -478,6 +482,27 @@ async def index_is_ready(request: Request, call_next):
             return await call_next(request)
         return _no_listo(foto)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def https_is_required(request: Request, call_next):
+    """Con `PUBLIC_URL`, lo que llega por HTTP directo se manda a la dirección
+    con HTTPS (308: mantiene el método). Declarado después de `index_is_ready`,
+    así que va por fuera de todo: ni la puerta ni el login se sirven por HTTP."""
+    destino = (settings.public_url or "").rstrip("/")
+    if destino and _llega_por_http_directo(request):
+        url = destino + request.url.path + (("?" + request.url.query) if request.url.query else "")
+        return RedirectResponse(url, status_code=308)
+    return await call_next(request)
+
+
+def _llega_por_http_directo(request: Request) -> bool:
+    if request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() == "https":
+        return False
+    if request.url.scheme == "https":
+        return False
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+    return host not in ("127.0.0.1", "localhost", "::1", "testserver", "")
 
 
 # Vigilante del vault (P8). Vive en el módulo (y no en `app.state`) para que
@@ -871,6 +896,13 @@ def login_page_view(request: Request, next_url: str = Query("/", alias="next")):
     if user is not None:
         return RedirectResponse(login_page.safe_next(next_url), status_code=303)
     return HTMLResponse(login_page.render(needs_setup=needs_setup, next_url=next_url))
+
+
+@app.get("/enlace/{token}", include_in_schema=False)
+def access_link_view(token: str):
+    """Invitación o contraseña nueva (ver `app/access_links.py`). Pública: el
+    token es la credencial; la página pregunta a `/auth/link/<token>`."""
+    return HTMLResponse(login_page.render_link(token), headers={"Cache-Control": "no-store"})
 
 
 class NoCacheStaticFiles(StaticFiles):
