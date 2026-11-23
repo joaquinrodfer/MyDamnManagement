@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Revisión de seguridad
+- **Relaciones:** una celda de relación ya no deja leer el título de una fila que no ves, y una base no puede apuntar a otra que no ves.
+- **Cabeceras de seguridad:** CSP, protección contra iframes, `nosniff`, `Referrer-Policy` y HSTS por HTTPS.
+- **Escrituras desde otra web:** se rechazan aunque vengan del mismo servidor.
+- Informe completo en `docs/SEGURIDAD-2026-11.md`, y tests en `test_seguridad.py`.
+
 ## Listo para un equipo: invitaciones, contraseña nueva, HTTPS y copias
 - **Invitar con un enlace** (Ajustes → Usuarios):
   - eliges el espacio y el rol, y quien lo abre pone su usuario y su contraseña y entra ya dentro;

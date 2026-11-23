@@ -246,6 +246,26 @@ def _serialize_view(view: View) -> schemas.ViewRead:
 
 # ---------------------------------------------------------------- databases
 
+def _check_relation_targets(repo: Repository, nuevo: list[dict], antes: Optional[list[dict]] = None) -> None:
+    """Una relación solo puede apuntar a una base que quien la declara ve.
+
+    Sin esto, una base propia con una relación hacia una base ajena dejaba
+    poner en la celda el id de una fila ajena y leer su título. Las relaciones
+    que ya estaban (misma clave y mismo destino) no se vuelven a mirar: editar
+    otra columna no puede fallar porque otro cambió permisos allí."""
+    if repo.user is None:
+        return
+    ya = {(p.get("key"), str(p.get("target_database") or "")) for p in (antes or []) if isinstance(p, dict)}
+    for prop in nuevo:
+        if not isinstance(prop, dict) or prop.get("type") != "relation":
+            continue
+        destino = str(prop.get("target_database") or "")
+        if not destino or (prop.get("key"), destino) in ya:
+            continue
+        if acl.level_for(repo.conn, repo.user, destino) is None:
+            raise HTTPException(400, f"no existe la base destino {destino}")
+
+
 @router.post("", response_model=schemas.DatabaseRead)
 def create_database(
     payload: schemas.DatabaseCreate,
@@ -257,6 +277,7 @@ def create_database(
     schema_def, _renames, _borradas = plan_schema(
         [], [p.model_dump() for p in payload.schema_def]
     )
+    _check_relation_targets(repo, schema_def)
     # La regla de «cerrada» se valida contra las opciones del schema **antes**
     # de escribir nada: un valor que no existe es un 400, no un `closed` que
     # nunca cuenta.
@@ -681,6 +702,7 @@ def update_database(
         # Plan H4: una base tipada no pierde ni cambia de tipo las columnas de sus roles.
         actual = _get_database_or_404(repo, database_id)
         kind_rules.check_schema(actual.kind, [p.model_dump() for p in payload.schema_def])
+        _check_relation_targets(repo, [p.model_dump() for p in payload.schema_def], actual.schema_def)
     with _vault_errors():
         db_def = repo.update_database(
             database_id,
