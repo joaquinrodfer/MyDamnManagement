@@ -1801,6 +1801,10 @@ class Repository:
         wanted = [str(one) for one in ids]
         if not wanted:
             return {}
+        # Solo las filas que quien pide puede ver: una celda de relación que
+        # apunta a una fila ajena no puede servir para leer su título (ni para
+        # enlazarla: al validar, una fila que no se ve es como si no existiera).
+        cond, cond_args = acl.visible_clause(self.user, "p")
         refs: dict[str, tuple[str, str]] = {}
         for start in range(0, len(wanted), _REFS_CHUNK):
             chunk = wanted[start:start + _REFS_CHUNK]
@@ -1808,8 +1812,8 @@ class Repository:
             rows = self.conn.execute(
                 "SELECT p.id AS id, p.title AS title, r.database_id AS database_id"
                 " FROM rows r JOIN pages p ON p.id = r.id"
-                f" WHERE r.id IN ({marks})",
-                chunk,
+                f" WHERE r.id IN ({marks}) AND {cond}",
+                [*chunk, *cond_args],
             ).fetchall()
             for row in rows:
                 refs[row["id"]] = (row["title"], row["database_id"])

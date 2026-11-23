@@ -347,3 +347,19 @@ def render_link(token: str) -> str:
 </body>
 </html>
 """
+
+
+def csp_for(page: str) -> str:
+    """La CSP de una página de entrada: la general, más el hash de SU script en
+    línea (estas páginas no cargan `app.js`, llevan el JS dentro)."""
+    import base64
+    import hashlib
+    import re
+
+    from app.security import CSP
+
+    hashes = [
+        "'sha256-" + base64.b64encode(hashlib.sha256(m.encode()).digest()).decode() + "'"
+        for m in re.findall(r"<script>(.*?)</script>", page, flags=re.S)
+    ]
+    return CSP.replace("script-src 'self'", "script-src 'self' " + " ".join(hashes))

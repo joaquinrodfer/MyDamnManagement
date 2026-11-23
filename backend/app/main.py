@@ -485,6 +485,20 @@ async def index_is_ready(request: Request, call_next):
 
 
 @app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Cabeceras de seguridad en todas las respuestas y escrituras de otra web
+    cortadas (ver `app/security.py`)."""
+    from app import security
+
+    if security.foreign_origin(request):
+        return JSONResponse(status_code=403, content={"detail": "petición de otra web: no se acepta"})
+    response = await call_next(request)
+    for clave, valor in security.headers_for(request, response.headers.get("content-type", "")).items():
+        response.headers.setdefault(clave, valor)
+    return response
+
+
+@app.middleware("http")
 async def https_is_required(request: Request, call_next):
     """Con `PUBLIC_URL`, lo que llega por HTTP directo se manda a la dirección
     con HTTPS (308: mantiene el método). Declarado después de `index_is_ready`,
@@ -895,14 +909,17 @@ def login_page_view(request: Request, next_url: str = Query("/", alias="next")):
         conn.close()
     if user is not None:
         return RedirectResponse(login_page.safe_next(next_url), status_code=303)
-    return HTMLResponse(login_page.render(needs_setup=needs_setup, next_url=next_url))
+    pagina = login_page.render(needs_setup=needs_setup, next_url=next_url)
+    return HTMLResponse(pagina, headers={"Content-Security-Policy": login_page.csp_for(pagina)})
 
 
 @app.get("/enlace/{token}", include_in_schema=False)
 def access_link_view(token: str):
     """Invitación o contraseña nueva (ver `app/access_links.py`). Pública: el
     token es la credencial; la página pregunta a `/auth/link/<token>`."""
-    return HTMLResponse(login_page.render_link(token), headers={"Cache-Control": "no-store"})
+    pagina = login_page.render_link(token)
+    return HTMLResponse(pagina, headers={"Cache-Control": "no-store", "Content-Security-Policy": login_page.csp_for(pagina),
+                                         "Referrer-Policy": "no-referrer"})
 
 
 class NoCacheStaticFiles(StaticFiles):
