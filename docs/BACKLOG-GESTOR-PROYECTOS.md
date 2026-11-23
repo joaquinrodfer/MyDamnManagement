@@ -81,6 +81,19 @@ Reglas de este backlog:
 | 33 | Importar/exportar CSV con esquema | medio | pendiente, y sube de prioridad con ADR-0005 |
 | 34 | API con webhooks salientes | medio | pendiente |
 
+## Operación: que todo se ajuste desde la app
+
+Pedido por el dueño el 2026-11-23, al activar las copias en producción (#84).
+Hoy, para cambiar algo de esto, hay que tocar el `docker-compose.prod.yml` del
+servidor.
+
+| # | Función | Coste | Estado |
+|---|---------|-------|--------|
+| O1 | **Copias fuera de la máquina desde Ajustes → Copias:** elegir un destino (Google Drive primero; luego WebDAV/S3/carpeta de red), conectarlo con OAuth sin pegar credenciales a mano y subir cada copia programada. Cifrar antes de subir: la copia lleva los hashes de las contraseñas. Avisar si una subida falla. | medio | pendiente |
+| O2 | **Carpeta, frecuencia y nº de copias** desde la app, no por variables de entorno. Hoy la frecuencia y el nº ya se eligen ahí; la carpeta (`BACKUP_DIR`) no. | bajo | pendiente |
+| O3 | **Dirección pública (`PUBLIC_URL`)** editable desde Ajustes, con una prueba de que responde por HTTPS antes de guardarla. | bajo | pendiente |
+| O4 | **Estado del servidor en Ajustes:** espacio libre en disco, última copia buena y si la última subida externa falló, con aviso al administrador. | bajo | pendiente |
+
 ## Aplazado a una versión grande: la migración a base de datos
 
 [ADR-0005](ADR-0005-verdad-en-base-de-datos.md) decidió que la verdad pase a la
