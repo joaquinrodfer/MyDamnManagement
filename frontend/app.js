@@ -1832,6 +1832,93 @@ function crearEl(tag, clase, texto) {
   return el;
 }
 
+/* ---------- diálogos propios (en vez de confirm/alert/prompt del navegador) ----------
+ * El texto puede traer párrafos separados por una línea en blanco: el primero
+ * es el título y el resto, la explicación. Devuelven una promesa. */
+function dialogoPropio({ texto, aceptar = "Aceptar", cancelar = "Cancelar", peligro = false, campo = null }) {
+  return new Promise((resolve) => {
+    const dialogo = crearEl("dialog", "ask-dialog");
+    const partes = String(texto || "").split(/\n\s*\n/);
+    // «¿Pregunta? Explicación.» en un solo párrafo: la pregunta es el título.
+    const corte = partes[0].indexOf("? ");
+    if (corte > 0 && partes[0].trim().length > corte + 2) {
+      partes.splice(0, 1, partes[0].slice(0, corte + 1), partes[0].slice(corte + 2));
+    }
+    dialogo.append(crearEl("h3", "", partes.shift().trim()));
+    for (const p of partes) if (p.trim()) dialogo.append(crearEl("p", "ask-dialog-text", p.trim()));
+    let input = null;
+    if (campo) {
+      input = crearEl("input", "ask-dialog-input");
+      input.type = "text";
+      input.value = campo.valor || "";
+      if (campo.max) input.maxLength = campo.max;
+      if (campo.placeholder) input.placeholder = campo.placeholder;
+      dialogo.append(input);
+    }
+    const acciones = crearEl("div", "dialog-actions");
+    let botonNo = null;
+    if (cancelar) {
+      botonNo = crearEl("button", "btn", cancelar);
+      botonNo.type = "button";
+      acciones.append(botonNo);
+    }
+    const botonSi = crearEl("button", peligro ? "btn btn-danger-solid" : "btn btn-primary", aceptar);
+    botonSi.type = "button";
+    acciones.append(botonSi);
+    dialogo.append(acciones);
+    let hecho = false;
+    const cerrar = (valor) => {
+      if (hecho) return;
+      hecho = true;
+      if (dialogo.open) dialogo.close();
+      setTimeout(() => dialogo.remove(), 250);
+      resolve(valor);
+    };
+    const si = () => cerrar(campo ? input.value : true);
+    const no = () => cerrar(campo ? null : false);
+    botonSi.addEventListener("click", si);
+    botonNo?.addEventListener("click", no);
+    dialogo.addEventListener("cancel", (ev) => {
+      ev.preventDefault();
+      no();
+    });
+    dialogo.addEventListener("click", (ev) => {
+      if (ev.target === dialogo) no(); // clic en el fondo
+    });
+    input?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.isComposing) {
+        ev.preventDefault();
+        si();
+      }
+    });
+    document.body.append(dialogo);
+    dialogo.showModal();
+    (input || botonSi).focus();
+    input?.select();
+  });
+}
+
+/** «¿Seguro?» con Aceptar/Cancelar → true o false. Si la pregunta empieza por
+ * «¿Borrar…», «¿Eliminar…», «¿Retirar…»… el botón lo dice y va en rojo. */
+function confirmar(texto, opciones = {}) {
+  const verbo = /^¿\s*(Borrar|Eliminar|Retirar|Quitar|Salir|Vaciar|Descartar)\b/i.exec(String(texto));
+  return dialogoPropio({
+    texto,
+    aceptar: opciones.aceptar || (verbo ? verbo[1][0].toUpperCase() + verbo[1].slice(1).toLowerCase() : "Aceptar"),
+    peligro: opciones.peligro ?? Boolean(verbo),
+  });
+}
+
+/** Un aviso con un solo botón. */
+function avisar(texto) {
+  return dialogoPropio({ texto, aceptar: "Entendido", cancelar: null });
+}
+
+/** Pide una línea de texto → el texto o null si se cancela. */
+function pedirTexto(texto, campo = {}) {
+  return dialogoPropio({ texto, aceptar: campo.aceptar || "Guardar", campo });
+}
+
 function opcionesDeRol(actual) {
   const sel = crearEl("select");
   for (const [valor, texto] of Object.entries(ROLES_DE_ESPACIO)) {
@@ -2000,7 +2087,7 @@ function tarjetaDePermiso(cap, concedidos, ctx) {
     if (g.subject_type === "group") marca.append(crearEl("span", "perm-kind", "grupo"));
     const alcance = crearEl("span", g.workspace_id ? "perm-scope" : "perm-scope perm-scope--all", g.workspace_id ? g.workspace_name || "(espacio borrado)" : "Todos los espacios");
     const quitar = botonQuitarDeCarga("Retirar este permiso", `Retirar ${cap.label} a ${g.subject_name}`, async () => {
-      if (!confirm(`¿Retirar «${cap.label}» a ${g.subject_name}?`)) return;
+      if (!await confirmar(`¿Retirar «${cap.label}» a ${g.subject_name}?`)) return;
       try {
         await api(`/grants/${g.id}`, { method: "DELETE" });
         setFormNote(ctx.nota, "Permiso retirado.", "ok");
@@ -2346,7 +2433,7 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios, permisos = nul
     const borrar = crearEl("button", "btn btn-danger", "Borrar espacio");
     borrar.type = "button";
     borrar.addEventListener("click", async () => {
-      if (!confirm(`¿Borrar el espacio «${w.name}»? Tiene que estar vacío.`)) return;
+      if (!await confirmar(`¿Borrar el espacio «${w.name}»? Tiene que estar vacío.`)) return;
       try {
         await api(`/workspaces/${w.id}`, { method: "DELETE" });
         if (state.workspaceId === w.id) cambiarDeEspacio(state.workspaces.find((x) => x.id !== w.id)?.id ?? null);
@@ -2425,7 +2512,7 @@ function seccionDeCargaDelEspacio(w) {
         b.type = "button";
         b.title = t.help;
         b.addEventListener("click", async () => {
-          if (!confirm(`¿Configurar la carga de «${w.name}» como «${t.label}»? ${t.help}`)) return;
+          if (!await confirmar(`¿Configurar la carga de «${w.name}» como «${t.label}»? ${t.help}`)) return;
           try {
             const nuevo = await api(`/workspaces/${w.id}/workload-template`, { method: "POST", body: JSON.stringify({ template: t.key }) });
             w.settings = nuevo.settings;
@@ -2590,7 +2677,7 @@ function seccionDeWebhook(w) {
       const regenerar = crearEl("button", "btn", "Nuevo secreto");
       regenerar.type = "button";
       regenerar.addEventListener("click", async () => {
-        if (!confirm("El secreto actual dejará de valer: quien reciba el webhook tendrá que cambiarlo.")) return;
+        if (!await confirmar("El secreto actual dejará de valer: quien reciba el webhook tendrá que cambiarlo.")) return;
         try {
           pintar((await api(`/workspaces/${w.id}/webhook/secret`, { method: "POST" })).secret);
         } catch (e) {
@@ -2710,7 +2797,7 @@ function tarjetaDeGrupo(g, usuarios) {
   const borrar = crearEl("button", "btn btn-danger", "Borrar grupo");
   borrar.type = "button";
   borrar.addEventListener("click", async () => {
-    if (!confirm(`¿Borrar el grupo «${g.name}»? Pierde los accesos que daba.`)) return;
+    if (!await confirmar(`¿Borrar el grupo «${g.name}»? Pierde los accesos que daba.`)) return;
     try {
       await api(`/groups/${g.id}`, { method: "DELETE" });
       await cargarAdministracionDeEspacios();
@@ -4903,7 +4990,7 @@ function initPresencia() {
     boton.addEventListener("click", async () => {
       let texto = "";
       if (boton.dataset.status === "custom") {
-        texto = (prompt("¿En qué estás? (hasta 80 caracteres)") || "").trim();
+        texto = ((await pedirTexto("¿En qué estás?", { max: 80, placeholder: "Hasta 80 caracteres" })) || "").trim();
         if (!texto) return;
       }
       try {
@@ -6859,7 +6946,7 @@ function selectPageRangeTo(node) {
 
 async function bulkDeletePages(items) {
   const label = items.length > 1 ? `estas ${items.length} páginas` : `"${items[0].title}"`;
-  if (!confirm(`¿Eliminar ${label}? Esto no se puede deshacer.`)) return;
+  if (!await confirmar(`¿Eliminar ${label}? Esto no se puede deshacer.`)) return;
 
   const currentId = state.current?.id;
   let currentWasDeleted = false;
@@ -7611,7 +7698,7 @@ function renderNote(page, backlinks) {
       page.header_position = data.header_position ?? null;
       renderHeaderImage();
     } catch (e) {
-      alert("Error al subir la imagen: " + e.message);
+      avisar("Error al subir la imagen: " + e.message);
     }
   });
 
@@ -9297,9 +9384,19 @@ function mostrarPestanaLateral(nombre, { guardar = true, cargar = true } = {}) {
   document.getElementById("side-tab-chat")?.setAttribute("aria-selected", String(esChat));
   const lista = document.getElementById("members-list");
   const panel = document.getElementById("chat-pane");
+  const cambia = panel ? panel.hidden === esChat : false;
   if (lista) lista.hidden = esChat;
   if (panel) panel.hidden = !esChat;
   document.getElementById("members-aside")?.classList.toggle("is-chat", esChat);
+  colocarPastillaDePestana({ animar: cambia });
+  // El panel que entra llega desde su lado (Miembros a la izquierda, Chat a la derecha).
+  const entra = esChat ? panel : lista;
+  if (cambia && entra) {
+    entra.classList.remove("side-pane-in-left", "side-pane-in-right");
+    void entra.offsetWidth;
+    entra.classList.add(esChat ? "side-pane-in-right" : "side-pane-in-left");
+    entra.addEventListener("animationend", () => entra.classList.remove("side-pane-in-left", "side-pane-in-right"), { once: true });
+  }
   if (guardar) {
     try {
       localStorage.setItem(CHAT_TAB_KEY, nombre);
@@ -9311,6 +9408,23 @@ function mostrarPestanaLateral(nombre, { guardar = true, cargar = true } = {}) {
     if (chatUI.vista === "conversacion" && chatUI.actual) abrirConversacion(chatUI.actual.id);
     else cargarChat();
   }
+}
+
+/** Pone la pastilla de las pestañas bajo la activa (deslizándose, si `animar`). */
+function colocarPastillaDePestana({ animar = true } = {}) {
+  const pastilla = document.querySelector("#members-aside .side-tabs-pill");
+  const activa = document.querySelector('#members-aside .side-tab[aria-selected="true"]');
+  if (!pastilla || !activa || !activa.offsetWidth) return;
+  pastilla.classList.toggle("sin-animar", !animar);
+  pastilla.style.setProperty("--tab-x", `${activa.offsetLeft}px`);
+  pastilla.style.setProperty("--tab-w", `${activa.offsetWidth}px`);
+  if (!animar) requestAnimationFrame(() => pastilla.classList.remove("sin-animar"));
+}
+// El ancho de «Chat» cambia con el contador de no leídos; y el panel puede
+// nacer oculto (sin medidas): se recoloca cuando cambia de tamaño.
+if (typeof ResizeObserver === "function") {
+  const tabs = document.querySelector("#members-aside .side-tabs");
+  if (tabs) new ResizeObserver(() => colocarPastillaDePestana({ animar: false })).observe(tabs);
 }
 
 document.getElementById("side-tab-members")?.addEventListener("click", () => mostrarPestanaLateral("members"));
@@ -9392,7 +9506,10 @@ function pintarListaDeChat() {
   nuevo.addEventListener("click", () => pintarSelectorDeGente());
   cab.append(nuevo);
   // Buscar en el chat (CH4): en las conversaciones que veo.
-  const buscar = crearEl("input", "chat-search");
+  const campo = crearEl("label", "chat-search");
+  campo.innerHTML = svgIcon("i-search");
+  const buscar = crearEl("input");
+  campo.append(buscar);
   buscar.type = "search";
   buscar.placeholder = "Buscar en el chat…";
   buscar.setAttribute("aria-label", "Buscar en el chat");
@@ -9411,13 +9528,13 @@ function pintarListaDeChat() {
   for (const c of canales) lista.append(itemDeChat(c));
   if (directos.length) lista.append(crearEl("div", "chat-section-label", "Directos"));
   for (const c of directos) lista.append(itemDeChat(c));
-  panel.replaceChildren(cab, buscar, lista);
+  panel.replaceChildren(cab, campo, lista);
 }
 
 async function buscarEnChat(q, lista) {
   if (q.trim().length < 2) {
     pintarListaDeChat();
-    const nuevo = document.querySelector("#chat-pane .chat-search");
+    const nuevo = document.querySelector("#chat-pane .chat-search input");
     if (nuevo) {
       nuevo.value = q;
       nuevo.focus();
@@ -9656,7 +9773,7 @@ function pintarConversacion({ alFinal = false } = {}) {
     salir.title = "Salir de la conversación";
     salir.setAttribute("aria-label", "Salir de la conversación");
     salir.addEventListener("click", async () => {
-      if (!confirm("¿Salir de esta conversación? Dejarás de verla.")) return;
+      if (!await confirmar("¿Salir de esta conversación? Dejarás de verla.")) return;
       try {
         await api(`/chat/conversations/${c.id}/members/me`, { method: "DELETE" });
         chatUI.actual = null;
@@ -9757,10 +9874,24 @@ function mensajeDeChat(m, primero) {
   meta.append(crearEl("strong", "", m.author?.display_name || "(ya no está)"), crearEl("span", "", horaDeChat(m.created_at)));
   meta.title = new Date(m.created_at).toLocaleString("es-ES");
   const cuerpo = crearEl("div", "chat-msg-body");
-  if (m.deleted) cuerpo.textContent = "Mensaje borrado";
-  else {
+  if (m.deleted) {
+    // El rastro de un borrado: quién (el autor, arriba) y cuándo.
+    cuerpo.textContent = "Mensaje borrado";
+    if (m.deleted_at) {
+      const cuando = crearEl("span", "chat-edited", `· ${horaDeChat(m.deleted_at)}`);
+      cuando.title = `Borrado el ${new Date(m.deleted_at).toLocaleString("es-ES")}`;
+      cuerpo.append(cuando);
+    }
+  } else {
     cuerpo.innerHTML = htmlDeChat(m.body || "");
-    if (m.edited_at) cuerpo.append(crearEl("span", "chat-edited", "(editado)"));
+    if (m.edited_at) {
+      // El rastro de una edición: «(editado)» abre las versiones anteriores.
+      const marca = crearEl("button", "chat-edited chat-edited-btn", "(editado)");
+      marca.type = "button";
+      marca.title = `Editado el ${new Date(m.edited_at).toLocaleString("es-ES")} · ver versiones anteriores`;
+      marca.addEventListener("click", (e) => verVersionesDeMensaje(m, e.currentTarget));
+      cuerpo.append(marca);
+    }
     adjuntosDeMensaje(cuerpo, m);
     if (m.task_id) {
       const tarea = crearEl("button", "chat-task-chip");
@@ -9772,8 +9903,51 @@ function mensajeDeChat(m, primero) {
     }
   }
   fila.append(av, meta, cuerpo);
-  if (!m.deleted) fila.append(accionesDeMensaje(m));
+  if (!m.deleted) {
+    fila.append(accionesDeMensaje(m));
+    // Editar y borrar caducan: al pasar por encima se rehacen los botones si
+    // el plazo terminó mientras el mensaje estaba en pantalla.
+    fila.addEventListener("pointerenter", () => {
+      const caja = fila.querySelector(".chat-msg-actions");
+      if (!caja || caja.classList.contains("is-confirming")) return;
+      if (caja.dataset.cambiable === "1" && !mensajeCambiable(m)) caja.replaceWith(accionesDeMensaje(m));
+    });
+  }
   return fila;
+}
+
+/** Si aún se puede editar o borrar: mío y dentro del plazo (15 min). */
+function mensajeCambiable(m) {
+  return m.user_id === sessionUser.me?.id && !m.deleted && Date.now() < new Date(m.changeable_until || 0).getTime();
+}
+
+async function verVersionesDeMensaje(m, ancla) {
+  if (ancla.getAttribute("aria-expanded") === "true") {
+    cerrarPanelDeColumna();
+    return;
+  }
+  const panel = crearEl("div", "db-col-menu chat-versions");
+  panel.setAttribute("role", "dialog");
+  panel.append(crearEl("strong", "", "Versiones anteriores"));
+  const lista = crearEl("div", "chat-versions-list", "Cargando…");
+  panel.append(lista);
+  abrirPanelFlotante(ancla, panel, { etiqueta: "Versiones anteriores del mensaje" });
+  try {
+    const { edits } = await api(`/chat/messages/${m.id}/edits`);
+    lista.replaceChildren();
+    if (!edits.length) lista.append(crearEl("p", "chat-empty", "No hay versiones guardadas."));
+    for (const e of [...edits].reverse()) {
+      const v = crearEl("div", "chat-version");
+      const cuando = crearEl("div", "chat-version-when", `Hasta ${horaDeChat(e.replaced_at)}`);
+      cuando.title = new Date(e.replaced_at).toLocaleString("es-ES");
+      const texto = crearEl("div", "chat-version-body");
+      texto.innerHTML = htmlDeChat(e.body || "");
+      v.append(cuando, texto);
+      lista.append(v);
+    }
+  } catch (e) {
+    lista.replaceChildren(crearEl("p", "chat-empty form-error", describeError(e)));
+  }
 }
 
 /** Los adjuntos de un mensaje (CH3): imágenes en línea, lo demás como enlace. */
@@ -9830,43 +10004,77 @@ function botonDeAccion(icono, texto, alPulsar) {
 
 function accionesDeMensaje(m) {
   const caja = crearEl("div", "chat-msg-actions");
-  caja.append(
-    botonDeAccion("i-quote", "Citar", () => {
-      const t = document.querySelector("#chat-pane .chat-compose textarea");
-      if (!t) return;
-      const cita = (m.body || "").split("\n").map((l) => `> ${l}`).join("\n");
-      t.value = `${cita}\n${t.value}`;
-      t.focus();
-      t.dispatchEvent(new Event("input"));
-    }),
-  );
-  for (const extra of accionesExtraDeMensaje(m)) caja.append(extra);
-  if (m.user_id === sessionUser.me?.id) {
-    caja.append(
-      botonDeAccion("i-pencil", "Editar", () => {
-        chatUI.editando = m.id;
+  const cambiable = mensajeCambiable(m);
+  caja.dataset.cambiable = cambiable ? "1" : "0";
+  const normales = () => {
+    const botones = [
+      botonDeAccion("i-quote", "Citar", () => {
         const t = document.querySelector("#chat-pane .chat-compose textarea");
         if (!t) return;
-        t.value = m.body || "";
+        const cita = (m.body || "").split("\n").map((l) => `> ${l}`).join("\n");
+        t.value = `${cita}\n${t.value}`;
         t.focus();
         t.dispatchEvent(new Event("input"));
-        const nota = document.querySelector("#chat-pane .chat-compose-note");
-        if (nota) {
-          nota.textContent = "Editando un mensaje · Esc cancela";
-          nota.classList.add("is-editing");
-        }
       }),
-      botonDeAccion("i-trash", "Borrar", async () => {
-        if (!confirm("¿Borrar este mensaje?")) return;
-        try {
-          await api(`/chat/messages/${m.id}`, { method: "DELETE" });
-        } catch (e) {
-          reportError("No se pudo borrar el mensaje", e);
+      ...accionesExtraDeMensaje(m),
+    ];
+    if (mensajeCambiable(m)) {
+      botones.push(
+        botonDeAccion("i-pencil", "Editar", () => empezarAEditar(m)),
+        botonDeAccion("i-trash", "Borrar", () => pedirConfirmacionDeBorrado()),
+      );
+    }
+    caja.classList.remove("is-confirming");
+    caja.replaceChildren(...botones);
+  };
+  // Borrar se confirma ahí mismo: la barra pasa a «¿Borrar este mensaje? ✓ ✕».
+  const pedirConfirmacionDeBorrado = () => {
+    caja.classList.add("is-confirming");
+    const pregunta = crearEl("span", "chat-msg-confirm", "¿Borrar este mensaje?");
+    const si = botonDeAccion("i-check", "Sí, borrar", async () => {
+      si.disabled = true;
+      try {
+        reemplazarMensaje(await api(`/chat/messages/${m.id}`, { method: "DELETE" }));
+      } catch (e) {
+        reportError("No se pudo borrar el mensaje", e);
+        normales();
+      }
+    });
+    si.classList.add("is-danger");
+    const no = botonDeAccion("i-x", "No, dejarlo", () => {
+      normales();
+      caja.closest(".chat-msg")?.focus?.();
+    });
+    caja.replaceChildren(pregunta, si, no);
+    caja.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key === "Escape" && caja.classList.contains("is-confirming")) {
+          e.stopPropagation();
+          normales();
         }
-      }),
+      },
+      { once: true },
     );
-  }
+    no.focus();
+  };
+  normales();
   return caja;
+}
+
+function empezarAEditar(m) {
+  chatUI.editando = m.id;
+  const t = document.querySelector("#chat-pane .chat-compose textarea");
+  if (!t) return;
+  t.value = m.body || "";
+  t.focus();
+  t.dispatchEvent(new Event("input"));
+  const nota = document.querySelector("#chat-pane .chat-compose-note");
+  if (nota) {
+    const hasta = new Date(m.changeable_until).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    nota.textContent = `Editando un mensaje (puedes hasta las ${hasta}) · Esc cancela`;
+    nota.classList.add("is-editing");
+  }
 }
 
 /** «Convertir en tarea» (CH4), si el mensaje aún no lo es. */
@@ -11700,7 +11908,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       // El backend resolvería la colisión con un sufijo («Clientes (2)») y
       // quedarían dos bases con el mismo nombre a la vista: se avisa y no
       // se toca nada.
-      alert(avisoDeNombreOcupado(ocupada, "Elige otro nombre."));
+      avisar(avisoDeNombreOcupado(ocupada, "Elige otro nombre."));
       title.value = database.title;
       return;
     }
@@ -11727,7 +11935,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
         }
         title.value = database.title;
         await loadTree();
-        alert(
+        avisar(
           avisoDeNombreOcupado(
             choque,
             deshecho
@@ -11743,7 +11951,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       markActive(database.id);
     } catch (e) {
       if (e?.status === 401) return;
-      alert("Error al renombrar: " + e.message);
+      avisar("Error al renombrar: " + e.message);
       title.value = database.title;
     }
   };
@@ -11773,7 +11981,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       `¿Borrar la vista «${activeView.name}»?\n\n` +
       "Las filas no se tocan: los datos son de la base, no de la vista. " +
       "Se quita esta forma de mirarlos (filtro, orden y tipo).";
-    if (!confirm(pregunta)) return;
+    if (!await confirmar(pregunta)) return;
     try {
       await api(`/databases/${database.id}/views/${activeView.id}`, { method: "DELETE" });
     } catch (e) {
@@ -11792,7 +12000,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   };
 
   const borrarBase = async () => {
-    if (!confirm(`¿Borrar "${database.title}" y todas sus filas? Esto no se puede deshacer.`)) return;
+    if (!await confirmar(`¿Borrar "${database.title}" y todas sus filas? Esto no se puede deshacer.`)) return;
     try {
       await api(`/databases/${database.id}`, { method: "DELETE" });
       await loadTree();
@@ -15770,7 +15978,7 @@ function crearSeleccionDeFilas({
     // (`.trash/<fecha y hora UTC>/`, un directorio por borrado), no se borran
     // del disco y se pueden recuperar.
     if (
-      !confirm(
+      !await confirmar(
         `¿Borrar ${recuentoDeFilas(filas.length)}?${avisoFuera}\n\n` +
           "Cada una va a su carpeta de la papelera del vault (.trash/<fecha y hora UTC>/):" +
           " no se borran del disco.",
@@ -17211,7 +17419,7 @@ async function borrarColumna({ database, prop, onChanged }) {
     "Esos valores se quedan en el .md de cada fila: borrar la columna no borra " +
     "datos (es así hoy; el fichero de la fila no se toca). La propiedad solo " +
     "desaparece del esquema de la base y de las vistas que la nombran.";
-  if (!confirm(pregunta)) return;
+  if (!await confirmar(pregunta)) return;
   const schema = (database.schema_def || [])
     .filter((p) => p.key !== prop.key)
     .map((p) => ({ ...p }));
@@ -23809,7 +24017,7 @@ document.getElementById("btn-create-view").addEventListener("click", async () =>
     const views = await api(`/databases/${viewDialogDatabase.id}/views`);
     await renderDatabase(viewDialogDatabase, views, created?.id ?? views[0]?.id ?? null);
   } catch (e) {
-    alert("Error al crear la vista: " + e.message);
+    avisar("Error al crear la vista: " + e.message);
   }
 });
 

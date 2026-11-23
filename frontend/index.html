@@ -1056,6 +1056,14 @@
   .btn-primary:hover { filter: brightness(1.1); background: var(--accent-btn); border-color: var(--accent); color: var(--accent-contrast); }
   .btn-danger { color: var(--down); border-color: transparent; background: none; }
   .btn-danger:hover { background: var(--down-bg); border-color: var(--down); color: var(--down); }
+  .btn.btn-danger-solid { background: var(--down); border-color: var(--down); color: #fff; }
+  .btn.btn-danger-solid:hover { filter: brightness(1.08); background: var(--down); border-color: var(--down); color: #fff; }
+  /* Diálogos propios (confirmar / avisar / pedir texto): pequeños y al centro. */
+  dialog.ask-dialog { width: min(420px, 92vw); padding: 22px 24px 18px; }
+  dialog.ask-dialog h3 { margin: 0 0 8px; font-size: 16px; line-height: 1.35; }
+  .ask-dialog-text { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--ink-muted); }
+  .ask-dialog-input { width: 100%; margin-top: 6px; padding: 8px 11px; font: inherit; font-size: 14px; }
+  dialog.ask-dialog .dialog-actions { margin-top: 18px; padding-top: 0; border-top: none; }
   /* En la cabecera de una base, «Borrar vista» y «Borrar base de datos» están
      siempre a la vista: en rojo fijo eran lo primero que se leía de la página.
      Apagados en reposo, rojos al pasar o al recibir el foco. */
@@ -6472,7 +6480,8 @@
   .header-share { display: flex; align-items: center; }
   #btn-toggle-members[aria-expanded="true"] { color: var(--ink); background: var(--menu-hover); }
   .members-aside {
-    width: 248px; flex-shrink: 0;
+    /* Mismo ancho para «Miembros» y «Chat»: cambiar de pestaña no mueve la página. */
+    width: 320px; flex-shrink: 0;
     display: flex; flex-direction: column; min-height: 0;
     background: var(--bg);
     border-left: 1px solid var(--panel-border);
@@ -6541,11 +6550,31 @@
   .side-tabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--ink) 6%, transparent); }
   .side-tab { position: relative; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ink-muted); background: none; border: 0; border-radius: calc(var(--radius-md) - 2px); padding: 4px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
   .side-tab:hover { color: var(--ink); }
-  .side-tab[aria-selected="true"] { color: var(--ink); background: var(--surface-elevated); box-shadow: 0 0 0 1px var(--panel-border); }
+  .side-tabs { position: relative; isolation: isolate; }
+  .side-tab { transition: color var(--dur-normal) var(--ease-out); }
+  .side-tab[aria-selected="true"] { color: var(--ink); }
+  /* La pastilla de la pestaña activa se desliza de una a otra (la colocan
+     --tab-x y --tab-w desde app.js). */
+  .side-tabs-pill {
+    position: absolute; z-index: -1; top: 2px; bottom: 2px; left: 0;
+    width: var(--tab-w, 0px); transform: translateX(var(--tab-x, 0px));
+    border-radius: calc(var(--radius-md) - 2px);
+    background: var(--surface-elevated); box-shadow: 0 0 0 1px var(--panel-border);
+    transition: transform 240ms var(--ease-out), width 240ms var(--ease-out);
+  }
+  .side-tabs-pill.sin-animar { transition: none; }
+  /* Al cambiar de pestaña, el panel que entra llega deslizándose desde su lado. */
+  .side-pane-in-left { animation: np-side-in-left 220ms var(--ease-out); }
+  .side-pane-in-right { animation: np-side-in-right 220ms var(--ease-out); }
+  @keyframes np-side-in-left { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+  @keyframes np-side-in-right { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .side-tabs-pill { transition: none; }
+    .side-pane-in-left, .side-pane-in-right { animation: none; }
+  }
   .side-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .chat-badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--down); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 16px; text-align: center; }
   .chat-badge[hidden] { display: none; }
-  .members-aside.is-chat { width: 340px; }
   .members-aside.is-chat .members-online { display: none; }
   .chat-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .chat-pane[hidden] { display: none; }
@@ -6588,7 +6617,19 @@
   .chat-msg-body a { color: var(--accent-ink); }
   .chat-msg.is-deleted .chat-msg-body { color: var(--ink-muted); font-style: italic; }
   .chat-edited { font-size: 11px; color: var(--ink-muted); margin-left: 4px; }
-  .chat-msg-actions { position: absolute; top: -10px; right: 6px; display: none; gap: 2px; padding: 2px; background: var(--surface-elevated); border: 1px solid var(--panel-border); border-radius: var(--radius-md); box-shadow: var(--shadow-card); }
+  .chat-edited-btn { font: inherit; font-size: 11px; background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink-muted); text-decoration: underline dotted; text-underline-offset: 2px; }
+  .chat-edited-btn:hover { color: var(--ink); }
+  .chat-msg.is-deleted .chat-edited { font-style: normal; }
+  .chat-msg-actions.is-confirming { display: inline-flex; align-items: center; padding-left: 10px; }
+  .chat-msg-confirm { font-size: 12.5px; font-weight: 600; color: var(--ink); margin-right: 4px; white-space: nowrap; }
+  .chat-msg-actions .icon-btn.is-danger { color: var(--down); }
+  .chat-msg-actions .icon-btn.is-danger:hover { background: var(--down-bg); color: var(--down); }
+  .chat-versions { width: min(300px, 90vw); display: flex; flex-direction: column; gap: 8px; }
+  .chat-versions-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; font-size: 13px; }
+  .chat-version { padding: 6px 8px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--ink) 4%, transparent); }
+  .chat-version-when { font-size: 11px; color: var(--ink-muted); margin-bottom: 2px; }
+  .chat-version-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+  .chat-msg-actions { position: absolute; top: -22px; right: 6px; z-index: 1; display: none; gap: 2px; padding: 2px; background: var(--surface-elevated); border: 1px solid var(--panel-border); border-radius: var(--radius-md); box-shadow: var(--shadow-card); }
   .chat-msg:hover .chat-msg-actions, .chat-msg:focus-within .chat-msg-actions { display: inline-flex; }
   .chat-msg-actions .icon-btn { width: 26px; height: 26px; }
   .chat-msg-actions .svg-icon { width: 14px; height: 14px; }
@@ -6627,7 +6668,18 @@
   .chat-suggest-opt .svg-icon { width: 15px; height: 15px; color: var(--ink-muted); }
   .chat-suggest-opt small { margin-left: auto; color: var(--ink-muted); font-size: 11.5px; }
   .chat-suggest-opt.is-active, .chat-suggest-opt:hover { background: var(--menu-hover); }
-  .chat-search { margin: 0 12px 6px; width: auto !important; }
+  /* Buscar en el chat: el mismo campo relleno que el buscador de la barra
+     lateral, con la lupa dentro. */
+  .chat-search { position: relative; display: block; margin: 0 12px 8px; }
+  .chat-search .svg-icon { position: absolute; left: 10px; top: 50%; width: 14px; height: 14px; transform: translateY(-50%); color: var(--ink-muted); pointer-events: none; }
+  .chat-search input {
+    width: 100%; padding: 7px 10px 7px 30px; font: inherit; font-size: 13px; color: var(--ink);
+    background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: 8px;
+    transition: border-color var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std);
+  }
+  .chat-search input:hover { border-color: var(--field-border-hover); }
+  .chat-search input:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+  .chat-search input::-webkit-search-cancel-button { cursor: pointer; }
   .chat-result .chat-av-ini, .chat-result img { width: 28px; height: 28px; border-radius: 50%; flex: none; }
   .chat-msg.is-found { background: color-mix(in srgb, var(--accent) 16%, transparent); transition: background .4s; }
   .chat-task-chip { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--ok) 10%, transparent); color: var(--ink); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
@@ -6636,10 +6688,23 @@
   .chat-task-panel select, .chat-task-panel input { width: 100%; }
   .chat-typing { min-height: 14px; font-size: 11.5px; color: var(--ink-muted); font-style: italic; }
   .chat-typing:empty { min-height: 0; }
-  .member-chat-btn { opacity: 0; margin-left: auto; flex: none; width: 26px; height: 26px; }
-  .member-line { display: flex; align-items: center; }
-  .member-line > .member { flex: 1; min-width: 0; }
+  /* «Escribir» a un miembro: un icono discreto dentro de su propia fila (a
+     la derecha, sin marco), que aparece al pasar por encima. */
+  .member-line { position: relative; }
+  .member-line > .member { padding-right: 36px; }
+  .member-line:hover > .member { background: var(--menu-hover); }
+  .member-line:hover > .member.is-offline { opacity: .8; }
+  .member-chat-btn {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    width: 26px; height: 26px; min-width: 0; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 6px; background: none; box-shadow: none;
+    color: var(--ink-muted); cursor: pointer; opacity: 0;
+    transition: opacity var(--dur-fast) ease, color var(--dur-fast) ease, background var(--dur-fast) ease;
+  }
   .member-line:hover .member-chat-btn, .member-chat-btn:focus-visible { opacity: 1; }
+  .member-chat-btn:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+  .member-chat-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .member-chat-btn .svg-icon { width: 15px; height: 15px; }
 
   /* Tú, abajo del panel: avatar con tu estado y el menú de la cuenta. */
@@ -6989,6 +7054,7 @@
       <symbol id="i-user-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/></symbol>
       <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
       <symbol id="i-message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
       <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
       <symbol id="i-quote" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.76-2-2-2H4c-1.25 0-2 .75-2 1.97V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .01-1 1.03V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.76-2-2-2h-4c-1.25 0-2 .75-2 1.97V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/></symbol>
       <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
@@ -7138,6 +7204,7 @@
     <div class="members-aside" id="members-aside" role="complementary" aria-label="Miembros y chat">
       <div class="members-head">
         <div class="side-tabs" role="tablist" aria-label="Panel derecho">
+          <span class="side-tabs-pill" aria-hidden="true"></span>
           <button type="button" class="side-tab" role="tab" id="side-tab-members" aria-selected="true" aria-controls="members-list">Miembros</button>
           <button type="button" class="side-tab" role="tab" id="side-tab-chat" aria-selected="false" aria-controls="chat-pane">Chat<span class="chat-badge" id="chat-badge" hidden></span></button>
         </div>

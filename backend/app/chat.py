@@ -20,7 +20,7 @@ import json
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from app import workspaces as ws_mod
@@ -268,7 +268,29 @@ def _preview(row: sqlite3.Row) -> dict[str, Any]:
             "body": texto, "deleted": bool(row["deleted"]), "created_at": row["created_at"]}
 
 
-def _message(row: sqlite3.Row, people: dict[str, dict[str, Any]]) -> dict[str, Any]:
+# Editar y borrar un mensaje solo vale durante este rato desde que se envió;
+# luego el mensaje queda como está (y lo que se cambió deja rastro: «editado»
+# con las versiones anteriores, o «Mensaje borrado» con la hora).
+CHANGE_WINDOW = timedelta(minutes=15)
+
+
+def _until(created_at: str) -> str:
+    try:
+        return (datetime.fromisoformat(created_at) + CHANGE_WINDOW).isoformat(timespec="seconds")
+    except ValueError:
+        return created_at
+
+
+def changeable(msg: dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """Si aún se puede editar o borrar (dentro de `CHANGE_WINDOW`)."""
+    try:
+        creado = datetime.fromisoformat(msg["created_at"])
+    except (TypeError, ValueError):
+        return False
+    return (now or datetime.now(timezone.utc)) <= creado + CHANGE_WINDOW
+
+
+def _message(row: sqlite3.Row, people: dict[str, dict[str, Any]], edits: int = 0) -> dict[str, Any]:
     borrado = bool(row["deleted"])
     return {
         "id": row["id"],
@@ -280,6 +302,9 @@ def _message(row: sqlite3.Row, people: dict[str, dict[str, Any]]) -> dict[str, A
         "created_at": row["created_at"],
         "edited_at": row["edited_at"],
         "deleted": borrado,
+        "deleted_at": row["edited_at"] if borrado else None,
+        "edits": 0 if borrado else edits,
+        "changeable_until": _until(row["created_at"]),
         "task_id": row["task_id"],
     }
 
@@ -296,14 +321,27 @@ def messages(conn: sqlite3.Connection, conv: dict[str, Any], before: Optional[in
         args.append(int(before))
     filas = conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()[::-1]
     gente = _people(conn, {r["user_id"] for r in filas})
-    return [_message(r, gente) for r in filas]
+    ediciones = _edit_counts(conn, [r["id"] for r in filas])
+    return [_message(r, gente, ediciones.get(r["id"], 0)) for r in filas]
+
+
+def _edit_counts(conn: sqlite3.Connection, ids: list[int]) -> dict[int, int]:
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    return {
+        r[0]: r[1]
+        for r in conn.execute(
+            f"SELECT message_id, count(*) FROM chat_message_edits WHERE message_id IN ({marks}) GROUP BY message_id", ids
+        )
+    }
 
 
 def get_message(conn: sqlite3.Connection, message_id: int) -> Optional[dict[str, Any]]:
     r = conn.execute("SELECT * FROM chat_messages WHERE id = ?", (int(message_id),)).fetchone()
     if r is None:
         return None
-    return _message(r, _people(conn, [r["user_id"]]))
+    return _message(r, _people(conn, [r["user_id"]]), _edit_counts(conn, [r["id"]]).get(r["id"], 0))
 
 
 def _clean(body: str) -> str:
@@ -352,6 +390,9 @@ def _own(conn: sqlite3.Connection, user: Any, message_id: int) -> dict[str, Any]
         raise ChatError("no existe ese mensaje", 404)
     if msg["user_id"] != _uid(user):
         raise ChatError("solo quien escribió el mensaje puede cambiarlo", 403)
+    if not changeable(msg):
+        minutos = int(CHANGE_WINDOW.total_seconds() // 60)
+        raise ChatError(f"Ya no se puede cambiar: solo se puede en los {minutos} minutos después de enviarlo.", 409)
     return msg
 
 
@@ -360,17 +401,38 @@ def edit(conn: sqlite3.Connection, user: Any, message_id: int, body: str) -> dic
     texto = _clean(body)
     if not texto and not msg["attachments"]:
         raise ChatError("El mensaje está vacío: bórralo.")
-    conn.execute("UPDATE chat_messages SET body = ?, edited_at = ? WHERE id = ?", (texto, _now(), int(message_id)))
+    if texto == msg["body"]:
+        return msg
+    ahora = _now()
+    # El rastro: el texto de antes, con la hora en que se sustituyó.
+    conn.execute(
+        "INSERT INTO chat_message_edits (message_id, body, replaced_at) VALUES (?, ?, ?)",
+        (int(message_id), msg["body"], ahora),
+    )
+    conn.execute("UPDATE chat_messages SET body = ?, edited_at = ? WHERE id = ?", (texto, ahora, int(message_id)))
     return get_message(conn, message_id)  # type: ignore[return-value]
 
 
 def delete(conn: sqlite3.Connection, user: Any, message_id: int) -> dict[str, Any]:
     _own(conn, user, message_id)
+    # Borrar quita el contenido (también sus versiones anteriores); queda el
+    # hueco «Mensaje borrado» con quién y cuándo.
+    conn.execute("DELETE FROM chat_message_edits WHERE message_id = ?", (int(message_id),))
     conn.execute(
         "UPDATE chat_messages SET deleted = 1, body = '', attachments_json = '[]', edited_at = ? WHERE id = ?",
         (_now(), int(message_id)),
     )
     return get_message(conn, message_id)  # type: ignore[return-value]
+
+
+def edit_history(conn: sqlite3.Connection, message_id: int) -> list[dict[str, Any]]:
+    """Las versiones anteriores de un mensaje, de la más vieja a la más nueva."""
+    return [
+        {"body": r["body"], "replaced_at": r["replaced_at"]}
+        for r in conn.execute(
+            "SELECT body, replaced_at FROM chat_message_edits WHERE message_id = ? ORDER BY id", (int(message_id),)
+        )
+    ]
 
 
 def mark_read(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], last_id: Optional[int] = None) -> None:

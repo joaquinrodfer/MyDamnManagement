@@ -2,6 +2,17 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Chat: plazo y rastro al editar o borrar, y diálogos propios
+- **Editar y borrar un mensaje** solo se puede en los 15 minutos después de enviarlo. Después, el mensaje queda como está.
+- **Queda rastro:**
+  - un mensaje editado lleva «(editado)», y al pulsarlo se ven las versiones anteriores con su hora;
+  - uno borrado deja «Mensaje borrado · hora».
+- **Borrar se confirma sobre el mensaje:** la barra de botones pasa a «¿Borrar este mensaje?» con ✓ y ✕ (Esc cancela).
+- **Diálogos propios** en toda la app en vez de los avisos del navegador (confirmar un borrado, avisar de un error, escribir tu estado…). Los que borran o retiran algo llevan el botón en rojo.
+- **Panel derecho:** «Miembros» y «Chat» tienen el mismo ancho, y al cambiar de pestaña la marca se desliza y el panel entra desde su lado.
+- **Buscar en el chat** usa el mismo campo que el buscador de la barra lateral, con la lupa.
+- **«Escribir» a un miembro** es ahora un icono discreto dentro de su fila, sin marco, que aparece al pasar el ratón.
+
 ## Chat: convertir en tarea, buscar y «está escribiendo…» (plan del chat, CH4)
 - **Convertir en tarea:** en el menú de un mensaje (✓). Eliges la base (de Tareas o que cuenta para la carga) y el título. Se crea la fila con quien escribió el mensaje como responsable y, en su cuerpo, el mensaje citado y de dónde viene. El mensaje queda marcado «Convertido en tarea · abrir».
 - **Buscar en el chat:** encima de las conversaciones, solo en las que ves. Al pulsar un resultado se abre la conversación y se resalta el mensaje.
