@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -159,6 +159,24 @@ CREATE TABLE IF NOT EXISTS chat_message_edits (
     replaced_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_message_edits_msg ON chat_message_edits(message_id);
+"""
+
+# v27: enlaces de un solo uso para entrar (invitación) o poner una contraseña
+# nueva (ver `app/access_links.py`).
+ACCESS_LINKS_SQL = """
+CREATE TABLE IF NOT EXISTS access_links (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash   TEXT NOT NULL UNIQUE,
+    kind         TEXT NOT NULL CHECK (kind IN ('invite', 'reset')),
+    user_id      TEXT,
+    workspace_id TEXT,
+    role         TEXT,
+    display_name TEXT,
+    created_by   TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    used_at      TEXT
+);
 """
 
 # Migraciones futuras: {versión_destino: [sql, ...]}. Se aplican en orden.
@@ -562,6 +580,8 @@ MIGRATIONS: dict[int, list[str]] = {
     # v26 (chat): editar y borrar dejan rastro; las versiones anteriores van a
     # `chat_message_edits`.
     26: [lambda conn: conn.executescript(CHAT_EDITS_SQL)],
+    # v27: invitaciones y enlaces de contraseña nueva.
+    27: [lambda conn: conn.executescript(ACCESS_LINKS_SQL)],
 }
 
 
@@ -1111,7 +1131,21 @@ CREATE TABLE chat_message_edits (
 );
 CREATE INDEX chat_message_edits_msg ON chat_message_edits(message_id);
 
-PRAGMA user_version = 26;
+CREATE TABLE access_links (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash   TEXT NOT NULL UNIQUE,
+    kind         TEXT NOT NULL CHECK (kind IN ('invite', 'reset')),
+    user_id      TEXT,
+    workspace_id TEXT,
+    role         TEXT,
+    display_name TEXT,
+    created_by   TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    used_at      TEXT
+);
+
+PRAGMA user_version = 27;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1627,6 +1661,8 @@ DUMP_EXCLUDED = {
     "chat_messages",
     "chat_reads",
     "chat_message_edits",
+    # Enlaces de acceso (v27): credenciales de un solo uso, no contenido.
+    "access_links",
 }
 
 

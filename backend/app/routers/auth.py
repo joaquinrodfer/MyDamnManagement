@@ -26,7 +26,7 @@ termina el proxy, y sin mirar la cabecera la cookie saldría sin `Secure` en el
 from __future__ import annotations
 
 import sqlite3
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -483,3 +483,160 @@ def create_user(
     audit.record(conn, user, "user.created", target_type="user", target_id=created.id,
                  target_name=created.display_name, metadata={"admin": payload.is_admin})
     return created.as_dict()
+
+
+# ------------------------------------------------- enlaces de acceso (equipo)
+# Invitar con un enlace y dar un enlace de contraseña nueva. Ver
+# `app/access_links.py`: Notemil no manda correo, el enlace lo pasa quien lo crea.
+
+
+class InviteRequest(BaseModel):
+    workspace_id: Optional[str] = None
+    role: str = "editor"
+    display_name: Optional[str] = None
+
+
+class LinkUseRequest(BaseModel):
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    password: str
+
+
+def _may_invite(conn: sqlite3.Connection, user: auth.User, workspace_id: Optional[str]) -> bool:
+    """Un administrador; o quien gestiona a las personas de ese espacio."""
+    if user.is_admin:
+        return True
+    from app import grants
+
+    return bool(workspace_id) and grants.can(conn, user, "manage_people", workspace_id)
+
+
+@router.post("/invites", status_code=201)
+def create_invite(
+    payload: InviteRequest,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Un enlace de invitación (7 días, un solo uso). Con `workspace_id`, quien
+    entra queda como miembro de ese espacio con `role`."""
+    from app import access_links
+
+    wid = (payload.workspace_id or "").strip() or None
+    if wid and ws_mod.get(conn, wid) is None:
+        raise HTTPException(400, f"no existe el espacio {wid}")
+    if payload.role not in ws_mod.ROLES:
+        raise HTTPException(400, "el rol es admin, editor o viewer")
+    if not _may_invite(conn, user, wid):
+        raise HTTPException(403, "solo un administrador (o quien gestiona a las personas del espacio) puede invitar")
+    if payload.role == "admin" and not user.is_admin:
+        # Gestionar personas no es poder hacer administradores: eso, solo un admin.
+        raise HTTPException(403, "solo un administrador puede invitar como administrador del espacio")
+    link = access_links.create_invite(conn, created_by=user.id, workspace_id=wid, role=payload.role,
+                                      display_name=payload.display_name)
+    audit.record(conn, user, "user.invited", target_type="workspace" if wid else "user", target_id=wid,
+                 metadata={"role": payload.role if wid else None, "link_id": link["id"]})
+    return link
+
+
+@router.get("/invites")
+def list_invites(user: auth.User = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_conn)):
+    """Las invitaciones pendientes: todas para un administrador, las mías si no."""
+    from app import access_links
+
+    return access_links.pending(conn, None if user.is_admin else user.id)
+
+
+@router.delete("/invites/{link_id}", status_code=204)
+def revoke_invite(link_id: int, user: auth.User = Depends(get_current_user),
+                  conn: sqlite3.Connection = Depends(get_conn)):
+    from app import access_links
+
+    if not access_links.revoke(conn, link_id, None if user.is_admin else user.id):
+        raise HTTPException(404, "no hay ninguna invitación pendiente con ese id")
+    return Response(status_code=204)
+
+
+@router.post("/users/{user_id}/reset-link", status_code=201)
+def create_reset_link(user_id: str, user: auth.User = Depends(get_current_user),
+                      conn: sqlite3.Connection = Depends(get_conn)):
+    """Un enlace para que esa persona ponga una contraseña nueva (24 h, un
+    solo uso; anula los anteriores). Solo un administrador."""
+    from app import access_links
+
+    if not user.is_admin:
+        raise HTTPException(403, "solo un administrador puede dar un enlace de contraseña nueva")
+    destino = auth.get_user(conn, user_id)
+    if destino is None:
+        raise HTTPException(404, "no hay ningún usuario con ese id")
+    link = access_links.create_reset(conn, created_by=user.id, user_id=user_id)
+    audit.record(conn, user, "user.reset_link", target_type="user", target_id=user_id,
+                 target_name=destino.display_name)
+    return link
+
+
+@router.get("/link/{token}")
+def read_link(token: str, conn: sqlite3.Connection = Depends(get_conn)):
+    """Qué es un enlace (público: lo abre quien todavía no tiene sesión)."""
+    from app import access_links
+
+    fila = access_links.find(conn, token)
+    if fila is None:
+        raise HTTPException(404, "Este enlace ya no vale: caducó, ya se usó o no existe. Pide otro.")
+    out: dict[str, Any] = {"kind": fila["kind"], "expires_at": fila["expires_at"]}
+    if fila["kind"] == "invite":
+        ws = ws_mod.get(conn, fila["workspace_id"]) if fila["workspace_id"] else None
+        out.update(display_name=fila["display_name"], role=fila["role"] if ws else None,
+                   workspace_name=ws["name"] if ws else None)
+    else:
+        destino = auth.get_user(conn, fila["user_id"])
+        out.update(username=destino.username if destino else None,
+                   display_name=destino.display_name if destino else None)
+    return out
+
+
+@router.post("/link/{token}")
+def use_link(token: str, payload: LinkUseRequest, request: Request,
+             conn: sqlite3.Connection = Depends(get_conn)):
+    """Usa el enlace: crea la cuenta (invitación) o pone la contraseña nueva, y
+    abre la sesión. Público."""
+    from app import access_links
+
+    ip = _client_ip(request)
+    if auth.blocked("enlace", ip):
+        raise HTTPException(429, "demasiados intentos: espera un minuto")
+    fila = access_links.find(conn, token)
+    if fila is None:
+        auth.note_attempt("enlace", ip)
+        raise HTTPException(404, "Este enlace ya no vale: caducó, ya se usó o no existe. Pide otro.")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not access_links.mark_used(conn, fila["id"]):
+            raise HTTPException(404, "Este enlace ya se ha usado.")
+        if fila["kind"] == "invite":
+            username = (payload.username or "").strip().lower()
+            nombre = (payload.display_name or fila["display_name"] or "").strip()
+            espacios = [(fila["workspace_id"], fila["role"] or ws_mod.DEFAULT_ROLE)] \
+                if fila["workspace_id"] and ws_mod.get(conn, fila["workspace_id"]) else None
+            try:
+                user = auth.create_user(conn, username=username, display_name=nombre or username,
+                                        password=payload.password, workspaces=espacios)
+            except auth.AuthError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            audit.record(conn, user, "user.created", target_type="user", target_id=user.id,
+                         target_name=user.display_name, metadata={"via": "invite", "link_id": fila["id"]})
+        else:
+            user = auth.get_user(conn, fila["user_id"])
+            if user is None:
+                raise HTTPException(404, "Esa persona ya no está en Notemil.")
+            try:
+                auth.set_password(conn, user.id, payload.password)
+            except auth.AuthError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            auth.revoke_user_sessions(conn, user.id)
+            audit.record(conn, user, "user.password_reset", target_type="user", target_id=user.id,
+                         target_name=user.display_name, metadata={"link_id": fila["id"]})
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    return signed_in(conn, request, user, status_code=201 if fila["kind"] == "invite" else 200)

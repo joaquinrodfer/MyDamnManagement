@@ -49,7 +49,7 @@ META_FREQUENCY = "backup_frequency"  # off | daily | weekly
 META_KEEP = "backup_keep"
 META_LAST = "backup_last"
 FREQUENCIES = {"off": None, "daily": timedelta(days=1), "weekly": timedelta(days=7)}
-DEFAULT_KEEP = 7
+DEFAULT_KEEP = 14
 MAX_KEEP = 90
 
 
@@ -215,7 +215,9 @@ def prune(keep: int) -> int:
 
 
 def get_settings(conn) -> dict:
-    freq = index_mod.get_meta(conn, META_FREQUENCY) or "off"
+    # Con `BACKUP_DIR` configurado y sin elegir nada, una copia al día: tener
+    # la carpeta puesta y ninguna copia era la trampa (bloque 1 del equipo).
+    freq = index_mod.get_meta(conn, META_FREQUENCY) or ("daily" if settings.backup_dir else "off")
     try:
         keep = int(index_mod.get_meta(conn, META_KEEP) or DEFAULT_KEEP)
     except ValueError:

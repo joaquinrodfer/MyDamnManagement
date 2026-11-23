@@ -239,3 +239,111 @@ def redirect_to_login(path: str) -> str:
     if destino == "/":
         return "/login"
     return "/login?next=" + quote(destino, safe="/")
+
+
+def render_link(token: str) -> str:
+    """La página de un enlace de invitación o de contraseña nueva
+    (`/enlace/<token>`). Pregunta a `/auth/link/<token>` qué es y pinta el
+    formulario que toca; al terminar, entra en el panel."""
+    tok = html.escape(token, quote=True)
+    return f"""<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<title>Notemil</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48" />
+<link rel="icon" href="/icons/notemil-mark.svg" type="image/svg+xml" />
+<style>{_CSS}
+  .hint {{ margin: -10px 0 16px; font-size: 12px; color: var(--ink-muted); }}
+  [hidden] {{ display: none !important; }}
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><svg viewBox="0 0 64 64" width="28" height="28" fill="none" aria-hidden="true"><rect x=".5" y=".5" width="63" height="63" rx="15" fill="#1C2142" stroke="#333A6B"/><path d="M20.5 46.5V18.5L43.5 46.5V31" stroke="#9AA2FF" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="43.5" cy="19" r="4.6" fill="#FF6B6B"/></svg><span class="brand-name">Note<span>mil</span></span></div>
+  <h1 id="title">Un momento…</h1>
+  <p class="sub" id="sub"></p>
+  <p class="error" id="error" role="alert"></p>
+  <form id="form" data-token="{tok}" novalidate hidden>
+    <div id="invite-fields" hidden>
+      <label for="display_name">Tu nombre</label>
+      <input id="display_name" name="display_name" autocomplete="name" maxlength="80" />
+      <label for="username">Usuario</label>
+      <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false"
+             pattern="[a-z][a-z0-9_]{{2,31}}" />
+      <p class="hint">Con el que entrarás: minúsculas, números y _ (de 3 a 32).</p>
+    </div>
+    <label for="password">Contraseña</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+    <p class="hint">Al menos 8 caracteres.</p>
+    <button type="submit" id="submit">Continuar</button>
+  </form>
+</main>
+<script>
+(() => {{
+  const form = document.getElementById("form");
+  const token = form.dataset.token;
+  const $ = (id) => document.getElementById(id);
+  const show = (m) => {{ $("error").textContent = m; $("error").classList.add("on"); }};
+  const ROLES = {{ admin: "administrador", editor: "editor", viewer: "lector" }};
+  let kind = null;
+  fetch("/auth/link/" + encodeURIComponent(token), {{ headers: {{ Accept: "application/json" }} }})
+    .then(async (r) => {{
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {{
+        $("title").textContent = "Enlace no válido";
+        show((d && d.detail) || "Este enlace ya no vale.");
+        return;
+      }}
+      kind = d.kind;
+      if (kind === "invite") {{
+        $("title").textContent = "Te han invitado a Notemil";
+        $("sub").textContent = d.workspace_name
+          ? `Entrarás en «${{d.workspace_name}}» como ${{ROLES[d.role] || d.role}}. Elige cómo entrar.`
+          : "Elige tu usuario y tu contraseña.";
+        $("invite-fields").hidden = false;
+        if (d.display_name) $("display_name").value = d.display_name;
+        $("submit").textContent = "Crear mi cuenta y entrar";
+      }} else {{
+        $("title").textContent = "Contraseña nueva";
+        $("sub").textContent = `Para ${{d.display_name || ""}} (@${{d.username || ""}}). Al guardarla se cierran tus otras sesiones.`;
+        $("submit").textContent = "Guardar y entrar";
+      }}
+      form.hidden = false;
+      (kind === "invite" ? $("display_name") : $("password")).focus();
+    }})
+    .catch(() => show("No se pudo conectar con el servidor"));
+  form.addEventListener("submit", async (e) => {{
+    e.preventDefault();
+    $("error").classList.remove("on");
+    $("submit").disabled = true;
+    const body = {{ password: $("password").value }};
+    if (kind === "invite") {{
+      body.username = $("username").value.trim().toLowerCase();
+      body.display_name = $("display_name").value.trim();
+    }}
+    try {{
+      const r = await fetch("/auth/link/" + encodeURIComponent(token), {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json", Accept: "application/json" }},
+        body: JSON.stringify(body),
+      }});
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {{
+        show((d && d.detail) || `Error ${{r.status}}`);
+        return;
+      }}
+      window.location.replace("/");
+    }} catch (_) {{
+      show("No se pudo conectar con el servidor");
+    }} finally {{
+      $("submit").disabled = false;
+    }}
+  }});
+}})();
+</script>
+</body>
+</html>
+"""
