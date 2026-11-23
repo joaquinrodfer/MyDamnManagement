@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 
-from app import closed
+from app import closed, kinds
 from app.workload import _ids, _number
 
 
@@ -67,6 +67,7 @@ def tasks_of(conn: sqlite3.Connection, project_row_id: str, visible: Optional[se
     estimate = _number(json.loads(proj["props"] or "{}").get(est_key)) if est_key else None
 
     tasks: list[dict[str, Any]] = []
+    tipos = kinds.kind_types(conn)
     for base in conn.execute(
         "SELECT d.id AS id, d.schema_json AS schema_json, k.kind_json AS kind_json, c.rule_json AS rule_json,"
         " bp.title AS base_title, bp.workspace_id AS ws"
@@ -74,10 +75,11 @@ def tasks_of(conn: sqlite3.Connection, project_row_id: str, visible: Optional[se
         " LEFT JOIN database_closed c ON c.database_id = d.id").fetchall():
         kind = json.loads(base["kind_json"] or "null") or {}
         roles = kind.get("roles") or {}
-        if kind.get("type") != "tasks" or not roles.get("project"):
-            continue
         schema = json.loads(base["schema_json"] or "[]")
-        prop = next((p for p in schema if p.get("key") == roles["project"]), None)
+        clave = kinds.project_key(kind, schema, tipos) if kind.get("type") == "tasks" else None
+        if not clave:
+            continue
+        prop = next((p for p in schema if p.get("key") == clave), None)
         if not prop or str(prop.get("target_database") or "") != proj["db"]:
             continue
         if base["ws"] != proj["ws"] and not accepts_foreign(conn, proj["ws"]):
@@ -87,7 +89,7 @@ def tasks_of(conn: sqlite3.Connection, project_row_id: str, visible: Optional[se
             "SELECT r.id AS id, r.properties_json AS props, p.title AS title"
             " FROM rows r JOIN pages p ON p.id = r.id WHERE r.database_id = ?", (base["id"],)):
             props = json.loads(row["props"] or "{}")
-            if project_row_id not in _ids(props.get(roles["project"])):
+            if project_row_id not in _ids(props.get(clave)):
                 continue
             people = _ids(props.get(roles.get("assignee"))) if roles.get("assignee") else []
             names = [r["display_name"] for r in conn.execute(

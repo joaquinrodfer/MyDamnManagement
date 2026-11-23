@@ -34,7 +34,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from app import closed, effort, worktime
+from app import closed, effort, kinds, worktime
 from app.due import iso_day
 
 DEFAULT_CAPACITY = worktime.weekly(worktime.DEFAULT_DAY_HOURS)
@@ -136,6 +136,7 @@ def pieces(
     project_ids: set[str] = set()
     staged: list[dict[str, Any]] = []
     reglas: dict[str, dict[str, Any]] = {}
+    tipos = {str(b["id"]): (json.loads(b["kind_json"] or "null") or {}).get("type") or "" for b in bases}
     for base in bases:
         kind = json.loads(base["kind_json"] or "null") or {}
         if kind.get("type") not in ("tasks", "workload"):
@@ -144,6 +145,7 @@ def pieces(
         if not roles.get("assignee"):
             continue
         schema_def = json.loads(base["schema_json"] or "[]")
+        clave_proyecto = kinds.project_key(kind, schema_def, tipos)
         rule, _src = closed.effective(json.loads(base["rule_json"] or "null"), schema_def)
         opciones = kind.get("options") or {}
         split = opciones.get("hours_split", "full")
@@ -170,7 +172,7 @@ def pieces(
             )
             start = iso_day(props.get(roles.get("start"))) if roles.get("start") else None
             end = iso_day(props.get(roles.get("end"))) if roles.get("end") else None
-            projects = _ids(props.get(roles.get("project"))) if roles.get("project") else []
+            projects = _ids(props.get(clave_proyecto)) if clave_proyecto else []
             project_ids.update(projects)
             staged.append({
                 "row_id": row["id"], "row_title": row["title"] or "Sin título",
