@@ -115,6 +115,13 @@ def edit_message(
     return msg
 
 
+@router.get("/messages/{message_id}/edits")
+def message_edits(message_id: int, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)):
+    """El rastro de un mensaje editado: el texto que tenía antes de cada edición."""
+    _own_conv(repo, user, message_id)  # 404 si no puedo ver la conversación
+    return {"edits": chat.edit_history(repo.conn, message_id)}
+
+
 @router.delete("/messages/{message_id}")
 def delete_message(message_id: int, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)):
     conv = _own_conv(repo, user, message_id)

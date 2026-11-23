@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -147,6 +147,18 @@ CREATE TRIGGER IF NOT EXISTS chat_fts_au AFTER UPDATE OF body ON chat_messages B
     INSERT INTO chat_fts(chat_fts, rowid, body) VALUES ('delete', old.id, old.body);
     INSERT INTO chat_fts(rowid, body) VALUES (new.id, new.body);
 END;
+"""
+
+# v26: el rastro de las ediciones de un mensaje del chat (el texto que había
+# antes de cada edición).
+CHAT_EDITS_SQL = """
+CREATE TABLE IF NOT EXISTS chat_message_edits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id  INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    body        TEXT NOT NULL,
+    replaced_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_message_edits_msg ON chat_message_edits(message_id);
 """
 
 # Migraciones futuras: {versión_destino: [sql, ...]}. Se aplican en orden.
@@ -547,6 +559,9 @@ MIGRATIONS: dict[int, list[str]] = {
     # (`chat_mention`) y llevar a su conversación (`conversation_id`). SQLite no
     # cambia un CHECK: se rehace la tabla, conservando todo.
     25: [lambda conn: _rebuild_notifications_for_chat(conn)],
+    # v26 (chat): editar y borrar dejan rastro; las versiones anteriores van a
+    # `chat_message_edits`.
+    26: [lambda conn: conn.executescript(CHAT_EDITS_SQL)],
 }
 
 
@@ -1088,7 +1103,15 @@ CREATE TRIGGER chat_fts_au AFTER UPDATE OF body ON chat_messages BEGIN
     INSERT INTO chat_fts(rowid, body) VALUES (new.id, new.body);
 END;
 
-PRAGMA user_version = 25;
+CREATE TABLE chat_message_edits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id  INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    body        TEXT NOT NULL,
+    replaced_at TEXT NOT NULL
+);
+CREATE INDEX chat_message_edits_msg ON chat_message_edits(message_id);
+
+PRAGMA user_version = 26;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")
@@ -1603,6 +1626,7 @@ DUMP_EXCLUDED = {
     "chat_members",
     "chat_messages",
     "chat_reads",
+    "chat_message_edits",
 }
 
 
