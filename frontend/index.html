@@ -2709,6 +2709,25 @@
     font-size: 11px;
   }
   .db-new-row-more:hover, .db-new-row-more[aria-expanded="true"] { color: var(--ink); }
+  /* «+ Nueva fila» sin caja: texto apagado con el «+», y el desplegable de
+     plantillas como un chevron que solo asoma al pasar por encima. Los dos se
+     iluminan juntos, como un solo control. */
+  .db-new-row { border-radius: var(--radius-md); transition: background var(--dur-fast) ease; }
+  .db-new-row .btn {
+    border: 0; background: transparent; box-shadow: none; color: var(--ink-muted);
+    font-weight: 500; min-height: 30px;
+  }
+  .db-new-row .db-add-row-btn { padding: 4px 10px 4px 8px; gap: 6px; }
+  .db-new-row .db-add-row-btn .svg-icon { width: 15px; height: 15px; }
+  .db-new-row .db-new-row-more { margin-left: 0; padding: 0 6px; opacity: 0; transition: opacity var(--dur-fast) ease, color var(--dur-fast) ease; }
+  .db-new-row .db-new-row-more .svg-icon { width: 13px; height: 13px; }
+  .db-new-row:hover, .db-new-row:focus-within { background: var(--row-hover); }
+  .db-new-row:hover .btn, .db-new-row:focus-within .btn { color: var(--ink); }
+  .db-new-row:hover .db-new-row-more, .db-new-row:focus-within .db-new-row-more,
+  .db-new-row-more[aria-expanded="true"] { opacity: 1; }
+  .db-new-row .btn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .db-new-row .btn:focus-visible { box-shadow: var(--focus-ring); }
+  @media (hover: none) { .db-new-row .db-new-row-more { opacity: 1; } }
   /* La fila fantasma: una fila más de la tabla, con el título en edición. No
      tiene velo de hover ni controles: todavía no es una fila. */
   .rows-table tr.row-ghost td { background: transparent; cursor: default; }
@@ -4562,6 +4581,18 @@
   .row-prop-value input:focus,
   .row-prop-value select:focus { border-color: var(--border-input); background: var(--panel); outline: none; }
   .row-prop-value input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; padding: 0; margin-left: 8px; }
+  /* Personas y relaciones en la ficha: el valor como en la tabla (avatar y
+     nombre, o el título de la fila enlazada); al pulsar, el selector. */
+  .row-prop-cell {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px;
+    min-height: var(--control-size); padding: 4px 8px; box-sizing: border-box;
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13.5px; color: var(--ink);
+    position: relative;
+  }
+  .row-prop-cell:hover { background: var(--code-bg); }
+  .row-prop-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row-prop-cell.cell-empty { color: var(--ink-muted); }
+  .row-prop-cell .rel-edit { position: static; margin-left: 2px; }
   .row-prop-add {
     display: inline-flex;
     align-items: center;
@@ -5623,6 +5654,19 @@
     font-size: 12.5px;
   }
   .row-subtask:hover { background: var(--code-bg); }
+  .row-subtask-cell {
+    min-width: 0; min-height: 28px; padding: 3px 6px; box-sizing: border-box;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    border-radius: var(--radius-sm); cursor: pointer; overflow: hidden;
+    color: var(--ink); font-size: 12.5px; white-space: nowrap;
+  }
+  .row-subtask-cell:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .row-subtask-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row-subtask-cell.cell-empty { color: var(--ink-muted); }
+  .row-subtask-cell.is-number, .row-subtask-cell.is-date { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+  .row-subtask-cell input, .row-subtask-cell select { width: 100%; min-width: 0; font: inherit; font-size: 12.5px; }
+  .row-subtask.is-closed .row-subtask-title { color: var(--ink-muted); text-decoration: line-through; }
+  .row-subtask-cell .rel-edit { position: static; }
   .row-subtasks-row.is-head {
     padding: 2px 8px 4px;
     border-bottom: none;
@@ -5631,8 +5675,8 @@
     text-transform: uppercase;
     color: var(--ink-muted);
   }
-  .row-subtasks-row.is-head span:last-child,
-  .row-subtask-date { text-align: right; }
+  .row-subtasks-row.is-head span.is-end { text-align: right; }
+  .row-subtasks-row.is-head span { padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-subtask { border-radius: var(--radius-md); }
   .row-subtask-title {
     min-width: 0;
@@ -6642,6 +6686,7 @@
   .chat-compose-note.is-editing { color: var(--accent-ink); }
   .chat-readonly { padding: 10px 14px; font-size: 12.5px; color: var(--ink-muted); border-top: 1px solid var(--panel-border); }
   .chat-picker { display: flex; flex-direction: column; gap: 8px; padding: 4px 12px 12px; min-height: 0; flex: 1; }
+  .chat-picker .chat-search { margin: 0; }
   .chat-picker-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
   .chat-picker-opt { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--radius-md); cursor: pointer; font-size: 13.5px; }
   .chat-picker-opt:hover { background: var(--menu-hover); }

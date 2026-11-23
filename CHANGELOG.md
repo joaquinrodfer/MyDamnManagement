@@ -2,6 +2,16 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado según [SemVer](https://semver.org/lang/es/): cada fase del roadmap avanza la versión menor (`0.x.0`) hasta que el proyecto se considere estable.
 
+## Fichas de tarea, subtareas y proyecto en la carga
+- **Responsables y relaciones en la ficha de una fila:**
+  - se ven como en la tabla: avatar y nombre, o el título de la fila enlazada;
+  - al pulsar, se abre el mismo selector con buscador;
+  - antes eran casillas sueltas y, la relación, su id en texto.
+- **Subtareas editables desde la lista:** en una base de Tareas salen estado, responsables, inicio, fin y horas, y cada valor se cambia ahí mismo. Una subtarea hecha sale tachada.
+- **La carga reconoce el proyecto** aunque la columna no esté marcada como «Proyecto» en el tipo de base, si es la única relación con una base de Proyectos. Lo mismo vale para «Tareas del proyecto».
+- **«+ Nueva fila»** sin caja: el texto apagado con el «+». Al pasar el ratón se ilumina, y el desplegable de plantillas asoma como un chevron.
+- **«Mensaje directo nuevo»:** el buscador usa el mismo campo que «Buscar en el chat».
+
 ## Chat: plazo y rastro al editar o borrar, y diálogos propios
 - **Editar y borrar un mensaje** solo se puede en los 15 minutos después de enviarlo. Después, el mensaje queda como está.
 - **Queda rastro:**

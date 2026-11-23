@@ -9628,9 +9628,14 @@ async function pintarSelectorDeGente(alElegir = null, titulo = "Mensaje directo 
   volver.addEventListener("click", () => (chatUI.actual && alElegir ? abrirConversacion(chatUI.actual.id) : pintarListaDeChat()));
   cab.append(volver, crearEl("span", "chat-conv-title", titulo));
   const caja = crearEl("div", "chat-picker");
+  // El mismo campo que «Buscar en el chat»: relleno y con la lupa.
+  const campo = crearEl("label", "chat-search");
+  campo.innerHTML = svgIcon("i-search");
   const buscar = crearEl("input");
+  campo.append(buscar);
   buscar.type = "search";
   buscar.placeholder = "Buscar persona…";
+  buscar.setAttribute("aria-label", "Buscar persona");
   const lista = crearEl("div", "chat-picker-list");
   const abrir = crearEl("button", "btn btn-primary", "Abrir conversación");
   abrir.type = "button";
@@ -9675,7 +9680,7 @@ async function pintarSelectorDeGente(alElegir = null, titulo = "Mensaje directo 
       abrir.disabled = false;
     }
   });
-  caja.append(buscar, lista, abrir);
+  caja.append(campo, lista, abrir);
   panel.replaceChildren(cab, caja);
   buscar.focus();
 }
@@ -14092,7 +14097,7 @@ function botonDeAlta({ database, alCrear, alElegirPlantilla, etiqueta = "Nueva f
   const mas = document.createElement("button");
   mas.type = "button";
   mas.className = "btn db-new-row-more";
-  mas.textContent = "▾";
+  mas.innerHTML = svgIcon("i-chevron-down");
   mas.title = "Nueva fila desde una plantilla";
   mas.setAttribute("aria-label", `${etiqueta}: elegir plantilla`);
   mas.setAttribute("aria-haspopup", "menu");
@@ -22285,6 +22290,32 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
       nombre.setAttribute("aria-haspopup", "dialog");
       nombre.addEventListener("click", () => abrirMenuDeColumna(nombre, contextoDeColumna(prop)));
 
+      // Personas y relaciones, como en la tabla: los nombres (con su avatar o
+      // el título de la fila enlazada) y, al pulsar, el mismo selector con
+      // buscador. Antes eran casillas sueltas y, la relación, su id en texto.
+      if (prop.type === "person" || prop.type === "relation") {
+        const celda = crearEl("div", "row-prop-cell");
+        celda.dataset.editable = "1";
+        celda.setAttribute("aria-label", `${prop.name}: cambiar`);
+        const hooks = {
+          onBeforeSave: () => {
+            ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+          },
+          onSaved: (guardada) => {
+            page.version = guardada.version;
+          },
+        };
+        // `paintCell` deja la celda lista como en la tabla: el clic (o Intro)
+        // abre el selector y los títulos enlazados abren su fila.
+        paintCell(celda, database, detalle, prop, hooks);
+        celda.tabIndex = 0;
+        const valor = crearEl("div", "row-prop-value");
+        valor.appendChild(celda);
+        fila.append(nombre, valor);
+        propsEl.appendChild(fila);
+        return;
+      }
+
       const { input, read } = buildPropertyInput(
         prop,
         detalle.properties?.[prop.key],
@@ -22333,16 +22364,31 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
   // y su fecha. Quién está cerrada lo dice el servidor (`closed`, con la regla
   // de la base): esa regla no se repite en el cliente.
 
-  function fechaDeSubtarea(hija, propFecha) {
-    const valor = propFecha ? hija.properties?.[propFecha.key] : null;
-    const texto = String(valor || hija.updated_at || "");
-    const partes = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    return partes ? `${partes[3]}/${partes[2]}/${partes[1]}` : "";
+  /** Las columnas de la lista de subtareas: en una base de Tareas (o que
+   * cuenta para la carga), las de sus roles —estado, responsables, inicio,
+   * fin y horas—, que son lo que cada tarea necesita; si no, estado y fecha. */
+  function columnasDeSubtareas(database, propEstado, propFecha) {
+    const esquema = database.schema_def || [];
+    const porClave = (k) => (k ? esquema.find((p) => p && p.key === k) : null);
+    const roles = ["tasks", "workload"].includes(database.kind?.type) ? database.kind.roles || {} : null;
+    const cols = roles
+      ? ["status", "assignee", "start", "end", "hours"].map((r) => porClave(roles[r]))
+      : [propEstado, propFecha];
+    return cols.filter((p, i, todas) => p && todas.indexOf(p) === i);
   }
 
-  function filaDeSubtarea(hija, propEstado, propFecha) {
+  function anchoDeColumnaDeSubtarea(prop) {
+    if (prop.type === "person") return "minmax(120px, 160px)";
+    if (prop.type === "date") return "112px";
+    if (prop.type === "number") return "64px";
+    return "minmax(96px, 130px)";
+  }
+
+  /** Una subtarea: el título abre la fila y cada propiedad se edita ahí mismo,
+   * con los mismos controles que la celda de la tabla. */
+  function filaDeSubtarea(hija, columnas) {
     const fila = document.createElement("div");
-    fila.className = "row-subtask";
+    fila.className = "row-subtask" + (hija.closed ? " is-closed" : "");
     fila.dataset.rowId = hija.id;
 
     const abrir = document.createElement("button");
@@ -22353,19 +22399,28 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
     abrir.addEventListener("click", () => (alNavegar || navigateToPage)(hija.id));
     fila.appendChild(abrir);
 
-    const estadoEl = document.createElement("span");
-    estadoEl.className = "row-subtask-state" + (hija.closed ? " is-closed" : "");
-    estadoEl.innerHTML = propEstado
-      ? formatPropValueHtml(hija.properties?.[propEstado.key], propEstado, hija)
-      : hija.closed
-        ? "Cerrada"
-        : "—";
-    fila.appendChild(estadoEl);
-
-    const fecha = document.createElement("span");
-    fecha.className = "row-subtask-date";
-    fecha.textContent = fechaDeSubtarea(hija, propFecha);
-    fila.appendChild(fecha);
+    const { database } = estado;
+    const hooks = {
+      onBeforeSave: () => {
+        ultimoCambioPropio = { databaseId: String(database.id), ts: Date.now() };
+      },
+      // El estado puede cerrar la subtarea (cambia el «N de M»): se relee.
+      onSaved: () => {
+        if (propiedadDeCierre(database)) cargar();
+      },
+    };
+    for (const prop of columnas) {
+      const celda = document.createElement("div");
+      celda.className = `row-subtask-cell is-${prop.type}`;
+      celda.dataset.editable = "1";
+      celda.dataset.colKey = prop.key;
+      celda.tabIndex = 0;
+      celda.setAttribute("aria-label", `${prop.name} de «${hija.title || "sin título"}»`);
+      // Como en la tabla: `paintCell` engancha el clic y el Intro que editan.
+      paintCell(celda, database, hija, prop, hooks);
+      celda.tabIndex = 0;
+      fila.appendChild(celda);
+    }
     return fila;
   }
 
@@ -22474,15 +22529,23 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
     subtareasEl.appendChild(cabeza);
 
     if (hijas.length) {
+      const columnas = columnasDeSubtareas(database, propEstado, propFecha);
+      const plantilla = `minmax(140px, 1fr) ${columnas.map(anchoDeColumnaDeSubtarea).join(" ")}`;
       const cabecera = document.createElement("div");
       cabecera.className = "row-subtasks-row is-head";
-      ["Título", "Estado", "Fecha"].forEach((texto) => {
+      cabecera.style.gridTemplateColumns = plantilla;
+      [{ name: "Título" }, ...columnas].forEach((p) => {
         const celda = document.createElement("span");
-        celda.textContent = texto;
+        celda.textContent = p.name;
+        if (p.type === "date" || p.type === "number") celda.className = "is-end";
         cabecera.appendChild(celda);
       });
       subtareasEl.appendChild(cabecera);
-      hijas.forEach((hija) => subtareasEl.appendChild(filaDeSubtarea(hija, propEstado, propFecha)));
+      hijas.forEach((hija) => {
+        const fila = filaDeSubtarea(hija, columnas);
+        fila.style.gridTemplateColumns = plantilla;
+        subtareasEl.appendChild(fila);
+      });
     } else {
       const vacio = document.createElement("p");
       vacio.className = "row-subtasks-empty";

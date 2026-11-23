@@ -32,6 +32,7 @@ Una fecha de la plantilla es un par de columnas (Inicio y Fin): la propiedad
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Iterable, Optional
 
@@ -302,3 +303,32 @@ def default_groups_for(options: Iterable[str]) -> Optional[list[dict[str, Any]]]
         {"name": "Pendiente", "closed": False, "options": [o for o in options if o not in hechas]},
         {"name": "Hecho", "closed": True, "options": hechas},
     ]
+
+
+def kind_types(conn: Any) -> dict[str, str]:
+    """`{id de base: tipo}` de las bases que tienen tipo."""
+    out: dict[str, str] = {}
+    for r in conn.execute("SELECT database_id, kind_json FROM database_kinds"):
+        try:
+            out[str(r[0])] = (json.loads(r[1] or "null") or {}).get("type") or ""
+        except ValueError:
+            continue
+    return out
+
+
+def project_key(kind: dict[str, Any], schema_def: list[dict[str, Any]], types: dict[str, str]) -> Optional[str]:
+    """La columna que dice el proyecto de una tarea.
+
+    La del rol «Proyecto» si está marcada. Si no (bases de antes de ese rol, o
+    convertidas sin marcarlo), la única relación que apunta a una base de
+    Proyectos: es la misma información y sin esto la tarea salía «Sin proyecto»
+    en la carga aunque estuviera enlazada."""
+    roles = kind.get("roles") or {}
+    if roles.get("project"):
+        return roles["project"]
+    candidatas = [
+        p.get("key") for p in schema_def or []
+        if isinstance(p, dict) and p.get("type") == "relation"
+        and types.get(str(p.get("target_database") or "")) == "projects"
+    ]
+    return candidatas[0] if len(candidatas) == 1 else None
