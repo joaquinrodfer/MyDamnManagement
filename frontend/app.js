@@ -298,16 +298,119 @@ function typeIconId(type) {
   return type === "database" ? "i-database" : "i-file-text";
 }
 
+/* ---------- iconos elegibles (además de los emojis) ----------
+ * Una página o una propiedad puede llevar un emoji o uno de estos iconos de la
+ * app. Se guarda en el mismo campo `icon` como `i:<nombre>` (corto: cabe en el
+ * límite de 16 caracteres del icono de una propiedad). Los `tipo-*` son los
+ * dibujos de los tipos de propiedad (ICONOS_DE_TIPO); el resto, del sprite. */
+const ICONOS_ELEGIBLES = [
+  ["file-text", "documento página nota texto"], ["folder", "carpeta"], ["database", "base datos"],
+  ["table", "tabla"], ["board", "tablero kanban"], ["list", "lista"], ["list-tree", "árbol esquema"],
+  ["calendar", "calendario fecha"], ["clock", "reloj hora tiempo"], ["check", "hecho tarea check"],
+  ["pencil", "lápiz editar escribir"], ["inbox", "bandeja entrada"], ["archive", "archivo caja"],
+  ["pin", "chincheta fijar"], ["paperclip", "clip adjunto"], ["message", "mensaje chat"],
+  ["send", "enviar"], ["quote", "cita"], ["at", "arroba correo email"], ["bell", "campana aviso"],
+  ["alert", "alerta aviso importante"], ["info", "información"], ["search", "buscar lupa"],
+  ["chart", "gráfico métricas"], ["graph", "grafo red"], ["layers", "capas"], ["key", "clave llave"],
+  ["lock", "candado privado"], ["shield", "escudo seguridad"], ["user", "persona usuario"],
+  ["users", "personas equipo"], ["users-group", "grupo equipo"], ["user-plus", "invitar persona"],
+  ["home", "casa inicio"], ["sun", "sol día"], ["moon", "luna noche"], ["upload", "subir"],
+  ["download", "descargar"], ["expand", "expandir"],
+  ["tipo-text", "texto propiedad"], ["tipo-number", "número cifra"], ["tipo-date", "fecha"],
+  ["tipo-select", "selección estado opción"], ["tipo-multiselect", "etiquetas varias"],
+  ["tipo-checkbox", "casilla check"], ["tipo-url", "enlace url web"], ["tipo-relation", "relación vínculo"],
+  ["tipo-person", "persona responsable"], ["tipo-parent_row", "subtarea padre"],
+];
+const NOMBRES_DE_ICONO = new Set(ICONOS_ELEGIBLES.map(([n]) => n));
+
+function esIconoDeApp(valor) {
+  return typeof valor === "string" && valor.startsWith("i:") && NOMBRES_DE_ICONO.has(valor.slice(2));
+}
+
+/** El SVG de un icono de la app (`i:<nombre>`). */
+function svgDeIconoDeApp(valor, sizeClass = "") {
+  const nombre = valor.slice(2);
+  if (nombre.startsWith("tipo-")) {
+    const html = ICONOS_DE_TIPO[nombre.slice(5)] || ICONOS_DE_TIPO.text;
+    return sizeClass ? html.replace('class="svg-icon"', `class="svg-icon ${sizeClass}"`) : html;
+  }
+  return svgIcon(`i-${nombre}`, sizeClass);
+}
+
+/** HTML del icono elegido por el usuario (emoji o icono de la app), para
+ * cabeceras de columna y paneles de propiedad. */
+function htmlDeIconoElegido(valor, clase = "db-prop-emoji") {
+  return esIconoDeApp(valor)
+    ? `<span class="${clase} is-app-icon">${svgDeIconoDeApp(valor)}</span>`
+    : `<span class="${clase}">${escapeHtml(valor)}</span>`;
+}
+
+/** Rejilla de iconos de la app que filtra por `filtro`; `alElegir("i:…")`. */
+function rejillaDeIconosDeApp(filtro, alElegir, claseBoton) {
+  const q = String(filtro || "").trim().toLowerCase();
+  const lista = q ? ICONOS_ELEGIBLES.filter(([n, kw]) => n.includes(q) || kw.includes(q)) : ICONOS_ELEGIBLES;
+  return lista.map(([nombre, kw]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `${claseBoton} is-app-icon`;
+    b.innerHTML = svgDeIconoDeApp(`i:${nombre}`);
+    b.title = kw.split(" ")[0];
+    b.setAttribute("aria-label", `Icono ${kw.split(" ")[0]}`);
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      alElegir(`i:${nombre}`);
+    });
+    return b;
+  });
+}
+
+/** Las dos pestañas «Emojis | Iconos» de un selector. Recuerda la última. */
+function pestanasDeIcono(alCambiar) {
+  let modo = "emoji";
+  try {
+    if (localStorage.getItem("np-icono-modo") === "app") modo = "app";
+  } catch {
+    /* sin almacenamiento: empieza en emojis */
+  }
+  const tabs = crearEl("div", "icon-picker-tabs");
+  tabs.setAttribute("role", "tablist");
+  const boton = (valor, texto) => {
+    const b = crearEl("button", "icon-picker-tab", texto);
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.dataset.modo = valor;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      modo = valor;
+      try {
+        localStorage.setItem("np-icono-modo", valor);
+      } catch {
+        /* nada */
+      }
+      pintar();
+      alCambiar(modo);
+    });
+    return b;
+  };
+  tabs.append(boton("emoji", "Emojis"), boton("app", "Iconos"));
+  const pintar = () =>
+    tabs.querySelectorAll(".icon-picker-tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.modo === modo)));
+  pintar();
+  return { tabs, modo: () => modo };
+}
+
 /** Pinta el icono de una página/base en `el`: SVG de su tipo si lleva el de
- * por defecto, el emoji del usuario si eligió otro. */
+ * por defecto, el icono de la app o el emoji que eligió el usuario. */
 function paintPageIcon(el, type, icon, sizeClass = "") {
   if (isDefaultIcon(type, icon)) el.innerHTML = svgIcon(typeIconId(type), sizeClass);
+  else if (esIconoDeApp(icon)) el.innerHTML = svgDeIconoDeApp(icon, sizeClass);
   else el.textContent = icon;
 }
 
 /** Props para dashboardItem: icono de tipo (SVG) o el emoji del usuario. */
 function pageIconProps(type, icon) {
-  return isDefaultIcon(type, icon) ? { iconType: typeIconId(type) } : { icon };
+  if (isDefaultIcon(type, icon)) return { iconType: typeIconId(type) };
+  return esIconoDeApp(icon) ? { iconHtml: svgDeIconoDeApp(icon, "icon-18") } : { icon };
 }
 
 /** Limpia #main: fuerza cualquier autoguardado pendiente (para no perder los
@@ -411,13 +514,14 @@ function formatDueLabel(days) {
   return `hace ${Math.abs(days)} días`;
 }
 
-function dashboardItem({ icon, iconType, title, sub, meta, metaClass, onClick }) {
+function dashboardItem({ icon, iconType, iconHtml, title, sub, meta, metaClass, onClick }) {
   const item = document.createElement("div");
   item.className = "dashboard-item";
 
   const iconEl = document.createElement("span");
   iconEl.className = "dashboard-item-icon";
   if (iconType) iconEl.innerHTML = svgIcon(iconType, "icon-18");
+  else if (iconHtml) iconEl.innerHTML = iconHtml;
   else iconEl.textContent = icon;
 
   const titleEl = document.createElement("span");
@@ -7153,14 +7257,30 @@ function openEmojiPicker(anchorEl, onSelect) {
 
   const search = document.createElement("input");
   search.type = "search";
-  search.placeholder = "Buscar emoji…";
   search.className = "mdm-emoji-search";
 
   const grid = document.createElement("div");
   grid.className = "mdm-emoji-grid";
 
+  const pestanas = pestanasDeIcono(() => {
+    renderGrid(search.value);
+    search.focus();
+  });
+
   function renderGrid(filter) {
     grid.innerHTML = "";
+    const conIconos = pestanas.modo() === "app";
+    search.placeholder = conIconos ? "Buscar icono…" : "Buscar emoji…";
+    grid.classList.toggle("is-app-icons", conIconos);
+    if (conIconos) {
+      const botones = rejillaDeIconosDeApp(filter, (v) => {
+        onSelect(v);
+        closeEmojiPicker();
+      }, "mdm-emoji-option");
+      if (botones.length) grid.append(...botones);
+      else grid.innerHTML = '<div class="search-empty">Sin resultados.</div>';
+      return;
+    }
     const q = filter.trim().toLowerCase();
     const matches = q ? EMOJI_DATA.filter(([, kw]) => kw.includes(q)) : EMOJI_DATA;
     if (matches.length === 0) {
@@ -7182,7 +7302,7 @@ function openEmojiPicker(anchorEl, onSelect) {
   renderGrid("");
   search.addEventListener("input", () => renderGrid(search.value));
 
-  panel.append(search, grid);
+  panel.append(pestanas.tabs, search, grid);
   document.body.appendChild(panel);
 
   const anchorRect = anchorEl.getBoundingClientRect();
@@ -7861,7 +7981,15 @@ function renderNote(page, backlinks) {
   function pintarIconoDeNota() {
     const porDefecto = isDefaultIcon("note", page.icon);
     iconBtn.hidden = porDefecto;
-    if (!porDefecto) iconBtn.textContent = page.icon;
+    if (!porDefecto) {
+      if (esIconoDeApp(page.icon)) {
+        iconBtn.innerHTML = svgDeIconoDeApp(page.icon);
+        iconBtn.classList.add("is-app-icon");
+      } else {
+        iconBtn.textContent = page.icon;
+        iconBtn.classList.remove("is-app-icon");
+      }
+    }
     head.classList.toggle("has-icon", !porDefecto);
     anadirIcono.hidden = !porDefecto;
     quitarIcono.hidden = porDefecto;
@@ -18058,9 +18186,7 @@ function abrirMenuDeColumna(anchor, contexto) {
     botonIcono.title = "Icono de la propiedad";
     let iconoActual = prop.icon || "";
     const pintar = () => {
-      botonIcono.innerHTML = iconoActual
-        ? `<span class="db-prop-emoji">${escapeHtml(iconoActual)}</span>`
-        : iconoDeTipo(prop.type);
+      botonIcono.innerHTML = iconoActual ? htmlDeIconoElegido(iconoActual) : iconoDeTipo(prop.type);
     };
     pintar();
     const picker = selectorDeIcono(async (emoji) => {
@@ -18333,31 +18459,43 @@ const ICONOS_DE_PROPIEDAD = [
  * panel que lo abre. `alElegir(icono)` recibe el emoji o "" para quitarlo. */
 function selectorDeIcono(alElegir) {
   const caja = document.createElement("div");
-  caja.className = "db-icon-picker";
-  caja.setAttribute("role", "listbox");
-  caja.setAttribute("aria-label", "Icono de la propiedad");
-  ICONOS_DE_PROPIEDAD.forEach((emoji) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "db-icon-option";
-    b.textContent = emoji;
-    b.setAttribute("role", "option");
-    b.setAttribute("aria-label", `Icono ${emoji}`);
-    b.addEventListener("click", (e) => {
+  caja.className = "db-icon-picker-wrap";
+  const rejilla = document.createElement("div");
+  rejilla.className = "db-icon-picker";
+  rejilla.setAttribute("role", "listbox");
+  rejilla.setAttribute("aria-label", "Icono de la propiedad");
+  const pintar = () => {
+    rejilla.replaceChildren();
+    if (pestanas.modo() === "app") {
+      rejilla.append(...rejillaDeIconosDeApp("", alElegir, "db-icon-option"));
+    } else {
+      ICONOS_DE_PROPIEDAD.forEach((emoji) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "db-icon-option";
+        b.textContent = emoji;
+        b.setAttribute("role", "option");
+        b.setAttribute("aria-label", `Icono ${emoji}`);
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          alElegir(emoji);
+        });
+        rejilla.appendChild(b);
+      });
+    }
+    const quitar = document.createElement("button");
+    quitar.type = "button";
+    quitar.className = "db-icon-remove";
+    quitar.textContent = "Sin icono";
+    quitar.addEventListener("click", (e) => {
       e.stopPropagation();
-      alElegir(emoji);
+      alElegir("");
     });
-    caja.appendChild(b);
-  });
-  const quitar = document.createElement("button");
-  quitar.type = "button";
-  quitar.className = "db-icon-remove";
-  quitar.textContent = "Sin icono";
-  quitar.addEventListener("click", (e) => {
-    e.stopPropagation();
-    alElegir("");
-  });
-  caja.appendChild(quitar);
+    rejilla.appendChild(quitar);
+  };
+  const pestanas = pestanasDeIcono(pintar);
+  caja.append(pestanas.tabs, rejilla);
+  pintar();
   return caja;
 }
 
@@ -18397,9 +18535,7 @@ function abrirFormularioDeColumna(anchor, contexto, posicion = null) {
   botonIcono.title = "Icono de la propiedad";
   botonIcono.setAttribute("aria-expanded", "false");
   const pintarIcono = () => {
-    botonIcono.innerHTML = icono
-      ? `<span class="db-prop-emoji">${escapeHtml(icono)}</span>`
-      : iconoDeTipo(tipoElegido);
+    botonIcono.innerHTML = icono ? htmlDeIconoElegido(icono) : iconoDeTipo(tipoElegido);
   };
   const nombre = document.createElement("input");
   nombre.type = "text";
@@ -18703,7 +18839,9 @@ function cabeceraDeColumna(contexto, prop, nombre, paraOrdenar = prop) {
   boton.type = "button";
   boton.className = "db-col-head-btn" + (indice >= 0 ? " is-sorted" : "");
   boton.innerHTML = prop?.icon
-    ? `<span class="db-col-type db-col-emoji" aria-hidden="true">${escapeHtml(prop.icon)}</span>`
+    ? (esIconoDeApp(prop.icon)
+        ? `<span class="db-col-type" aria-hidden="true">${svgDeIconoDeApp(prop.icon)}</span>`
+        : `<span class="db-col-type db-col-emoji" aria-hidden="true">${escapeHtml(prop.icon)}</span>`)
     : iconoDeTipo(prop ? prop.type : "title");
   const etiqueta = document.createElement("span");
   etiqueta.className = "db-col-label";
@@ -22558,7 +22696,7 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
       nombre.type = "button";
       nombre.className = "row-prop-name";
       nombre.innerHTML = `${
-        prop.icon ? `<span class="db-prop-emoji">${escapeHtml(prop.icon)}</span>` : iconoDeTipo(prop.type)
+        prop.icon ? htmlDeIconoElegido(prop.icon) : iconoDeTipo(prop.type)
       }<span class="row-prop-label"></span>`;
       nombre.querySelector(".row-prop-label").textContent = prop.name;
       nombre.title = `Opciones de «${prop.name}» (en toda la base)`;
