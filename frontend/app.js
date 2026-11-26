@@ -1628,7 +1628,6 @@ function paintUserChip() {
   const visibles = {
     users: me.is_admin || tengoPermiso("manage_people"),
     groups: me.is_admin,
-    workspaces: me.is_admin,
     permisos: me.is_admin,
     holidays: me.is_admin || tengoPermiso("manage_holidays"),
     audit: tengoPermisoEnTodos("view_audit"),
@@ -1850,6 +1849,16 @@ function renderUsers(users) {
       jornada.addEventListener("click", () => abrirJornada(u));
       row.appendChild(jornada);
     }
+    // La ficha de permisos de esa persona: sus espacios y lo que puede hacer.
+    if (u.id && sessionUser.me?.is_admin) {
+      const perm = document.createElement("button");
+      perm.type = "button";
+      perm.className = "btn user-jornada";
+      perm.innerHTML = `${svgIcon("i-shield")}<span>Permisos</span>`;
+      perm.title = `Qué puede hacer ${u.display_name}: espacios, roles y permisos`;
+      perm.addEventListener("click", () => abrirFichaDePermisos(u));
+      row.appendChild(perm);
+    }
     // Contraseña olvidada: un enlace de un solo uso (24 h) para ponerse otra.
     if (u.id && sessionUser.me?.is_admin && u.id !== sessionUser.me?.id) {
       const clave = document.createElement("button");
@@ -1872,6 +1881,181 @@ function renderUsers(users) {
   });
   paintUsersNote();
   return sorted.length;
+}
+
+/** Ajustes → Usuarios → «Permisos»: la ficha de una persona. Sus espacios con
+ * su rol (se cambia aquí si es directo) y cada permiso con un interruptor
+ * «en todos los espacios»; lo que le llega por un grupo se ve, pero se cambia
+ * en el grupo. Todo lo que se cambia queda en la auditoría. */
+async function abrirFichaDePermisos(u) {
+  const dialogo = crearEl("dialog", "perm-ficha");
+  dialogo.setAttribute("aria-label", `Permisos de ${u.display_name}`);
+  document.body.append(dialogo);
+  dialogo.addEventListener("close", () => dialogo.remove());
+  const nota = crearEl("p", "form-note");
+
+  async function pintar() {
+    let d, espacios;
+    try {
+      [d, espacios] = await Promise.all([api(`/users/${u.id}/access`), api("/workspaces?manage=1").catch(() => [])]);
+    } catch (e) {
+      dialogo.replaceChildren(crearEl("p", "form-note form-error", describeError(e)));
+      return;
+    }
+    const cabeza = crearEl("div", "perm-ficha-head");
+    const titulo = crearEl("div", "perm-texts");
+    titulo.append(
+      crearEl("strong", "perm-ficha-title", d.user.display_name),
+      crearEl("span", "perm-help", `@${d.user.username}${d.user.is_admin ? " · administrador de la instalación" : ""}`),
+    );
+    const cerrar = crearEl("button", "icon-btn");
+    cerrar.type = "button";
+    cerrar.innerHTML = svgIcon("i-x");
+    cerrar.setAttribute("aria-label", "Cerrar");
+    cerrar.addEventListener("click", () => dialogo.close());
+    cabeza.append(titulo, cerrar);
+
+    // Espacios
+    const bloqueEspacios = crearEl("section", "perm-ficha-block");
+    bloqueEspacios.append(crearEl("p", "perm-mine-label", "Espacios"));
+    const lista = crearEl("ul", "perm-list");
+    if (!d.workspaces.length) lista.append(crearEl("li", "perm-empty", "No está en ningún espacio compartido."));
+    for (const w of d.workspaces) {
+      const fila = crearEl("li", "perm-row");
+      const nombre = crearEl("span", "perm-subject");
+      nombre.append(crearEl("span", "perm-name", w.name));
+      if (w.via === "group") nombre.append(crearEl("span", "perm-via", `por el grupo ${w.group_name || "(borrado)"}`));
+      fila.append(nombre);
+      if (w.via === "user") {
+        const rol = opcionesDeRol(w.role);
+        rol.setAttribute("aria-label", `Rol en ${w.name}`);
+        rol.addEventListener("change", async () => {
+          try {
+            await api(`/workspaces/${w.id}/members/user/${u.id}`, { method: "PUT", body: JSON.stringify({ role: rol.value }) });
+            setFormNote(nota, `Rol en «${w.name}»: ${ROLES_DE_ESPACIO[rol.value]}.`, "ok");
+          } catch (e) {
+            setFormNote(nota, describeError(e), "error");
+            rol.value = w.role;
+          }
+        });
+        const quitar = crearEl("button", "icon-btn");
+        quitar.type = "button";
+        quitar.innerHTML = svgIcon("i-x");
+        quitar.title = `Sacar de «${w.name}»`;
+        quitar.setAttribute("aria-label", `Sacar a ${d.user.display_name} de ${w.name}`);
+        quitar.addEventListener("click", async () => {
+          if (!(await confirmar(`¿Sacar a ${d.user.display_name} de «${w.name}»?`, { aceptar: "Sacar" }))) return;
+          try {
+            await api(`/workspaces/${w.id}/members/user/${u.id}`, { method: "DELETE" });
+            await pintar();
+          } catch (e) {
+            setFormNote(nota, describeError(e), "error");
+          }
+        });
+        fila.append(rol, quitar);
+      } else {
+        fila.append(crearEl("span", "perm-scope", ROLES_DE_ESPACIO[w.role] || w.role));
+      }
+      lista.append(fila);
+    }
+    // Añadir a un espacio en el que no está.
+    const dentro = new Set(d.workspaces.filter((w) => w.via === "user").map((w) => w.id));
+    const candidatos = espacios.filter((w) => !w.personal_of && !dentro.has(w.id));
+    if (candidatos.length) {
+      const anadir = crearEl("li", "perm-row perm-row-add");
+      const sel = crearEl("select");
+      sel.append(new Option("Añadir a un espacio…", ""));
+      for (const w of candidatos) sel.append(new Option(w.name, w.id));
+      const rol = opcionesDeRol("editor");
+      const boton = crearEl("button", "btn", "Añadir");
+      boton.type = "button";
+      boton.addEventListener("click", async () => {
+        if (!sel.value) return;
+        try {
+          await api(`/workspaces/${sel.value}/members/user/${u.id}`, { method: "PUT", body: JSON.stringify({ role: rol.value }) });
+          await pintar();
+        } catch (e) {
+          setFormNote(nota, describeError(e), "error");
+        }
+      });
+      anadir.append(sel, rol, boton);
+      lista.append(anadir);
+    }
+    bloqueEspacios.append(lista);
+
+    // Permisos
+    const bloquePermisos = crearEl("section", "perm-ficha-block");
+    bloquePermisos.append(crearEl("p", "perm-mine-label", "Permisos"));
+    for (const c of d.capabilities) {
+      const tarjeta = crearEl("div", "perm-ficha-cap");
+      const directoTodos = c.grants.find((g) => g.via === "user" && !g.workspace_id);
+      const fila = crearEl("label", "db-switch-row");
+      const textos = crearEl("span", "db-switch-text");
+      const ic = crearEl("span", "perm-icon");
+      ic.innerHTML = svgIcon(CAPACIDAD_ICONOS[c.key] || "i-key");
+      textos.append(crearEl("span", "db-switch-title", c.label), crearEl("span", "db-switch-note", c.help));
+      const sw = crearEl("input", "db-switch");
+      sw.type = "checkbox";
+      sw.setAttribute("role", "switch");
+      sw.checked = Boolean(directoTodos);
+      sw.setAttribute("aria-label", `${c.label}, en todos los espacios`);
+      sw.addEventListener("change", async () => {
+        sw.disabled = true;
+        try {
+          if (sw.checked) {
+            await api("/grants", {
+              method: "POST",
+              body: JSON.stringify({ capability: c.key, subject_type: "user", subject_id: u.id, workspace_id: null }),
+            });
+          } else if (directoTodos) {
+            await api(`/grants/${directoTodos.id}`, { method: "DELETE" });
+          }
+          await pintar();
+          if (u.id === sessionUser.me?.id) await refrescarTrasPermisos();
+        } catch (e) {
+          sw.checked = !sw.checked;
+          sw.disabled = false;
+          setFormNote(nota, describeError(e), "error");
+        }
+      });
+      fila.append(ic, textos, sw);
+      tarjeta.append(fila);
+      // Lo demás: por espacios concretos o por un grupo.
+      const otros = c.grants.filter((g) => g !== directoTodos);
+      if (otros.length) {
+        const chips = crearEl("div", "perm-chips");
+        for (const g of otros) {
+          const chip = crearEl("span", g.workspace_id ? "perm-scope" : "perm-scope perm-scope--all",
+            (g.workspace_id ? g.workspace_name || "(espacio borrado)" : "Todos los espacios") +
+              (g.via === "group" ? ` · por el grupo ${g.group_name || "(borrado)"}` : ""));
+          if (g.via === "user") {
+            const x = crearEl("button", "perm-chip-x");
+            x.type = "button";
+            x.innerHTML = svgIcon("i-x");
+            x.setAttribute("aria-label", `Retirar ${c.label} en ${g.workspace_name || "ese espacio"}`);
+            x.addEventListener("click", async () => {
+              try {
+                await api(`/grants/${g.id}`, { method: "DELETE" });
+                await pintar();
+              } catch (e) {
+                setFormNote(nota, describeError(e), "error");
+              }
+            });
+            chip.append(x);
+          }
+          chips.append(chip);
+        }
+        tarjeta.append(chips);
+      }
+      bloquePermisos.append(tarjeta);
+    }
+    const cuerpo = crearEl("div", "perm-ficha-body");
+    cuerpo.append(bloqueEspacios, bloquePermisos, nota);
+    dialogo.replaceChildren(cabeza, cuerpo);
+  }
+  dialogo.append(crearEl("p", "form-note", "Cargando…"));
+  dialogo.showModal();
+  await pintar();
 }
 
 /** Respaldo: los que conoce este navegador (si `GET /auth/users` falla). */
@@ -2096,12 +2280,17 @@ async function cargarAdministracionDeEspacios() {
       api("/workspaces?manage=1"),
       api("/workspaces"),
       api("/groups"),
-      api("/auth/users").catch(() => []),
+      // Sin ser administrador, las personas de la app (para invitarlas a mis espacios).
+      (sessionUser.me?.is_admin ? api("/auth/users") : api("/people")).catch(() => []),
       sessionUser.me?.is_admin ? api("/grants").catch(() => null) : Promise.resolve(null),
     ]);
     state.workspaces = mios;
     pintarSelectorDeEspacio();
-    caja.replaceChildren(...lista.map((w) => tarjetaDeEspacio(w, grupos, usuarios, permisos)), formularioDeEspacioNuevo());
+    const puedeCrear = Boolean(sessionUser.me?.is_admin) || tengoPermiso("create_workspaces");
+    caja.replaceChildren(
+      ...lista.map((w) => tarjetaDeEspacio(w, grupos, usuarios, permisos)),
+      ...(puedeCrear ? [formularioDeEspacioNuevo()] : []),
+    );
     cajaGrupos.replaceChildren(...grupos.map((g) => tarjetaDeGrupo(g, usuarios)), formularioDeGrupoNuevo());
   } catch (e) {
     if (e?.status === 401) return;
@@ -2193,6 +2382,8 @@ const CAPACIDAD_ICONOS = {
   manage_holidays: "i-calendar",
   view_audit: "i-list",
   backups: "i-archive",
+  create_workspaces: "i-layers",
+  invite_people: "i-user-plus",
 };
 
 /** Ajustes → Administración → Permisos: quién tiene cada permiso y dónde. */
@@ -2357,8 +2548,9 @@ function formularioDeEspacioNuevo() {
     if (!nombre.value.trim()) return setFormNote(wsNota, "Escribe un nombre.", "error");
     try {
       await api("/workspaces", { method: "POST", body: JSON.stringify({ name: nombre.value.trim() }) });
-      setFormNote(wsNota, "Espacio creado.", "ok");
+      setFormNote(wsNota, "Espacio creado: eres su administrador.", "ok");
       await cargarAdministracionDeEspacios();
+      await loadTree();
     } catch (e) {
       setFormNote(wsNota, e?.message || "No se pudo crear.", "error");
     }
@@ -2528,8 +2720,32 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios, permisos = nul
     });
     anadir.replaceChildren(sel, rol, boton);
   };
-  anadir.hidden = !esAdminDelEspacio;
+  // Meter a alguien nuevo es «Invitar a sus espacios» (todos lo tienen, salvo
+  // que el administrador se lo retire).
+  anadir.hidden = !esAdminDelEspacio || !(sessionUser.me?.is_admin || tengoPermiso("invite_people"));
   cuerpo.append(anadir);
+
+  // Salir del espacio (no del personal). El servidor dice por qué no, si no se puede.
+  if (w.role && !w.personal_of) {
+    const salir = crearEl("button", "btn btn-danger ws-leave", "Salir del espacio…");
+    salir.type = "button";
+    salir.addEventListener("click", async () => {
+      const ok = await confirmar(
+        `¿Salir de «${w.name}»?\n\nDejarás de ver sus páginas, bases y chat. Lo que escribiste se queda en el espacio. Para volver, alguien que lo administre tendrá que añadirte.`,
+        { aceptar: "Salir del espacio" },
+      );
+      if (!ok) return;
+      try {
+        await api(`/workspaces/${w.id}/leave`, { method: "POST" });
+        setFormNote(wsNota, `Has salido de «${w.name}».`, "ok");
+        await cargarAdministracionDeEspacios();
+        await loadTree();
+      } catch (e) {
+        setFormNote(wsNota, describeError(e), "error");
+      }
+    });
+    cuerpo.append(salir);
+  }
 
   // ¿Sus proyectos aceptan tareas de otros espacios? (plan H4)
   if (esAdminDelEspacio) {

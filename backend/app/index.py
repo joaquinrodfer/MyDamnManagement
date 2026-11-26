@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -582,7 +582,16 @@ MIGRATIONS: dict[int, list[str]] = {
     26: [lambda conn: conn.executescript(CHAT_EDITS_SQL)],
     # v27: invitaciones y enlaces de contraseña nueva.
     27: [lambda conn: conn.executescript(ACCESS_LINKS_SQL)],
+    # v28: «Crear espacios» e «Invitar a sus espacios», que todo el mundo
+    # tiene por defecto (y el administrador retira a quien quiera).
+    28: [lambda conn: _migrate_default_grants(conn)],
 }
+
+
+def _migrate_default_grants(conn: sqlite3.Connection) -> None:
+    from app import grants  # import tardío
+
+    grants.migrate_defaults(conn)
 
 
 def _migrate_grants(conn: sqlite3.Connection) -> None:
@@ -1145,7 +1154,7 @@ CREATE TABLE access_links (
     used_at      TEXT
 );
 
-PRAGMA user_version = 27;
+PRAGMA user_version = 28;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")

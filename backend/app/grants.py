@@ -12,6 +12,8 @@ no lee lo ajeno (R1). Lo demás que antes venía con `is_admin` es ahora un
 | `manage_holidays`  | los festivos comunes (todos) o los de esos espacios           |
 | `view_audit`       | el registro de auditoría (solo «todos»)                       |
 | `backups`          | copias, exportar el vault entero y la papelera (solo «todos») |
+| `create_workspaces`| crear espacios nuevos (todos lo tienen por defecto)           |
+| `invite_people`    | añadir personas a los espacios que administra (por defecto)   |
 
 Solo el administrador concede y retira, y queda en la auditoría. Al migrar,
 cada administrador que había recibe todos de forma explícita (y retirable); un
@@ -40,7 +42,13 @@ CAPABILITIES: list[tuple[str, str, str, bool]] = [
      "El registro de quién hizo qué. No guarda contenido.", False),
     ("backups", "Copias de seguridad",
      "Hacer y descargar copias, exportar el vault entero y la papelera. Llevan todo el contenido.", False),
+    ("create_workspaces", "Crear espacios",
+     "Crear espacios de trabajo nuevos; quien lo crea queda como su administrador. Todos lo tienen al darse de alta.", False),
+    ("invite_people", "Invitar a sus espacios",
+     "Añadir personas (o mandar invitaciones) a los espacios que administra. Todos lo tienen al darse de alta.", False),
 ]
+# Los que tiene todo el mundo al darse de alta (y retirables uno a uno).
+DEFAULT_FOR_EVERYONE = ("create_workspaces", "invite_people")
 KEYS = [c[0] for c in CAPABILITIES]
 SCOPED = {c[0] for c in CAPABILITIES if c[3]}
 LABELS = {c[0]: c[1] for c in CAPABILITIES}
@@ -277,3 +285,43 @@ def explain(conn: sqlite3.Connection, user: Any) -> list[dict[str, Any]]:
             ],
         })
     return salida
+
+
+def grant_defaults(conn: sqlite3.Connection, user_id: str) -> None:
+    """Lo que todo el mundo tiene al darse de alta: crear espacios e invitar a
+    los suyos. Son concesiones normales: el administrador las retira a quien quiera."""
+    for key in DEFAULT_FOR_EVERYONE:
+        grant(conn, key, "user", user_id, None)
+
+
+def migrate_defaults(conn: sqlite3.Connection) -> None:
+    """Migración v28: las personas que ya había reciben los permisos por defecto."""
+    for (uid,) in conn.execute("SELECT id FROM users").fetchall():
+        grant_defaults(conn, uid)
+
+
+def user_access(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    """Todo lo que puede hacer una persona, para la ficha del administrador:
+    cada permiso del catálogo con sus concesiones (directas, con su id para
+    retirarlas, o por un grupo)."""
+    cond, args = _subjects_sql(str(user_id))
+    filas = conn.execute(
+        "SELECT g.id, g.capability, g.subject_type, gr.name AS group_name, g.workspace_id, w.name AS workspace_name"
+        " FROM grants g LEFT JOIN groups gr ON g.subject_type = 'group' AND gr.id = g.subject_id"
+        " LEFT JOIN workspaces w ON w.id = g.workspace_id"
+        f" WHERE {cond} ORDER BY g.workspace_id IS NOT NULL, w.name COLLATE NOCASE",
+        args,
+    ).fetchall()
+    return [
+        {
+            "key": key, "label": label, "help": ayuda, "scoped": scoped,
+            "grants": [
+                {
+                    "id": f["id"], "workspace_id": f["workspace_id"], "workspace_name": f["workspace_name"],
+                    "via": "group" if f["subject_type"] == "group" else "user", "group_name": f["group_name"],
+                }
+                for f in filas if f["capability"] == key
+            ],
+        }
+        for key, label, ayuda, scoped in CAPABILITIES
+    ]

@@ -348,6 +348,8 @@ def create_user(
         grants.grant_all(conn, user_id)
     elif can_view_global_workload:
         grants.grant(conn, "view_workload", "user", user_id, None)
+    # Crear espacios e invitar a los suyos: todo el mundo, de entrada.
+    grants.grant_defaults(conn, user_id)
     created = get_user(conn, user_id)
     assert created is not None
     return created
