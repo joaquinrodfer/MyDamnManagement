@@ -36,7 +36,7 @@ def test_mis_espacios_y_permisos_con_su_origen(client):
     assert espacios["General"]["via"] == "user"
     assert all(not w["name"].startswith("Espacio de") for w in yo["workspaces"])  # el personal no sale
     caps = {c["key"]: c for c in yo["capabilities"]}
-    assert set(caps) == {"view_workload", "view_audit"}
+    assert set(caps) == {"view_workload", "view_audit", "create_workspaces", "invite_people"}
     assert caps["view_workload"]["grants"] == [
         {"workspace_id": dev["id"], "workspace_name": "Desarrollo", "via": "group", "group_name": "Equipo"}
     ]

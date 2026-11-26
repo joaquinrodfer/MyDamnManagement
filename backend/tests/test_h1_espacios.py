@@ -18,6 +18,14 @@ from app import workspaces
 from app.index import DEFAULT_WORKSPACE_ID
 
 
+def sin_por_defecto(caps):
+    """Los permisos de una persona sin los que todo el mundo tiene al darse de
+    alta (crear espacios e invitar a los suyos)."""
+    from app.grants import DEFAULT_FOR_EVERYONE
+
+    return {k: v for k, v in caps.items() if k not in DEFAULT_FOR_EVERYONE}
+
+
 def _sesion(client, username, **extra):
     r = client.post("/auth/users", json={
         "username": username, "display_name": username.title(), "password": f"contrasena-{username}", **extra,
@@ -73,10 +81,10 @@ def test_crear_renombrar_y_borrar_espacios(client, cierra):
     assert client.post("/workspaces", json={"name": "investigación"}).status_code == 409
     r = client.patch(f"/workspaces/{ws['id']}", json={"name": "I+D"})
     assert r.json()["name"] == "I+D" and r.json()["slug"] == "i-d"
-    # Solo el superadministrador crea y borra.
+    # Crear, quien tiene «Crear espacios» (todos por defecto; ver
+    # test_permisos_por_usuario.py); borrar, solo el superadministrador.
     c, _ = _sesion(client, "beto")
     cierra.append(c)
-    assert c.post("/workspaces", json={"name": "Otro"}).status_code == 403
     assert c.delete(f"/workspaces/{ws['id']}").status_code == 403
     # Con páginas dentro no se borra; vacío sí; y nunca el único.
     client.post("/pages", json={"title": "Dentro"}, headers={"X-Workspace": ws["id"]})
@@ -196,13 +204,13 @@ def test_la_carga_global_es_un_permiso_aparte(client, cierra):
     c, u = _sesion(client, "pmgr", can_view_global_workload=True)
     cierra.append(c)
     assert u["is_admin"] is False
-    assert c.get("/auth/me").json()["capabilities"] == {"view_workload": "all"}
+    assert sin_por_defecto(c.get("/auth/me").json()["capabilities"]) == {"view_workload": "all"}
     otro, ou = _sesion(client, "otro")
     cierra.append(otro)
-    assert otro.get("/auth/me").json()["capabilities"] == {}
+    assert sin_por_defecto(otro.get("/auth/me").json()["capabilities"]) == {}
     # Un administrador se lo da; un usuario normal no puede dárselo.
     assert client.patch(f"/auth/users/{ou['id']}", json={"can_view_global_workload": True}).status_code == 200
-    assert otro.get("/auth/me").json()["capabilities"] == {"view_workload": "all"}
+    assert sin_por_defecto(otro.get("/auth/me").json()["capabilities"]) == {"view_workload": "all"}
     assert otro.patch(f"/auth/users/{ou['id']}", json={"can_view_global_workload": False}).status_code == 403
 
 

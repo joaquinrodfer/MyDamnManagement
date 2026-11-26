@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from test_h1_espacios import sin_por_defecto  # noqa: E402
 import sqlite3
 from contextlib import contextmanager
 
@@ -47,12 +48,14 @@ def gente(client):
 
 def test_el_primer_administrador_los_tiene_todos(client):
     caps = _ok(client.get("/auth/me"))["capabilities"]
-    assert caps == {k: "all" for k in ("manage_people", "view_workload", "manage_holidays", "view_audit", "backups")}
+    from app import grants as _g
+
+    assert caps == {k: "all" for k in _g.KEYS}
 
 
 def test_un_administrador_nuevo_no_tiene_ninguno(client, gente):
     nuevo, ids = gente["nuevo"], gente["ids"]
-    assert _ok(nuevo.get("/auth/me"))["capabilities"] == {}
+    assert sin_por_defecto(_ok(nuevo.get("/auth/me"))["capabilities"]) == {}
     assert nuevo.get("/audit").status_code == 403
     assert nuevo.get("/backups").status_code == 403
     assert nuevo.post("/export").status_code == 403
@@ -81,7 +84,7 @@ def test_conceder_y_retirar_queda_en_la_auditoria(client, gente):
         "capability": "view_audit", "subject_type": "user", "subject_id": ids["ana"],
     }), 201)
     assert otra["id"] == dado["id"]
-    assert _ok(ana.get("/auth/me"))["capabilities"] == {"view_audit": "all"}
+    assert sin_por_defecto(_ok(ana.get("/auth/me"))["capabilities"]) == {"view_audit": "all"}
     assert ana.get("/audit").status_code == 200
 
     _ok(client.delete(f"/grants/{dado['id']}"), 204)
@@ -117,7 +120,7 @@ def test_por_grupo_y_por_espacio(client, gente):
         "capability": "manage_people", "subject_type": "group", "subject_id": jefes["id"],
         "workspace_id": dev["id"],
     }), 201)
-    assert _ok(ana.get("/auth/me"))["capabilities"] == {"manage_people": [dev["id"]]}
+    assert sin_por_defecto(_ok(ana.get("/auth/me"))["capabilities"]) == {"manage_people": [dev["id"]]}
 
     # Beto está en Desarrollo: Ana gestiona su jornada y sus ausencias.
     _ok(ana.put(f"/worktime/users/{ids['beto']}/schedule", json={"hours": [7, 7, 7, 7, 7, 0, 0]}))
@@ -173,6 +176,8 @@ def test_la_migracion_da_a_los_administradores_lo_de_antes(tmp_path, monkeypatch
     c = sqlite3.connect(ruta)
     c.row_factory = sqlite3.Row
     assert grants.summary(c, "u1") == {k: "all" for k in grants.KEYS}
-    assert grants.summary(c, "u2") == {"view_workload": "all"}
-    assert grants.summary(c, "u3") == {}
+    # v28: todos reciben además los permisos por defecto.
+    assert sin_por_defecto(grants.summary(c, "u2")) == {"view_workload": "all"}
+    assert sin_por_defecto(grants.summary(c, "u3")) == {}
+    assert set(grants.summary(c, "u3")) == set(grants.DEFAULT_FOR_EVERYONE)
     c.close()

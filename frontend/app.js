@@ -2287,8 +2287,12 @@ async function cargarAdministracionDeEspacios() {
     state.workspaces = mios;
     pintarSelectorDeEspacio();
     const puedeCrear = Boolean(sessionUser.me?.is_admin) || tengoPermiso("create_workspaces");
+    // Los que gestiono y, además, en los que solo soy miembro (para ver sus
+    // miembros y poder salir).
+    const vistos = new Set(lista.map((w) => w.id));
+    const todos = [...lista, ...mios.filter((w) => !vistos.has(w.id))];
     caja.replaceChildren(
-      ...lista.map((w) => tarjetaDeEspacio(w, grupos, usuarios, permisos)),
+      ...todos.map((w) => tarjetaDeEspacio(w, grupos, usuarios, permisos)),
       ...(puedeCrear ? [formularioDeEspacioNuevo()] : []),
     );
     cajaGrupos.replaceChildren(...grupos.map((g) => tarjetaDeGrupo(g, usuarios)), formularioDeGrupoNuevo());
