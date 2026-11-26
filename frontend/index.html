@@ -6345,6 +6345,15 @@
   .home-capture:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring, 0 0 0 3px var(--accent-soft)); }
   .home-capture-icon { color: var(--ink-muted); display: inline-flex; }
   .home-capture-icon .svg-icon { width: 16px; height: 16px; }
+  .home-capture { position: relative; }
+  .home-capture-ok {
+    display: inline-flex; align-items: center; gap: 4px; flex: none;
+    font-size: 12px; color: var(--ok); white-space: nowrap;
+    max-width: 0; overflow: hidden; opacity: 0;
+    transition: opacity 180ms var(--ease-out, ease), max-width 180ms var(--ease-out, ease);
+  }
+  .home-capture-ok.is-on { opacity: 1; max-width: 200px; }
+  .home-capture-ok .svg-icon { width: 14px; height: 14px; }
   .home-capture input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; outline: none; }
 
   .home-columns { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
@@ -6556,6 +6565,10 @@
     display: flex; flex-direction: column; min-height: 0;
     background: var(--bg);
     border-left: 1px solid var(--panel-border);
+    /* El panel que entra al cambiar de pestaña llega desplazado 14 px: sin
+       recortar, el chat asomaba por la derecha de la ventana y salía una
+       barra de scroll horizontal mientras duraba la animación. */
+    overflow-x: clip;
   }
   .layout.members-collapsed > .members-aside { display: none; }
   .layout.members-entering > .members-aside { animation: np-members-in var(--dur-normal) var(--ease-out); }

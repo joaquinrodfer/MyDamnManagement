@@ -690,7 +690,12 @@ function capturaDeInicio() {
   input.placeholder = "Apunta algo… (Intro lo guarda en la bandeja)";
   input.setAttribute("aria-label", "Apuntar algo en la bandeja");
   input.maxLength = 2000;
-  form.append(icono, input);
+  // La confirmación sale AQUÍ, junto a lo que acabas de escribir: el aviso
+  // general salía en la otra punta de la pantalla.
+  const hecho = crearEl("span", "home-capture-ok");
+  hecho.setAttribute("role", "status");
+  let quitarHecho = 0;
+  form.append(icono, input, hecho);
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const texto = input.value.trim();
@@ -699,7 +704,11 @@ function capturaDeInicio() {
     try {
       await api("/capture", { method: "POST", body: JSON.stringify({ text: texto, source: "api" }) });
       input.value = "";
-      showError("Guardado en la bandeja", "info");
+      hecho.innerHTML = svgIcon("i-check");
+      hecho.append("Guardado en la bandeja");
+      hecho.classList.add("is-on");
+      clearTimeout(quitarHecho);
+      quitarHecho = setTimeout(() => hecho.classList.remove("is-on"), 2400);
       loadInbox?.();
     } catch (err) {
       reportError("No se pudo guardar en la bandeja", err);
@@ -9674,7 +9683,7 @@ async function buscarEnChat(q, lista) {
     b.append(avatarDeChat(m.author));
     const texto = crearEl("span", "chat-item-text");
     texto.append(
-      crearEl("span", "chat-item-title", `${m.author?.display_name || "Alguien"} · ${m.conversation_kind === "workspace" ? "# " : ""}${m.conversation_title}`),
+      crearEl("span", "chat-item-title", `${m.author?.display_name || "Alguien"} · ${m.conversation_title}`),
       crearEl("span", "chat-item-last", (m.body || "").replace(/[*`>]/g, "")),
     );
     const lado = crearEl("span", "chat-item-side");
@@ -9714,7 +9723,7 @@ function itemDeChat(c) {
     b.append(avs);
   }
   const texto = crearEl("span", "chat-item-text");
-  texto.append(crearEl("span", "chat-item-title", c.kind === "workspace" ? `# ${c.title}` : c.title));
+  texto.append(crearEl("span", "chat-item-title", c.title));
   let ultimo = "Sin mensajes todavía";
   if (c.last) {
     const quien = c.last.user_id === sessionUser.me?.id ? "Tú" : (c.last.author_name || "Alguien");
@@ -9869,7 +9878,7 @@ function pintarConversacion({ alFinal = false } = {}) {
     pintarListaDeChat();
     cargarChat();
   });
-  const titulo = crearEl("span", "chat-conv-title", c.kind === "workspace" ? `# ${c.title}` : c.title);
+  const titulo = crearEl("span", "chat-conv-title", c.title);
   if (c.kind === "workspace") {
     const quien = { viewer: "Todos los miembros del espacio", editor: "Editores y administradores del espacio", admin: "Administradores del espacio" }[c.min_role] || "";
     titulo.append(crearEl("span", "chat-conv-sub", quien));
