@@ -3211,16 +3211,17 @@
   .db-prop-icon-btn[aria-expanded="true"] { background: var(--row-hover); color: var(--ink); }
   .db-prop-icon-btn .db-col-type { opacity: 1; }
   .db-prop-emoji, .db-col-emoji { font-size: 14px; line-height: 1; }
+  .db-icon-picker-wrap { margin: 0 4px 6px; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); }
+  .db-icon-picker-wrap[hidden] { display: none; }
+  .db-icon-picker-wrap .icon-picker-tabs { margin: 4px 4px 0; }
   .db-icon-picker {
     display: grid;
     grid-template-columns: repeat(9, 1fr);
     gap: 2px;
     padding: 4px;
-    margin: 0 4px 6px;
-    border: 1px solid var(--panel-border);
-    border-radius: var(--radius-sm);
+    max-height: 220px;
+    overflow-y: auto;
   }
-  .db-icon-picker[hidden] { display: none; }
   .db-icon-option {
     height: 28px;
     padding: 0;
@@ -7316,6 +7317,20 @@
   .project-tasks-head h3 { margin: 0; }
   .project-task-new { display: inline-flex; align-items: center; gap: 6px; }
   .project-task-new .svg-icon { width: 14px; height: 14px; }
+
+  /* Pestañas «Emojis | Iconos» de los selectores de icono. */
+  .icon-picker-tabs { display: flex; gap: 2px; padding: 2px; margin-bottom: 8px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .icon-picker-tab { flex: 1; height: 28px; border: 0; border-radius: calc(var(--radius-md) - 2px); background: none; color: var(--ink-muted); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+  .icon-picker-tab[aria-selected="true"] { background: var(--surface-elevated); color: var(--ink); box-shadow: 0 0 0 1px var(--panel-border); }
+  .mdm-emoji-option.is-app-icon, .db-icon-option.is-app-icon { display: inline-flex; align-items: center; justify-content: center; color: var(--ink-muted); }
+  .mdm-emoji-option.is-app-icon:hover, .db-icon-option.is-app-icon:hover { color: var(--ink); }
+  .mdm-emoji-option.is-app-icon .svg-icon { width: 20px; height: 20px; }
+  .db-icon-option.is-app-icon .svg-icon { width: 16px; height: 16px; }
+  .db-prop-emoji.is-app-icon { display: inline-flex; color: var(--ink-muted); }
+  .db-prop-emoji.is-app-icon .svg-icon { width: 15px; height: 15px; }
+  .note-head .note-icon-btn.is-app-icon { color: var(--ink-muted); }
+  .note-head .note-icon-btn.is-app-icon .svg-icon { width: 52px; height: 52px; stroke-width: 1.5; }
+  .type-icon .svg-icon, .home-recent-icon .svg-icon { flex: none; }
   /* Paso 2 de «Nueva base»: ajustes de Proyectos y Tareas. */
   .tpl-ajustes { display: grid; gap: 14px; }
   .tpl-ajustes h3 { margin-bottom: 0; }
