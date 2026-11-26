@@ -2085,7 +2085,7 @@
   #note-body .cm-mdm-image:hover .cm-mdm-image-tools { opacity: 1; }
   #note-body .cm-mdm-image-tools button {
     border: 0; border-radius: 6px; padding: 4px 9px; font: inherit; font-size: 12px; cursor: pointer;
-    background: rgba(15, 17, 24, 0.72); color: #fff; backdrop-filter: blur(6px);
+    background: rgba(15, 17, 24, 0.86); color: #fff;
   }
   #note-body .cm-mdm-image-tools button:hover { background: rgba(15, 17, 24, 0.9); }
   /* vídeo, audio, PDF y archivos (MediaWidget) */
@@ -5947,9 +5947,10 @@
   dialog[open] { transform: none; }
   @starting-style { dialog[open] { opacity: 0; transform: translateY(10px) scale(0.98); } }
   dialog[open]::backdrop {
-    background-color: rgba(6, 8, 12, 0.55);
-    -webkit-backdrop-filter: blur(4px);
-    backdrop-filter: blur(4px);
+    /* Sin desenfoque: `backdrop-filter` obliga a volver a desenfocar toda la
+       pantalla en cada fotograma mientras se desplaza el diálogo (en una
+       pantalla grande, el scroll iba a tirones). Un velo algo más oscuro. */
+    background-color: rgba(6, 8, 12, 0.66);
   }
   html[data-theme="light"] dialog[open]::backdrop { background-color: rgba(17, 20, 28, 0.28); }
   dialog h3 { font-weight: 650; }
@@ -6089,8 +6090,8 @@
   .note-cover-actions {
     position: absolute; right: calc(var(--main-pad-x) + 8px); bottom: 12px;
     display: flex; gap: 0; padding: 2px; border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
-    box-shadow: var(--shadow-float); backdrop-filter: blur(6px);
+    background: var(--surface-elevated);
+    box-shadow: var(--shadow-float);
     opacity: 0; transition: opacity var(--dur-normal) var(--ease-std);
   }
   .note-header-image-wrap:hover .note-cover-actions,
@@ -6802,8 +6803,23 @@
   .chat-msg.is-found { background: color-mix(in srgb, var(--accent) 16%, transparent); transition: background .4s; }
   .chat-task-chip { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--ok) 10%, transparent); color: var(--ink); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
   .chat-task-chip .svg-icon { width: 12px; height: 12px; color: var(--ok); }
-  .chat-task-panel { padding: 12px; width: 300px; display: flex; flex-direction: column; gap: 8px; }
-  .chat-task-panel select, .chat-task-panel input { width: 100%; }
+  .chat-task-panel { padding: 0; width: 400px; max-width: calc(100vw - 16px); display: flex; flex-direction: column; gap: 0; }
+  .chat-task-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; }
+  .chat-task-icon { flex: none; width: 30px; height: 30px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+  .chat-task-icon .svg-icon { width: 16px; height: 16px; }
+  .chat-task-texts { display: grid; gap: 1px; min-width: 0; }
+  .chat-task-texts strong { font-size: 14.5px; }
+  .chat-task-from { font-size: 12px; color: var(--ink-muted); }
+  .chat-task-quote { margin: 0 16px 12px; padding: 8px 10px; border-left: 3px solid var(--panel-border); border-radius: 4px; background: color-mix(in srgb, var(--ink) 4%, transparent); font-size: 12.5px; line-height: 1.45; color: var(--ink-muted); white-space: pre-wrap; max-height: 84px; overflow: hidden; }
+  .chat-task-body { display: grid; gap: 12px; padding: 0 16px 14px; }
+  .chat-task-field { display: grid; gap: 5px; min-width: 0; font-weight: 400; }
+  .chat-task-label { font-size: 12px; font-weight: 500; color: var(--ink-muted); }
+  .chat-task-panel .chat-task-field :is(input, select) { width: 100%; height: 36px; font-size: 13.5px; padding-left: 10px !important; }
+  .chat-task-row { display: grid; grid-template-columns: 1fr 150px; gap: 10px; }
+  .chat-task-note:empty { display: none; }
+  .chat-task-empty { margin: 0; font-size: 13px; color: var(--ink-muted); }
+  .chat-task-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--panel-border); }
+  @media (max-width: 480px) { .chat-task-row { grid-template-columns: 1fr; } }
   .chat-typing { min-height: 14px; font-size: 11.5px; color: var(--ink-muted); font-style: italic; }
   .chat-typing:empty { min-height: 0; }
   /* «Escribir» a un miembro: un icono discreto dentro de su propia fila (a
