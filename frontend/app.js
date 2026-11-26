@@ -17160,39 +17160,186 @@ async function abrirCompartir(anchor, tipo, id, titulo) {
     }
   }
   pintar();
-  abrirPanelFlotante(anchor, panel, { etiqueta: `Compartir «${titulo}»`, foco: "select, input", hoja: true });
+  abrirPanelFlotante(anchor, panel, { etiqueta: `Compartir «${titulo}»`, foco: ".share-search input, select", hoja: true });
 }
 
 function pintarCompartir(panel, { titulo, datos, gente, grupos = [], yo, guardar }) {
-  panel.textContent = "";
-  const h = document.createElement("h3");
-  h.textContent = `Compartir «${titulo}»`;
-  panel.append(h);
+  // Como en Notion: arriba un buscador para añadir (personas, grupos o todo el
+  // espacio) con el nivel al lado; debajo, quién tiene acceso; al final, la
+  // herencia y «Copiar enlace». Todo se guarda en el acto.
+  panel.replaceChildren();
   const esPropietario = datos.your_level === "owner";
   const entradas = datos.entries.map((e) => ({ ...e }));
+  const editable = esPropietario && !datos.inherit;
   const declarar = (lista) =>
     guardar({
       inherit: false,
       entries: lista.map(({ subject_type, subject_id, level }) => ({ subject_type, subject_id, level })),
     });
 
+  const cabeza = crearEl("div", "share-head");
+  const tit = crearEl("div", "share-head-texts");
+  tit.append(crearEl("h3", "", "Compartir"), crearEl("span", "share-head-sub", titulo || "Sin título"));
+  cabeza.append(tit);
+  panel.append(cabeza);
+
+  const avatar = (e) => {
+    const dot = crearEl("span", "share-dot");
+    if (e.subject_type === "workspace") {
+      dot.classList.add("is-icon");
+      dot.innerHTML = svgIcon("i-layers");
+    } else if (e.subject_type === "group") {
+      dot.classList.add("is-icon");
+      dot.innerHTML = svgIcon("i-users-group");
+    } else if (avatarImg(e.avatar)) {
+      dot.classList.add("has-img");
+      dot.appendChild(avatarImg(e.avatar, ""));
+    } else {
+      dot.textContent = (e.name || "?").slice(0, 1).toUpperCase();
+      if (e.color) dot.style.background = e.color;
+    }
+    return dot;
+  };
+
+  // --- añadir
+  if (editable) {
+    const ya = new Set(entradas.map((e) => `${e.subject_type}:${e.subject_id}`));
+    const candidatos = [];
+    if (!ya.has(`workspace:${datos.workspace_id}`)) {
+      candidatos.push({ subject_type: "workspace", subject_id: datos.workspace_id, name: "Todo el espacio", sub: "Todos sus miembros" });
+    }
+    for (const g of grupos) {
+      if (!ya.has(`group:${g.id}`)) candidatos.push({ subject_type: "group", subject_id: g.id, name: g.name, sub: "Grupo" });
+    }
+    for (const p of gente) {
+      if (ya.has(`user:${p.id}`)) continue;
+      candidatos.push({
+        subject_type: "user", subject_id: p.id, name: p.display_name || p.username,
+        sub: p.username ? `@${p.username}` : "", avatar: p.avatar, color: p.color,
+      });
+    }
+    const add = crearEl("div", "share-add");
+    const campo = crearEl("div", "share-search");
+    const lupa = crearEl("span", "share-search-icon");
+    lupa.innerHTML = svgIcon("i-search");
+    const buscar = crearEl("input");
+    buscar.type = "text";
+    buscar.placeholder = "Añadir personas o grupos";
+    buscar.setAttribute("aria-label", "Buscar a quién añadir");
+    buscar.autocomplete = "off";
+    campo.append(lupa, buscar);
+    const nivel = crearEl("select", "share-level");
+    nivel.setAttribute("aria-label", "Con qué permiso se añade");
+    NIVELES_ACL.forEach(([valor, texto]) => nivel.add(new Option(texto, valor, false, valor === "view")));
+    add.append(campo, nivel);
+    const sugerencias = crearEl("div", "share-suggest");
+    sugerencias.setAttribute("role", "listbox");
+    sugerencias.hidden = true;
+    let activa = 0;
+    const filtrar = () => {
+      const q = buscar.value.trim().toLowerCase();
+      return candidatos.filter((c) => !q || `${c.name} ${c.sub}`.toLowerCase().includes(q)).slice(0, 8);
+    };
+    const anadir = (c) => declarar([...entradas, { subject_type: c.subject_type, subject_id: c.subject_id, level: nivel.value }]);
+    const pintarSugerencias = () => {
+      const lista = filtrar();
+      sugerencias.replaceChildren();
+      if (!lista.length) {
+        sugerencias.append(crearEl("div", "share-suggest-empty", candidatos.length ? "Nadie con ese nombre." : "Ya tienen acceso todos."));
+      }
+      lista.forEach((c, k) => {
+        const b = crearEl("button", "share-suggest-item");
+        b.type = "button";
+        b.setAttribute("role", "option");
+        b.setAttribute("aria-selected", String(k === activa));
+        const tx = crearEl("span", "share-person");
+        tx.append(crearEl("span", "share-name", c.name));
+        if (c.sub) tx.append(crearEl("span", "share-sub", c.sub));
+        b.append(avatar(c), tx);
+        b.addEventListener("mousedown", (e) => e.preventDefault());
+        b.addEventListener("click", () => anadir(c));
+        sugerencias.append(b);
+      });
+      sugerencias.hidden = false;
+    };
+    buscar.addEventListener("focus", () => {
+      activa = 0;
+      pintarSugerencias();
+    });
+    buscar.addEventListener("input", () => {
+      activa = 0;
+      pintarSugerencias();
+    });
+    buscar.addEventListener("blur", () => setTimeout(() => (sugerencias.hidden = true), 120));
+    buscar.addEventListener("keydown", (e) => {
+      const lista = filtrar();
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!lista.length) return;
+        activa = (activa + (e.key === "ArrowDown" ? 1 : -1) + lista.length) % lista.length;
+        pintarSugerencias();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (lista[activa]) anadir(lista[activa]);
+      } else if (e.key === "Escape" && !sugerencias.hidden) {
+        e.preventDefault();
+        e.stopPropagation();
+        sugerencias.hidden = true;
+      }
+    });
+    const bloque = crearEl("div", "share-add-wrap");
+    bloque.append(add, sugerencias);
+    panel.append(bloque);
+  }
+
+  // --- quién tiene acceso
+  panel.append(crearEl("div", "share-section-label", "Quién tiene acceso"));
+  const lista = crearEl("div", "share-list");
+  if (!entradas.length) lista.append(crearEl("div", "share-note", "Nadie más que tú. Añade a alguien arriba."));
+  entradas.forEach((e, i) => {
+    const fila = crearEl("div", "share-row");
+    const textos = crearEl("span", "share-person");
+    const esYo = e.subject_type === "user" && String(e.subject_id) === yo;
+    textos.append(crearEl("span", "share-name", (e.name || "Usuario borrado") + (esYo ? " (tú)" : "")));
+    const sub =
+      e.subject_type === "workspace" ? "Todos los miembros del espacio"
+        : e.subject_type === "group" ? "Grupo"
+          : e.guest ? "Invitado: solo ve esta página y las de dentro" : "";
+    if (sub) textos.append(crearEl("span", "share-sub", sub));
+    fila.append(avatar(e), textos);
+    if (editable) {
+      const nivel = crearEl("select", "share-level");
+      nivel.setAttribute("aria-label", `Nivel de ${e.name || "esta entrada"}`);
+      NIVELES_ACL.forEach(([valor, texto]) => nivel.add(new Option(texto, valor, false, valor === e.level)));
+      nivel.addEventListener("change", () => {
+        entradas[i].level = nivel.value;
+        declarar(entradas);
+      });
+      const quitar = crearEl("button", "icon-btn share-remove");
+      quitar.type = "button";
+      quitar.innerHTML = svgIcon("i-x");
+      quitar.title = "Quitar el acceso";
+      quitar.setAttribute("aria-label", `Quitar a ${e.name || "esta entrada"}`);
+      quitar.addEventListener("click", () => declarar(entradas.filter((_, j) => j !== i)));
+      fila.append(nivel, quitar);
+    } else {
+      fila.append(crearEl("span", "share-level-text", (NIVELES_ACL.find(([v]) => v === e.level) || [, e.level])[1]));
+    }
+    lista.append(fila);
+  });
+  panel.append(lista);
+
+  // --- herencia
   if (!datos.is_root) {
-    const fila = document.createElement("label");
-    fila.className = "db-switch-row";
-    const textos = document.createElement("span");
-    textos.className = "db-switch-text";
-    const t1 = document.createElement("span");
-    t1.className = "db-switch-title";
-    t1.textContent = datos.source_title ? `Heredar de «${datos.source_title}»` : "Heredar de la página superior";
-    const t2 = document.createElement("span");
-    t2.className = "db-switch-note";
-    t2.textContent = datos.inherit
-      ? "Quien ve la página de arriba ve esta."
-      : "Esta página decide sus propios permisos.";
-    textos.append(t1, t2);
-    const sw = document.createElement("input");
+    const fila = crearEl("label", "db-switch-row share-inherit");
+    const textos = crearEl("span", "db-switch-text");
+    textos.append(
+      crearEl("span", "db-switch-title", datos.source_title ? `Heredar de «${datos.source_title}»` : "Heredar de la página superior"),
+      crearEl("span", "db-switch-note", datos.inherit ? "Quien ve la página de arriba ve esta. Desactívalo para elegir aquí." : "Esta página decide sus propios permisos."),
+    );
+    const sw = crearEl("input", "db-switch");
     sw.type = "checkbox";
-    sw.className = "db-switch";
     sw.setAttribute("role", "switch");
     sw.checked = datos.inherit;
     sw.disabled = !esPropietario;
@@ -17202,115 +17349,33 @@ function pintarCompartir(panel, { titulo, datos, gente, grupos = [], yo, guardar
         return;
       }
       // Dejar de heredar: lo heredado es el punto de partida, y tú propietario.
-      const lista = entradas.filter((e) => !(e.subject_type === "user" && e.subject_id === yo));
-      lista.unshift({ subject_type: "user", subject_id: yo, level: "owner" });
-      declarar(lista);
+      const lista2 = entradas.filter((e) => !(e.subject_type === "user" && String(e.subject_id) === yo));
+      lista2.unshift({ subject_type: "user", subject_id: yo, level: "owner" });
+      declarar(lista2);
     });
     fila.append(textos, sw);
     panel.append(fila);
   }
 
-  const lista = document.createElement("div");
-  lista.className = "share-list";
-  const editable = esPropietario && !datos.inherit;
-  if (!entradas.length) {
-    const nadie = document.createElement("div");
-    nadie.className = "share-note";
-    nadie.textContent = "Solo la ven los administradores.";
-    lista.append(nadie);
-  }
-  entradas.forEach((e, i) => {
-    const fila = document.createElement("div");
-    fila.className = "share-row";
-    const dot = document.createElement("span");
-    dot.className = "share-dot";
-    if (e.subject_type === "workspace" || e.subject_type === "group") {
-      dot.innerHTML = svgIcon("i-users");
-    } else if (avatarImg(e.avatar)) {
-      dot.classList.add("has-img");
-      dot.appendChild(avatarImg(e.avatar, ""));
-    } else {
-      dot.textContent = (e.name || "?").slice(0, 1).toUpperCase();
-      if (e.color) dot.style.background = e.color;
+  // --- pie
+  const pie = crearEl("div", "share-foot");
+  pie.append(
+    crearEl("span", "share-note", !esPropietario ? "Solo quien es propietario cambia quién entra." : datos.inherit ? "Los permisos vienen de la página de arriba." : "Los cambios se guardan solos."),
+  );
+  const copiar = crearEl("button", "btn share-copy");
+  copiar.type = "button";
+  copiar.innerHTML = `${svgIcon("i-paperclip")}<span>Copiar enlace</span>`;
+  copiar.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      copiar.querySelector("span").textContent = "Copiado";
+      setTimeout(() => copiar.isConnected && (copiar.querySelector("span").textContent = "Copiar enlace"), 1600);
+    } catch {
+      mostrarEnlace("Enlace a esta página", location.href);
     }
-    const nombre = document.createElement("span");
-    nombre.className = "share-name";
-    nombre.textContent =
-      (e.name || "Usuario borrado") + (e.subject_type === "user" && e.subject_id === yo ? " (tú)" : "");
-    fila.append(dot, nombre);
-    if (e.guest) {
-      // Plan H2: alguien de fuera del espacio ve esta página (y sus hijas), no el espacio.
-      const invitado = document.createElement("span");
-      invitado.className = "share-note";
-      invitado.textContent = "invitado";
-      invitado.title = "No es miembro del espacio: solo ve esta página y las de dentro.";
-      fila.append(invitado);
-    }
-    if (editable) {
-      const nivel = document.createElement("select");
-      nivel.className = "share-level";
-      nivel.setAttribute("aria-label", `Nivel de ${e.name || "esta entrada"}`);
-      NIVELES_ACL.forEach(([valor, texto]) => nivel.add(new Option(texto, valor, false, valor === e.level)));
-      nivel.addEventListener("change", () => {
-        entradas[i].level = nivel.value;
-        declarar(entradas);
-      });
-      const quitar = document.createElement("button");
-      quitar.type = "button";
-      quitar.className = "icon-btn share-remove";
-      quitar.innerHTML = svgIcon("i-x");
-      quitar.title = "Quitar el acceso";
-      quitar.setAttribute("aria-label", `Quitar a ${e.name || "esta entrada"}`);
-      quitar.addEventListener("click", () => declarar(entradas.filter((_, j) => j !== i)));
-      fila.append(nivel, quitar);
-    } else {
-      const nivel = document.createElement("span");
-      nivel.className = "share-note";
-      nivel.textContent = (NIVELES_ACL.find(([v]) => v === e.level) || [, e.level])[1];
-      fila.append(nivel);
-    }
-    lista.append(fila);
   });
-  panel.append(lista);
-
-  if (editable) {
-    const add = document.createElement("div");
-    add.className = "share-add";
-    const quien = document.createElement("select");
-    quien.setAttribute("aria-label", "Añadir a alguien");
-    quien.add(new Option("Añadir a alguien…", ""));
-    const ya = new Set(entradas.map((e) => `${e.subject_type}:${e.subject_id}`));
-    if (!ya.has(`workspace:${datos.workspace_id}`)) {
-      quien.add(new Option("Todo el espacio", `workspace:${datos.workspace_id}`));
-    }
-    grupos
-      .filter((g) => !ya.has(`group:${g.id}`))
-      .forEach((g) => quien.add(new Option(`Grupo: ${g.name}`, `group:${g.id}`)));
-    gente
-      .filter((p) => !ya.has(`user:${p.id}`))
-      .forEach((p) => quien.add(new Option(p.display_name || p.username, `user:${p.id}`)));
-    const nivel = document.createElement("select");
-    nivel.setAttribute("aria-label", "Con qué permiso");
-    NIVELES_ACL.forEach(([valor, texto]) => nivel.add(new Option(texto, valor, false, valor === "view")));
-    const invitar = document.createElement("button");
-    invitar.type = "button";
-    invitar.className = "btn";
-    invitar.textContent = "Añadir";
-    invitar.addEventListener("click", () => {
-      if (!quien.value) return;
-      const [subject_type, subject_id] = quien.value.split(":");
-      declarar([...entradas, { subject_type, subject_id, level: nivel.value }]);
-    });
-    add.append(quien, nivel, invitar);
-    panel.append(add);
-  } else {
-    const nota = document.createElement("div");
-    nota.className = "share-note";
-    nota.textContent = !esPropietario
-      ? "Solo quien es propietario cambia quién entra."
-      : "Para cambiarlos aquí, deja de heredar.";
-    panel.append(nota);
-  }
+  pie.append(copiar);
+  panel.append(pie);
 }
 
 /** Un `recolocar` para los paneles flotantes que no se dispara con el scroll
@@ -17377,10 +17442,16 @@ function abrirPanelFlotante(anchor, el, { etiqueta = "", foco = null, alCerrar =
 
   const fuera = (e) => {
     if (el.contains(e.target) || anchor.contains(e.target)) return;
+    // El menú de un desplegable del panel se cuelga de <body> (`np-select-menu`):
+    // elegir en él no es pinchar fuera. Antes cerraba el panel (Compartir se
+    // cerraba al elegir a la persona).
+    if (e.target instanceof Element && e.target.closest(".np-select-menu")) return;
     cerrarPanelDeColumna();
   };
   const teclas = (e) => {
     if (e.key === "Escape") {
+      // Escape cierra primero el desplegable abierto, no el panel entero.
+      if (menuDeSelect) return;
       e.preventDefault();
       e.stopPropagation();
       cerrarPanelDeColumna({ foco: true });
