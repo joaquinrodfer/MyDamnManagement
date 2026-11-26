@@ -7400,6 +7400,34 @@
   .perm-chip-x .svg-icon { width: 12px; height: 12px; }
   .perm-ficha .perm-scope { max-width: none; }
   .ws-leave { justify-self: start; margin-top: 10px; }
+
+  /* ============ PANEL DERECHO, pulido ============
+     El mismo fondo, los mismos altos y las mismas filas que la barra de la
+     izquierda; las pestañas, a todo el ancho; sin el «N más en línea». */
+  .members-aside { background: var(--panel); }
+  .members-head { align-items: center; gap: 8px; min-height: 54px; padding: 12px 12px 10px; border-bottom: 1px solid var(--panel-border); }
+  .members-head .side-tabs { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; border-radius: 9px; }
+  .members-head .side-tab { justify-content: center; height: 30px; padding: 0 10px; font-size: 13px; font-weight: 600; border-radius: 7px; }
+  .members-head .side-tabs-pill { top: 3px; bottom: 3px; border-radius: 7px; }
+  .members-list { padding: 6px 8px 12px; }
+  .members-group { margin-top: 4px; }
+  .members-group-head {
+    min-height: 34px; padding: 3px 8px; border-radius: 7px; gap: 8px;
+    color: var(--ink); font-size: 13.5px; font-weight: 600; letter-spacing: 0; text-transform: none;
+  }
+  .members-group-head:hover { background: var(--row-hover); color: var(--ink); }
+  .members-group-head .workspace-icon { width: 20px; height: 20px; font-size: 11px; border-radius: 6px; }
+  .members-group-count { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--ink-muted); }
+  .members-group-head .svg-icon { color: var(--ink-muted); }
+  .members-group-body { padding: 2px 0 6px 14px; }
+  .member { min-height: 40px; padding: 4px 8px; border-radius: 7px; }
+  .member:hover { background: var(--row-hover); }
+  .member .user-avatar { width: 28px; height: 28px; font-size: 12px; }
+  .member-av-wrap .member-dot { border-color: var(--panel); }
+  .members-me { padding: 6px 8px 8px; background: var(--panel); }
+  .members-me .user-chip { min-height: 40px; border-radius: 7px; }
+  .members-me .user-chip:hover { background: var(--row-hover); }
+  .members-me .user-chip .member-av-wrap .member-dot { border-color: var(--panel); }
   /* Paso 2 de «Nueva base»: ajustes de Proyectos y Tareas. */
   .tpl-ajustes { display: grid; gap: 14px; }
   .tpl-ajustes h3 { margin-bottom: 0; }
@@ -7611,7 +7639,6 @@
           <button type="button" class="side-tab" role="tab" id="side-tab-members" aria-selected="true" aria-controls="members-list">Miembros</button>
           <button type="button" class="side-tab" role="tab" id="side-tab-chat" aria-selected="false" aria-controls="chat-pane">Chat<span class="chat-badge" id="chat-badge" hidden></span></button>
         </div>
-        <span class="members-online" id="members-online"></span>
         <button type="button" class="icon-btn members-close" id="btn-close-members" title="Cerrar" aria-label="Cerrar el panel"><svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
       </div>
       <div class="members-list" id="members-list" role="tabpanel" aria-labelledby="side-tab-members"></div>

@@ -5332,9 +5332,6 @@ function pintarPresencia(datos) {
   if (lista) {
     const plegados = gruposPlegados();
     const espacios = datos.workspaces || [];
-    const conectados = new Set(espacios.flatMap((w) => w.members.filter((m) => m.online && !m.you).map((m) => m.id)));
-    const total = document.getElementById("members-online");
-    if (total) total.textContent = conectados.size ? `${conectados.size} más en línea` : "";
     lista.replaceChildren();
     if (!espacios.length) {
       lista.append(crearEl("p", "members-empty", "Aquí saldrá la gente de tus espacios compartidos y quién está conectado."));
@@ -7015,20 +7012,10 @@ function pintarEspacios(notes, invitado) {
       toggle.append(e);
     }
     toggle.append(flecha); // el plegado va a la derecha, el logo pegado a la izquierda
-    const acciones = document.createElement("div");
-    acciones.className = "sidebar-head-actions";
+    // Crear va en cada sección (Compartido, Privado), no en la cabecera del
+    // espacio: así se ve dónde nace lo nuevo.
     const puedeCrear = !esInvitado && w.member !== false && w.role !== "viewer";
-    if (puedeCrear) {
-      acciones.append(
-        botonDeCabecera("i-database", "Crear desde plantilla", () => {
-          state.workspaceId = w.id;
-          guardarEspacio(w.id);
-          openTemplateDialog().catch((e) => reportError("No se pudo abrir «Crear desde plantilla»", e));
-        }),
-        botonDeCabecera("i-plus", `Nueva página compartida en «${w.name}»`, () => createNote(null, "shared", w.id)),
-      );
-    }
-    cab.append(toggle, acciones);
+    cab.append(toggle);
     const cuerpo = document.createElement("div");
     cuerpo.className = "wsp-body";
     cuerpo.hidden = plegado;
@@ -7047,7 +7034,21 @@ function pintarEspacios(notes, invitado) {
       const compartidas = nodos.filter((n) => n.section === "shared" || n.section === "with_me");
       const privadas = nodos.filter((n) => n.section === "private");
       cuerpo.append(
-        subSeccion("Compartido", compartidas, { ws: w.id, seccion: "shared", soltable: true, vacia: conRatonFino.matches ? "Suelta aquí páginas para todo el espacio" : "Todavía no hay nada compartido" }),
+        subSeccion(
+          "Compartido",
+          compartidas,
+          { ws: w.id, seccion: "shared", soltable: true, vacia: conRatonFino.matches ? "Suelta aquí páginas para todo el espacio" : "Todavía no hay nada compartido" },
+          puedeCrear
+            ? [
+                botonDeCabecera("i-database", `Nueva base de datos compartida en «${w.name}»`, () => {
+                  state.workspaceId = w.id;
+                  guardarEspacio(w.id);
+                  openTemplateDialog({ seccion: "shared" }).catch((e) => reportError("No se pudo abrir «Crear desde plantilla»", e));
+                }),
+                botonDeCabecera("i-plus", `Nueva página compartida en «${w.name}»`, () => createNote(null, "shared", w.id)),
+              ]
+            : [],
+        ),
         subSeccion(
           "Privado",
           privadas,
