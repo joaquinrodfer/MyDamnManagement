@@ -6719,7 +6719,16 @@ function pintarEspacios(notes, invitado) {
           "Privado",
           privadas,
           { ws: w.id, seccion: "private", soltable: true, vacia: "Solo las ves tú" },
-          puedeCrear ? [botonDeCabecera("i-plus", "Nueva página privada", () => createNote(null, "private", w.id))] : [],
+          puedeCrear
+            ? [
+                botonDeCabecera("i-database", "Nueva base de datos privada", () => {
+                  state.workspaceId = w.id;
+                  guardarEspacio(w.id);
+                  openTemplateDialog({ seccion: "private" }).catch((e) => reportError("No se pudo abrir «Crear desde plantilla»", e));
+                }),
+                botonDeCabecera("i-plus", "Nueva página privada", () => createNote(null, "private", w.id)),
+              ]
+            : [],
         ),
       );
     }
@@ -23356,7 +23365,7 @@ function notasParaCarpetaDePlantilla() {
  * de avance, la estimación y el reparto de horas). Se cambian luego en
  * «Tipo de base».
  */
-async function openTemplateDialog() {
+async function openTemplateDialog({ seccion = "shared" } = {}) {
   const dialog = document.getElementById("dialog-template");
   const paso1 = document.getElementById("template-step-1");
   const paso2 = document.getElementById("template-step-2");
@@ -23625,17 +23634,16 @@ async function openTemplateDialog() {
     lista.appendChild(opcion);
   });
 
-  carpeta.innerHTML = "";
-  const raiz = document.createElement("option");
-  raiz.value = "";
-  raiz.textContent = "Bases (raíz)";
-  carpeta.appendChild(raiz);
-  notasParaCarpetaDePlantilla().forEach((nota) => {
-    const opcion = document.createElement("option");
-    opcion.value = nota.id;
-    opcion.textContent = nota.title || "Sin título";
-    carpeta.appendChild(opcion);
-  });
+  // Dónde nace: en Compartido o en Privado del espacio, o colgando de una página.
+  carpeta.replaceChildren(
+    new Option("Compartido (todo el espacio)", ""),
+    new Option("Privado (solo tú)", "__private__"),
+  );
+  const debajo = document.createElement("optgroup");
+  debajo.label = "Dentro de una página";
+  notasParaCarpetaDePlantilla().forEach((nota) => debajo.append(new Option(nota.title || "Sin título", nota.id)));
+  if (debajo.childElementCount) carpeta.append(debajo);
+  carpeta.value = seccion === "private" ? "__private__" : "";
 
   nombre.value = "";
   delete nombre.dataset.tocado;
@@ -23669,7 +23677,12 @@ async function openTemplateDialog() {
     atras.disabled = true;
     hint.hidden = true;
     // En la raíz, una base nueva nace en Compartido (plan H2).
-    const destino = carpeta.value ? { parent_id: carpeta.value } : { section: "shared" };
+    const destino =
+      carpeta.value === "__private__"
+        ? { section: "private" }
+        : carpeta.value
+          ? { parent_id: carpeta.value }
+          : { section: "shared" };
     let base = null;
     const fallos = [];
     try {
