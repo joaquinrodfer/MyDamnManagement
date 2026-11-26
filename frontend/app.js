@@ -12448,8 +12448,13 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   // La tabla de la vista y su «+ Nueva fila». La tabla se pinta a demanda
   // porque con un filtro que no deja pasar nada no se enseña (ver abajo) y
   // aun así hay que poder añadir una fila.
-  const esTabla = !activeView || !["board", "calendar", "list"].includes(activeView.type) ||
+  const esTablaDeVerdad = !activeView || !["board", "calendar", "list"].includes(activeView.type) ||
     (activeView.type === "board" && !activeView.config?.group_by);
+  // En el móvil una tabla no se puede leer (la columna del título se come la
+  // pantalla y lo demás queda cortado a la derecha): se pinta como la vista
+  // Lista, con las mismas columnas, que ya trae su alta y su selección.
+  const comoLista = esTablaDeVerdad && esMovil() && rows.length > 0;
+  const esTabla = esTablaDeVerdad && !comoLista;
   let tablaPintada = null;
   let alPedirTabla = null;
   const alta = renderAltaEnTabla({
@@ -12525,7 +12530,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
     content.appendChild(renderBoard(database, rows, activeView, refresh));
   } else if (activeView && activeView.type === "calendar") {
     content.appendChild(renderCalendar(database, rows, activeView, refresh));
-  } else if (activeView && activeView.type === "list") {
+  } else if ((activeView && activeView.type === "list") || comoLista) {
     content.appendChild(renderList(database, rows, activeView, refresh, { barraEn: viewbar }));
   } else {
     content.appendChild(pintarTabla());
@@ -15454,6 +15459,12 @@ function formatPropValueHtml(value, prop, row = null) {
   }
   if (prop.type === "relation") return htmlDeRelacion(value, prop, row);
   if (prop.type === "person") return htmlDePersona(value, prop, row);
+  // Fechas legibles («21 nov», con el año si no es el actual), no `2026-11-21`.
+  if (prop.type === "date" && typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    const anio = value.slice(0, 4);
+    const corta = fechaCorta(value.slice(0, 10));
+    return escapeHtml(anio === String(new Date().getFullYear()) ? corta : `${corta} ${anio}`);
+  }
   return escapeHtml(formatPropValue(value, prop));
 }
 
@@ -20838,7 +20849,7 @@ function renderBoardColumn(
       const line = document.createElement("div");
       // La propiedad por la que agrupa el tablero ya la dice la columna: en la
       // tarjeta se marca para que el CSS no la repita.
-      line.className = "board-card-prop" + (k === groupKey ? " is-group-key" : "");
+      line.className = `board-card-prop board-card-prop--${propDef.type}` + (k === groupKey ? " is-group-key" : "");
       line.innerHTML =
         `<span class="board-card-key">${escapeHtml(propDef.name)}</span>` +
         `<span class="sr-only">: </span>` +
@@ -22078,7 +22089,9 @@ function renderList(database, rows, view, refresh, { barraEn = null } = {}) {
       span.title = p.name;
       if (p.type === "date" && typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) {
         span.innerHTML = svgIcon("i-calendar");
-        span.append(fechaCorta(v.slice(0, 10)));
+        // El nombre de la fecha (Inicio, Fin…) solo se pinta en el móvil, donde
+        // no hay ratón para verlo al pasar por encima y dos fechas se confunden.
+        span.append(crearEl("span", "list-row-prop-key", p.name), fechaCorta(v.slice(0, 10)));
       } else if (p.type === "number") {
         span.textContent = `${p.name} ${v}`;
       } else {

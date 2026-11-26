@@ -6517,6 +6517,7 @@
     padding: 2px 8px; border-radius: 999px; border: 1px solid var(--panel-border);
   }
   .list-row-prop .svg-icon { width: 12px; height: 12px; }
+  .list-row-prop-key { display: none; }
   @media (max-width: 900px) { .list-row-prop--text, .list-row-prop--url, .list-row-prop--number { display: none; } }
 
   /* ================================================================
@@ -7128,6 +7129,45 @@
   }
   /* Sin teclado físico no hay Mayús+Intro que explicar. */
   @media (pointer: coarse) { .chat-compose-note:not(.is-editing) { display: none; } }
+
+  /* ================================================================
+     MÓVIL, M2 (nov 2026): bases en el teléfono
+     ================================================================ */
+  @media (max-width: 768px) {
+    /* Pestañas de vista: el recuento de filas no cabe al lado (cortaba la
+       pestaña activa en «Tal», «Cale»); la fila se difumina al borde. */
+    .db-viewbar .db-count { display: none; }
+    .view-tabs {
+      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+      mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+      padding-right: 20px;
+    }
+    /* La tabla se pinta como lista (app.js): cada fila, el título arriba y
+       sus propiedades debajo, que se ven todas (no cortadas a la derecha). */
+    .list-row { flex-wrap: wrap; row-gap: 6px; padding: 12px 12px 12px 6px; }
+    .list-row-title { flex: 1 0 100%; white-space: normal; font-size: 15px; line-height: 1.35; align-items: flex-start; }
+    .list-row-title .svg-icon { margin-top: 2px; }
+    .list-row-props { flex: 1 0 100%; flex-wrap: wrap; justify-content: flex-start; padding-left: 23px; row-gap: 6px; }
+    .list-row-prop--text, .list-row-prop--url, .list-row-prop--number { display: inline-flex; }
+    .list-row-prop--text { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    /* Tablero: las columnas van una debajo de otra; las tarjetas, compactas:
+       sus propiedades en fichas en línea y sin el nombre delante. */
+    .board-card { padding: 12px 14px; }
+    .board-card-title { font-size: 15px; }
+    .board-card:has(.board-card-prop:not(.is-group-key)) .board-card-title { margin-bottom: 8px; }
+    .board-card-prop { display: inline-flex; margin: 0 6px 6px 0; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--panel-border); font-size: 12.5px; max-width: 100%; }
+    .board-card-prop.is-group-key { display: none; }
+    /* El nombre de la propiedad, delante y en gris («Fin 21 nov», «Horas 2»);
+       en personas y etiquetas sobra, se ve por el propio valor. */
+    .board-card-key { flex: none; width: auto; font-size: 12px; }
+    .board-card-prop--person .board-card-key,
+    .board-card-prop--select .board-card-key,
+    .board-card-prop--multiselect .board-card-key,
+    .board-card-prop--checkbox .board-card-key { display: none; }
+    .board-card-prop { gap: 5px; }
+    .list-row-prop-key { display: inline; color: var(--ink-muted); }
+    .list-row-prop--date .svg-icon { display: none; }
+  }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
