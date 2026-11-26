@@ -14952,13 +14952,13 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
     e.stopPropagation();
     cerrarSelectorDeRelacion({ foco: true });
   };
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(panel, () => {
     if (!td.isConnected) {
       cerrarSelectorDeRelacion();
       return;
     }
     colocarPanelFlotante(panel, td);
-  };
+  });
   document.addEventListener("mousedown", fuera, true);
   document.addEventListener("keydown", teclas, true);
   window.addEventListener("scroll", recolocar, true);
@@ -15395,13 +15395,13 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
     e.preventDefault();
     cerrarSelectorDePersona({ foco: true });
   };
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(panel, () => {
     if (!td.isConnected) {
       cerrarSelectorDePersona();
       return;
     }
     colocarPanelFlotante(panel, td);
-  };
+  });
   document.addEventListener("mousedown", fuera, true);
   document.addEventListener("keydown", teclas, true);
   window.addEventListener("scroll", recolocar, true);
@@ -17167,7 +17167,26 @@ function pintarCompartir(panel, { titulo, datos, gente, grupos = [], yo, guardar
   }
 }
 
+/** Un `recolocar` para los paneles flotantes que no se dispara con el scroll
+ * de DENTRO del panel (antes, desplazar la lista de un menú lo volvía a medir
+ * y a colocar en cada evento) y que, como mucho, trabaja una vez por fotograma. */
+function recolocarSinTirones(panel, fn) {
+  let pendiente = false;
+  return (e) => {
+    const t = e?.target;
+    if (t instanceof Node && panel.contains(t)) return;
+    if (pendiente) return;
+    pendiente = true;
+    requestAnimationFrame(() => {
+      pendiente = false;
+      fn();
+    });
+  };
+}
+
 function colocarPanelFlotante(el, anchor) {
+  // La hoja del móvil va fija abajo por CSS: no hay nada que medir.
+  if (el.classList.contains("is-sheet")) return;
   const r = anchor.getBoundingClientRect();
   const caja = el.getBoundingClientRect();
   const margen = 8;
@@ -17232,13 +17251,13 @@ function abrirPanelFlotante(anchor, el, { etiqueta = "", foco = null, alCerrar =
   };
   // El ancla se va con un repintado (el menú guarda el tipo, el panel repinta
   // la tabla): sin ancla no hay sitio donde colgarse, así que se cierra.
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(el, () => {
     if (!anchor.isConnected) {
       cerrarPanelDeColumna();
       return;
     }
     colocarPanelFlotante(el, anchor);
-  };
+  });
 
   // El contenido puede crecer DESPUÉS de abrirse (la lista de bases destino
   // de una relación llega por la API): el panel se vuelve a colocar para no
@@ -20181,10 +20200,10 @@ function editarCeldaDeSeleccion(td, database, row, prop, hooks = null) {
     if (!menu.hidden) cerrarMenu();
     else cerrarSelectorDeSeleccion({ foco: true });
   };
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(panel, () => {
     if (!td.isConnected) cerrarSelectorDeSeleccion();
     else colocarPanelFlotante(panel, td);
-  };
+  });
   document.addEventListener("mousedown", fuera, true);
   document.addEventListener("keydown", teclas, true);
   window.addEventListener("scroll", recolocar, true);

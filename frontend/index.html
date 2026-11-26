@@ -372,12 +372,20 @@
     transform-origin: center;
     opacity: 0;
   }
+  /* Solo transform y opacidad, y tres pulsos: animar el trazo de un SVG sin
+     fin obligaba a repintar 60 veces por segundo toda la sesión (y el scroll
+     iba a tirones, sobre todo en el móvil). Después queda el halo fijo. */
   @keyframes np-sonar {
-    0%   { transform: scale(1); opacity: .75; stroke-width: 2.2; }
-    100% { transform: scale(3); opacity: 0;   stroke-width: .4; }
+    0%   { transform: scale(1); opacity: .75; }
+    100% { transform: scale(3); opacity: 0; }
   }
-  .np-mark[data-unread="true"] .np-ring--a { animation: np-sonar 2.4s cubic-bezier(.2, .6, .3, 1) infinite; }
-  .np-mark[data-unread="true"] .np-ring--b { animation: np-sonar 2.4s cubic-bezier(.2, .6, .3, 1) 1.2s infinite; }
+  @keyframes np-halo {
+    from, to { opacity: .5; transform: scale(1.9); }
+  }
+  .np-mark[data-unread="true"] .np-ring--a {
+    animation: np-sonar 2.4s cubic-bezier(.2, .6, .3, 1) 3, np-halo .3s linear 7.2s forwards;
+  }
+  .np-mark[data-unread="true"] .np-ring--b { animation: np-sonar 2.4s cubic-bezier(.2, .6, .3, 1) 1.2s 3; }
   /* Sin movimiento: un halo fijo dice «sin leer». */
   @media (prefers-reduced-motion: reduce) {
     .np-mark[data-unread="true"] .np-ring--a,
