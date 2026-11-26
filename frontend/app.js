@@ -16376,7 +16376,7 @@ function acotarAncho(px) {
  * de acciones. En el DOM llevan `@` delante para no chocar con una propiedad
  * con esa clave (`open`, `title`, `actions`), pero solo la del título tiene
  * ancho guardado, y bajo la clave `title`. */
-const CLAVES_DE_SERVICIO = new Set(["@open", "@title", "@actions", "@add"]);
+const CLAVES_DE_SERVICIO = new Set(["@open", "@title", "@actions", "@add", "@tasks"]);
 
 /** La clave con la que se guarda el ancho de una columna en `views[].widths`:
  * la de la propiedad, o `title` para la columna del título. Las de servicio
@@ -16406,6 +16406,7 @@ function anchoDeServicio(domKey) {
   const movil = typeof window !== "undefined" && window.matchMedia?.("(max-width: 768px)").matches;
   if (domKey === "@actions") return movil ? 44 : 32;
   if (domKey === "@add") return 40;
+  if (domKey === "@tasks") return 132;
   return movil ? 44 : 34; // @open
 }
 
@@ -18813,6 +18814,53 @@ function barraDeColumnasOcultas(contexto, ocultas) {
   return barra;
 }
 
+/** ¿Enseña esta base la columna «Tareas»? Las de Proyectos, salvo que se
+ * haya apagado en «Tipo de base» o al crearla. */
+function tieneColumnaDeAvance(database) {
+  return database?.kind?.type === "projects" && database.kind.options?.tasks_column !== false;
+}
+
+// El avance de cada base de Proyectos, unos segundos: la tabla se repinta a
+// menudo (cada edición) y no hace falta preguntar al servidor cada vez.
+const avanceDeProyectos = new Map();
+function pedirAvanceDeProyectos(databaseId, { fresco = false } = {}) {
+  const guardado = avanceDeProyectos.get(databaseId);
+  if (!fresco && guardado && Date.now() - guardado.t < 5000) return guardado.promesa;
+  const promesa = api(`/databases/${databaseId}/project-progress`).catch(() => ({}));
+  avanceDeProyectos.set(databaseId, { t: Date.now(), promesa });
+  return promesa;
+}
+
+/** Pinta «3/7» y una barrita en cada celda `.project-progress-cell` de `raiz`. */
+async function pintarAvanceDeProyectos(database, raiz) {
+  if (!tieneColumnaDeAvance(database)) return;
+  const avance = await pedirAvanceDeProyectos(database.id);
+  const sel = ".project-progress-cell[data-row-id], .project-progress-chip[data-row-id]";
+  const celdas = raiz.matches?.(sel) ? [raiz] : [...raiz.querySelectorAll(sel)];
+  celdas.forEach((celda) => {
+    const t = avance[celda.dataset.rowId];
+    const esChip = celda.classList.contains("project-progress-chip");
+    celda.replaceChildren();
+    // En la lista, un proyecto sin tareas no lleva chip.
+    celda.hidden = esChip && !(t && t.count);
+    if (esChip) celda.append(crearEl("span", "list-row-prop-key", "Tareas"));
+    if (!t || !t.count) {
+      celda.classList.add("is-empty");
+      celda.append(crearEl("span", "project-progress-text", "—"));
+      celda.title = "Sin tareas";
+      return;
+    }
+    celda.classList.remove("is-empty");
+    celda.classList.toggle("is-done", t.closed === t.count);
+    const barra = crearEl("span", "project-progress-bar");
+    const relleno = crearEl("span", "project-progress-fill");
+    relleno.style.width = `${Math.round((t.closed / t.count) * 100)}%`;
+    barra.append(relleno);
+    celda.append(barra, crearEl("span", "project-progress-text", `${t.closed}/${t.count}`));
+    celda.title = `${t.closed} de ${t.count} tareas hechas` + (t.hours ? ` · ${Math.round(t.hours_open * 10) / 10} h pendientes` : "");
+  });
+}
+
 function renderTable(
   database,
   rows,
@@ -18912,6 +18960,18 @@ function renderTable(
         name: rotuloTitulo,
       }),
     );
+  }
+  // En una base de Proyectos, la columna calculada «Tareas» (su avance), junto
+  // al título. No es del schema: no se ordena, no se mueve ni se edita.
+  const conAvance = tieneColumnaDeAvance(database);
+  if (conAvance) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.className = "project-progress-head";
+    th.dataset.colKey = "@tasks";
+    th.title = "Tareas hechas de cada proyecto (se calcula sola)";
+    th.textContent = "Tareas";
+    headRow.appendChild(th);
   }
   // Cada propiedad es una cabecera que ordena (`filtros-vista`) y, además, el
   // menú de la columna: el rótulo ordena y el botón de tres puntos abre el menú.
@@ -19130,6 +19190,15 @@ function renderTable(
       titleTd.adornarTitulo();
       celdas.set(null, titleTd);
       tr.appendChild(titleTd);
+    }
+
+    if (conAvance) {
+      const td = document.createElement("td");
+      td.className = "project-progress-cell";
+      td.dataset.colKey = "@tasks";
+      td.dataset.rowId = row.id;
+      tr.appendChild(td);
+      pintarAvanceDeProyectos(database, td);
     }
 
     propiedades.forEach((p) => {
@@ -22121,6 +22190,12 @@ function renderList(database, rows, view, refresh, { barraEn = null } = {}) {
       }
       props.appendChild(span);
     });
+    if (tieneColumnaDeAvance(database)) {
+      const chip = crearEl("span", "list-row-prop project-progress-chip");
+      chip.dataset.rowId = row.id;
+      props.appendChild(chip);
+      pintarAvanceDeProyectos(database, chip);
+    }
     if (props.childElementCount) item.appendChild(props);
     const cuenta = contadorDeSubtareas(row);
     if (cuenta) {
@@ -22299,14 +22374,67 @@ function montarPanelDeFila(page, caja, { alNavegar = null, alCargarBase = null }
       return;
     }
     try {
-      const r = await api(`/databases/${page.database_id}/rows/${page.id}/tasks`);
+      const [r, bases] = await Promise.all([
+        api(`/databases/${page.database_id}/rows/${page.id}/tasks`),
+        api("/databases").catch(() => []),
+      ]);
       if (!estado.vivo || !caja.isConnected) return;
       const tot = r.totals;
       const fmt = (h) => `${Math.round(h * 10) / 10} h`;
       tareasEl.hidden = false;
-      tareasEl.replaceChildren(crearEl("h3", "", "Tareas del proyecto"));
+      const cabeza = crearEl("div", "project-tasks-head");
+      cabeza.append(crearEl("h3", "", "Tareas del proyecto"));
+      // «+ Nueva tarea»: en una base de Tareas enlazada con esta base de
+      // Proyectos, ya con el proyecto puesto. Con varias, se elige cuál.
+      const enlazadas = (Array.isArray(bases) ? bases : [])
+        .filter((b) => b.kind?.type === "tasks" && b.kind?.roles?.project)
+        .map((b) => ({ base: b, clave: b.kind.roles.project, col: (b.schema_def || []).find((p) => p.key === b.kind.roles.project) }))
+        .filter((x) => x.col && String(x.col.target_database) === String(page.database_id));
+      if (enlazadas.length) {
+        const nueva = crearEl("button", "btn btn-small project-task-new");
+        nueva.type = "button";
+        nueva.innerHTML = svgIcon("i-plus");
+        nueva.append("Nueva tarea");
+        nueva.addEventListener("click", async () => {
+          let destino = enlazadas[0];
+          if (enlazadas.length > 1) {
+            const elegir = await new Promise((resolve) => {
+              const panel = crearEl("div", "page-menu");
+              for (const x of enlazadas) {
+                panel.append(itemDeColumna(x.base.title || "Sin título", {
+                  icono: svgIcon("i-database"),
+                  alElegir: () => {
+                    resolve(x);
+                    cerrarPanelDeColumna();
+                  },
+                }));
+              }
+              abrirPanelFlotante(nueva, panel, { etiqueta: "¿En qué base de Tareas?", hoja: true, alCerrar: () => resolve(null) });
+            });
+            if (!elegir) return;
+            destino = elegir;
+          }
+          const titulo = ((await pedirTexto("Nueva tarea", { aceptar: "Crear", placeholder: "Título de la tarea", max: 200 })) || "").trim();
+          if (!titulo) return;
+          try {
+            await api(`/databases/${destino.base.id}/rows`, {
+              method: "POST",
+              body: JSON.stringify({ title: titulo, properties: { [destino.clave]: page.id } }),
+            });
+            avanceDeProyectos.delete(String(page.database_id));
+            await cargarTareasDelProyecto(database);
+            showNotice(`Tarea «${titulo}» creada en «${destino.base.title || "Sin título"}».`);
+          } catch (e) {
+            reportError("No se pudo crear la tarea", e);
+          }
+        });
+        cabeza.append(nueva);
+      }
+      tareasEl.replaceChildren(cabeza);
       if (!tot.count) {
-        tareasEl.append(crearEl("p", "row-page-prop-empty", "Ninguna tarea cuelga de este proyecto todavía. Enlázalas desde la columna «Proyecto» de una base de Tareas."));
+        tareasEl.append(crearEl("p", "row-page-prop-empty", enlazadas.length
+          ? "Ninguna tarea cuelga de este proyecto todavía."
+          : "Ninguna tarea cuelga de este proyecto todavía. Enlázalas desde la columna «Proyecto» de una base de Tareas."));
         if (tot.estimate) tareasEl.append(crearEl("p", "form-note", `Estimado: ${fmt(tot.estimate)}.`));
         return;
       }
@@ -23222,14 +23350,22 @@ function notasParaCarpetaDePlantilla() {
  * El servidor valida la plantilla entera antes de escribir nada y contesta un
  * 400 con el motivo si algo no encaja; el diálogo se queda abierto con esa
  * frase a la vista y no se crea nada a medias.
+ *
+ * Proyectos y Tareas tienen un segundo paso: un panel con sus ajustes (crear a
+ * la vez la base enlazada, enlazar bases de Tareas que ya existen, la columna
+ * de avance, la estimación y el reparto de horas). Se cambian luego en
+ * «Tipo de base».
  */
 async function openTemplateDialog() {
   const dialog = document.getElementById("dialog-template");
+  const paso1 = document.getElementById("template-step-1");
+  const paso2 = document.getElementById("template-step-2");
   const lista = document.getElementById("template-list");
   const nombre = document.getElementById("template-name");
   const carpeta = document.getElementById("template-folder");
   const crear = document.getElementById("btn-create-template");
   const cancelar = document.getElementById("btn-cancel-template");
+  const atras = document.getElementById("btn-back-template");
   const hint = document.getElementById("template-hint");
   hint.hidden = true;
   hint.textContent = "";
@@ -23253,19 +23389,36 @@ async function openTemplateDialog() {
     views: [],
   };
   catalogo = [...tipos, vacia, ...otras];
-  const campoProyecto = document.getElementById("template-project-field");
-  const selectProyecto = document.getElementById("template-project");
-  selectProyecto.replaceChildren(new Option("Sin proyecto", ""));
+  let todas = [];
   try {
-    const todas = await api("/databases");
-    for (const b of todas) {
-      if (b.kind?.type === "projects") selectProyecto.add(new Option(b.title, b.id));
-    }
+    todas = await api("/databases");
   } catch {
-    /* sin lista de proyectos: las tareas nacen sin enlace */
+    /* sin la lista: el panel no ofrece enlazar con bases que ya existen */
   }
+  const basesDeProyectos = todas.filter((b) => b.kind?.type === "projects");
+  const tareasSueltas = todas.filter((b) => b.kind?.type === "tasks" && !b.kind?.roles?.project);
 
+  // Los ajustes del paso 2; sobreviven a ir y volver entre pasos.
+  const ajustes = {
+    crearTareas: false,
+    nombreTareas: "",
+    enlazar: new Set(),
+    columnaTareas: true,
+    estimacion: false,
+    proyecto: basesDeProyectos.length === 1 ? String(basesDeProyectos[0].id) : "",
+    nombreProyectos: "",
+    reparto: "full",
+    enElTiempo: "uniform",
+  };
+  let paso = 1;
   let elegida = catalogo[0]?.key || null;
+  const conAjustes = () => elegida === "proyectos" || elegida === "tareas";
+
+  const pintarBotones = () => {
+    atras.hidden = paso !== 2;
+    crear.textContent = paso === 1 && conAjustes() ? "Siguiente" : "Crear";
+    crear.disabled = !nombre.value.trim() || !elegida;
+  };
   const pintarSeleccion = () => {
     lista.querySelectorAll(".template-option").forEach((opcion) => {
       opcion.setAttribute(
@@ -23273,13 +23426,172 @@ async function openTemplateDialog() {
         opcion.dataset.key === elegida ? "true" : "false",
       );
     });
-    crear.disabled = !nombre.value.trim() || !elegida;
-    // «Tareas» pregunta a qué proyectos pertenecen, si hay alguna base de Proyectos.
-    campoProyecto.hidden = !(elegida === "tareas" && selectProyecto.options.length > 1);
+    pintarBotones();
+  };
+
+  /** Un interruptor con título y nota, como los de los paneles de la base. */
+  const interruptor = (titulo, nota, valor, alCambiar) => {
+    const fila = crearEl("label", "db-switch-row");
+    const textos = crearEl("span", "db-switch-text");
+    textos.append(crearEl("span", "db-switch-title", titulo));
+    if (nota) textos.append(crearEl("span", "db-switch-note", nota));
+    const sw = crearEl("input", "db-switch");
+    sw.type = "checkbox";
+    sw.setAttribute("role", "switch");
+    sw.checked = valor;
+    sw.addEventListener("change", () => alCambiar(sw.checked));
+    fila.append(textos, sw);
+    return fila;
+  };
+  const radios = (leyenda, nombreGrupo, opciones, actual, alCambiar) => {
+    const grupo = crearEl("fieldset", "kind-split");
+    grupo.append(crearEl("legend", "prop-field-label", leyenda));
+    for (const [valor, texto, ayuda] of opciones) {
+      const etiqueta = crearEl("label", "kind-split-opt");
+      const radio = crearEl("input");
+      radio.type = "radio";
+      radio.name = nombreGrupo;
+      radio.value = valor;
+      radio.checked = actual === valor;
+      radio.addEventListener("change", () => alCambiar(valor));
+      const t = crearEl("span");
+      t.append(crearEl("strong", "", texto), crearEl("span", "prop-field-hint", ayuda));
+      etiqueta.append(radio, t);
+      grupo.append(etiqueta);
+    }
+    return grupo;
+  };
+  const grupo = (titulo, ...hijos) => {
+    const caja = crearEl("div", "tpl-grupo");
+    caja.append(crearEl("span", "tpl-grupo-titulo", titulo), ...hijos);
+    return caja;
+  };
+  const campoTexto = (etiqueta, valor, marcador, alCambiar) => {
+    const entrada = crearEl("input");
+    entrada.type = "text";
+    entrada.value = valor;
+    entrada.placeholder = marcador;
+    entrada.addEventListener("input", () => alCambiar(entrada.value));
+    return campoEtiquetado(etiqueta, entrada, "field");
+  };
+  const repartoDeHoras = () =>
+    radios("Horas con varios responsables", "tpl-split", [
+      ["full", "Completas a cada uno", "Cada responsable cuenta todas las horas de la tarea."],
+      ["equal", "A partes iguales", "Las horas se dividen entre los responsables."],
+      ["dedication", "Según la dedicación", "En proporción a lo que cada uno dedica al espacio."],
+    ], ajustes.reparto, (v) => (ajustes.reparto = v));
+
+  function pintarAjustes() {
+    const titulo = nombre.value.trim();
+    paso2.replaceChildren();
+    if (elegida === "proyectos") {
+      paso2.append(
+        crearEl("h3", "", "Ajustes de Proyectos"),
+        crearEl("p", "tpl-sub", `«${titulo}». Puedes cambiarlos luego en «Tipo de base».`),
+      );
+      // Tareas: crear una base nueva enlazada y/o enlazar las que ya hay.
+      const detalle = crearEl("div", "tpl-detalle");
+      detalle.hidden = !ajustes.crearTareas;
+      detalle.append(
+        campoTexto("Nombre de la base de Tareas", ajustes.nombreTareas, `Tareas de ${titulo}`, (v) => (ajustes.nombreTareas = v)),
+        repartoDeHoras(),
+      );
+      const hijos = [
+        interruptor(
+          "Crear también una base de Tareas enlazada",
+          "Cada tarea tendrá una columna «Proyecto» que apunta aquí, y cada proyecto verá sus tareas.",
+          ajustes.crearTareas,
+          (v) => {
+            ajustes.crearTareas = v;
+            detalle.hidden = !v;
+          },
+        ),
+        detalle,
+      ];
+      if (tareasSueltas.length) {
+        const caja = crearEl("div", "tpl-enlazar");
+        for (const b of tareasSueltas) {
+          const fila = crearEl("label");
+          const marca = crearEl("input");
+          marca.type = "checkbox";
+          marca.checked = ajustes.enlazar.has(String(b.id));
+          marca.addEventListener("change", () => {
+            if (marca.checked) ajustes.enlazar.add(String(b.id));
+            else ajustes.enlazar.delete(String(b.id));
+          });
+          fila.append(marca, crearEl("span", "", b.title || "Sin título"));
+          caja.append(fila);
+        }
+        hijos.push(crearEl("span", "db-switch-note", "Enlazar bases de Tareas que ya tienes y aún no tienen proyecto:"), caja);
+      }
+      paso2.append(
+        grupo("Tareas", ...hijos),
+        grupo(
+          "Tabla",
+          interruptor(
+            "Columna «Tareas» con el avance",
+            "Cuántas tareas de cada proyecto están hechas. Se calcula sola.",
+            ajustes.columnaTareas,
+            (v) => (ajustes.columnaTareas = v),
+          ),
+          interruptor(
+            "Columna de estimación de horas",
+            "Para comparar lo estimado con lo que suman sus tareas.",
+            ajustes.estimacion,
+            (v) => (ajustes.estimacion = v),
+          ),
+        ),
+      );
+    } else {
+      paso2.append(
+        crearEl("h3", "", "Ajustes de Tareas"),
+        crearEl("p", "tpl-sub", `«${titulo}». Puedes cambiarlos luego en «Tipo de base».`),
+      );
+      const select = crearEl("select");
+      select.append(new Option("Sin proyecto", ""));
+      for (const b of basesDeProyectos) select.append(new Option(b.title || "Sin título", String(b.id)));
+      select.append(new Option("Crear una base de Proyectos nueva…", "__nueva__"));
+      select.value = ajustes.proyecto;
+      const nueva = crearEl("div", "tpl-detalle");
+      nueva.hidden = ajustes.proyecto !== "__nueva__";
+      nueva.append(campoTexto("Nombre de la base de Proyectos", ajustes.nombreProyectos, "Proyectos", (v) => (ajustes.nombreProyectos = v)));
+      select.addEventListener("change", () => {
+        ajustes.proyecto = select.value;
+        nueva.hidden = select.value !== "__nueva__";
+      });
+      paso2.append(
+        grupo(
+          "Proyecto",
+          campoEtiquetado("¿A qué proyectos pertenecen las tareas?", select, "field"),
+          crearEl("span", "db-switch-note", "Se añade una columna «Proyecto», y cada proyecto ve sus tareas y su avance."),
+          nueva,
+        ),
+        grupo(
+          "Horas",
+          repartoDeHoras(),
+          radios("Horas en el tiempo", "tpl-spread", [
+            ["uniform", "Repartidas", "Por igual en los días de trabajo de inicio a fin."],
+            ["start", "Al principio", "Todas el primer día de trabajo del rango."],
+            ["end", "Al final", "Todas el último día de trabajo del rango."],
+            ["due", "El día de entrega", "Todas en la fecha de fin, sea o no laborable."],
+          ], ajustes.enElTiempo, (v) => (ajustes.enElTiempo = v)),
+        ),
+      );
+    }
+  }
+
+  const irAPaso = (n) => {
+    paso = n;
+    paso1.hidden = n !== 1;
+    paso2.hidden = n !== 2;
+    hint.hidden = true;
+    if (n === 2) pintarAjustes();
+    pintarBotones();
+    (n === 2 ? paso2.querySelector("input, select") : nombre)?.focus();
   };
 
   lista.innerHTML = "";
-  catalogo.forEach((plantilla, indice) => {
+  catalogo.forEach((plantilla) => {
     if (otras.length && plantilla === otras[0]) {
       const sep = document.createElement("div");
       sep.className = "template-sep";
@@ -23330,6 +23642,7 @@ async function openTemplateDialog() {
   nombre.placeholder = catalogo[0]
     ? `Mi ${catalogo[0].title.toLowerCase()}`
     : "Mi proyecto";
+  irAPaso(1);
   pintarSeleccion();
 
   nombre.oninput = () => {
@@ -23337,43 +23650,106 @@ async function openTemplateDialog() {
     pintarSeleccion();
   };
   cancelar.onclick = () => dialog.close();
+  atras.onclick = () => irAPaso(1);
+
+  const desdePlantilla = (cuerpo) =>
+    api("/databases/from-template", { method: "POST", body: JSON.stringify(cuerpo) });
+
   crear.onclick = async () => {
     const titulo = nombre.value.trim();
     if (!titulo) {
-      nombre.focus();
+      irAPaso(1);
+      return;
+    }
+    if (paso === 1 && conAjustes()) {
+      irAPaso(2);
       return;
     }
     crear.disabled = true;
+    atras.disabled = true;
     hint.hidden = true;
+    // En la raíz, una base nueva nace en Compartido (plan H2).
+    const destino = carpeta.value ? { parent_id: carpeta.value } : { section: "shared" };
+    let base = null;
+    const fallos = [];
     try {
-      // En la raíz, una base nueva nace en Compartido (plan H2).
-      const destino = carpeta.value ? { parent_id: carpeta.value } : { section: "shared" };
-      const base =
-        elegida === "__vacia__"
-          ? await api("/databases", {
-              method: "POST",
-              body: JSON.stringify({ title: titulo, schema_def: [], ...destino }),
-            })
-          : await api("/databases/from-template", {
-              method: "POST",
-              body: JSON.stringify({
-                template: elegida,
-                title: titulo,
-                ...destino,
-                ...(elegida === "tareas" && selectProyecto.value ? { project_database: selectProyecto.value } : {}),
-              }),
-            });
-      dialog.close();
-      await loadTree();
-      await goTo("database", base.id);
+      if (elegida === "__vacia__") {
+        base = await api("/databases", {
+          method: "POST",
+          body: JSON.stringify({ title: titulo, schema_def: [], ...destino }),
+        });
+      } else if (elegida === "proyectos") {
+        base = await desdePlantilla({
+          template: "proyectos",
+          title: titulo,
+          ...destino,
+          estimate: ajustes.estimacion,
+          options: ajustes.columnaTareas ? {} : { tasks_column: false },
+        });
+      } else if (elegida === "tareas") {
+        let proyecto = ajustes.proyecto;
+        if (proyecto === "__nueva__") {
+          const nuevaBase = await desdePlantilla({
+            template: "proyectos",
+            title: ajustes.nombreProyectos.trim() || "Proyectos",
+            ...destino,
+          });
+          proyecto = String(nuevaBase.id);
+        }
+        base = await desdePlantilla({
+          template: "tareas",
+          title: titulo,
+          ...destino,
+          ...(proyecto ? { project_database: proyecto } : {}),
+          options: { hours_split: ajustes.reparto, ...(ajustes.enElTiempo !== "uniform" ? { spread: ajustes.enElTiempo } : {}) },
+        });
+      } else {
+        base = await desdePlantilla({ template: elegida, title: titulo, ...destino });
+      }
     } catch (e) {
       hint.textContent = describeError(e);
       hint.hidden = false;
       crear.disabled = false;
+      atras.disabled = false;
+      return;
     }
+    // Lo que va enlazado a la base de Proyectos ya creada: si algo falla, la
+    // base se queda y se dice qué faltó.
+    if (elegida === "proyectos") {
+      if (ajustes.crearTareas) {
+        const nombreTareas = ajustes.nombreTareas.trim() || `Tareas de ${titulo}`;
+        try {
+          await desdePlantilla({
+            template: "tareas",
+            title: nombreTareas,
+            ...destino,
+            project_database: String(base.id),
+            options: { hours_split: ajustes.reparto },
+          });
+        } catch (e) {
+          fallos.push(`no se pudo crear «${nombreTareas}» (${describeError(e)})`);
+        }
+      }
+      for (const id of ajustes.enlazar) {
+        const b = tareasSueltas.find((x) => String(x.id) === id);
+        try {
+          await api(`/databases/${id}/kind`, {
+            method: "PUT",
+            body: JSON.stringify({ type: "tasks", project_database: String(base.id) }),
+          });
+        } catch (e) {
+          fallos.push(`no se pudo enlazar «${b?.title || "Sin título"}» (${describeError(e)})`);
+        }
+      }
+    }
+    crear.disabled = false;
+    atras.disabled = false;
+    dialog.close();
+    await loadTree();
+    await goTo("database", base.id);
+    if (fallos.length) avisar(`La base «${titulo}» se ha creado, pero ${fallos.join("; ")}.`);
   };
   dialog.showModal();
-  nombre.focus();
 }
 
 /** Los roles de cada tipo de base: tipo de columna que piden, si son
@@ -23512,6 +23888,22 @@ async function abrirDialogoDeTipo(database) {
       ], enElTiempo, (v) => (enElTiempo = v)),
     );
   }
+  // Proyectos: la columna calculada «Tareas» (avance) en la tabla.
+  let columnaTareas = database.kind.options?.tasks_column !== false;
+  if (tipo === "projects") {
+    const etiqueta = crearEl("label", "kind-split-opt");
+    const marca = crearEl("input");
+    marca.type = "checkbox";
+    marca.checked = columnaTareas;
+    marca.addEventListener("change", () => (columnaTareas = marca.checked));
+    const t = crearEl("span");
+    t.append(
+      crearEl("strong", "", "Columna «Tareas» con el avance"),
+      crearEl("span", "prop-field-hint", "Cuántas tareas de cada proyecto están hechas. Se calcula sola."),
+    );
+    etiqueta.append(marca, t);
+    dialog.append(etiqueta);
+  }
   dialog.append(aviso);
   const acciones = crearEl("div", "dialog-actions");
   const aNormal = crearEl("button", "btn btn-danger", "Convertir en base normal");
@@ -23539,7 +23931,12 @@ async function abrirDialogoDeTipo(database) {
     const roles = {};
     const cuerpo = {
       type: tipo,
-      options: tipo === "tasks" || tipo === "workload" ? { hours_split: reparto, ...(enElTiempo !== "uniform" || database.kind.options?.spread ? { spread: enElTiempo } : {}) } : undefined,
+      options:
+        tipo === "tasks" || tipo === "workload"
+          ? { hours_split: reparto, ...(enElTiempo !== "uniform" || database.kind.options?.spread ? { spread: enElTiempo } : {}) }
+          : tipo === "projects"
+            ? { tasks_column: columnaTareas }
+            : undefined,
     };
     for (const rol of ROLES_DE_TIPO[tipo]) {
       const v = selects[rol].value;

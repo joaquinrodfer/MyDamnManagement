@@ -3267,7 +3267,7 @@
     text-transform: none;
   }
   /* Un interruptor con su texto (p. ej. «Varias filas» de una relación). */
-  :is(.db-col-add-field, .share-panel) .db-switch-row {
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes) .db-switch-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -3283,7 +3283,7 @@
   .db-switch-text { display: grid; gap: 2px; min-width: 0; }
   .db-switch-title { font-weight: 500; }
   .db-switch-note { font-size: 11.5px; color: var(--ink-muted); line-height: 1.35; }
-  :is(.db-col-add-field, .share-panel) input.db-switch {
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch {
     appearance: none;
     -webkit-appearance: none;
     flex: none;
@@ -3299,7 +3299,7 @@
     cursor: pointer;
     transition: background-color var(--dur-fast) var(--ease-std);
   }
-  :is(.db-col-add-field, .share-panel) input.db-switch::after {
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch::after {
     content: "";
     position: absolute;
     top: 2px;
@@ -3311,9 +3311,9 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     transition: transform var(--dur-fast) var(--ease-std);
   }
-  :is(.db-col-add-field, .share-panel) input.db-switch:checked { background: var(--accent); }
-  :is(.db-col-add-field, .share-panel) input.db-switch:checked::after { transform: translateX(12px); }
-  :is(.db-col-add-field, .share-panel) input.db-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch:checked { background: var(--accent); }
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch:checked::after { transform: translateX(12px); }
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .db-prop-new .db-col-add-actions { padding: 6px 4px 2px; }
   @media (max-width: 768px) {
     .db-type-option { min-height: 44px; }
@@ -7278,6 +7278,38 @@
   }
   @keyframes np-hoja-sube { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .db-col-floating.is-sheet { animation: none; } }
+
+
+  /* Columna calculada «Tareas» de una base de Proyectos: barrita y «3/7». */
+  .project-progress-head { font-weight: 500; color: var(--ink-muted); font-size: 12.5px; text-align: left; padding: 0 10px; white-space: nowrap; }
+  .project-progress-cell { padding: 0 10px; white-space: nowrap; color: var(--ink-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; cursor: default; }
+  .project-progress-chip { display: inline-flex; align-items: center; gap: 6px; }
+  .project-progress-chip[hidden] { display: none; }
+  .project-progress-cell > * { vertical-align: middle; }
+  .project-progress-bar { display: inline-block; position: relative; width: 56px; height: 6px; border-radius: 999px; background: var(--panel-border); overflow: hidden; margin-right: 8px; }
+  .project-progress-chip .project-progress-bar { width: 40px; margin-right: 0; }
+  .project-progress-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); }
+  .is-done .project-progress-fill { background: var(--ok, #2f9e60); }
+  .project-progress-cell.is-empty { color: var(--ink-faint, var(--ink-muted)); }
+  .project-tasks-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .project-tasks-head h3 { margin: 0; }
+  .project-task-new { display: inline-flex; align-items: center; gap: 6px; }
+  .project-task-new .svg-icon { width: 14px; height: 14px; }
+  /* Paso 2 de «Nueva base»: ajustes de Proyectos y Tareas. */
+  .tpl-ajustes { display: grid; gap: 14px; }
+  .tpl-ajustes h3 { margin-bottom: 0; }
+  .tpl-ajustes .tpl-sub { margin: -8px 0 0; font-size: 13px; color: var(--ink-muted); }
+  .tpl-grupo { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 12px; }
+  .tpl-grupo-titulo { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-muted); }
+  .tpl-ajustes .db-switch-row { padding: 6px 0; font-size: 13.5px; }
+  .tpl-ajustes .db-switch-note { font-size: 12px; }
+  .tpl-detalle { display: grid; gap: 8px; padding: 2px 0 4px 0; }
+  .tpl-detalle[hidden] { display: none; }
+  .tpl-detalle .field { margin: 0; }
+  .tpl-enlazar { display: grid; gap: 4px; max-height: 160px; overflow: auto; }
+  .tpl-enlazar label { display: flex; gap: 8px; align-items: center; font-size: 13.5px; font-weight: 400; cursor: pointer; }
+  .tpl-ajustes .kind-split { margin: 0; }
+  .tpl-ajustes .kind-split-opt { padding: 8px 10px; margin-top: 6px; }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
@@ -7531,25 +7563,27 @@
        plantilla de serie. La lista la pinta app.js desde /databases/templates;
        el servidor valida la plantilla entera antes de escribir nada. -->
   <dialog id="dialog-template">
-    <h3>Nueva base de datos</h3>
-    <div class="field">
-      <label for="template-name">Nombre</label>
-      <input type="text" id="template-name" placeholder="Mi proyecto" />
+    <div id="template-step-1">
+      <h3>Nueva base de datos</h3>
+      <div class="field">
+        <label for="template-name">Nombre</label>
+        <input type="text" id="template-name" placeholder="Mi proyecto" />
+      </div>
+      <div class="field">
+        <label for="template-folder">Carpeta</label>
+        <select id="template-folder"></select>
+      </div>
+      <div class="field">
+        <label id="template-list-label">Tipo de base</label>
+        <div id="template-list" class="template-list" role="radiogroup" aria-labelledby="template-list-label"></div>
+      </div>
     </div>
-    <div class="field">
-      <label for="template-folder">Carpeta</label>
-      <select id="template-folder"></select>
-    </div>
-    <div class="field">
-      <label id="template-list-label">Tipo de base</label>
-      <div id="template-list" class="template-list" role="radiogroup" aria-labelledby="template-list-label"></div>
-    </div>
-    <div class="field" id="template-project-field" hidden>
-      <label for="template-project">Proyectos a los que pertenecen las tareas (opcional)</label>
-      <select id="template-project"></select>
-    </div>
+    <!-- Paso 2, solo en Proyectos y Tareas: sus ajustes (tareas enlazadas,
+         columna de avance, estimación, reparto de horas). Lo pinta app.js. -->
+    <div id="template-step-2" class="tpl-ajustes" hidden></div>
     <p id="template-hint" class="db-save-hint" role="status" hidden></p>
     <div class="dialog-actions">
+      <button class="btn" id="btn-back-template" hidden>Atrás</button>
       <button class="btn" id="btn-cancel-template">Cancelar</button>
       <button class="btn btn-primary" id="btn-create-template" disabled>Crear</button>
     </div>

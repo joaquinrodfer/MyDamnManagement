@@ -67,24 +67,7 @@ def tasks_of(conn: sqlite3.Connection, project_row_id: str, visible: Optional[se
     estimate = _number(json.loads(proj["props"] or "{}").get(est_key)) if est_key else None
 
     tasks: list[dict[str, Any]] = []
-    tipos = kinds.kind_types(conn)
-    for base in conn.execute(
-        "SELECT d.id AS id, d.schema_json AS schema_json, k.kind_json AS kind_json, c.rule_json AS rule_json,"
-        " bp.title AS base_title, bp.workspace_id AS ws"
-        " FROM databases d JOIN database_kinds k ON k.database_id = d.id JOIN pages bp ON bp.id = d.page_id"
-        " LEFT JOIN database_closed c ON c.database_id = d.id").fetchall():
-        kind = json.loads(base["kind_json"] or "null") or {}
-        roles = kind.get("roles") or {}
-        schema = json.loads(base["schema_json"] or "[]")
-        clave = kinds.project_key(kind, schema, tipos) if kind.get("type") == "tasks" else None
-        if not clave:
-            continue
-        prop = next((p for p in schema if p.get("key") == clave), None)
-        if not prop or str(prop.get("target_database") or "") != proj["db"]:
-            continue
-        if base["ws"] != proj["ws"] and not accepts_foreign(conn, proj["ws"]):
-            continue
-        rule, _src = closed.effective(json.loads(base["rule_json"] or "null"), schema)
+    for base, schema, roles, clave, rule in _task_bases(conn, proj["db"], proj["ws"]):
         for row in conn.execute(
             "SELECT r.id AS id, r.properties_json AS props, p.title AS title"
             " FROM rows r JOIN pages p ON p.id = r.id WHERE r.database_id = ?", (base["id"],)):
@@ -119,3 +102,62 @@ def tasks_of(conn: sqlite3.Connection, project_row_id: str, visible: Optional[se
             "estimate": estimate,
         },
     }
+
+
+def _task_bases(conn: sqlite3.Connection, projects_db: str, projects_ws: str):
+    """Las bases de Tareas cuya columna «Proyecto» apunta a `projects_db`.
+
+    Da `(base, schema, roles, clave del proyecto, regla de cerrado)`. Una base
+    de otro espacio solo cuenta si el espacio del proyecto acepta tareas de fuera.
+    """
+    tipos = kinds.kind_types(conn)
+    for base in conn.execute(
+        "SELECT d.id AS id, d.schema_json AS schema_json, k.kind_json AS kind_json, c.rule_json AS rule_json,"
+        " bp.title AS base_title, bp.workspace_id AS ws"
+        " FROM databases d JOIN database_kinds k ON k.database_id = d.id JOIN pages bp ON bp.id = d.page_id"
+        " LEFT JOIN database_closed c ON c.database_id = d.id").fetchall():
+        kind = json.loads(base["kind_json"] or "null") or {}
+        roles = kind.get("roles") or {}
+        schema = json.loads(base["schema_json"] or "[]")
+        clave = kinds.project_key(kind, schema, tipos) if kind.get("type") == "tasks" else None
+        if not clave:
+            continue
+        prop = next((p for p in schema if p.get("key") == clave), None)
+        if not prop or str(prop.get("target_database") or "") != str(projects_db):
+            continue
+        if base["ws"] != projects_ws and not accepts_foreign(conn, projects_ws):
+            continue
+        rule, _src = closed.effective(json.loads(base["rule_json"] or "null"), schema)
+        yield base, schema, roles, clave, rule
+
+
+def progress_of(conn: sqlite3.Connection, projects_db: str) -> dict[str, dict[str, Any]]:
+    """El avance de cada proyecto de una base, para la columna «Tareas».
+
+    `{fila del proyecto: {count, closed, hours, hours_open}}`, contando todas
+    las tareas (también las que quien pregunta no ve, como en `tasks_of`). Los
+    proyectos sin tareas no salen.
+    """
+    page = conn.execute("SELECT workspace_id FROM pages p JOIN databases d ON d.page_id = p.id WHERE d.id = ?",
+                        (str(projects_db),)).fetchone()
+    if page is None:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for base, _schema, roles, clave, rule in _task_bases(conn, str(projects_db), page["workspace_id"]):
+        for row in conn.execute("SELECT properties_json AS props FROM rows WHERE database_id = ?", (base["id"],)):
+            props = json.loads(row["props"] or "{}")
+            ids = _ids(props.get(clave))
+            if not ids:
+                continue
+            hecho = closed.is_closed(rule, props)
+            horas = _number(props.get(roles.get("hours"))) if roles.get("hours") else 0.0
+            for pid in ids:
+                t = out.setdefault(pid, {"count": 0, "closed": 0, "hours": 0.0, "hours_open": 0.0})
+                t["count"] += 1
+                t["closed"] += 1 if hecho else 0
+                t["hours"] += horas
+                t["hours_open"] += 0.0 if hecho else horas
+    for t in out.values():
+        t["hours"] = round(t["hours"], 2)
+        t["hours_open"] = round(t["hours_open"], 2)
+    return out

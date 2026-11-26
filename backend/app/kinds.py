@@ -84,6 +84,9 @@ SPECS: dict[str, dict[str, Any]] = {
         "required": ("assignee", "status", "start", "end"),
         "optional": ("estimate",),
         "options": {},
+        # `tasks_column`: la columna calculada «Tareas» (avance) en la tabla.
+        # Sin la opción, se ve.
+        "extra_options": {"tasks_column": True},
     },
     "tasks": {
         "title": "Tareas",
@@ -161,7 +164,10 @@ def normalize(raw: Any) -> Optional[dict[str, Any]]:
         for r, k in roles.items()
         if r in ROLE_TYPES and isinstance(k, str) and k.strip()
     }
-    options = raw.get("options") if isinstance(raw.get("options"), dict) else {}
+    options = dict(raw.get("options")) if isinstance(raw.get("options"), dict) else {}
+    # El frontmatter guarda los sí/no como texto; aquí vuelven a ser booleanos.
+    if isinstance(options.get("tasks_column"), str):
+        options["tasks_column"] = options["tasks_column"].strip().lower() not in ("false", "no", "0", "")
     return {
         "type": kind_type,
         "roles": roles,
@@ -185,6 +191,8 @@ def validate_options(kind_type: str, options: Any) -> dict[str, Any]:
             _fail(f"el tipo {kind_type} no tiene la opción {key!r}")
         if key == "hours_split" and value not in HOURS_SPLITS:
             _fail("hours_split es «full» (completas a cada uno), «equal» (a partes iguales) o «dedication» (según la dedicación)")
+        if key == "tasks_column" and not isinstance(value, bool):
+            _fail("tasks_column es true o false")
         if key == "spread" and value not in SPREADS:
             _fail("spread es «uniform», «start», «end» o «due»")
         base[key] = value

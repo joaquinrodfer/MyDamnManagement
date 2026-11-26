@@ -382,10 +382,16 @@ def create_from_template(
             )
             schema_def, _r, _b = plan_schema(schema_def, [*schema_def, col])
             roles["project"] = schema_def[-1]["key"]
+        if template["kind"]["type"] == "projects" and payload.estimate:
+            col = kind_rules.new_column("estimate", {str(p.get("name") or "").casefold() for p in schema_def})
+            schema_def, _r, _b = plan_schema(schema_def, [*schema_def, col])
+            roles["estimate"] = schema_def[-1]["key"]
+        # Los ajustes del panel de creación pisan los de la plantilla.
+        opciones = {**(template["kind"].get("options") or {}), **(payload.options or {})}
         kind_record = {
             "type": template["kind"]["type"],
             "roles": roles,
-            "options": kind_rules.validate_options(template["kind"]["type"], template["kind"].get("options")),
+            "options": kind_rules.validate_options(template["kind"]["type"], opciones),
         }
         kind_rules.check_roles(kind_record["type"], roles, schema_def)
 
@@ -970,6 +976,19 @@ def project_tasks(
     if (db_def.kind or {}).get("type") != "projects":
         raise HTTPException(400, "esta base no es de Proyectos")
     return projects.tasks_of(repo.conn, str(row_id), acl.visible_ids(repo.conn, user))
+
+
+@router.get("/{database_id}/project-progress")
+def project_progress(database_id: uuid.UUID, repo: Repository = Depends(get_repo)):
+    """El avance de todos los proyectos de una base, para su columna «Tareas».
+
+    `{fila: {count, closed, hours, hours_open}}`; lo calcula el servidor a partir
+    de la columna «Proyecto» de las bases de Tareas, nunca se escribe a mano.
+    """
+    db_def = _get_database_or_404(repo, database_id)
+    if (db_def.kind or {}).get("type") != "projects":
+        raise HTTPException(400, "esta base no es de Proyectos")
+    return projects.progress_of(repo.conn, str(database_id))
 
 
 @router.delete("/{database_id}/rows/{row_id}", status_code=204)
