@@ -7242,6 +7242,42 @@
     .chat-msg-actions .svg-icon { width: 17px; height: 17px; }
     .chat-msg.is-touched { background: var(--row-hover); }
   }
+
+  /* ---------- menú «⋮» de la página: enlaces entrantes ---------- */
+  .page-menu .backlinks-list { padding: 2px 8px 6px; }
+  .page-menu .backlinks-title { display: none; } /* ya lo dice el rótulo de arriba */
+  .page-menu .backlinks-help code { white-space: nowrap; }
+
+  /* ---------- móvil: los menús grandes suben desde abajo ---------- */
+  @media (max-width: 768px) {
+    .db-col-floating.is-sheet {
+      position: fixed !important; left: 0 !important; right: 0 !important;
+      top: auto !important; bottom: 0 !important;
+      width: 100% !important; max-width: none !important; min-width: 0 !important;
+      max-height: 82dvh; overflow-y: auto; overscroll-behavior: contain;
+      border-radius: 18px 18px 0 0; border-width: 1px 0 0;
+      padding: 6px 10px calc(14px + env(safe-area-inset-bottom, 0px));
+      /* El fondo se oscurece: queda claro que es una hoja encima de la página. */
+      box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .5), 0 -8px 24px -12px rgba(0, 0, 0, .5);
+      animation: np-hoja-sube 200ms var(--ease-out, ease-out);
+    }
+    .db-col-floating.is-sheet::before {
+      content: ""; display: block; width: 38px; height: 4px; border-radius: 2px;
+      background: var(--panel-border); margin: 4px auto 10px;
+    }
+    .is-sheet .db-col-menu-item { min-height: 50px; padding: 10px 12px; font-size: 16px; gap: 14px; border-radius: 10px; }
+    .is-sheet .db-col-menu-icon .svg-icon { width: 20px; height: 20px; }
+    /* Las filas sin icono, con el texto en la misma columna que las que lo llevan. */
+    .is-sheet:has(.db-col-menu-icon) .db-col-menu-item:not(:has(.db-col-menu-icon)) { padding-left: 42px; }
+    .is-sheet .db-col-menu-label { font-size: 13px; padding: 10px 12px 6px; }
+    .is-sheet .db-col-menu-sep { margin: 6px 4px; }
+    .is-sheet .backlinks-list { padding: 2px 12px 8px; }
+    .is-sheet .backlinks-empty { font-size: 15px; }
+    .is-sheet .backlinks-help { font-size: 14px; }
+    .is-sheet .backlink-item { padding: 12px 14px; font-size: 15px; }
+  }
+  @keyframes np-hoja-sube { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .db-col-floating.is-sheet { animation: none; } }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>

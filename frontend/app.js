@@ -371,7 +371,9 @@ function ponerCompartirEnCabecera(boton) {
   const sitio = document.getElementById("header-right");
   if (!sitio) return;
   sitio.textContent = "";
-  if (boton) sitio.append(boton);
+  // En el móvil Compartir va dentro del menú «⋮» (su icono se confundía con el
+  // del panel de miembros, al lado).
+  if (boton && !esMovil()) sitio.append(boton);
 }
 
 async function showEmpty() {
@@ -5227,6 +5229,7 @@ function initAvisos() {
  * en el mismo sitio. Es el mismo ítem para páginas y bases. */
 function itemDeAvisos(ancla, pageId) {
   return itemDeColumna("Avisos de esta página…", {
+    icono: svgIcon("i-bell"),
     alElegir: async () => {
       cerrarPanelDeColumna();
       let modo = "mentions_only";
@@ -5269,7 +5272,7 @@ function abrirMenuDeAvisos(ancla, pageId, modoActual, alCambiar) {
       }),
     );
   }
-  abrirPanelFlotante(ancla, menu, { etiqueta: "Avisos de la página" });
+  abrirPanelFlotante(ancla, menu, { etiqueta: "Avisos de la página", hoja: true });
 }
 
 // ----------------------------------------------- carga del equipo (plan H5)
@@ -7567,7 +7570,7 @@ function renderNote(page, backlinks) {
   // P8: aparte, porque un cambio en OTRA nota puede cambiar los enlaces
   // entrantes de esta y entonces solo se repinta esto, sin tocar el editor.
   function paintBacklinks(fresh) {
-    backTitle.textContent = `Backlinks (${fresh.length})`;
+    backTitle.textContent = fresh.length ? `Enlazan aquí (${fresh.length})` : "Enlazan aquí";
     backList.innerHTML = "";
     if (fresh.length === 0) {
       // Una lista vacía no explica nada: el dueño no entendía los backlinks
@@ -7619,7 +7622,11 @@ function renderNote(page, backlinks) {
       return;
     }
     const panel = document.createElement("div");
+    panel.className = "page-menu";
+    if (esMovil()) panel.append(itemDeCompartir(menuBtn, "page", page.id, () => page.title));
     panel.append(
+      itemDeFijar(page.id),
+      itemDeAvisos(menuBtn, page.id),
       itemDeColumna("Descargar como Markdown (.md)", {
         icono: svgIcon("i-download"),
         alElegir: () => {
@@ -7627,12 +7634,11 @@ function renderNote(page, backlinks) {
           exportPageAsMarkdown(page, state.editor.getValue());
         },
       }),
-      itemDeAvisos(menuBtn, page.id),
-      itemDeFijar(page.id),
+      separadorDeMenu(),
       backTitle,
       backList,
     );
-    abrirPanelFlotante(menuBtn, panel, { etiqueta: "Opciones de la página" });
+    abrirPanelFlotante(menuBtn, panel, { etiqueta: "Opciones de la página", hoja: true });
   });
 
   const topbarRight = document.createElement("div");
@@ -12321,6 +12327,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
         },
       }),
     );
+    if (esMovil()) menu.appendChild(itemDeCompartir(menuBtn, "database", database.id, () => database.title));
     menu.appendChild(itemDeAvisos(menuBtn, database.page_id || database.id));
     menu.appendChild(itemDeFijar(database.page_id || database.id));
 
@@ -12342,7 +12349,7 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
       itemDeColumna("Borrar base de datos", { peligro: true, alElegir: elegir(borrarBase) }),
     );
 
-    abrirPanelFlotante(menuBtn, menu, { etiqueta: "Opciones de la base" });
+    abrirPanelFlotante(menuBtn, menu, { etiqueta: "Opciones de la base", hoja: true });
     // Al borde derecho del botón, que el menú sale de la esquina de la base.
     const r = menuBtn.getBoundingClientRect();
     const ancho = menu.getBoundingClientRect().width;
@@ -16966,6 +16973,17 @@ function botonCompartir(tipo, id, titulo) {
   return btn;
 }
 
+/** «Compartir…» como fila de un menú (el del «⋮» en el móvil). */
+function itemDeCompartir(ancla, tipo, id, titulo) {
+  return itemDeColumna("Compartir…", {
+    icono: svgIcon("i-user-plus"),
+    alElegir: () => {
+      cerrarPanelDeColumna();
+      abrirCompartir(ancla, tipo, id, titulo());
+    },
+  });
+}
+
 async function abrirCompartir(anchor, tipo, id, titulo) {
   let datos;
   let gente;
@@ -16995,7 +17013,7 @@ async function abrirCompartir(anchor, tipo, id, titulo) {
     }
   }
   pintar();
-  abrirPanelFlotante(anchor, panel, { etiqueta: `Compartir «${titulo}»`, foco: "select, input" });
+  abrirPanelFlotante(anchor, panel, { etiqueta: `Compartir «${titulo}»`, foco: "select, input", hoja: true });
 }
 
 function pintarCompartir(panel, { titulo, datos, gente, grupos = [], yo, guardar }) {
@@ -17178,9 +17196,13 @@ function colocarPanelFlotante(el, anchor) {
 
 /** Cuelga `el` de <body> junto a `anchor` y lo cierra al pinchar fuera, con
  * Escape, o si el ancla desaparece (un repintado de la tabla). */
-function abrirPanelFlotante(anchor, el, { etiqueta = "", foco = null, alCerrar = null } = {}) {
+function abrirPanelFlotante(anchor, el, { etiqueta = "", foco = null, alCerrar = null, hoja = false } = {}) {
   cerrarPanelDeColumna();
   el.classList.add("db-col-floating");
+  // En el móvil, los menús grandes (opciones de la página o de la base,
+  // Compartir, Avisos) suben desde abajo a todo el ancho, con filas de dedo:
+  // colgados del botón quedaban pegados a un borde y a medio tapar la página.
+  el.classList.toggle("is-sheet", Boolean(hoja) && esMovil());
   if (!el.hasAttribute("role")) el.setAttribute("role", "menu");
   if (etiqueta) el.setAttribute("aria-label", etiqueta);
   document.body.appendChild(el);
