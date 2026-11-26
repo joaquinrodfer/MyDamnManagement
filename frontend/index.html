@@ -7215,6 +7215,33 @@
   .mobile-format-done { border-left: 1px solid var(--panel-border); border-radius: 0; margin-left: 2px; color: var(--ink-muted); }
   /* Con la barra fuera, el texto de abajo no queda tapado por ella. */
   body.with-format-bar #main { padding-bottom: 64px; }
+
+  /* ================================================================
+     MÓVIL, M4 (nov 2026): paneles a pantalla completa
+     ================================================================ */
+  .members-close { display: none; }
+  @media (max-width: 768px) {
+    /* Miembros y chat ocupan la pantalla (quedaba una franja de la página
+       detrás, que no servía) y llevan su ✕: el botón de la cabecera queda
+       tapado por el propio panel. */
+    .members-aside { width: 100vw; max-width: 100vw; box-shadow: none; }
+    .members-head { gap: 8px; }
+    .members-close { display: inline-flex; margin-left: auto; min-width: 40px; min-height: 40px; }
+    .members-online { display: none; }
+  }
+  /* Con el dedo no hay «pasar por encima»: el :hover se queda pegado tras un
+     toque y sacaba la barra de acciones de un mensaje cualquiera (encima de
+     la fecha). Las acciones salen al tocar el mensaje, dentro de él. */
+  @media (hover: none) {
+    .chat-msg:hover .chat-msg-actions { display: none; }
+    .chat-msg.is-touched .chat-msg-actions,
+    .chat-msg .chat-msg-actions.is-confirming { display: inline-flex; }
+    /* Debajo del texto, no encima: tapaba lo que se estaba leyendo. */
+    .chat-msg.is-touched .chat-msg-actions { position: static; margin-top: 6px; width: max-content; }
+    .chat-msg-actions .icon-btn { width: 36px; height: 36px; }
+    .chat-msg-actions .svg-icon { width: 17px; height: 17px; }
+    .chat-msg.is-touched { background: var(--row-hover); }
+  }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
@@ -7412,6 +7439,7 @@
           <button type="button" class="side-tab" role="tab" id="side-tab-chat" aria-selected="false" aria-controls="chat-pane">Chat<span class="chat-badge" id="chat-badge" hidden></span></button>
         </div>
         <span class="members-online" id="members-online"></span>
+        <button type="button" class="icon-btn members-close" id="btn-close-members" title="Cerrar" aria-label="Cerrar el panel"><svg class="svg-icon icon-18" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
       </div>
       <div class="members-list" id="members-list" role="tabpanel" aria-labelledby="side-tab-members"></div>
       <!-- Chat del equipo (docs/PLAN-CHAT.md): la lista de conversaciones o una

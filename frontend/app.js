@@ -24813,3 +24813,21 @@ for (const evento of ["resize", "orientationchange"]) {
   window.visualViewport?.addEventListener("resize", pegarAlTeclado);
   window.visualViewport?.addEventListener("scroll", pegarAlTeclado);
 })();
+
+// ------------------------------------------ móvil, M4: paneles y chat
+// La ✕ del panel de miembros/chat (solo se ve en el móvil): hace lo mismo que
+// el botón de la cabecera, que en el móvil queda debajo del panel.
+document.getElementById("btn-close-members")?.addEventListener("click", () => {
+  document.getElementById("btn-toggle-members")?.click();
+});
+// Con el dedo, las acciones de un mensaje salen al tocarlo (y se van al tocar
+// otro o fuera); con ratón siguen saliendo al pasar por encima (CSS).
+document.addEventListener("click", (e) => {
+  if (!window.matchMedia("(hover: none)").matches) return;
+  const msg = e.target.closest?.(".chat-msg");
+  if (msg && e.target.closest("button, a, input, textarea, .chat-msg-actions")) return;
+  document.querySelectorAll(".chat-msg.is-touched").forEach((m) => {
+    if (m !== msg) m.classList.remove("is-touched");
+  });
+  msg?.classList.toggle("is-touched");
+});

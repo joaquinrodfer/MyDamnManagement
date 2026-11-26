@@ -111,7 +111,7 @@ function createView({ pageId, onOpenPage }) {
     <div class="graph-legend">
       <span><i class="graph-dot" data-type="note"></i>nota</span>
       <span><i class="graph-dot" data-type="database"></i>base de datos</span>
-      <span class="graph-hint">arrastra · rueda para zoom · clic para abrir · el tamaño va con el nº de enlaces</span>
+      <span class="graph-hint">${matchMedia("(hover: none)").matches ? "arrastra · toca para abrir" : "arrastra · rueda para zoom · clic para abrir · el tamaño va con el nº de enlaces"}</span>
     </div>`;
   document.body.appendChild(el);
 
