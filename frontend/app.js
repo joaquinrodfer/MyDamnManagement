@@ -504,10 +504,12 @@ function filaDeTareaDeInicio(tarea, alCambiar) {
   cuerpo.addEventListener("click", () => abrirMiTarea(tarea));
   fila.append(cuerpo);
 
+  // El estado va dentro del cuerpo, detrás de la base: en el escritorio se ve
+  // igual (misma fila) y en el móvil cae con la base en la segunda línea.
   if (tarea.status?.value) {
     const estado = crearEl("span", "home-task-status", tarea.status.value);
     estado.title = `${tarea.status.name}: ${tarea.status.value}`;
-    fila.append(estado);
+    cuerpo.append(estado);
   }
 
   // La fecha se cambia aquí mismo: un selector de día sobre la etiqueta.
@@ -4491,7 +4493,7 @@ function avisarDeVencidas(datos) {
   }
   showNotice(
     vencidas === 1 ? "Tienes 1 tarea vencida" : `Tienes ${vencidas} tareas vencidas`,
-    { sticky: true },
+    { sticky: !esMovil() },
   );
 }
 
@@ -6709,7 +6711,7 @@ function pintarEspacios(notes, invitado) {
       const compartidas = nodos.filter((n) => n.section === "shared" || n.section === "with_me");
       const privadas = nodos.filter((n) => n.section === "private");
       cuerpo.append(
-        subSeccion("Compartido", compartidas, { ws: w.id, seccion: "shared", soltable: true, vacia: "Suelta aquí páginas para todo el espacio" }),
+        subSeccion("Compartido", compartidas, { ws: w.id, seccion: "shared", soltable: true, vacia: conRatonFino.matches ? "Suelta aquí páginas para todo el espacio" : "Todavía no hay nada compartido" }),
         subSeccion(
           "Privado",
           privadas,
@@ -7326,7 +7328,8 @@ function createOutlinePanel(mountEl = document.body) {
   details.hidden = true; // hasta que renderOutline() confirme que hay encabezados
 
   const summary = document.createElement("summary");
-  summary.innerHTML = `${svgIcon("i-list-tree")}Índice`;
+  summary.innerHTML = `${svgIcon("i-list-tree")}<span class="note-outline-label">Índice</span>`;
+  summary.setAttribute("aria-label", "Índice");
 
   const list = document.createElement("div");
   list.className = "note-outline-list";
@@ -7548,6 +7551,9 @@ function renderNote(page, backlinks) {
       saveIcon.innerHTML = svgIcon("i-check");
       saveLabel.textContent = "Guardado";
     }
+    // En el móvil «Guardado» no se pinta (ocupaba una línea entera antes del
+    // título); lo que sí sale es cuando NO está guardado.
+    saveStatus.classList.toggle("is-saved", !["saving", "dirty", "error", "readonly", "offline"].includes(s));
   }
   setSaveState("saved");
 
@@ -7635,6 +7641,10 @@ function renderNote(page, backlinks) {
   ponerCompartirEnCabecera(botonCompartir("page", page.id, () => page.title));
 
   topbar.append(saveStatus, topbarRight);
+  // En el móvil, «⋯» e Índice van a la fila de la cabecera, delante de
+  // Compartir: en el flujo, no con position:fixed (se montaban encima de los
+  // botones de la derecha). `clearMain` vacía ese hueco al navegar.
+  if (esMovil()) document.getElementById("header-right")?.prepend(topbarRight);
 
   // ---- imagen de cabecera (opcional) ----
   const headerWrap = document.createElement("div");
@@ -16938,7 +16948,7 @@ function botonCompartir(tipo, id, titulo) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn share-btn";
-  btn.innerHTML = `${svgIcon("i-users")}<span>Compartir</span>`;
+  btn.innerHTML = `${svgIcon("i-user-plus")}<span>Compartir</span>`;
   btn.title = "Quién puede ver o editar esto";
   btn.setAttribute("aria-haspopup", "dialog");
   btn.addEventListener("click", () => abrirCompartir(btn, tipo, id, titulo()));

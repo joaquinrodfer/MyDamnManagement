@@ -6382,6 +6382,7 @@
   .home-task-icon .svg-icon { width: 15px; height: 15px; }
   .home-task-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: var(--ink); }
   .home-task-base { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ink-muted); }
+  .home-task-main > .home-task-status { margin-left: auto; }
   .home-task-status {
     flex-shrink: 0; font-size: 11.5px; padding: 2px 8px; border-radius: 999px;
     background: var(--code-bg); color: var(--ink-muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -7067,6 +7068,66 @@
   .invite-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .invite-row-text small { color: var(--ink-muted); margin-left: 6px; }
   .ask-dialog-input[readonly] { font-family: var(--font-mono, monospace); font-size: 12px; }
+
+  /* ================================================================
+     MÓVIL, M1 (nov 2026): leer bien en el teléfono
+     ================================================================ */
+  @media (max-width: 768px) {
+    /* «⋯» e Índice ya van dentro de la cabecera (app.js los mueve ahí): en
+       el flujo, sin la posición fija que los montaba encima de Compartir. */
+    .note-topbar-right { position: static; height: auto; z-index: auto; display: flex; align-items: center; gap: 2px; }
+    .header-share { display: flex; align-items: center; gap: 2px; }
+    .header-share .note-outline-dropdown summary {
+      min-width: 40px; min-height: 40px; justify-content: center; border-radius: var(--radius-md);
+    }
+    .header-share .note-outline-dropdown summary .svg-icon { width: 18px; height: 18px; }
+    .note-outline-label { display: none; }
+    .header-share .note-outline-dropdown .note-outline-list { position: fixed; top: calc(var(--header-height) + 4px); right: 8px; left: 8px; width: auto; }
+    /* «Guardado» no se pinta: solo lo que NO está guardado. Y sin nada que
+       enseñar, la barra de la nota no ocupa sitio. */
+    .note-savestatus.is-saved { display: none; }
+    .note-topbar { min-height: 0; margin-bottom: 4px; }
+    .note-topbar:not(:has(> :not(.is-saved):not(:empty))) { display: none; }
+    /* Añadir icono / portada / descripción: solo al tocar la cabecera (el
+       título), no siempre: eran tres líneas antes de llegar a leer. */
+    .note-head-actions { display: none; }
+    .note-head:focus-within .note-head-actions { display: flex; opacity: 1; }
+    .note-head .note-title { font-size: 28px; }
+    /* El texto aprovecha el ancho: sin el hueco del asa a la izquierda (en el
+       móvil los bloques se mueven desde la barra de formato). */
+    #note-body .cm-content { --mdm-gutter: 0px; padding-left: 0; }
+    #note-body .cm-mdm-block-handle-wrap,
+    .cm-mdm-dblock > .cm-mdm-block-handle-wrap { display: none !important; }
+
+    /* Tareas del inicio: el título entero arriba y lo demás (base, estado)
+       en una segunda línea; la fecha a la derecha. */
+    .home-task { align-items: flex-start; gap: 10px; padding: 6px 4px; }
+    .home-task-check { width: 22px; height: 22px; margin-top: 8px; }
+    .home-task-main { flex-wrap: wrap; row-gap: 2px; column-gap: 8px; padding: 6px 0; }
+    .home-task-icon { display: none; }
+    .home-task-title {
+      flex: 1 0 100%; white-space: normal; font-size: 15px; line-height: 1.35;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+    .home-task-base { flex: 0 1 auto; max-width: 60%; }
+    .home-task-main > .home-task-status { margin-left: 0; }
+    .home-task-date { margin-top: 6px; min-width: 0; padding: 3px 4px; }
+    /* Mis tareas: igual, en dos líneas. */
+    .dashboard-item:has(.my-task-base) { flex-wrap: wrap; row-gap: 4px; align-items: center; padding: 10px 8px; }
+    .dashboard-item:has(.my-task-base) .dashboard-item-title { flex: 1 0 calc(100% - 30px); white-space: normal; line-height: 1.35; }
+    .dashboard-item:has(.my-task-base) .my-task-base { margin-left: 28px; }
+    .dashboard-item:has(.my-task-base) .dashboard-item-meta { margin-left: auto; }
+
+    /* Ajustes: la fila de apartados acaba antes de la ✕ (se deslizaba por
+       debajo) y se difumina en el borde para que se vea que sigue. */
+    .settings-nav {
+      margin-right: 48px; padding-right: 16px;
+      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+      mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+    }
+  }
+  /* Sin teclado físico no hay Mayús+Intro que explicar. */
+  @media (pointer: coarse) { .chat-compose-note:not(.is-editing) { display: none; } }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
