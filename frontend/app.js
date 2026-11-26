@@ -690,7 +690,12 @@ function capturaDeInicio() {
   input.placeholder = "Apunta algo… (Intro lo guarda en la bandeja)";
   input.setAttribute("aria-label", "Apuntar algo en la bandeja");
   input.maxLength = 2000;
-  form.append(icono, input);
+  // La confirmación sale AQUÍ, junto a lo que acabas de escribir: el aviso
+  // general salía en la otra punta de la pantalla.
+  const hecho = crearEl("span", "home-capture-ok");
+  hecho.setAttribute("role", "status");
+  let quitarHecho = 0;
+  form.append(icono, input, hecho);
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const texto = input.value.trim();
@@ -699,7 +704,11 @@ function capturaDeInicio() {
     try {
       await api("/capture", { method: "POST", body: JSON.stringify({ text: texto, source: "api" }) });
       input.value = "";
-      showError("Guardado en la bandeja", "info");
+      hecho.innerHTML = svgIcon("i-check");
+      hecho.append("Guardado en la bandeja");
+      hecho.classList.add("is-on");
+      clearTimeout(quitarHecho);
+      quitarHecho = setTimeout(() => hecho.classList.remove("is-on"), 2400);
       loadInbox?.();
     } catch (err) {
       reportError("No se pudo guardar en la bandeja", err);
@@ -9674,7 +9683,7 @@ async function buscarEnChat(q, lista) {
     b.append(avatarDeChat(m.author));
     const texto = crearEl("span", "chat-item-text");
     texto.append(
-      crearEl("span", "chat-item-title", `${m.author?.display_name || "Alguien"} · ${m.conversation_kind === "workspace" ? "# " : ""}${m.conversation_title}`),
+      crearEl("span", "chat-item-title", `${m.author?.display_name || "Alguien"} · ${m.conversation_title}`),
       crearEl("span", "chat-item-last", (m.body || "").replace(/[*`>]/g, "")),
     );
     const lado = crearEl("span", "chat-item-side");
@@ -9714,7 +9723,7 @@ function itemDeChat(c) {
     b.append(avs);
   }
   const texto = crearEl("span", "chat-item-text");
-  texto.append(crearEl("span", "chat-item-title", c.kind === "workspace" ? `# ${c.title}` : c.title));
+  texto.append(crearEl("span", "chat-item-title", c.title));
   let ultimo = "Sin mensajes todavía";
   if (c.last) {
     const quien = c.last.user_id === sessionUser.me?.id ? "Tú" : (c.last.author_name || "Alguien");
@@ -9869,7 +9878,7 @@ function pintarConversacion({ alFinal = false } = {}) {
     pintarListaDeChat();
     cargarChat();
   });
-  const titulo = crearEl("span", "chat-conv-title", c.kind === "workspace" ? `# ${c.title}` : c.title);
+  const titulo = crearEl("span", "chat-conv-title", c.title);
   if (c.kind === "workspace") {
     const quien = { viewer: "Todos los miembros del espacio", editor: "Editores y administradores del espacio", admin: "Administradores del espacio" }[c.min_role] || "";
     titulo.append(crearEl("span", "chat-conv-sub", quien));
@@ -14952,13 +14961,13 @@ async function editarCeldaDeRelacion(td, database, row, prop, hooks = null) {
     e.stopPropagation();
     cerrarSelectorDeRelacion({ foco: true });
   };
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(panel, () => {
     if (!td.isConnected) {
       cerrarSelectorDeRelacion();
       return;
     }
     colocarPanelFlotante(panel, td);
-  };
+  });
   document.addEventListener("mousedown", fuera, true);
   document.addEventListener("keydown", teclas, true);
   window.addEventListener("scroll", recolocar, true);
@@ -15395,13 +15404,13 @@ async function editarCeldaDePersona(td, database, row, prop, hooks = null) {
     e.preventDefault();
     cerrarSelectorDePersona({ foco: true });
   };
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(panel, () => {
     if (!td.isConnected) {
       cerrarSelectorDePersona();
       return;
     }
     colocarPanelFlotante(panel, td);
-  };
+  });
   document.addEventListener("mousedown", fuera, true);
   document.addEventListener("keydown", teclas, true);
   window.addEventListener("scroll", recolocar, true);
@@ -17167,7 +17176,26 @@ function pintarCompartir(panel, { titulo, datos, gente, grupos = [], yo, guardar
   }
 }
 
+/** Un `recolocar` para los paneles flotantes que no se dispara con el scroll
+ * de DENTRO del panel (antes, desplazar la lista de un menú lo volvía a medir
+ * y a colocar en cada evento) y que, como mucho, trabaja una vez por fotograma. */
+function recolocarSinTirones(panel, fn) {
+  let pendiente = false;
+  return (e) => {
+    const t = e?.target;
+    if (t instanceof Node && panel.contains(t)) return;
+    if (pendiente) return;
+    pendiente = true;
+    requestAnimationFrame(() => {
+      pendiente = false;
+      fn();
+    });
+  };
+}
+
 function colocarPanelFlotante(el, anchor) {
+  // La hoja del móvil va fija abajo por CSS: no hay nada que medir.
+  if (el.classList.contains("is-sheet")) return;
   const r = anchor.getBoundingClientRect();
   const caja = el.getBoundingClientRect();
   const margen = 8;
@@ -17232,13 +17260,13 @@ function abrirPanelFlotante(anchor, el, { etiqueta = "", foco = null, alCerrar =
   };
   // El ancla se va con un repintado (el menú guarda el tipo, el panel repinta
   // la tabla): sin ancla no hay sitio donde colgarse, así que se cierra.
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(el, () => {
     if (!anchor.isConnected) {
       cerrarPanelDeColumna();
       return;
     }
     colocarPanelFlotante(el, anchor);
-  };
+  });
 
   // El contenido puede crecer DESPUÉS de abrirse (la lista de bases destino
   // de una relación llega por la API): el panel se vuelve a colocar para no
@@ -20181,10 +20209,10 @@ function editarCeldaDeSeleccion(td, database, row, prop, hooks = null) {
     if (!menu.hidden) cerrarMenu();
     else cerrarSelectorDeSeleccion({ foco: true });
   };
-  const recolocar = () => {
+  const recolocar = recolocarSinTirones(panel, () => {
     if (!td.isConnected) cerrarSelectorDeSeleccion();
     else colocarPanelFlotante(panel, td);
-  };
+  });
   document.addEventListener("mousedown", fuera, true);
   document.addEventListener("keydown", teclas, true);
   window.addEventListener("scroll", recolocar, true);
