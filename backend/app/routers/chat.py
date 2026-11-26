@@ -224,6 +224,10 @@ def typing(conversation_id: str, repo: Repository = Depends(get_repo), user: aut
 class TaskIn(BaseModel):
     database_id: str
     title: Optional[str] = Field(default=None, max_length=300)
+    # Responsable: sin mandarlo, quien escribió el mensaje; "" = nadie.
+    assignee_id: Optional[str] = None
+    # Fecha límite (AAAA-MM-DD), en la columna «Fin» de la base si la tiene.
+    due: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 @router.post("/messages/{message_id}/task", status_code=201)
@@ -258,14 +262,20 @@ def message_to_task(
         raise HTTPException(404, "no existe esa base")
     propiedades: dict[str, Any] = {}
     kind = base.kind or {}
-    clave = (kind.get("roles") or {}).get("assignee") if kind.get("type") in ("tasks", "workload") else None
-    if clave and msg["user_id"]:
+    roles = (kind.get("roles") or {}) if kind.get("type") in ("tasks", "workload") else {}
+    clave = roles.get("assignee")
+    responsable = msg["user_id"] if payload.assignee_id is None else (payload.assignee_id or None)
+    if clave and responsable:
+        if repo.conn.execute("SELECT 1 FROM users WHERE id = ?", (responsable,)).fetchone() is None:
+            raise HTTPException(404, "no existe esa persona")
         prop = next((p for p in base.schema_def if p.get("key") == clave), {})
         multiple = prop.get("multiple") in (True, "true")
-        propiedades[clave] = [msg["user_id"]] if multiple else msg["user_id"]
+        propiedades[clave] = [responsable] if multiple else responsable
+    if payload.due and roles.get("end"):
+        propiedades[roles["end"]] = payload.due
     texto = msg["body"] or ""
     titulo = (payload.title or texto.split("\n")[0] or "Tarea del chat").strip()[:200]
-    donde = f"# {conv_title(repo, conv)}" if conv["kind"] == "workspace" else "un mensaje directo"
+    donde = f"«{conv_title(repo, conv)}»" if conv["kind"] == "workspace" else "un mensaje directo"
     autor = (msg.get("author") or {}).get("display_name") or "alguien"
     cuerpo = "\n".join(f"> {linea}" for linea in texto.split("\n")) + f"\n\nDesde el chat ({donde}), de {autor}."
     fila = create_row(

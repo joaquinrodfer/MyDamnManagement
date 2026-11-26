@@ -10580,43 +10580,90 @@ async function abrirConvertirEnTarea(m, ancla) {
   }
   const panel = crearEl("div", "db-col-menu chat-task-panel");
   panel.setAttribute("role", "dialog");
-  panel.append(crearEl("strong", "", "Convertir en tarea"));
-  const base = crearEl("select");
-  base.add(new Option("Cargando bases…", ""));
+
+  // Cabecera: qué se va a convertir.
+  const cabeza = crearEl("div", "chat-task-head");
+  const ic = crearEl("span", "chat-task-icon");
+  ic.innerHTML = svgIcon("i-check");
+  const tx = crearEl("div", "chat-task-texts");
+  tx.append(crearEl("strong", "", "Convertir en tarea"), crearEl("span", "chat-task-from", `Mensaje de ${m.author?.display_name || "alguien"}`));
+  cabeza.append(ic, tx);
+  const cita = crearEl("blockquote", "chat-task-quote", (m.body || "").replace(/^>\s?/gm, "").slice(0, 240));
+
   const titulo = crearEl("input");
   titulo.type = "text";
   titulo.value = (m.body || "").split("\n")[0].replace(/^>\s?/, "").slice(0, 200);
   titulo.placeholder = "Título de la tarea";
-  const nota = crearEl("p", "form-note", "Quien escribió el mensaje queda como responsable. Puedes cambiarlo en la tarea.");
+  titulo.maxLength = 200;
+  const base = crearEl("select");
+  base.add(new Option("Cargando bases…", ""));
+  const responsable = crearEl("select");
+  responsable.add(new Option(m.author?.display_name ? `${m.author.display_name} (quien lo escribió)` : "Quien lo escribió", "__autor__"));
+  responsable.add(new Option("Sin responsable", ""));
+  const fecha = crearEl("input");
+  fecha.type = "date";
+  fecha.setAttribute("aria-label", "Fecha límite");
+
+  const campo = (rotulo, control, clase = "") => {
+    const c = crearEl("label", `chat-task-field ${clase}`.trim());
+    c.append(crearEl("span", "chat-task-label", rotulo), control);
+    return c;
+  };
+  const fila = crearEl("div", "chat-task-row");
+  fila.append(campo("Responsable", responsable), campo("Fecha límite", fecha, "is-date"));
+  const nota = crearEl("p", "form-note chat-task-note");
+  const pie = crearEl("div", "chat-task-foot");
+  const cancelar = crearEl("button", "btn", "Cancelar");
+  cancelar.type = "button";
+  cancelar.addEventListener("click", () => cerrarPanelDeColumna());
   const crear = crearEl("button", "btn btn-primary", "Crear tarea");
   crear.type = "button";
   crear.disabled = true;
-  panel.append(campoDeCarga("Base", base), campoDeCarga("Título", titulo), nota, crear);
-  abrirPanelFlotante(ancla, panel, { etiqueta: "Convertir en tarea" });
+  pie.append(cancelar, crear);
+  const cuerpo = crearEl("div", "chat-task-body");
+  cuerpo.append(campo("Título", titulo), campo("Base de tareas", base), fila, nota);
+  panel.append(cabeza, cita, cuerpo, pie);
+  abrirPanelFlotante(ancla, panel, { etiqueta: "Convertir en tarea", foco: "input", hoja: true });
+
   try {
-    const bases = (await api("/databases")).filter((d) => ["tasks", "workload"].includes(d.kind?.type));
+    const [bases, personas] = await Promise.all([api("/databases"), cargarPersonas().catch(() => [])]);
+    const deTareas = bases.filter((d) => ["tasks", "workload"].includes(d.kind?.type));
     base.replaceChildren();
-    if (!bases.length) base.add(new Option("No hay bases de Tareas", ""));
-    for (const d of bases) base.add(new Option(d.title || "Sin título", d.id));
-    crear.disabled = !bases.length;
+    for (const d of deTareas) base.add(new Option(d.title || "Sin título", d.id));
+    for (const p of personas) {
+      if (String(p.id) === String(m.author?.id ?? m.user_id)) continue;
+      responsable.add(new Option(p.display_name || p.username, p.id));
+    }
+    if (!deTareas.length) {
+      // Sin bases de Tareas no hay dónde crearla: se dice y se ofrece crear una.
+      cuerpo.replaceChildren(crearEl("p", "chat-task-empty", "Aún no hay ninguna base de Tareas donde crearla."));
+      crear.textContent = "Crear una base de Tareas…";
+      crear.disabled = false;
+      crear.onclick = () => {
+        cerrarPanelDeColumna();
+        openTemplateDialog().catch((e) => reportError("No se pudo abrir «Nueva base»", e));
+      };
+      return;
+    }
+    crear.disabled = false;
   } catch (e) {
     setFormNote(nota, describeError(e), "error");
   }
-  crear.addEventListener("click", async () => {
+  crear.onclick = async () => {
     crear.disabled = true;
     try {
-      const r = await api(`/chat/messages/${m.id}/task`, {
-        method: "POST",
-        body: JSON.stringify({ database_id: base.value, title: titulo.value.trim() || null }),
-      });
+      const cuerpoPeticion = { database_id: base.value, title: titulo.value.trim() || null };
+      if (responsable.value !== "__autor__") cuerpoPeticion.assignee_id = responsable.value;
+      if (fecha.value) cuerpoPeticion.due = fecha.value;
+      const r = await api(`/chat/messages/${m.id}/task`, { method: "POST", body: JSON.stringify(cuerpoPeticion) });
       cerrarPanelDeColumna();
       reemplazarMensaje(r.message);
-      showError(`Tarea «${r.title}» creada`, "info");
+      showNotice(`Tarea «${r.title}» creada`);
     } catch (e) {
       setFormNote(nota, describeError(e), "error");
       crear.disabled = false;
     }
-  });
+  };
 }
 
 function compositorDeChat() {
@@ -10625,7 +10672,7 @@ function compositorDeChat() {
   const box = crearEl("div", "chat-compose-box");
   const t = crearEl("textarea");
   t.rows = 1;
-  t.placeholder = c.kind === "workspace" ? `Escribe en # ${c.title}…` : `Escribe a ${c.title}…`;
+  t.placeholder = c.kind === "workspace" ? `Escribe en ${c.title}…` : `Escribe a ${c.title}…`;
   t.setAttribute("aria-label", "Escribir un mensaje");
   const ajustar = () => {
     t.style.height = "auto";
