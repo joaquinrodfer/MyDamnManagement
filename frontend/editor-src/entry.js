@@ -10,7 +10,7 @@
 import { collabActive, collabBaseExtensions, remoteChange, startCollab } from "./collab-client.js";
 import { ChangeSet, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, isolateHistory } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, isolateHistory, undo, redo } from "@codemirror/commands";
 import { HighlightStyle, ensureSyntaxTree, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
@@ -4096,6 +4096,60 @@ function blockAt(state, pos) {
  * - Todo el reordenado es UNA transacción (ver `moveBlockTo`), así que un solo
  *   ⌘Z lo deshace.
  */
+// ------------------------------------- barra de formato del móvil (M3)
+//
+// Lo que en el escritorio son atajos (⌘B, Tab, Alt+↑…) o el asa del bloque,
+// en el móvil son botones encima del teclado. La barra vive en app.js; aquí
+// solo se traduce cada botón a lo que ya hacen las teclas.
+const TOOLBAR_TYPES = new Set(["h1", "h2", "h3", "bullet_list_item", "ordered_list_item", "quote"]);
+
+export function runToolbarCommand(view, name) {
+  if (name === "bold" || name === "italic" || name === "underline") return runFormat(view, name);
+  if (name === "indent") return runListIndent(view, 1);
+  if (name === "outdent") return runListIndent(view, -1);
+  if (name === "up") return runMoveBlockKey(view, -1);
+  if (name === "down") return runMoveBlockKey(view, 1);
+  if (name === "undo") return undo(view);
+  if (name === "redo") return redo(view);
+  if (name === "slash") {
+    // Lo mismo que escribir «/» en una línea vacía: si la línea tiene texto,
+    // antes se abre un bloque nuevo debajo (como Intro al final).
+    // Con texto en la línea, «/» va en un párrafo nuevo debajo (el menú solo
+    // se abre en una línea vacía).
+    // La «/» va sola en su cambio: el menú se abre cuando lo insertado es
+    // exactamente «/» (ver slashMenuExtension).
+    const line = view.state.doc.lineAt(view.state.selection.main.head);
+    if (line.text.trim() !== "") {
+      view.dispatch({ changes: { from: line.to, insert: "\n\n" }, selection: { anchor: line.to + 2 }, userEvent: "input" });
+    }
+    const pos = view.state.selection.main.head;
+    view.dispatch({
+      changes: { from: pos, insert: "/" },
+      selection: { anchor: pos + 1 },
+      userEvent: "input.type",
+      scrollIntoView: true,
+    });
+    return true;
+  }
+  if (TOOLBAR_TYPES.has(name)) {
+    // Convertir el bloque del cursor; si ya es de ese tipo, vuelve a párrafo.
+    const { state } = view;
+    const block = blockAt(state, state.selection.main.head);
+    if (!block) {
+      // Línea vacía: se escribe el prefijo, como si se tecleara.
+      const pos = state.selection.main.head;
+      const insert = applyBlockType("", name);
+      view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + insert.length }, userEvent: "input.type" });
+      return true;
+    }
+    const index = state.field(blockField).blocks.indexOf(block);
+    if (index < 0) return false;
+    convertBlocks(view, [index], block.type === name ? "paragraph" : name);
+    return true;
+  }
+  return false;
+}
+
 export function runMoveBlockKey(view, dir) {
   const { state } = view;
   const range = state.selection.main;
@@ -5165,6 +5219,8 @@ export function createNoteEditor({
       return startCollab(view, options);
     },
     focus: () => view.focus(),
+    // Los botones de la barra de formato del móvil (ver `runToolbarCommand`).
+    command: (name) => runToolbarCommand(view, name),
     /** Cierra el selector de bases si está abierto y borra del documento el
      * filtro que llevara escrito. La app lo llama al dejar la nota, ANTES del
      * guardado pendiente: ese texto no es contenido de la nota y no puede

@@ -24734,3 +24734,82 @@ for (const evento of ["resize", "orientationchange"]) {
     requestAnimationFrame(() => state.refitNoteText?.());
   });
 }
+
+// ------------------------------------------ móvil, M3: barra de formato
+// En el teléfono no hay ⌘B, Tab ni Alt+↑, y el asa del bloque no cabe: encima
+// del teclado sale una fila de botones mientras se escribe en una nota. Cada
+// botón llama a `state.editor.command`, que hace lo mismo que la tecla.
+// Se pega al teclado con `visualViewport` (en iOS el teclado no encoge la
+// ventana y un `bottom: 0` quedaría debajo).
+(function montarBarraDeFormato() {
+  const barra = crearEl("div", "mobile-format-bar");
+  barra.setAttribute("role", "toolbar");
+  barra.setAttribute("aria-label", "Formato");
+  barra.hidden = true;
+  const fila = crearEl("div", "mobile-format-scroll");
+  const BOTONES = [
+    ["slash", "Insertar bloque", svgIcon("i-plus")],
+    ["bold", "Negrita", "<b>B</b>"],
+    ["italic", "Cursiva", "<i>I</i>"],
+    ["h1", "Título 1", "H1"],
+    ["h2", "Título 2", "H2"],
+    ["bullet_list_item", "Lista", svgIcon("i-list")],
+    ["ordered_list_item", "Lista numerada", "1."],
+    ["quote", "Cita", svgIcon("i-quote")],
+    ["outdent", "Quitar sangría", svgIcon("i-chevron-left")],
+    ["indent", "Sangrar", svgIcon("i-chevron-right")],
+    ["up", "Subir el bloque", svgIcon("i-arrow-up")],
+    ["down", "Bajar el bloque", svgIcon("i-arrow-down")],
+    ["undo", "Deshacer", "↶"],
+    ["redo", "Rehacer", "↷"],
+  ];
+  for (const [orden, nombre, html] of BOTONES) {
+    const b = crearEl("button", "mobile-format-btn");
+    b.type = "button";
+    b.innerHTML = html;
+    b.title = nombre;
+    b.setAttribute("aria-label", nombre);
+    b.dataset.cmd = orden;
+    fila.append(b);
+  }
+  const cerrar = crearEl("button", "mobile-format-btn mobile-format-done");
+  cerrar.type = "button";
+  cerrar.innerHTML = svgIcon("i-chevron-down");
+  cerrar.title = "Cerrar el teclado";
+  cerrar.setAttribute("aria-label", "Cerrar el teclado");
+  barra.append(fila, cerrar);
+  document.body.append(barra);
+
+  // El foco no se va del editor al tocar un botón: si se fuera, el teclado
+  // se cerraría y la barra con él.
+  barra.addEventListener("pointerdown", (e) => e.preventDefault());
+  barra.addEventListener("mousedown", (e) => e.preventDefault());
+  fila.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cmd]");
+    if (b) state.editor?.command?.(b.dataset.cmd);
+  });
+  cerrar.addEventListener("click", () => document.activeElement?.blur?.());
+
+  const escribiendo = () => {
+    const el = document.activeElement;
+    return Boolean(
+      esMovil() && el?.closest?.("#note-body .cm-content") && el.closest(".cm-content")?.getAttribute("contenteditable") === "true",
+    );
+  };
+  const pegarAlTeclado = () => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const tapado = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    barra.style.transform = tapado ? `translateY(${-tapado}px)` : "";
+  };
+  const repasar = () => {
+    const ver = escribiendo();
+    barra.hidden = !ver;
+    document.body.classList.toggle("with-format-bar", ver);
+    if (ver) pegarAlTeclado();
+  };
+  document.addEventListener("focusin", repasar);
+  document.addEventListener("focusout", () => setTimeout(repasar, 0));
+  window.visualViewport?.addEventListener("resize", pegarAlTeclado);
+  window.visualViewport?.addEventListener("scroll", pegarAlTeclado);
+})();
