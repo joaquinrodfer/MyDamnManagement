@@ -6219,7 +6219,24 @@
   .apunta-fab:hover { filter: brightness(1.08); }
   .apunta-fab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .layout.sidebar-collapsed:not(.sidebar-peek) > .apunta-fab { display: inline-flex; }
-  @media (max-width: 768px) { .apunta-fab, .sidebar-footer { display: none !important; } }
+  @media (max-width: 768px) {
+    .sidebar-footer { display: none !important; }
+    /* En el móvil «Apunta algo» es el botón redondo de abajo a la derecha, al
+       alcance del pulgar (antes no había forma de apuntar fuera del inicio). */
+    .apunta-fab {
+      display: inline-flex !important; left: auto; right: 16px;
+      bottom: calc(18px + env(safe-area-inset-bottom, 0px)); width: 52px; height: 52px; border: 0;
+    }
+    .apunta-fab .svg-icon { width: 22px; height: 22px; }
+    /* Mientras se escribe (sale la barra de formato), con un panel abierto o
+       en el inicio (ya tiene su caja de apuntar), el botón sobra. */
+    body.with-format-bar .apunta-fab,
+    .layout:not(.members-collapsed) .apunta-fab,
+    .layout.sidebar-drawer-open .apunta-fab,
+    .layout:has(main .home-capture) .apunta-fab { display: none !important; }
+    /* Su caja sale abajo, a lo ancho, encima del botón. */
+    .apunta-panel { position: fixed !important; left: 8px !important; right: 8px !important; top: auto !important; bottom: calc(84px + env(safe-area-inset-bottom, 0px)) !important; width: auto !important; max-width: none !important; }
+  }
   /* Sin marcos: el texto de ayuda y el cursor esperando, como una nota. */
   .apunta-panel { padding: 12px 14px 10px; width: 340px; max-width: calc(100vw - 24px); }
   .apunta-panel .home-capture,
@@ -7168,6 +7185,36 @@
     .list-row-prop-key { display: inline; color: var(--ink-muted); }
     .list-row-prop--date .svg-icon { display: none; }
   }
+
+  /* ================================================================
+     MÓVIL, M3 (nov 2026): escribir en el teléfono
+     ================================================================ */
+  .mobile-format-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    display: flex; align-items: center;
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
+    background: var(--surface-elevated); border-top: 1px solid var(--panel-border);
+    box-shadow: 0 -6px 18px -12px rgba(0, 0, 0, .45);
+  }
+  .mobile-format-bar[hidden] { display: none; }
+  .mobile-format-scroll {
+    flex: 1 1 auto; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+    padding-right: 18px;
+  }
+  .mobile-format-scroll::-webkit-scrollbar { display: none; }
+  .mobile-format-btn {
+    flex: none; min-width: 42px; height: 42px; padding: 0 8px; border: 0; border-radius: var(--radius-md);
+    background: none; color: var(--ink); font: inherit; font-size: 15px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mobile-format-btn:active { background: var(--menu-hover); }
+  .mobile-format-btn .svg-icon { width: 18px; height: 18px; }
+  .mobile-format-done { border-left: 1px solid var(--panel-border); border-radius: 0; margin-left: 2px; color: var(--ink-muted); }
+  /* Con la barra fuera, el texto de abajo no queda tapado por ella. */
+  body.with-format-bar #main { padding-bottom: 64px; }
 </style>
 <link rel="stylesheet" href="/graph.css" />
 </head>
