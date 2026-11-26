@@ -75,3 +75,37 @@ def delete_grant(grant_id: str, repo: Repository = Depends(get_repo), user: auth
         metadata={"capability": previo["capability"], "scope": previo["workspace_id"] or "all"},
     )
     return Response(status_code=204)
+
+
+@router.get("/users/{user_id}/access")
+def user_access(user_id: str, repo: Repository = Depends(get_repo), _: auth.User = Depends(_admin)):
+    """La ficha de permisos de una persona (solo el administrador): sus espacios
+    con su rol (directo o por un grupo) y cada permiso con sus concesiones."""
+    from app import workspaces as ws_mod
+
+    conn = repo.conn
+    persona = conn.execute("SELECT id, display_name, username, is_admin FROM users WHERE id = ?", (user_id,)).fetchone()
+    if persona is None:
+        raise HTTPException(404, "no existe esa persona")
+    espacios = []
+    for r in conn.execute(
+        "SELECT w.id, w.name, w.settings, m.role, m.subject_type, g.name AS group_name"
+        " FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id"
+        " LEFT JOIN groups g ON m.subject_type = 'group' AND g.id = m.subject_id"
+        " WHERE (m.subject_type = 'user' AND m.subject_id = ?)"
+        " OR (m.subject_type = 'group' AND m.subject_id IN (SELECT group_id FROM group_members WHERE user_id = ?))"
+        " ORDER BY w.name COLLATE NOCASE",
+        (user_id, user_id),
+    ):
+        if ws_mod.is_personal(r):
+            continue
+        espacios.append({
+            "id": r["id"], "name": r["name"], "role": r["role"],
+            "via": "group" if r["subject_type"] == "group" else "user", "group_name": r["group_name"],
+        })
+    return {
+        "user": {"id": persona["id"], "display_name": persona["display_name"], "username": persona["username"],
+                 "is_admin": bool(persona["is_admin"])},
+        "workspaces": espacios,
+        "capabilities": grants.user_access(conn, user_id),
+    }

@@ -503,12 +503,17 @@ class LinkUseRequest(BaseModel):
 
 
 def _may_invite(conn: sqlite3.Connection, user: auth.User, workspace_id: Optional[str]) -> bool:
-    """Un administrador; o quien gestiona a las personas de ese espacio."""
+    """Un administrador; quien gestiona a las personas de ese espacio; o quien
+    lo administra y tiene «Invitar a sus espacios» (todos, por defecto)."""
     if user.is_admin:
         return True
     from app import grants
 
-    return bool(workspace_id) and grants.can(conn, user, "manage_people", workspace_id)
+    if not workspace_id:
+        return False
+    if grants.can(conn, user, "manage_people", workspace_id):
+        return True
+    return ws_mod.role_of(conn, user, workspace_id) == "admin" and grants.can(conn, user, "invite_people")
 
 
 @router.post("/invites", status_code=201)

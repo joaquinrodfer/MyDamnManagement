@@ -550,6 +550,7 @@
   .ws-card[open] > summary { border-bottom: 1px solid var(--panel-border); }
   .ws-meta { color: var(--ink-muted); font-size: 12px; margin-left: auto; }
   .ws-body { padding: 8px 0 10px; display: grid; gap: 8px; }
+  .ws-row[hidden] { display: none; }
   .ws-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
   .ws-row .ws-grow { flex: 1 1 140px; min-width: 0; }
   .ws-row select, .ws-row input[type=text] { font: inherit; font-size: 13px; padding: 4px 6px; }
@@ -3307,7 +3308,7 @@
     text-transform: none;
   }
   /* Un interruptor con su texto (p. ej. «Varias filas» de una relación). */
-  :is(.db-col-add-field, .share-panel, .tpl-ajustes) .db-switch-row {
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes, .perm-ficha) .db-switch-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -3323,7 +3324,7 @@
   .db-switch-text { display: grid; gap: 2px; min-width: 0; }
   .db-switch-title { font-weight: 500; }
   .db-switch-note { font-size: 11.5px; color: var(--ink-muted); line-height: 1.35; }
-  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch {
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes, .perm-ficha) input.db-switch {
     appearance: none;
     -webkit-appearance: none;
     flex: none;
@@ -3339,7 +3340,7 @@
     cursor: pointer;
     transition: background-color var(--dur-fast) var(--ease-std);
   }
-  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch::after {
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes, .perm-ficha) input.db-switch::after {
     content: "";
     position: absolute;
     top: 2px;
@@ -3351,9 +3352,9 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     transition: transform var(--dur-fast) var(--ease-std);
   }
-  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch:checked { background: var(--accent); }
-  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch:checked::after { transform: translateX(12px); }
-  :is(.db-col-add-field, .share-panel, .tpl-ajustes) input.db-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes, .perm-ficha) input.db-switch:checked { background: var(--accent); }
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes, .perm-ficha) input.db-switch:checked::after { transform: translateX(12px); }
+  :is(.db-col-add-field, .share-panel, .tpl-ajustes, .perm-ficha) input.db-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .db-prop-new .db-col-add-actions { padding: 6px 4px 2px; }
   @media (max-width: 768px) {
     .db-type-option { min-height: 44px; }
@@ -7362,6 +7363,27 @@
   .note-head .note-icon-btn.is-app-icon { color: var(--ink-muted); }
   .note-head .note-icon-btn.is-app-icon .svg-icon { width: 52px; height: 52px; stroke-width: 1.5; }
   .type-icon .svg-icon, .home-recent-icon .svg-icon { flex: none; }
+  /* Ficha de permisos de una persona (Ajustes → Usuarios → Permisos). */
+  dialog.perm-ficha { width: min(560px, calc(100vw - 24px)); max-height: min(86vh, 820px); padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+  dialog.perm-ficha:not([open]) { display: none; }
+  .perm-ficha > .form-note { padding: 20px; }
+  .perm-ficha-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--panel-border); }
+  .perm-ficha-title { font-size: 17px; }
+  .perm-ficha-body { overflow-y: auto; padding: 14px 20px 18px; display: grid; gap: 18px; }
+  .perm-ficha-block { display: grid; gap: 8px; }
+  .perm-ficha .perm-list { border: 1px solid var(--panel-border); border-radius: 12px; }
+  .perm-ficha .perm-row select { margin-left: auto; width: auto; min-width: 0; }
+  .perm-ficha .perm-row .perm-scope { margin-left: auto; }
+  .perm-ficha .perm-row-add select:first-child { flex: 1; margin-left: 0; }
+  .perm-ficha-cap { border: 1px solid var(--panel-border); border-radius: 12px; padding: 4px 12px; display: grid; gap: 4px; }
+  .perm-ficha-cap .perm-chips { padding: 0 0 8px 42px; }
+  .perm-ficha .db-switch-row { gap: 12px; padding: 8px 0; font-size: 13.5px; }
+  .perm-ficha .db-switch-row .perm-icon { flex: none; }
+  .perm-ficha .db-switch-text { flex: 1; }
+  .perm-chip-x { display: inline-flex; margin: 0 -4px 0 4px; padding: 0; border: 0; background: none; color: var(--ink-muted); cursor: pointer; vertical-align: middle; }
+  .perm-chip-x .svg-icon { width: 12px; height: 12px; }
+  .perm-ficha .perm-scope { max-width: none; }
+  .ws-leave { justify-self: start; margin-top: 10px; }
   /* Paso 2 de «Nueva base»: ajustes de Proyectos y Tareas. */
   .tpl-ajustes { display: grid; gap: 14px; }
   .tpl-ajustes h3 { margin-bottom: 0; }
@@ -7782,6 +7804,7 @@
         <h3 id="settings-title">Ajustes</h3>
         <p class="settings-nav-group">Cuenta</p>
         <button type="button" class="settings-tab" data-section="perfil"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-user"/></svg><span>Perfil</span></button>
+        <button type="button" class="settings-tab" data-section="workspaces"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-layers"/></svg><span>Espacios</span></button>
         <button type="button" class="settings-tab" data-section="tokens"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-key"/></svg><span>Captura</span></button>
         <p class="settings-nav-group">Aplicación</p>
         <button type="button" class="settings-tab" data-section="app"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg><span>Apariencia</span></button>
@@ -7789,7 +7812,6 @@
         <p class="settings-nav-group" data-admin hidden>Administración</p>
         <button type="button" class="settings-tab" data-section="users" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users"/></svg><span>Usuarios</span></button>
         <button type="button" class="settings-tab" data-section="groups" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users-group"/></svg><span>Grupos</span></button>
-        <button type="button" class="settings-tab" data-section="workspaces" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-layers"/></svg><span>Espacios</span></button>
         <button type="button" class="settings-tab" data-section="permisos" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-shield"/></svg><span>Permisos</span></button>
         <button type="button" class="settings-tab" data-section="holidays" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg><span>Calendario laboral</span></button>
         <button type="button" class="settings-tab" data-section="audit" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-list"/></svg><span>Auditoría</span></button>
@@ -7984,7 +8006,7 @@
         </section>
         <section class="settings-section" data-section="workspaces" aria-labelledby="settings-workspaces-title" hidden>
           <h4 id="settings-workspaces-title">Espacios</h4>
-          <p class="settings-lead">Cada espacio separa un contexto de trabajo: quien no está en él no ve nada de lo suyo. Los miembros pueden ser personas o grupos.</p>
+          <p class="settings-lead">Cada espacio separa un contexto de trabajo: quien no está en él no ve nada de lo suyo. Aquí están los tuyos: en los que administras eliges quién entra y con qué rol; de los demás puedes salir.</p>
           <div class="settings-group" id="workspaces-group">
             <div id="ws-admin"></div>
             <p class="form-note" id="ws-note"></p>

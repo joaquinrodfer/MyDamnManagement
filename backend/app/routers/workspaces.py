@@ -3,7 +3,9 @@
 - `GET /workspaces`: los espacios en los que el usuario es miembro, con su rol
   y cuántas páginas tienen. `?manage=1`: los que puede gestionar (el
   administrador, también los ajenos no personales, sin entrar en ellos).
-- `POST /workspaces`, `DELETE /workspaces/{id}`: solo superadministrador.
+- `POST /workspaces`: quien tiene «Crear espacios» (por defecto, todos).
+- `DELETE /workspaces/{id}`: solo superadministrador.
+- `POST /workspaces/{id}/leave`: salir de un espacio.
 - `PATCH /workspaces/{id}`: nombre, icono y ajustes; administrador del espacio.
 - `GET /workspaces/{id}/members`, `PUT`/`DELETE /workspaces/{id}/members/...`:
   administrador del espacio.
@@ -94,9 +96,15 @@ def ensure_personal_workspace(user: auth.User = Depends(get_current_user), conn:
 @router.post("/workspaces", status_code=201)
 def create_workspace(
     payload: WorkspaceCreate,
-    user: auth.User = Depends(_superadmin),
+    user: auth.User = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
+    """Un espacio nuevo: el administrador, o quien tiene «Crear espacios» (todo
+    el mundo por defecto). Quien lo crea queda como su administrador."""
+    from app import grants
+
+    if not user.is_admin and not grants.can(conn, user, "create_workspaces"):
+        raise HTTPException(403, "No tienes permiso para crear espacios (pídeselo a un administrador).")
     try:
         created = ws.create(conn, payload.name, payload.icon)
         # Quien lo crea entra como administrador del espacio nuevo.
@@ -304,6 +312,17 @@ def put_member(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     _manager(conn, user, workspace_id)
+    ya_esta = any(
+        m["subject_type"] == subject_type and str(m["subject_id"]) == str(subject_id)
+        for m in ws.members(conn, workspace_id)
+    )
+    if not ya_esta and not user.is_admin:
+        # Cambiar el rol de quien ya está es administrar; meter a alguien nuevo
+        # es invitar, y ese permiso se puede retirar persona a persona.
+        from app import grants
+
+        if not grants.can(conn, user, "invite_people"):
+            raise HTTPException(403, "No tienes permiso para añadir personas a tus espacios (pídeselo a un administrador).")
     try:
         ws.set_member(conn, workspace_id, subject_type, subject_id, payload.role)
     except ws.WorkspaceError as exc:
@@ -326,6 +345,34 @@ def delete_member(
     audit.record(conn, user, "workspace.member_removed", workspace_id=workspace_id,
                  target_type=subject_type, target_id=subject_id)
     return ws.members(conn, workspace_id)
+
+
+@router.post("/workspaces/{workspace_id}/leave", status_code=204)
+def leave_workspace(
+    workspace_id: str,
+    user: auth.User = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """Salir de un espacio. No del personal; no si eres su único
+    administrador (nombra antes a otro); y si estás por un grupo, eso lo cambia
+    quien administra el grupo. Lo que escribiste se queda en el espacio."""
+    fila = ws.get(conn, workspace_id)
+    if fila is None or ws.role_of(conn, user, workspace_id) is None:
+        raise HTTPException(404, "no existe ese espacio")
+    if ws.is_personal(fila):
+        raise HTTPException(400, "De tu espacio personal no se puede salir.")
+    miembros = ws.members(conn, workspace_id)
+    directo = next((m for m in miembros if m["subject_type"] == "user" and str(m["subject_id"]) == str(user.id)), None)
+    if directo is None:
+        raise HTTPException(400, "Estás en este espacio por un grupo: para salir, alguien tiene que sacarte del grupo.")
+    if directo["role"] == "admin":
+        otros = [m for m in miembros if m["role"] == "admin" and m is not directo]
+        if not otros:
+            raise HTTPException(400, "Eres el único administrador del espacio: nombra antes a otra persona administradora.")
+    ws.remove_member(conn, workspace_id, "user", str(user.id))
+    audit.record(conn, user, "workspace.member_left", workspace_id=workspace_id,
+                 target_type="user", target_id=str(user.id))
+    return None
 
 
 # ------------------------------------------------------------------ grupos
