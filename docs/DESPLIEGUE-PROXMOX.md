@@ -198,6 +198,56 @@ alguna versión cambia algo del formato, lo dice el `CHANGELOG` y trae script).
 
 ---
 
+## 5b. Abrirlo a gente de fuera: Notemil como máquina propia del tailnet
+
+Con `tailscale serve` en el host, Notemil comparte IP con todo lo demás del
+servidor: compartir esa máquina con alguien le deja ver también el resto de
+servicios. La salida es darle a Notemil su propio nodo de Tailscale, un
+contenedor más en el compose que solo hace de proxy HTTPS hacia `api`.
+Compartes **ese** nodo (consola → *Machines* → `notemil` → *Share*) y quien lo
+recibe solo llega a Notemil, sin tocar las reglas de acceso.
+
+Añade este servicio al compose (y `ts_state:` en `volumes:`):
+
+```yaml
+  tailscale:
+    image: tailscale/tailscale:v1.104.4   # una versión fija, como la de Notemil
+    container_name: notemil_tailscale
+    hostname: notemil
+    restart: unless-stopped
+    # Sin el arranque estándar de la imagen: su `tailscale up` se rinde al
+    # minuto y, al reiniciarse, genera otra clave y otro enlace de alta (el que
+    # ibas a autorizar deja de valer). Así espera con un solo enlace.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale --socket=/tmp/tailscaled.sock &
+        until tailscale --socket=/tmp/tailscaled.sock status >/dev/null 2>&1 || tailscale --socket=/tmp/tailscaled.sock status 2>&1 | grep -q "Logged out"; do sleep 1; done
+        tailscale --socket=/tmp/tailscaled.sock up --hostname=notemil --timeout=0 || exit 1
+        tailscale --socket=/tmp/tailscaled.sock serve --bg --https=443 http://api:8000 || exit 1
+        wait
+    volumes:
+      - ts_state:/var/lib/tailscale
+    depends_on:
+      - api
+```
+
+1. `docker compose -f docker-compose.prod.yml up -d tailscale`
+2. `docker logs notemil_tailscale` muestra un enlace `https://login.tailscale.com/a/…`:
+   ábrelo con tu cuenta y autoriza la máquina. Solo la primera vez: el estado
+   queda en el volumen `ts_state`.
+3. Pon `PUBLIC_URL: https://notemil.<tu-tailnet>.ts.net` en el compose y
+   `up -d api`: es la dirección que llevan los enlaces de invitación, y adonde
+   se redirige quien entre por `http://IP:8000`.
+4. Comprueba `curl -I https://notemil.<tu-tailnet>.ts.net/login` (200, con
+   `strict-transport-security`).
+
+Va en modo *userspace*: no necesita `/dev/net/tun` ni privilegios, y el nodo
+no enruta hacia nada más (ni es *exit node* ni anuncia subredes). La dirección
+antigua del host sigue funcionando para ti si no quitas su `tailscale serve`.
+
+---
+
 ## 6. Cuando algo va mal
 
 | Síntoma | Qué mirar |
@@ -207,6 +257,7 @@ alguna versión cambia algo del formato, lo dice el `CHANGELOG` y trae script).
 | `pull` da `denied` | falta `docker login ghcr.io` o el token no tiene `read:packages` |
 | `pull` da `manifest unknown` | esa etiqueta no se ha publicado: mira Actions → imagen |
 | La página carga pero vuelve al login en bucle | estás entrando por `http://` y la cookie va `Secure` por detrás de Tailscale: usa la URL `https://…ts.net` |
+| El enlace de alta de `notemil_tailscale` «no funciona» | si el contenedor se reinició, el enlace cambió: vuelve a mirar `docker logs notemil_tailscale` |
 | `bind: address already in use` | algo ocupa el 8000 del host: cambia el puerto publicado en el compose |
 | El contenedor se reinicia solo | `docker compose logs --tail=80 api`: suele ser un vault ilegible o un `.env` mal escrito |
 
