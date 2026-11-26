@@ -356,6 +356,10 @@ class DatabaseFromTemplate(BaseModel):
     # (opcional: una tarea puede no tener proyecto).
     project_database: Optional[uuid.UUID] = None
     section: Optional[Literal["shared", "private"]] = None
+    # Ajustes del panel de creación: la columna de estimación (Proyectos) y las
+    # opciones del tipo (reparto de horas en Tareas, columna «Tareas» en Proyectos).
+    estimate: bool = False
+    options: Optional[dict[str, Any]] = None
 
 
 class RowTemplate(BaseModel):
