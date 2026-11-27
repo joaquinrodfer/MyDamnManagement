@@ -6921,6 +6921,21 @@
   .user-menu-item[data-status] { display: flex; align-items: center; gap: 10px; }
   .user-menu-item[data-status][aria-checked="true"] { background: var(--menu-hover); font-weight: 500; }
   .user-menu-sep { height: 1px; margin: 4px 6px; background: var(--panel-border); }
+  /* Ajustes: buscador del menú y la chuleta de atajos. */
+  .settings-search { position: relative; display: flex; align-items: center; margin: 0 0 6px; }
+  .settings-search .svg-icon { position: absolute; left: 9px; width: 14px; height: 14px; color: var(--ink-muted); pointer-events: none; }
+  dialog.settings-dialog .settings-search input { width: 100%; padding: 6px 8px 6px 30px !important; font: inherit; font-size: 13px; }
+  /* En el móvil los apartados son una fila de pestañas: no cabe; está Ctrl+K. */
+  @media (max-width: 768px) { .settings-search, .settings-search-empty { display: none !important; } }
+  .settings-search-empty { margin: 8px 10px; font-size: 13px; color: var(--ink-muted); }
+  .atajos-lista { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 8px 16px; margin: 6px 0 0; align-items: center; }
+  .atajos-lista dt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--ink-muted); font-size: 12.5px; }
+  .atajos-lista dd { margin: 0; font-size: 13.5px; }
+  .settings-section kbd {
+    display: inline-block; min-width: 20px; padding: 1px 6px; text-align: center; font: inherit; font-size: 12px;
+    border: 1px solid var(--panel-border); border-bottom-width: 2px; border-radius: 5px; background: var(--code-bg); color: var(--ink);
+  }
+  @media (max-width: 600px) { .atajos-lista { grid-template-columns: 1fr; gap: 2px; } .atajos-lista dd { margin-bottom: 8px; } }
   /* Borrado con «Deshacer»: lo borrado se esconde mientras dura el aviso. */
   .is-borrando { display: none !important; }
   .error-toast-action {
@@ -7965,20 +7980,26 @@
     <div class="settings-shell">
       <nav class="settings-nav" aria-label="Apartados de los ajustes">
         <h3 id="settings-title">Ajustes</h3>
-        <p class="settings-nav-group">Cuenta</p>
-        <button type="button" class="settings-tab" data-section="perfil"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-user"/></svg><span>Perfil</span></button>
-        <button type="button" class="settings-tab" data-section="workspaces"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-layers"/></svg><span>Espacios</span></button>
-        <button type="button" class="settings-tab" data-section="tokens"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-key"/></svg><span>Captura</span></button>
-        <p class="settings-nav-group">Aplicación</p>
-        <button type="button" class="settings-tab" data-section="app"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg><span>Apariencia</span></button>
-        <button type="button" class="settings-tab" data-section="info"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg><span>Información</span></button>
+        <div class="settings-search">
+          <svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-search"/></svg><input type="search" id="settings-search" placeholder="Buscar en ajustes…" aria-label="Buscar en los ajustes" autocomplete="off" />
+        </div>
+        <p class="settings-nav-group">Tu cuenta</p>
+        <button type="button" class="settings-tab" data-section="perfil" data-claves="nombre foto avatar contraseña color correo"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-user"/></svg><span>Perfil</span></button>
+        <button type="button" class="settings-tab" data-section="app" data-claves="tema claro oscuro aspecto"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg><span>Apariencia</span></button>
+        <button type="button" class="settings-tab" data-section="atajos" data-claves="teclado teclas combinaciones ctrl"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-key"/></svg><span>Atajos de teclado</span></button>
+        <button type="button" class="settings-tab" data-section="tokens" data-claves="token api captura atajos ios bandeja"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-inbox"/></svg><span>Captura</span></button>
+        <p class="settings-nav-group">Espacios</p>
+        <button type="button" class="settings-tab" data-section="workspaces" data-claves="miembros invitar archivos limite caducidad carga webhook salir"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-layers"/></svg><span>Espacios</span></button>
         <p class="settings-nav-group" data-admin hidden>Administración</p>
-        <button type="button" class="settings-tab" data-section="users" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users"/></svg><span>Usuarios</span></button>
-        <button type="button" class="settings-tab" data-section="groups" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users-group"/></svg><span>Grupos</span></button>
-        <button type="button" class="settings-tab" data-section="permisos" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-shield"/></svg><span>Permisos</span></button>
-        <button type="button" class="settings-tab" data-section="holidays" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg><span>Calendario laboral</span></button>
-        <button type="button" class="settings-tab" data-section="audit" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-list"/></svg><span>Auditoría</span></button>
-        <button type="button" class="settings-tab" data-section="backups" data-admin hidden><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-archive"/></svg><span>Copias de seguridad</span></button>
+        <button type="button" class="settings-tab" data-section="users" data-admin hidden data-claves="personas cuentas invitaciones alta baja contraseña"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users"/></svg><span>Usuarios</span></button>
+        <button type="button" class="settings-tab" data-section="groups" data-admin hidden data-claves="equipos"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-users-group"/></svg><span>Grupos</span></button>
+        <button type="button" class="settings-tab" data-section="permisos" data-admin hidden data-claves="roles accesos"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-shield"/></svg><span>Permisos</span></button>
+        <button type="button" class="settings-tab" data-section="holidays" data-admin hidden data-claves="festivos vacaciones jornada"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg><span>Calendario laboral</span></button>
+        <button type="button" class="settings-tab" data-section="audit" data-admin hidden data-claves="registro historial"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-list"/></svg><span>Auditoría</span></button>
+        <button type="button" class="settings-tab" data-section="backups" data-admin hidden data-claves="copias backup restaurar"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-archive"/></svg><span>Copias de seguridad</span></button>
+        <p class="settings-nav-group">Acerca de</p>
+        <button type="button" class="settings-tab" data-section="info" data-claves="version servidor estado"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg><span>Información</span></button>
+        <p class="settings-search-empty" id="settings-search-empty" hidden>Nada con ese nombre.</p>
       </nav>
       <div class="settings-body">
         <button type="button" class="icon-btn settings-close" id="btn-close-settings" title="Cerrar (Esc)" aria-label="Cerrar los ajustes"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
@@ -7987,6 +8008,44 @@
           <h4 id="settings-info-title">Información</h4>
           <div id="info-content" class="info-content" aria-live="polite">
             <p class="form-note">Cargando…</p>
+          </div>
+        </section>
+
+        <section class="settings-section" data-section="atajos" aria-labelledby="settings-atajos-title" hidden>
+          <h4 id="settings-atajos-title">Atajos de teclado</h4>
+          <p class="form-note">En Mac, <kbd>Ctrl</kbd> es <kbd>⌘</kbd>. Pulsa <kbd>?</kbd> en cualquier sitio (fuera de un texto) para volver aquí.</p>
+          <div class="settings-group atajos">
+            <h5>En toda la app</h5>
+            <dl class="atajos-lista">
+              <dt><kbd>Ctrl</kbd><kbd>K</kbd></dt><dd>Buscar una página, una persona o una acción</dd>
+              <dt><kbd>Ctrl</kbd><kbd>,</kbd></dt><dd>Abrir los ajustes</dd>
+              <dt><kbd>?</kbd></dt><dd>Ver estos atajos</dd>
+              <dt><kbd>G</kbd></dt><dd>Abrir el grafo de enlaces</dd>
+              <dt><kbd>Esc</kbd></dt><dd>Cerrar el panel o el diálogo abierto</dd>
+            </dl>
+          </div>
+          <div class="settings-group atajos">
+            <h5>Escribiendo en una página</h5>
+            <dl class="atajos-lista">
+              <dt><kbd>/</kbd></dt><dd>Menú de bloques (títulos, listas, tablas, bases…)</dd>
+              <dt><kbd>[</kbd><kbd>[</kbd></dt><dd>Enlazar otra página</dd>
+              <dt><kbd>@</kbd></dt><dd>Mencionar a alguien</dd>
+              <dt><kbd>Intro</kbd></dt><dd>Bloque nuevo</dd>
+              <dt><kbd>Mayús</kbd><kbd>Intro</kbd></dt><dd>Salto de línea dentro del bloque</dd>
+              <dt><kbd>Ctrl</kbd><kbd>B</kbd> · <kbd>I</kbd> · <kbd>U</kbd></dt><dd>Negrita, cursiva, subrayado</dd>
+              <dt><kbd>Alt</kbd><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Mover el bloque arriba o abajo</dd>
+              <dt><kbd>Ctrl</kbd><kbd>S</kbd></dt><dd>Guardar ya (se guarda solo igualmente)</dd>
+            </dl>
+          </div>
+          <div class="settings-group atajos">
+            <h5>En la barra lateral y las bases</h5>
+            <dl class="atajos-lista">
+              <dt><kbd>Ctrl</kbd> + clic</dt><dd>Seleccionar varias páginas</dd>
+              <dt><kbd>Mayús</kbd> + clic</dt><dd>Seleccionar un tramo de páginas</dd>
+              <dt><kbd>Ctrl</kbd><kbd>Intro</kbd></dt><dd>Abrir la fila de la tabla como página</dd>
+              <dt><kbd>Ctrl</kbd><kbd>A</kbd></dt><dd>Seleccionar todas las filas visibles</dd>
+              <dt><kbd>Ctrl</kbd><kbd>Z</kbd></dt><dd>Deshacer un arrastre en el calendario</dd>
+            </dl>
           </div>
         </section>
 
