@@ -4795,6 +4795,11 @@ function mostrarApartadoDeAjustes(nombre) {
 
 function openSettings(apartado = "perfil") {
   if (!settingsDialog) return;
+  const buscador = document.getElementById("settings-search");
+  if (buscador?.value) {
+    buscador.value = "";
+    filtrarAjustes("");
+  }
   if (!settingsDialog.open) settingsDialog.showModal();
   mostrarApartadoDeAjustes(apartado);
   settingsDialog.querySelector(".settings-tab.active")?.focus();
@@ -4802,6 +4807,65 @@ function openSettings(apartado = "perfil") {
 
 settingsDialog?.querySelectorAll(".settings-tab").forEach((tab) => {
   tab.addEventListener("click", () => mostrarApartadoDeAjustes(tab.dataset.section));
+});
+
+/** Buscador de Ajustes: filtra los apartados por su nombre, sus palabras
+ * clave y lo que pone dentro (títulos y etiquetas). Intro abre el primero. */
+function filtrarAjustes(texto) {
+  const q = plegarTexto(texto.trim());
+  let alguno = false;
+  const nav = settingsDialog.querySelector(".settings-nav");
+  nav.querySelectorAll(".settings-tab").forEach((tab) => {
+    if (tab.dataset.admin !== undefined && tab.dataset.adminVisible === undefined) {
+      // Lo que pinta paintUserChip: se apunta para no enseñar lo que no toca.
+      tab.dataset.adminVisible = String(!tab.hidden);
+    }
+    const permitido = tab.dataset.admin === undefined || tab.dataset.adminVisible === "true";
+    const seccion = settingsDialog.querySelector(`.settings-section[data-section="${tab.dataset.section}"]`);
+    const dentro = seccion ? [...seccion.querySelectorAll("h4, h5, label, legend")].map((el) => el.textContent).join(" ") : "";
+    const coincide = !q || plegarTexto(`${tab.textContent} ${tab.dataset.claves || ""} ${dentro}`).includes(q);
+    tab.hidden = !permitido || !coincide;
+    if (permitido && coincide) alguno = true;
+  });
+  // Los títulos de grupo, solo si les queda algún apartado debajo.
+  nav.querySelectorAll(".settings-nav-group").forEach((grupo) => {
+    let el = grupo.nextElementSibling;
+    let visible = false;
+    while (el && !el.classList.contains("settings-nav-group")) {
+      if (el.classList.contains("settings-tab") && !el.hidden) visible = true;
+      el = el.nextElementSibling;
+    }
+    grupo.hidden = !visible;
+  });
+  if (!q) nav.querySelectorAll("[data-admin-visible]").forEach((el) => delete el.dataset.adminVisible);
+  const vacio = document.getElementById("settings-search-empty");
+  if (vacio) vacio.hidden = alguno;
+  return alguno;
+}
+
+document.getElementById("settings-search")?.addEventListener("input", (e) => {
+  if (!e.target.value.trim()) {
+    // Sin texto: lo que se ve vuelve a ser lo que tocaba por permisos.
+    filtrarAjustes("");
+    paintUserChip();
+    return;
+  }
+  filtrarAjustes(e.target.value);
+});
+document.getElementById("settings-search")?.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const primera = settingsDialog.querySelector(".settings-nav .settings-tab:not([hidden])");
+  if (primera) mostrarApartadoDeAjustes(primera.dataset.section);
+});
+
+// «?» (fuera de un texto): la chuleta de atajos.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "?" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable='true'], .cm-editor")) return;
+  if (!sessionUser.me || document.querySelector("dialog[open]")) return;
+  e.preventDefault();
+  openSettings("atajos");
 });
 document.getElementById("btn-close-settings")?.addEventListener("click", () => {
   settingsDialog.close();
