@@ -3749,6 +3749,8 @@ let inboxAbierta = false;
 function inboxRow(page) {
   const row = document.createElement("div");
   row.className = "inbox-item";
+  row.dataset.nodeId = page.id;
+  if (paginasBorrandose.has(String(page.id))) row.classList.add("is-borrando");
   row.setAttribute("role", "listitem");
 
   const open = document.createElement("button");
@@ -7269,7 +7271,7 @@ async function reorganizarPagina(node, cuerpo, aviso, cambiaDeEspacio = false) {
 
 function renderTreeNode(node, depth = 1) {
   const wrap = document.createElement("div");
-  wrap.className = "tree-node";
+  wrap.className = paginasBorrandose.has(String(node.id)) ? "tree-node is-borrando" : "tree-node";
   // El envoltorio no aporta nada al árbol de accesibilidad: con role="none"
   // sus hijos (treeitem y group) cuelgan directamente del role="tree".
   wrap.setAttribute("role", "none");
@@ -7446,30 +7448,109 @@ function selectPageRangeTo(node) {
   applyPageSelectionClasses();
 }
 
-async function bulkDeletePages(items) {
-  const label = items.length > 1 ? `estas ${items.length} páginas` : `"${items[0].title}"`;
-  if (!await confirmar(`¿Eliminar ${label}? Esto no se puede deshacer.`)) return;
+// ------------------------------------------------------------ borrar con «Deshacer»
+// Borrar no pregunta «¿Seguro?»: lo borrado desaparece al momento y abajo sale
+// «Deshacer» unos segundos. Solo al acabar ese rato se manda el borrado de
+// verdad, así que deshacer no tiene que recuperar nada del servidor. Si cierras
+// o recargas la página antes, el borrado se manda igualmente (keepalive).
 
-  const currentId = state.current?.id;
-  let currentWasDeleted = false;
+const DESHACER_MS = 7000;
+const borradosPendientes = new Set();
+/** Ids de páginas a la espera de borrarse: si el árbol se repinta mientras
+ * tanto (otro cambio, un evento del servidor), siguen escondidas. */
+const paginasBorrandose = new Set();
 
-  for (const item of items) {
-    try {
-      if (item.type === "database") {
-        await api(`/databases/${item.database_id}`, { method: "DELETE" });
-        if (item.database_id === currentId) currentWasDeleted = true;
-      } else {
-        await api(`/pages/${item.id}`, { method: "DELETE" });
-        if (item.id === currentId) currentWasDeleted = true;
+/** `ocultar()` lo quita de la vista; `restaurar()` lo devuelve; `peticiones` es
+ * la lista de `{url, method}` que lo borran; `alTerminar()` se llama después de
+ * borrar (refrescar). */
+function borrarConDeshacer({ texto, ocultar, restaurar, peticiones, alTerminar }) {
+  const op = { hecho: false };
+  ocultar?.();
+  const ejecutar = async () => {
+    if (op.hecho) return;
+    op.hecho = true;
+    borradosPendientes.delete(op);
+    for (const { url, method, titulo } of peticiones) {
+      try {
+        await api(url, { method });
+      } catch (e) {
+        reportError(titulo ? `No se pudo borrar «${titulo}»` : "No se pudo borrar", e);
       }
-    } catch (e) {
-      reportError(`No se pudo borrar "${item.title}"`, e);
     }
-  }
+    await alTerminar?.();
+  };
+  op.ejecutar = ejecutar;
+  op.alSalir = () => {
+    if (op.hecho) return;
+    op.hecho = true;
+    for (const { url, method } of peticiones) {
+      try {
+        fetch(url, { method, keepalive: true, credentials: "same-origin" });
+      } catch {
+        /* se va la página: no hay a quién avisar */
+      }
+    }
+  };
+  borradosPendientes.add(op);
+  const aviso = showNotice(texto, { sticky: true });
+  const boton = crearEl("button", "error-toast-action", "Deshacer");
+  boton.type = "button";
+  aviso.querySelector(".error-toast-close")?.before(boton);
+  let reloj = setTimeout(() => {
+    aviso.retireToast?.();
+    ejecutar();
+  }, DESHACER_MS);
+  boton.addEventListener("click", () => {
+    clearTimeout(reloj);
+    op.hecho = true;
+    borradosPendientes.delete(op);
+    aviso.retireToast?.();
+    restaurar?.();
+  });
+  // Cerrar el aviso con la ✕ es «vale, bórralo ya».
+  aviso.querySelector(".error-toast-close")?.addEventListener("click", () => {
+    clearTimeout(reloj);
+    ejecutar();
+  });
+}
+
+window.addEventListener("pagehide", () => {
+  for (const op of [...borradosPendientes]) op.alSalir();
+});
+
+async function bulkDeletePages(items) {
+  const label = items.length > 1 ? `${items.length} páginas borradas` : `«${items[0].title}» borrada`;
+  const currentId = state.current?.id;
+  const ids = new Set(items.map((i) => String(i.id)));
+  const actual = items.find((i) => (i.type === "database" ? i.database_id : i.id) === currentId);
+  const filas = () =>
+    [...document.querySelectorAll(".tree-row[data-node-id], .inbox-item[data-node-id]")]
+      .filter((el) => ids.has(el.dataset.nodeId))
+      .map((el) => el.closest(".tree-node") || el);
 
   clearPageSelection();
-  await loadTree();
-  if (currentWasDeleted) volverAlInicio();
+  borrarConDeshacer({
+    texto: `${label}.`,
+    ocultar: () => {
+      ids.forEach((id) => paginasBorrandose.add(id));
+      filas().forEach((el) => el.classList.add("is-borrando"));
+      if (actual) volverAlInicio();
+    },
+    restaurar: () => {
+      ids.forEach((id) => paginasBorrandose.delete(id));
+      filas().forEach((el) => el.classList.remove("is-borrando"));
+      if (actual) goTo(actual.type === "database" ? "database" : "note", currentId);
+    },
+    peticiones: items.map((item) => ({
+      url: item.type === "database" ? `/databases/${item.database_id}` : `/pages/${item.id}`,
+      method: "DELETE",
+      titulo: item.title,
+    })),
+    alTerminar: async () => {
+      await loadTree();
+      ids.forEach((id) => paginasBorrandose.delete(id));
+    },
+  });
 }
 
 // -------------------------------------------------------------- selector de emojis
@@ -12869,6 +12950,8 @@ async function renderDatabase(database, views, activeViewId, { focus = null } = 
   };
 
   const borrarBase = async () => {
+    const nodo = [...state.pagesById.values()].find((n) => n.database_id === database.id);
+    if (nodo) return bulkDeletePages([nodo]);
     if (!await confirmar(`¿Borrar "${database.title}" y todas sus filas? Esto no se puede deshacer.`)) return;
     try {
       await api(`/databases/${database.id}`, { method: "DELETE" });

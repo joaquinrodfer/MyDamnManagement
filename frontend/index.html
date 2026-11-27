@@ -6897,6 +6897,14 @@
   .user-menu-item[data-status] { display: flex; align-items: center; gap: 10px; }
   .user-menu-item[data-status][aria-checked="true"] { background: var(--menu-hover); font-weight: 500; }
   .user-menu-sep { height: 1px; margin: 4px 6px; background: var(--panel-border); }
+  /* Borrado con «Deshacer»: lo borrado se esconde mientras dura el aviso. */
+  .is-borrando { display: none !important; }
+  .error-toast-action {
+    flex: none; align-self: center; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--panel-border);
+    background: none; color: var(--accent-ink); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .error-toast-action:hover { background: var(--menu-hover); }
+  .error-toast-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
   /* Paleta de comandos (Ctrl+K): arriba y centrada, como en Linear o Slack. */
   dialog.cmdk {
