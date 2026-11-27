@@ -1120,7 +1120,7 @@ function seccionDePrimerosPasos(data) {
   const tengoPaginas = Boolean(data?.recent_pages?.length);
   const pasos = [
     { id: "pagina", titulo: "Crea tu primera página", hecho: tengoPaginas || hechos.pagina, hacer: () => createNote(null, "shared", state.workspaceId) },
-    { id: "perfil", titulo: "Ponte una foto o un avatar", hecho: Boolean(yo.avatar), hacer: () => openSettings("perfil") },
+    { id: "perfil", titulo: "Elige tu imagen", hecho: hechos.perfil, hacer: () => openSettings("perfil") },
     { id: "apunta", titulo: "Apunta una idea rápida", hecho: hechos.apunta, hacer: () => abrirApuntaDondeSeVea() },
     { id: "chat", titulo: "Escribe a alguien por el chat", hecho: hechos.chat, hacer: () => abrirPanelDeChat() },
     { id: "paleta", titulo: esMovil() ? "Busca una página, una persona o una acción" : "Busca lo que sea con Ctrl + K", hecho: hechos.paleta, hacer: () => abrirPaleta() },
@@ -4918,6 +4918,7 @@ const selectorDePerfil = montarSelectorDeAvatar(
       sessionUser.me = me;
       rememberUser(me);
       paintUserChip();
+      marcarPrimerPaso("perfil");
       setFormNote(profileAvatarNote, "Imagen guardada.", "ok");
     } catch (e) {
       if (e?.status === 401) return;
