@@ -127,6 +127,13 @@ def update_workspace(
     ajustes = payload.settings
     if ajustes and "chat_min_role" in ajustes and ajustes["chat_min_role"] not in chat.CHAT_ROLES:
         raise HTTPException(400, "Quién ve el chat: lectores (viewer), editores (editor) o administradores (admin).")
+    if ajustes and ("files_max_mb" in ajustes or "chat_files_days" in ajustes):
+        from app import uploads
+
+        try:
+            ajustes = uploads.validate_settings(ajustes)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
     if ajustes and "workload" in ajustes:
         # Cómo cuenta la carga en el espacio (C4 y C5): se comprueba entero.
         try:

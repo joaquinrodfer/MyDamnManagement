@@ -74,7 +74,7 @@ from pathlib import Path
 log = logging.getLogger("mdm.index")
 
 # Subir esto OBLIGA a añadir la migración correspondiente en MIGRATIONS.
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 # El workspace por defecto tiene id fijo: la app no tiene multi-workspace y, si
 # fuera `uuid4()`, borrar el índice y reconstruirlo cambiaría el
@@ -596,6 +596,8 @@ MIGRATIONS: dict[int, list[str]] = {
         " OR (SELECT count(*) FROM chat_members m WHERE m.conversation_id = chat_conversations.id) > 2)",
         lambda conn: _rebuild_notifications_for_chat(conn),
     ],
+    # v30: el aviso `chat_removed` (te han sacado de un grupo).
+    30: [lambda conn: _rebuild_notifications_for_chat(conn)],
 }
 
 
@@ -622,7 +624,7 @@ NOTIFICATIONS_SQL = """CREATE TABLE notifications (
     user_id         TEXT NOT NULL,
     workspace_id    TEXT,
     page_id         TEXT,
-    type            TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update', 'chat_mention', 'chat_added')),
+    type            TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update', 'chat_mention', 'chat_added', 'chat_removed')),
     message         TEXT NOT NULL,
     is_read         INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
@@ -632,10 +634,10 @@ NOTIFICATIONS_SQL = """CREATE TABLE notifications (
 
 
 def _rebuild_notifications_for_chat(conn: sqlite3.Connection) -> None:
-    """Migraciones 25 y 29: `notifications` admite los avisos del chat
-    (`chat_mention`, `chat_added`) y `conversation_id`."""
+    """Migraciones 25, 29 y 30: `notifications` admite los avisos del chat
+    (`chat_mention`, `chat_added`, `chat_removed`) y `conversation_id`."""
     sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'notifications'").fetchone()
-    if sql is None or "chat_added" in sql[0]:
+    if sql is None or "chat_removed" in sql[0]:
         return
     tiene_conversacion = "conversation_id" in sql[0]
     conn.execute("ALTER TABLE notifications RENAME TO notifications_old")
@@ -960,7 +962,7 @@ CREATE TABLE notifications (
     user_id         TEXT NOT NULL,
     workspace_id    TEXT,
     page_id         TEXT,
-    type            TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update', 'chat_mention', 'chat_added')),
+    type            TEXT NOT NULL CHECK (type IN ('mention', 'task_assigned', 'deadline_soon', 'deadline_overdue', 'page_update', 'chat_mention', 'chat_added', 'chat_removed')),
     message         TEXT NOT NULL,
     is_read         INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
@@ -1177,7 +1179,7 @@ CREATE TABLE access_links (
     used_at      TEXT
 );
 
-PRAGMA user_version = 29;
+PRAGMA user_version = 30;
 """
 
 TABLES = ("workspaces", "pages", "databases", "views", "rows", "links")

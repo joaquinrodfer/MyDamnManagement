@@ -106,6 +106,12 @@ def get_file(path: str, request: Request):
         "Content-Disposition": f'{"inline" if media_type else "attachment"}; filename="{safe_name}"',
         "Accept-Ranges": "bytes",
     }
+    if media_type != "application/pdf":
+        # Ni aunque un navegador lo abriera como documento podría ejecutar nada
+        # en el origen de la app (el visor de PDF no admite `sandbox`, y un PDF
+        # ya se abre en el visor aislado del navegador).
+        headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox"
+
     tipo = media_type or "application/octet-stream"
 
     # Rangos (`Range: bytes=…`): sin ellos un vídeo no se puede adelantar. Esta
