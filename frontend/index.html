@@ -6921,6 +6921,37 @@
   .user-menu-item[data-status] { display: flex; align-items: center; gap: 10px; }
   .user-menu-item[data-status][aria-checked="true"] { background: var(--menu-hover); font-weight: 500; }
   .user-menu-sep { height: 1px; margin: 4px 6px; background: var(--panel-border); }
+  /* Barra de abajo del móvil. */
+  .movil-nav { display: none; }
+  @media (max-width: 768px) {
+    .movil-nav {
+      display: grid; grid-template-columns: repeat(5, 1fr); align-items: center;
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+      padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      border-top: 1px solid var(--panel-border);
+    }
+    .movil-nav-btn {
+      position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+      min-height: 52px; padding: 4px 0; border: 0; border-radius: 12px; background: none;
+      color: var(--ink-muted); font: inherit; font-size: 11px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .movil-nav-btn .svg-icon { width: 22px; height: 22px; }
+    .movil-nav-btn[aria-current="page"], .movil-nav-btn[aria-expanded="true"] { color: var(--accent-ink, var(--accent)); }
+    .movil-nav-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+    .movil-nav-apunta { justify-self: center; width: 48px; min-height: 48px; height: 48px; border-radius: 50%; background: var(--accent); color: var(--accent-contrast, #fff) !important; box-shadow: var(--shadow-card); }
+    .movil-nav-apunta .svg-icon { width: 24px; height: 24px; }
+    .movil-nav-badge {
+      position: absolute; top: 4px; left: calc(50% + 6px); min-width: 17px; height: 17px; padding: 0 5px; border-radius: 99px;
+      background: var(--down); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
+    }
+    /* Sustituye al botón redondo; deja sitio debajo del contenido. */
+    .apunta-fab { display: none !important; }
+    #main { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
+    /* Escribiendo (barra de formato) o con el cajón abierto, sobra. */
+    body.with-format-bar .movil-nav, .layout.sidebar-drawer-open .movil-nav { display: none; }
+  }
   /* Ajustes: buscador del menú y la chuleta de atajos. */
   .settings-search { position: relative; display: flex; align-items: center; margin: 0 0 6px; }
   .settings-search .svg-icon { position: absolute; left: 9px; width: 14px; height: 14px; color: var(--ink-muted); pointer-events: none; }
@@ -7754,6 +7785,14 @@
       </div>
 
     </aside>
+    <!-- Barra de abajo del móvil: Inicio, Buscar, Apuntar, Chat y Avisos. -->
+    <nav class="movil-nav" id="movil-nav" aria-label="Navegación principal">
+      <button type="button" class="movil-nav-btn" data-nav="inicio"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-home"/></svg><span>Inicio</span></button>
+      <button type="button" class="movil-nav-btn" data-nav="buscar"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-search"/></svg><span>Buscar</span></button>
+      <button type="button" class="movil-nav-btn movil-nav-apunta" data-nav="apunta" aria-haspopup="dialog" aria-expanded="false" aria-label="Apunta algo"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg></button>
+      <button type="button" class="movil-nav-btn" data-nav="chat"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><span>Chat</span><span class="movil-nav-badge" hidden></span></button>
+      <button type="button" class="movil-nav-btn" data-nav="avisos" id="movil-nav-avisos" aria-haspopup="dialog" aria-expanded="false"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-bell"/></svg><span>Avisos</span><span class="movil-nav-badge" hidden></span></button>
+    </nav>
     <button type="button" class="apunta-fab" id="btn-apunta-fab" aria-haspopup="dialog" aria-expanded="false" aria-label="Apunta algo" title="Apunta algo">
       <svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>
     </button>
