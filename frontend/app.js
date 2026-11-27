@@ -1684,6 +1684,10 @@ function initUserChip() {
     closeMenu();
     logOut();
   });
+  document.getElementById("btn-ajustes")?.addEventListener("click", () => {
+    closeMenu();
+    openSettings();
+  });
 }
 
 /** Pide /auth/me. Un 401 ya lo gestiona api(): manda al login y lanza. */
@@ -25975,6 +25979,14 @@ document.addEventListener("visibilitychange", () => {
 // de TODAS las notas abiertas en la sesión con el cuerpo congelado de cada una
 // -- el texto viejo de una pisaba lo que tuviera ahora su fichero. Si no hay
 // nada pendiente no se manda nada.
+// Ctrl + , (⌘ , en Mac): Ajustes, como en casi todas las aplicaciones.
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "," && sessionUser.me) {
+    e.preventDefault();
+    openSettings();
+  }
+});
+
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s") {
     e.preventDefault();

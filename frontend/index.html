@@ -6266,7 +6266,10 @@
   .apunta-fab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .layout.sidebar-collapsed:not(.sidebar-peek) > .apunta-fab { display: inline-flex; }
   @media (max-width: 768px) {
-    .sidebar-footer { display: none !important; }
+    /* En el móvil «Apunta algo» es el botón redondo; el pie se queda para tu
+       cuenta y los Ajustes, dentro del cajón. */
+    .sidebar-footer .sidebar-apunta { display: none !important; }
+    .sidebar-footer .sidebar-me { margin-top: 0; }
     /* En el móvil «Apunta algo» es el botón redondo de abajo a la derecha, al
        alcance del pulgar (antes no había forma de apuntar fuera del inicio). */
     .apunta-fab {
@@ -6884,6 +6887,13 @@
   .user-chip-status { font-size: 11.5px; font-weight: 400; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .members-me .user-chip .member-av-wrap .member-dot { border-color: color-mix(in srgb, var(--bg) 60%, var(--panel)); }
   .members-me .user-menu { left: 8px; right: 8px; bottom: calc(100% - 2px); }
+  /* Tú, al pie de la barra lateral (debajo de «Apunta algo»). */
+  .sidebar-footer .sidebar-me { margin-top: 6px; padding: 0; border-top: 0; background: none; gap: 4px; }
+  .sidebar-footer .sidebar-me .user-chip { flex: 1 1 auto; min-width: 0; }
+  .sidebar-footer .sidebar-me .user-chip .member-av-wrap .member-dot { border-color: var(--panel); }
+  .sidebar-footer .sidebar-me .user-menu { left: 0; right: 0; bottom: calc(100% + 4px); }
+  .sidebar-settings-btn { flex: none; width: 36px; height: 36px; color: var(--ink-muted); }
+  .sidebar-settings-btn:hover { color: var(--ink); }
   .user-menu-item[data-status] { display: flex; align-items: center; gap: 10px; }
   .user-menu-item[data-status][aria-checked="true"] { background: var(--menu-hover); font-weight: 500; }
   .user-menu-sep { height: 1px; margin: 4px 6px; background: var(--panel-border); }
@@ -7532,6 +7542,7 @@
       <symbol id="i-at" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol>
       <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
       <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
       <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
       <symbol id="i-bell-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8.7 3A6 6 0 0 1 18 8c0 2.7.4 4.7.9 6.2M17 17H3s3-2 3-9c0-.7.1-1.4.3-2"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="m2 2 20 20"/></symbol>
       <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
@@ -7627,11 +7638,36 @@
       </div>
 
       <!-- «Apunta algo»: siempre abajo del panel; lo que escribas va a la
-           bandeja. Con el panel cerrado, el botón flotante «+» hace lo mismo. -->
+           bandeja. Con el panel cerrado, el botón flotante «+» hace lo mismo.
+           Debajo, tú: tu estado y tu menú, y el engranaje de Ajustes. Antes
+           vivía abajo del panel de Miembros y Chat, y al plegarlo no había
+           forma de llegar a los Ajustes. -->
       <div class="sidebar-footer">
         <button type="button" class="sidebar-apunta" id="btn-apunta" aria-haspopup="dialog" aria-expanded="false">
           <svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Apunta algo</span>
         </button>
+        <div class="members-me sidebar-me user-chip-wrap" id="user-chip-wrap" hidden>
+          <button type="button" class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Tu cuenta">
+            <span class="member-av-wrap"><span class="user-avatar" aria-hidden="true"></span><span class="member-dot" id="user-chip-dot" data-status="available"></span></span>
+            <span class="user-chip-text">
+              <span class="user-chip-name"></span>
+              <span class="user-chip-status" id="user-chip-status">Disponible</span>
+            </span>
+            <svg class="svg-icon user-chip-caret" aria-hidden="true" focusable="false"><use href="#i-chevron-down"/></svg>
+          </button>
+          <button type="button" class="icon-btn sidebar-settings-btn" id="btn-ajustes" title="Ajustes (Ctrl + ,)" aria-label="Ajustes" aria-keyshortcuts="Control+Comma"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-settings"/></svg></button>
+          <div class="user-menu" id="user-menu" role="menu" aria-label="Tu cuenta" hidden>
+            <div class="user-menu-label" id="user-status-label">Tu estado</div>
+            <button type="button" class="user-menu-item" role="menuitemradio" data-status="available"><span class="member-dot" data-status="available"></span>Disponible</button>
+            <button type="button" class="user-menu-item" role="menuitemradio" data-status="focus"><span class="member-dot" data-status="focus"></span>En foco (no molestar)</button>
+            <button type="button" class="user-menu-item" role="menuitemradio" data-status="meeting"><span class="member-dot" data-status="meeting"></span>En reunión</button>
+            <button type="button" class="user-menu-item" role="menuitemradio" data-status="custom"><span class="member-dot" data-status="custom"></span>Otro estado…</button>
+            <div class="user-menu-sep" role="separator"></div>
+            <button type="button" class="user-menu-item" role="menuitem" data-action="absences">Mis ausencias</button>
+            <button type="button" class="user-menu-item" role="menuitem" data-action="settings">Ajustes</button>
+            <button type="button" class="user-menu-item is-danger" role="menuitem" data-action="logout">Cerrar sesión</button>
+          </div>
+        </div>
       </div>
 
     </aside>
@@ -7682,27 +7718,6 @@
       <!-- Chat del equipo (docs/PLAN-CHAT.md): la lista de conversaciones o una
            conversación abierta. Lo pinta la sección «chat» de app.js. -->
       <div class="chat-pane" id="chat-pane" role="tabpanel" aria-labelledby="side-tab-chat" hidden></div>
-      <div class="members-me user-chip-wrap" id="user-chip-wrap" hidden>
-        <button type="button" class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Tu cuenta">
-          <span class="member-av-wrap"><span class="user-avatar" aria-hidden="true"></span><span class="member-dot" id="user-chip-dot" data-status="available"></span></span>
-          <span class="user-chip-text">
-            <span class="user-chip-name"></span>
-            <span class="user-chip-status" id="user-chip-status">Disponible</span>
-          </span>
-          <svg class="svg-icon user-chip-caret" aria-hidden="true" focusable="false"><use href="#i-chevron-down"/></svg>
-        </button>
-        <div class="user-menu" id="user-menu" role="menu" aria-label="Tu cuenta" hidden>
-          <div class="user-menu-label" id="user-status-label">Tu estado</div>
-          <button type="button" class="user-menu-item" role="menuitemradio" data-status="available"><span class="member-dot" data-status="available"></span>Disponible</button>
-          <button type="button" class="user-menu-item" role="menuitemradio" data-status="focus"><span class="member-dot" data-status="focus"></span>En foco (no molestar)</button>
-          <button type="button" class="user-menu-item" role="menuitemradio" data-status="meeting"><span class="member-dot" data-status="meeting"></span>En reunión</button>
-          <button type="button" class="user-menu-item" role="menuitemradio" data-status="custom"><span class="member-dot" data-status="custom"></span>Otro estado…</button>
-          <div class="user-menu-sep" role="separator"></div>
-          <button type="button" class="user-menu-item" role="menuitem" data-action="absences">Mis ausencias</button>
-          <button type="button" class="user-menu-item" role="menuitem" data-action="settings">Ajustes</button>
-          <button type="button" class="user-menu-item is-danger" role="menuitem" data-action="logout">Cerrar sesión</button>
-        </div>
-      </div>
     </div>
     <div class="members-scrim" id="members-scrim" hidden></div>
   </div>
