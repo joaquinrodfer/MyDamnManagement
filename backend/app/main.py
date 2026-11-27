@@ -66,6 +66,11 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
+# Un cuerpo de petición enorme se corta antes de llegar a disco (`app.uploads`).
+from app.uploads import BodyLimit  # noqa: E402
+
+app.add_middleware(BodyLimit)
+
 # Permisos (3.0, hito 3): TODOS los routers pasan por la misma guarda
 # (`app.guard`), que es la única que pregunta a `acl.authorize`. Ninguna ruta
 # lleva su propio `if` de permisos; los listados los filtra el repositorio.

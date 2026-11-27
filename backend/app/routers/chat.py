@@ -8,7 +8,8 @@
 - `POST /chat/conversations/{id}/read` `{last_id}`.
 - `POST /chat/direct` `{user_ids}`: abre (o reutiliza) el chat privado con una persona.
 - `POST /chat/groups` `{title, user_ids}`: un grupo nuevo; `PATCH /chat/conversations/{id}` `{title}` lo renombra.
-- `POST /chat/conversations/{id}/members` `{user_ids}`, `DELETE /chat/conversations/{id}/members/me`: solo grupos.
+- `POST /chat/conversations/{id}/members` `{user_ids}`, `DELETE /chat/conversations/{id}/members/me`: solo grupos;
+  `DELETE /chat/conversations/{id}/members/{user_id}`: el administrador del grupo saca a alguien.
 """
 
 from __future__ import annotations
@@ -217,6 +218,26 @@ def leave(conversation_id: str, repo: Repository = Depends(get_repo), user: auth
     return Response(status_code=204)
 
 
+@router.delete("/conversations/{conversation_id}/members/{member_id}", status_code=204)
+def remove_member(
+    conversation_id: str, member_id: str, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)
+):
+    conv = _conv(repo, user, conversation_id)
+    if member_id == "me":
+        return leave(conversation_id, repo, user)
+    antes = chat.participants(repo.conn, conv)
+    try:
+        evento = chat.remove_member(repo.conn, user, conv, member_id)
+    except chat.ChatError as exc:
+        _err(exc)
+    # A quien sale también le llega, para que su lista lo quite al momento.
+    from app.events import bus
+
+    bus.publish({"type": "chat", "action": "members", "conversation_id": conv["id"], "recipients": sorted(antes)})
+    _publish_event(repo, conv, evento)
+    return Response(status_code=204)
+
+
 @router.post("/conversations/{conversation_id}/files", status_code=201)
 async def upload_file(
     conversation_id: str, file: UploadFile, repo: Repository = Depends(get_repo),
@@ -224,15 +245,16 @@ async def upload_file(
 ):
     """Sube un adjunto para un mensaje (CH3). Va a `_attachments/`, como los de
     las páginas, y se sirve igual (`/files/...`): por bytes, nunca por nombre."""
-    from app.routers.pages import MAX_FILE_BYTES
+    from app import uploads
 
-    _conv(repo, user, conversation_id)
-    data = await file.read(MAX_FILE_BYTES + 1)
-    if len(data) > MAX_FILE_BYTES:
-        raise HTTPException(413, f"Máximo {MAX_FILE_BYTES // (1024 * 1024)} MB por archivo")
-    if not data:
-        raise HTTPException(400, "El archivo está vacío")
+    conv = _conv(repo, user, conversation_id)
     nombre = os.path.basename(file.filename or "") or "archivo"
+    try:
+        data = await uploads.read_checked(
+            file, nombre, uploads.max_mb(repo.conn, conv.get("workspace_id")), settings.vault_path
+        )
+    except uploads.UploadRejected as exc:
+        raise HTTPException(exc.status, str(exc)) from None
     ext = attachments.detect_image_format(data)
     if ext is not None:
         kind = "image"

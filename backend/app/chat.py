@@ -9,7 +9,8 @@
   nadie ni se sale de él.
 - **Grupo** (`kind = group`; en el índice, `direct` con `is_group = 1`): con
   nombre, de 2 a `MAX_GROUP` personas (`chat_members`). Cualquiera de dentro
-  añade gente o sale; cada entrada y salida queda como un mensaje del sistema
+  añade gente o sale; quien lo creó (`created_by`, su administrador; si se va,
+  pasa a quien lleve más tiempo dentro) puede además sacar a alguien; cada entrada y salida queda como un mensaje del sistema
   (`event_json`) y quien entra recibe un aviso (`chat_added`).
 - Nadie más, tampoco el administrador de la instalación (plan de roles, R1).
 
@@ -202,6 +203,7 @@ def listing(conn: sqlite3.Connection, user: Any) -> list[dict[str, Any]]:
             item["members"] = list(miembros.values())
             nombres = ", ".join(p["display_name"] for p in otros)
             if conv["kind"] == "group":
+                item["admin_id"] = conv.get("created_by")
                 item["title"] = conv["title"] or nombres or "Grupo"
             else:
                 item["title"] = nombres or "(ya no está)"
@@ -356,6 +358,41 @@ def leave(conn: sqlite3.Connection, user: Any, conv: dict[str, Any]) -> dict[str
         raise ChatError("De un chat privado no se sale.")
     evento = _event(conn, user, conv, "left")
     conn.execute("DELETE FROM chat_members WHERE conversation_id = ? AND user_id = ?", (conv["id"], _uid(user)))
+    _hand_over(conn, conv)
+    return evento
+
+
+def _hand_over(conn: sqlite3.Connection, conv: dict[str, Any]) -> None:
+    """Si el administrador del grupo ya no está, lo es quien lleve más tiempo dentro."""
+    if conn.execute("SELECT 1 FROM chat_members WHERE conversation_id = ? AND user_id = ?",
+                    (conv["id"], conv.get("created_by") or "")).fetchone():
+        return
+    fila = conn.execute("SELECT user_id FROM chat_members WHERE conversation_id = ? ORDER BY joined_at, user_id LIMIT 1",
+                        (conv["id"],)).fetchone()
+    conn.execute("UPDATE chat_conversations SET created_by = ? WHERE id = ?", (fila[0] if fila else None, conv["id"]))
+
+
+def remove_member(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], target_id: str) -> dict[str, Any]:
+    """El administrador del grupo saca a alguien: queda un mensaje en el grupo
+    y la persona recibe un aviso. Devuelve el mensaje del sistema."""
+    from app import notifications
+
+    if conv["kind"] != "group":
+        raise ChatError("Solo se puede sacar a alguien de un grupo.")
+    if conv.get("created_by") != _uid(user):
+        raise ChatError("Solo el administrador del grupo puede sacar a alguien.", 403)
+    target_id = str(target_id)
+    if target_id == _uid(user):
+        raise ChatError("Para irte tú, sal del grupo.")
+    if target_id not in participants(conn, conv):
+        raise ChatError("Esa persona no está en el grupo.", 404)
+    evento = _event(conn, user, conv, "removed", [target_id])
+    conn.execute("DELETE FROM chat_members WHERE conversation_id = ? AND user_id = ?", (conv["id"], target_id))
+    autor = getattr(user, "display_name", None) or "Alguien"
+    notifications.notify(
+        conn, target_id, "chat_removed", f"{autor} te ha sacado del grupo «{conv.get('title') or 'sin nombre'}»",
+        dedupe_key=f"chat-removed:{conv['id']}:{_now()}",
+    )
     return evento
 
 

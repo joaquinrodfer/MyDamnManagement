@@ -37,7 +37,7 @@ from app.events import bus
 
 log = logging.getLogger("app.notifications")
 
-TYPES = ("mention", "task_assigned", "deadline_soon", "deadline_overdue", "page_update", "chat_mention", "chat_added")
+TYPES = ("mention", "task_assigned", "deadline_soon", "deadline_overdue", "page_update", "chat_mention", "chat_added", "chat_removed")
 MODES = ("all", "mentions_only", "muted")
 DEFAULT_MODE = "mentions_only"
 
@@ -337,6 +337,13 @@ class DeadlineWorker(threading.Thread):
             try:
                 creados = scan_deadlines(conn)
                 purge_old(conn)
+                # Los adjuntos del chat son temporales (`app.uploads`).
+                from app import uploads
+
+                try:
+                    uploads.expire_chat_files(conn, settings.vault_path)
+                except Exception:  # noqa: BLE001 - un fallo aquí no para los plazos
+                    log.exception("falló la caducidad de los archivos del chat")
                 from app import activity  # la actividad del inicio se poda con lo mismo
 
                 activity.purge_old(conn)

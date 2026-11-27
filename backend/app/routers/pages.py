@@ -319,13 +319,16 @@ async def upload_file(page_id: uuid.UUID, file: UploadFile, repo: Repository = D
     `audio`, `pdf` o `file`, y `markdown` la línea que el editor inserta
     (`![pie](url)` para una imagen, `[nombre](url)` para lo demás).
     """
-    _get_or_404(repo, page_id)
-    data = await file.read(MAX_FILE_BYTES + 1)
-    if len(data) > MAX_FILE_BYTES:
-        raise HTTPException(413, f"Máximo {MAX_FILE_BYTES // (1024 * 1024)} MB por archivo")
-    if not data:
-        raise HTTPException(400, "El archivo está vacío")
+    from app import uploads
+
+    pagina = _get_or_404(repo, page_id)
     nombre = os.path.basename(file.filename or "") or "archivo"
+    try:
+        data = await uploads.read_checked(
+            file, nombre, uploads.max_mb(repo.conn, getattr(pagina, "workspace_id", None)), settings.vault_path
+        )
+    except uploads.UploadRejected as exc:
+        raise HTTPException(exc.status, str(exc)) from None
     ext = attachments.detect_image_format(data)
     if ext is not None:
         kind = "image"
@@ -358,7 +361,7 @@ async def upload_header_image(
 ):
     _get_or_404(repo, page_id)
 
-    data = await file.read()
+    data = await file.read(MAX_HEADER_IMAGE_BYTES + 1)
     if len(data) > MAX_HEADER_IMAGE_BYTES:
         raise HTTPException(400, f"Máximo {MAX_HEADER_IMAGE_BYTES // (1024 * 1024)} MB")
 

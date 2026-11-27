@@ -2253,6 +2253,49 @@ async function mostrarEnlace(texto, url) {
   showError("Enlace copiado", "info");
 }
 
+/** «Archivos» en los ajustes de un espacio: máximo por archivo y caducidad de los del chat. */
+function seccionDeArchivosDelEspacio(w, nota) {
+  const caja = crearEl("div", "ws-files");
+  const campo = (texto, clave, defecto, max, unidad, ayuda) => {
+    const fila = crearEl("label", "ws-row ws-files-row");
+    const input = crearEl("input");
+    input.type = "number";
+    input.min = "1";
+    input.max = String(max);
+    input.step = "1";
+    input.inputMode = "numeric";
+    input.value = String(w.settings?.[clave] ?? defecto);
+    const valor = crearEl("span", "ws-files-input");
+    valor.append(input, crearEl("span", "", unidad));
+    const textos = crearEl("span", "ws-files-text");
+    textos.append(crearEl("span", "", texto), crearEl("small", "", ayuda));
+    fila.append(textos, valor);
+    input.addEventListener("change", async () => {
+      const n = Math.round(Number(input.value));
+      if (!Number.isFinite(n) || n < 1 || n > max) {
+        setFormNote(nota, `Tiene que ser un número de 1 a ${max}.`, "error");
+        input.value = String(w.settings?.[clave] ?? defecto);
+        return;
+      }
+      try {
+        const nuevo = await api(`/workspaces/${w.id}`, { method: "PATCH", body: JSON.stringify({ settings: { [clave]: n } }) });
+        w.settings = nuevo.settings;
+        input.value = String(n);
+        setFormNote(nota, "Guardado.", "ok");
+      } catch (e) {
+        setFormNote(nota, describeError(e), "error");
+      }
+    });
+    return fila;
+  };
+  caja.append(
+    crearEl("div", "ws-files-head", "Archivos"),
+    campo("Tamaño máximo por archivo", "files_max_mb", 25, 200, "MB", "En las páginas y en el chat de este espacio. Hasta 200 MB."),
+    campo("Los archivos del chat duran", "chat_files_days", 30, 365, "días", "Pasado ese tiempo se borran y queda «caducado»."),
+  );
+  return caja;
+}
+
 /** Pide una línea de texto → el texto o null si se cancela. */
 function pedirTexto(texto, campo = {}) {
   return dialogoPropio({ texto, aceptar: campo.aceptar || "Guardar", campo });
@@ -2793,6 +2836,9 @@ async function pintarCuerpoDeEspacio(cuerpo, w, grupos, usuarios, permisos = nul
     campo.append(crearEl("span", "", "Quién ve el chat del espacio"), sel);
     cuerpo.append(campo);
   }
+
+  // archivos: tamaño máximo y cuánto duran los del chat (app/uploads.py)
+  if (esAdminDelEspacio) cuerpo.append(seccionDeArchivosDelEspacio(w, wsNota));
 
   // cómo cuenta la carga en el espacio (plan de la carga, C4 y C5)
   if (esAdminDelEspacio && !w.personal_of) cuerpo.append(seccionDeCargaDelEspacio(w));
@@ -5484,6 +5530,7 @@ const ICONOS_DE_AVISO = {
   page_update: "i-pencil",
   chat_mention: "i-message",
   chat_added: "i-user-plus",
+  chat_removed: "i-logout",
 };
 
 function pintarPanelDeAvisos() {
@@ -10361,7 +10408,15 @@ function pintarConversacion({ alFinal = false } = {}) {
         reportError("No se pudo salir", e);
       }
     });
-    cab.append(renombrar, anadir, salir);
+    const miembros = crearEl("button", "icon-btn");
+    miembros.type = "button";
+    miembros.innerHTML = svgIcon("i-users");
+    miembros.title = "Miembros del grupo";
+    miembros.setAttribute("aria-label", "Miembros del grupo");
+    miembros.addEventListener("click", () => pintarMiembrosDelGrupo(c));
+    titulo.classList.add("is-clickable");
+    titulo.addEventListener("click", () => pintarMiembrosDelGrupo(c));
+    cab.append(miembros, renombrar, anadir, salir);
   }
   const caja = crearEl("div", "chat-msgs");
   caja.setAttribute("role", "log");
@@ -10444,6 +10499,63 @@ function htmlDeChat(texto) {
   return partes.join("\n").replace(/<\/blockquote>\n/g, "</blockquote>");
 }
 
+/** Quién está en el grupo; su administrador puede sacar a los demás. */
+function pintarMiembrosDelGrupo(c) {
+  chatUI.vista = "miembros";
+  const panel = document.getElementById("chat-pane");
+  if (!panel) return;
+  const yo = sessionUser.me?.id;
+  const soyAdmin = c.admin_id === yo;
+  const cab = crearEl("div", "chat-conv-head");
+  const volver = crearEl("button", "icon-btn");
+  volver.type = "button";
+  volver.innerHTML = svgIcon("i-arrow-left");
+  volver.setAttribute("aria-label", "Volver al grupo");
+  volver.addEventListener("click", () => abrirConversacion(c.id));
+  const titulo = crearEl("span", "chat-conv-title", c.title);
+  titulo.append(crearEl("span", "chat-conv-sub", `${(c.members || []).length} personas`));
+  cab.append(volver, titulo);
+  const lista = crearEl("div", "chat-picker chat-members");
+  const gente = [...(c.members || [])].sort((a, b) =>
+    (b.id === c.admin_id) - (a.id === c.admin_id) || (a.display_name || "").localeCompare(b.display_name || "", "es"),
+  );
+  for (const p of gente) {
+    const fila = crearEl("div", "chat-picker-opt chat-member");
+    const nombre = crearEl("span", "chat-member-name", p.id === yo ? `${p.display_name} (tú)` : p.display_name);
+    fila.append(avatarDeChat(p), nombre);
+    if (p.id === c.admin_id) fila.append(crearEl("span", "chat-member-role", "Administrador"));
+    if (soyAdmin && p.id !== yo) {
+      const sacar = crearEl("button", "btn btn-ghost chat-member-kick", "Sacar");
+      sacar.type = "button";
+      sacar.addEventListener("click", async () => {
+        if (!await confirmar(`¿Sacar a ${p.display_name} de «${c.title}»? Dejará de ver el grupo y recibirá un aviso.`)) return;
+        try {
+          await api(`/chat/conversations/${c.id}/members/${p.id}`, { method: "DELETE" });
+          await cargarChat();
+          const nuevo = chatUI.convs.find((x) => x.id === c.id);
+          if (nuevo) {
+            chatUI.actual = nuevo;
+            pintarMiembrosDelGrupo(nuevo);
+          }
+        } catch (e) {
+          reportError("No se pudo sacar del grupo", e);
+        }
+      });
+      fila.append(sacar);
+    }
+    lista.append(fila);
+  }
+  const nota = crearEl(
+    "p",
+    "chat-members-note",
+    soyAdmin
+      ? "Eres el administrador del grupo: puedes sacar a cualquiera. Si sales, lo será quien lleve más tiempo dentro."
+      : "Cualquiera puede añadir gente o salir; solo el administrador puede sacar a alguien.",
+  );
+  lista.append(nota);
+  panel.replaceChildren(cab, lista);
+}
+
 /** «Ana ha añadido a Luis y Carla», «Luis ha salido del grupo»… */
 function textoDeEventoDeChat(ev, autorId, autorNombre) {
   const yo = sessionUser.me?.id;
@@ -10458,6 +10570,8 @@ function textoDeEventoDeChat(ev, autorId, autorNombre) {
       return `${quien} añadido a ${lista}`;
     case "left":
       return soyYo ? "Has salido del grupo" : `${autorNombre || "Alguien"} ha salido del grupo`;
+    case "removed":
+      return `${quien} sacado a ${lista} del grupo`;
     case "renamed":
       return `${quien} cambiado el nombre a «${ev.title}»`;
     default:
@@ -10564,7 +10678,14 @@ function adjuntosDeMensaje(cuerpo, m) {
   if (!m.attachments?.length) return;
   const caja = crearEl("div", "chat-files");
   for (const a of m.attachments) {
-    if (a.type === "image") {
+    if (a.expired) {
+      // Los archivos del chat son temporales: pasado el plazo queda el nombre.
+      const fila = crearEl("span", "chat-file is-expired");
+      fila.innerHTML = svgIcon("i-clock");
+      fila.append(crearEl("span", "", a.name || "archivo"), crearEl("small", "", "caducado"));
+      fila.title = a.expired_at ? `Caducó el ${new Date(a.expired_at).toLocaleDateString("es-ES")}` : "Archivo caducado";
+      caja.append(fila);
+    } else if (a.type === "image") {
       const enlace = crearEl("a", "chat-file-img");
       enlace.href = a.url;
       enlace.target = "_blank";

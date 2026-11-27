@@ -99,9 +99,11 @@ def test_cualquier_otro_archivo_se_guarda_y_se_descarga(client):
 
 
 def test_un_archivo_demasiado_grande_se_rechaza(client, monkeypatch):
-    from app.routers import pages
+    from app import uploads
 
-    monkeypatch.setattr(pages, "MAX_FILE_BYTES", 10)
+    # El máximo es por espacio, en MB: con «1 MB» de 10 bytes, el PNG no cabe.
+    monkeypatch.setattr(uploads, "MB", 10)
+    monkeypatch.setattr(uploads, "max_mb", lambda conn, ws: 1)
     pid = _nota(client)
     r = client.post(f"/pages/{pid}/files", files={"file": ("grande.png", PNG, "image/png")})
     assert r.status_code == 413
