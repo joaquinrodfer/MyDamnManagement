@@ -1211,6 +1211,10 @@
     font-variant-numeric: tabular-nums;
   }
   .note-savestatus.is-error { color: var(--down); }
+  /* Callado mientras escribes (ver setSaveState): se apaga sin moverse de
+     sitio, para que la barra no salte al aparecer y desaparecer. */
+  .note-savestatus { transition: opacity var(--dur-fast, 0.15s) ease; }
+  .note-savestatus.is-quiet { opacity: 0; pointer-events: none; }
   .note-topbar-right { display: flex; align-items: center; gap: 10px; }
   /* «Compartir» (3.0, hito 3): botón de texto en la barra de la nota y en la
      cabecera de la base; abre el panel de quién puede qué. */
