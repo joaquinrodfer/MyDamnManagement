@@ -6415,6 +6415,30 @@
   .home-link:hover, .home-more:hover { background: var(--accent-soft); }
   .home-more { margin: 2px 0 4px 34px; }
   .home-empty { margin: 4px 4px 10px; color: var(--ink-muted); font-size: 13.5px; line-height: 1.5; }
+  /* Primeros pasos: tarjeta a todo el ancho, encima de las columnas. */
+  .home-pasos-titulo { display: flex; align-items: baseline; gap: 10px; }
+  .home-pasos-cuenta { font-size: 12.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .home-pasos-barra { height: 4px; margin: 0 4px 10px; border-radius: 99px; background: var(--code-bg); overflow: hidden; }
+  .home-pasos-barra > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-normal, 0.2s) ease; }
+  .home-pasos-lista { list-style: none; margin: 0; padding: 0 0 4px; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }
+  .home-paso-btn {
+    width: 100%; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 10px; text-align: left;
+    border: 1px solid var(--panel-border); border-radius: 10px; background: none; color: var(--ink); font: inherit; font-size: 13.5px; cursor: pointer;
+  }
+  .home-paso-btn:hover:not(:disabled) { background: var(--row-hover); border-color: color-mix(in srgb, var(--accent) 40%, var(--panel-border)); }
+  .home-paso-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .home-paso-marca {
+    flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+    border-radius: 50%; border: 1.5px solid var(--ink-muted); color: #fff;
+  }
+  .home-paso-marca .svg-icon { width: 12px; height: 12px; }
+  .home-paso.is-hecho .home-paso-btn { cursor: default; color: var(--ink-muted); }
+  .home-paso.is-hecho .home-paso-texto { text-decoration: line-through; }
+  .home-paso.is-hecho .home-paso-marca { background: var(--accent); border-color: var(--accent); }
+  /* Vacíos que dejan hacer algo. */
+  .empty-state--acciones { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+  .empty-state-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+  .empty-hint-btn { margin-top: 10px; }
 
   .home-task-group { padding: 4px 0 6px; }
   .home-task-group + .home-task-group { border-top: 1px solid var(--panel-border); }
