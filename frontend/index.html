@@ -6898,6 +6898,42 @@
   .user-menu-item[data-status][aria-checked="true"] { background: var(--menu-hover); font-weight: 500; }
   .user-menu-sep { height: 1px; margin: 4px 6px; background: var(--panel-border); }
 
+  /* Paleta de comandos (Ctrl+K): arriba y centrada, como en Linear o Slack. */
+  dialog.cmdk {
+    width: min(620px, calc(100vw - 32px)); max-height: min(560px, calc(100dvh - 120px));
+    margin: 12vh auto auto; padding: 0; display: none; flex-direction: column; overflow: hidden;
+    border-radius: 14px;
+  }
+  dialog.cmdk[open] { display: flex; }
+  .cmdk-cab { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--panel-border); }
+  .cmdk-lupa { display: inline-flex; color: var(--ink-muted); }
+  .cmdk-lupa .svg-icon { width: 18px; height: 18px; }
+  dialog.cmdk .cmdk-input, dialog.cmdk .cmdk-input:focus, dialog.cmdk .cmdk-input:focus-visible {
+    flex: 1; min-width: 0; width: auto; border: 0; border-radius: 0; background: none; color: var(--ink);
+    font: inherit; font-size: 16px; padding: 6px 0; outline: none !important; box-shadow: none !important;
+    border: 0 !important; background: none !important;
+  }
+  .cmdk-kbd, .cmdk-pie kbd {
+    font: inherit; font-size: 11px; color: var(--ink-muted); padding: 1px 6px; border-radius: 5px;
+    border: 1px solid var(--panel-border); background: var(--code-bg);
+  }
+  .cmdk-lista { flex: 1 1 auto; overflow-y: auto; padding: 6px 8px 10px; overscroll-behavior: contain; }
+  .cmdk-grupo { padding: 10px 10px 4px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-muted); }
+  .cmdk-item { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+  .cmdk-item[aria-selected="true"] { background: var(--menu-hover); }
+  .cmdk-ic { flex: none; display: inline-flex; width: 18px; justify-content: center; color: var(--ink-muted); }
+  .cmdk-ic .svg-icon { width: 16px; height: 16px; }
+  .cmdk-texto { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+  .cmdk-titulo, .cmdk-detalle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmdk-detalle { font-size: 12px; color: var(--ink-muted); }
+  .cmdk-vacio { padding: 24px 12px; text-align: center; color: var(--ink-muted); }
+  .cmdk-pie { display: flex; gap: 16px; flex-wrap: wrap; padding: 8px 16px; border-top: 1px solid var(--panel-border); font-size: 12px; color: var(--ink-muted); }
+  .cmdk-pie span { display: inline-flex; align-items: center; gap: 4px; }
+  @media (max-width: 768px) {
+    dialog.cmdk { margin-top: 16px; max-height: calc(100dvh - 32px); }
+    .cmdk-pie { display: none; }
+  }
+
   /* Pantalla estrecha: el panel flota encima, como un cajón por la derecha. */
   @media (max-width: 1100px) {
     .members-aside {
@@ -7566,7 +7602,7 @@
       <div class="sidebar-brand" id="sidebar-brand"><span id="brand-mark"></span><span class="brand-name">Note<span class="brand-name-acento">mil</span></span><span class="sr-only" id="brand-unread"></span><button type="button" class="icon-btn bell-btn" id="btn-avisos" aria-haspopup="dialog" aria-expanded="false" aria-label="Avisos" title="Avisos"><svg class="svg-icon" aria-hidden="true" focusable="false"><use href="#i-bell"/></svg><span class="bell-badge" id="avisos-badge" hidden></span></button></div>
       <div class="workspace-switcher" id="workspace-switcher" hidden></div>
       <div class="sidebar-search">
-        <input type="search" id="search-input" placeholder="Buscar…" />
+        <input type="search" id="search-input" placeholder="Buscar…" title="Para buscar páginas, personas y acciones: Ctrl + K" />
       </div>
       <div id="search-results" class="search-results" hidden></div>
 

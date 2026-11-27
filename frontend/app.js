@@ -11612,7 +11612,11 @@ function pilaGuardada() {
 /** Pinta un destino SIN tocar la dirección. Devuelve si se pudo: si la página
  * no existe (un enlace viejo), no se pinta nada y no se mueve la barra. */
 async function pintar(kind, id, { focus = null } = {}) {
-  if (kind === "database") return selectDatabase(id, { focus });
+  if (kind === "note") anotarRecienteEnPaleta(id);
+  if (kind === "database") {
+    anotarRecienteEnPaleta([...state.pagesById.values()].find((n) => n.database_id === id)?.id);
+    return selectDatabase(id, { focus });
+  }
   if (kind === "mytasks") {
     await showMisTareas();
     return true;
@@ -25930,6 +25934,271 @@ function applyTheme(theme) {
 }
 
 applyTheme(localStorage.getItem(THEME_KEY) || "dark");
+
+// ------------------------------------------------- paleta de comandos (Ctrl+K)
+// Un solo buscador para ir a cualquier sitio y hacer cualquier cosa: páginas
+// (por título, al momento, y por contenido con /search), acciones de la app,
+// apartados de Ajustes y personas con quien hablar. Flechas, Intro y Escape.
+
+const paleta = { dialog: null, input: null, lista: null, items: [], activo: 0, busquedaT: 0, pedida: 0 };
+
+function accionesDePaleta() {
+  const yo = sessionUser.me;
+  const acciones = [
+    { titulo: "Ir a Inicio", icono: "i-home", claves: "home portada", hacer: () => goHome() },
+    { titulo: "Mis tareas", icono: "i-check", claves: "pendientes vencidas", hacer: () => goTo("mytasks") },
+    { titulo: "Carga del equipo", icono: "i-users", claves: "carga trabajo horas", hacer: () => goTo("workload") },
+    { titulo: "Nueva página", icono: "i-plus", claves: "crear nota documento", hacer: () => createNote(null, "shared", state.workspaceId) },
+    { titulo: "Apunta algo", icono: "i-inbox", claves: "bandeja idea rapida", hacer: () => abrirApunta() },
+    { titulo: "Abrir el chat", icono: "i-message", claves: "mensajes conversacion", hacer: () => abrirPanelDeChat() },
+    { titulo: "Ver avisos", icono: "i-bell", claves: "notificaciones", hacer: () => document.getElementById("btn-avisos")?.click() },
+    { titulo: "Abrir el grafo", icono: "i-graph", claves: "enlaces nodos", hacer: () => openGraphView() },
+    {
+      titulo: document.documentElement.dataset.theme === "light" ? "Cambiar a tema oscuro" : "Cambiar a tema claro",
+      icono: document.documentElement.dataset.theme === "light" ? "i-moon" : "i-sun",
+      claves: "tema modo claro oscuro apariencia",
+      hacer: () => applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"),
+    },
+    { titulo: "Mis ausencias", icono: "i-calendar", claves: "vacaciones baja", hacer: () => abrirMisAusencias() },
+  ];
+  // Cada apartado de Ajustes que esta persona puede ver.
+  document.querySelectorAll(".settings-nav .settings-tab").forEach((tab) => {
+    if (tab.hidden || tab.closest("[hidden]")) return;
+    const nombre = tab.textContent.trim();
+    acciones.push({
+      titulo: `Ajustes: ${nombre}`,
+      icono: tab.querySelector("use")?.getAttribute("href")?.slice(1) || "i-settings",
+      claves: "ajustes configuracion preferencias",
+      hacer: () => openSettings(tab.dataset.section),
+    });
+  });
+  if (yo) acciones.push({ titulo: "Cerrar sesión", icono: "i-logout", claves: "salir logout", hacer: () => logOut() });
+  return acciones.map((a) => ({ ...a, grupo: "Acciones" }));
+}
+
+function personasDePaleta() {
+  const yo = String(sessionUser.me?.id ?? "");
+  return [...personasCache.values()]
+    .filter((p) => String(p.id) !== yo && p.active !== false)
+    .map((p) => ({
+      grupo: "Personas",
+      titulo: `Hablar con ${p.display_name || p.username}`,
+      claves: `${p.username || ""} chat privado mensaje`,
+      icono: "i-message",
+      hacer: () => escribirA(p.id),
+    }));
+}
+
+/** Dónde está una página, sin repetir su propio título al final. */
+function rutaCortaDePagina(id) {
+  const partes = String(rutaDePagina(id)).split(" / ");
+  // En la raíz, «Páginas» no dice nada: mejor el espacio donde está.
+  const espacio = state.workspaces?.find((w) => w.id === state.pagesById.get(id)?.workspace_id)?.name;
+  if (espacio && partes[0] === "Páginas") partes[0] = espacio;
+  return partes.length > 1 ? partes.slice(0, -1).join(" / ") : partes[0];
+}
+
+function paginasDePaleta() {
+  return [...state.pagesById.values()]
+    .filter((n) => n && n.title)
+    .map((n) => ({ grupo: "Páginas", titulo: n.title, pagina: n, detalle: rutaCortaDePagina(n.id), hacer: () => navigateToPage(n.id) }));
+}
+
+function puntuar(item, q) {
+  if (!q) return 1;
+  const t = plegarTexto(item.titulo);
+  if (t.startsWith(q)) return 3;
+  if (t.split(/[\s:/·-]+/).some((w) => w.startsWith(q))) return 2.5;
+  if (t.includes(q)) return 2;
+  if (plegarTexto(item.claves || "").includes(q)) return 1;
+  return 0;
+}
+
+function pintarPaleta(extra = []) {
+  const q = plegarTexto(paleta.input.value.trim());
+  const filtrar = (lista, max) =>
+    lista
+      .map((it) => [puntuar(it, q), it])
+      .filter(([p]) => p > 0)
+      .sort((a, b) => b[0] - a[0] || a[1].titulo.localeCompare(b[1].titulo, "es"))
+      .slice(0, max)
+      .map(([, it]) => it);
+  let items;
+  if (!q) {
+    // Sin escribir: lo de siempre a mano. Las páginas abiertas hace poco salen
+    // primero (el historial del navegador no se puede leer; se usa el de la app).
+    const recientes = (state.paletaRecientes || [])
+      .map((id) => state.pagesById.get(id))
+      .filter(Boolean)
+      .slice(0, 5)
+      .map((n) => ({ grupo: "Recientes", titulo: n.title, pagina: n, detalle: rutaCortaDePagina(n.id), hacer: () => navigateToPage(n.id) }));
+    items = [...recientes, ...accionesDePaleta().slice(0, 8)];
+  } else {
+    const paginas = filtrar(paginasDePaleta(), 8);
+    const vistas = new Set(paginas.map((it) => it.pagina.id));
+    items = [
+      ...paginas,
+      ...filtrar(accionesDePaleta(), 6),
+      ...filtrar(personasDePaleta(), 4),
+      ...extra.filter((it) => !vistas.has(it.pagina?.id)),
+    ];
+  }
+  paleta.items = items;
+  paleta.activo = Math.min(paleta.activo, Math.max(0, items.length - 1));
+  paleta.lista.replaceChildren();
+  if (!items.length) {
+    paleta.lista.append(crearEl("div", "cmdk-vacio", "Nada con ese nombre. Prueba con otra palabra."));
+    return;
+  }
+  let grupo = null;
+  items.forEach((it, i) => {
+    if (it.grupo !== grupo) {
+      grupo = it.grupo;
+      paleta.lista.append(crearEl("div", "cmdk-grupo", grupo));
+    }
+    const fila = crearEl("div", "cmdk-item");
+    fila.id = `cmdk-item-${i}`;
+    fila.setAttribute("role", "option");
+    fila.setAttribute("aria-selected", String(i === paleta.activo));
+    const ic = crearEl("span", "cmdk-ic");
+    if (it.pagina) paintPageIcon(ic, it.pagina.type, it.pagina.icon);
+    else ic.innerHTML = svgIcon(it.icono || "i-chevron-right");
+    const texto = crearEl("span", "cmdk-texto");
+    texto.append(crearEl("span", "cmdk-titulo", it.titulo));
+    if (it.detalle && it.detalle !== it.titulo) texto.append(crearEl("span", "cmdk-detalle", it.detalle));
+    fila.append(ic, texto);
+    fila.addEventListener("mousemove", () => {
+      if (paleta.activo !== i) marcarEnPaleta(i);
+    });
+    fila.addEventListener("click", () => ejecutarDePaleta(i));
+    paleta.lista.append(fila);
+  });
+  paleta.input.setAttribute("aria-activedescendant", `cmdk-item-${paleta.activo}`);
+}
+
+function marcarEnPaleta(i) {
+  paleta.activo = i;
+  paleta.lista.querySelectorAll(".cmdk-item").forEach((el, j) => el.setAttribute("aria-selected", String(j === i)));
+  paleta.input.setAttribute("aria-activedescendant", `cmdk-item-${i}`);
+  document.getElementById(`cmdk-item-${i}`)?.scrollIntoView({ block: "nearest" });
+}
+
+function ejecutarDePaleta(i) {
+  const it = paleta.items[i];
+  if (!it) return;
+  paleta.dialog.close();
+  Promise.resolve()
+    .then(() => it.hacer())
+    .catch((e) => reportError(`No se pudo «${it.titulo}»`, e));
+}
+
+/** Por contenido: lo que /search encuentre y el título no. */
+function buscarEnContenidoDePaleta() {
+  clearTimeout(paleta.busquedaT);
+  const q = paleta.input.value.trim();
+  if (q.length < 2) return;
+  const pedida = ++paleta.pedida;
+  paleta.busquedaT = setTimeout(async () => {
+    try {
+      const res = await api(`/search?q=${encodeURIComponent(q)}`);
+      if (pedida !== paleta.pedida || !paleta.dialog.open) return;
+      const extra = (Array.isArray(res) ? res : []).slice(0, 6).map((r) => {
+        const nodo = state.pagesById.get(r.id) || { id: r.id, type: r.type, icon: r.icon, title: r.title };
+        // Una fila de base no está en el árbol: se dice de qué base es.
+        const base = state.pagesById.has(r.id)
+          ? null
+          : [...state.pagesById.values()].find((n) => n.type === "database" && r.database_id && n.database_id === r.database_id);
+        const detalle = state.pagesById.has(r.id) ? rutaCortaDePagina(r.id) : base ? `Fila de ${base.title}` : "";
+        return { grupo: "En el contenido", titulo: r.title, pagina: nodo, detalle, hacer: () => navigateToPage(r.id) };
+      });
+      pintarPaleta(extra);
+    } catch {
+      /* el título ya se ha buscado; por contenido, simplemente no hay más */
+    }
+  }, 220);
+}
+
+function montarPaleta() {
+  const dialog = crearEl("dialog", "cmdk");
+  dialog.setAttribute("aria-label", "Buscar o hacer algo");
+  const cab = crearEl("div", "cmdk-cab");
+  const lupa = crearEl("span", "cmdk-lupa");
+  lupa.innerHTML = svgIcon("i-search");
+  const input = crearEl("input", "cmdk-input");
+  input.type = "text";
+  input.placeholder = "Busca una página, una persona o algo que hacer…";
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-controls", "cmdk-lista");
+  input.setAttribute("aria-autocomplete", "list");
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  cab.append(lupa, input, crearEl("kbd", "cmdk-kbd", "Esc"));
+  const lista = crearEl("div", "cmdk-lista");
+  lista.id = "cmdk-lista";
+  lista.setAttribute("role", "listbox");
+  const pie = crearEl("div", "cmdk-pie");
+  pie.innerHTML = "<span><kbd>↑</kbd><kbd>↓</kbd> moverse</span><span><kbd>Intro</kbd> abrir</span><span><kbd>Ctrl</kbd><kbd>K</kbd> abrir y cerrar</span>";
+  dialog.append(cab, lista, pie);
+  document.body.append(dialog);
+  input.addEventListener("input", () => {
+    paleta.activo = 0;
+    pintarPaleta();
+    buscarEnContenidoDePaleta();
+  });
+  input.addEventListener("keydown", (e) => {
+    const n = paleta.items.length;
+    if (e.key === "ArrowDown" && n) {
+      e.preventDefault();
+      marcarEnPaleta((paleta.activo + 1) % n);
+    } else if (e.key === "ArrowUp" && n) {
+      e.preventDefault();
+      marcarEnPaleta((paleta.activo - 1 + n) % n);
+    } else if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      ejecutarDePaleta(paleta.activo);
+    }
+  });
+  // Clic en el fondo: se cierra.
+  dialog.addEventListener("click", (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+  Object.assign(paleta, { dialog, input, lista });
+}
+
+function abrirPaleta() {
+  if (!sessionUser.me) return;
+  if (!paleta.dialog) montarPaleta();
+  if (paleta.dialog.open) {
+    paleta.dialog.close();
+    return;
+  }
+  // Otro diálogo abierto (Ajustes, una ficha…): no se apila encima.
+  if (document.querySelector("dialog[open]")) return;
+  cargarPersonas().catch(() => {});
+  paleta.input.value = "";
+  paleta.activo = 0;
+  pintarPaleta();
+  paleta.dialog.showModal();
+  paleta.input.focus();
+}
+
+// Las páginas que abres se apuntan para «Recientes» (solo en esta sesión).
+function anotarRecienteEnPaleta(id) {
+  if (!id) return;
+  const lista = (state.paletaRecientes || []).filter((x) => x !== id);
+  lista.unshift(id);
+  state.paletaRecientes = lista.slice(0, 10);
+}
+
+document.addEventListener("keydown", (e) => {
+  // En Mac, ⌘K: Ctrl+K allí es «borrar hasta el final de la línea» en el editor.
+  const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? e.metaKey : e.ctrlKey || e.metaKey;
+  if (mod && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
+    e.preventDefault();
+    abrirPaleta();
+  }
+});
 
 // -------------------------------------------------------------------- arranque
 
