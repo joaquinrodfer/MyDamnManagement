@@ -5774,22 +5774,27 @@ function pintarPanelDeAvisos() {
   }
 }
 
+/** Abre (o cierra) el panel de avisos colgado de `ancla`: la campana de la
+ * barra lateral o, en el móvil, el botón de la barra de abajo (allí sube como
+ * hoja a todo el ancho). */
+async function alternarAvisos(ancla) {
+  if (ancla.getAttribute("aria-expanded") === "true") {
+    cerrarPanelDeColumna({ foco: true });
+    return;
+  }
+  const panel = crearEl("div", "avisos-panel");
+  panel.id = "avisos-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Avisos");
+  abrirPanelFlotante(ancla, panel, { etiqueta: "Avisos", alCerrar: () => panel.remove(), hoja: esMovil() });
+  pintarPanelDeAvisos();
+  await cargarAvisos();
+}
+
 function initAvisos() {
   const boton = document.getElementById("btn-avisos");
   if (!boton) return;
-  boton.addEventListener("click", async () => {
-    if (boton.getAttribute("aria-expanded") === "true") {
-      cerrarPanelDeColumna({ foco: true });
-      return;
-    }
-    const panel = crearEl("div", "avisos-panel");
-    panel.id = "avisos-panel";
-    panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-label", "Avisos");
-    abrirPanelFlotante(boton, panel, { etiqueta: "Avisos", alCerrar: () => panel.remove() });
-    pintarPanelDeAvisos();
-    await cargarAvisos();
-  });
+  boton.addEventListener("click", () => alternarAvisos(boton));
   cargarAvisos();
   contarSinLeerDelChat();
   // Respaldo del canal de eventos: por si la conexión se cae sin que nadie se entere.
@@ -11887,6 +11892,7 @@ function pilaGuardada() {
  * no existe (un enlace viejo), no se pinta nada y no se mueve la barra. */
 async function pintar(kind, id, { focus = null } = {}) {
   if (kind === "note") anotarRecienteEnPaleta(id);
+  queueMicrotask(() => pintarNavMovil());
   if (kind === "database") {
     anotarRecienteEnPaleta([...state.pagesById.values()].find((n) => n.database_id === id)?.id);
     return selectDatabase(id, { focus });
@@ -26228,7 +26234,7 @@ function accionesDePaleta() {
     { titulo: "Nueva página", icono: "i-plus", claves: "crear nota documento", hacer: () => createNote(null, "shared", state.workspaceId) },
     { titulo: "Apunta algo", icono: "i-inbox", claves: "bandeja idea rapida", hacer: () => abrirApuntaDondeSeVea() },
     { titulo: "Abrir el chat", icono: "i-message", claves: "mensajes conversacion", hacer: () => abrirPanelDeChat() },
-    { titulo: "Ver avisos", icono: "i-bell", claves: "notificaciones", hacer: () => document.getElementById("btn-avisos")?.click() },
+    { titulo: "Ver avisos", icono: "i-bell", claves: "notificaciones", hacer: () => alternarAvisos(esMovil() ? document.getElementById("movil-nav-avisos") : document.getElementById("btn-avisos")) },
     { titulo: "Abrir el grafo", icono: "i-graph", claves: "enlaces nodos", hacer: () => openGraphView() },
     {
       titulo: document.documentElement.dataset.theme === "light" ? "Cambiar a tema oscuro" : "Cambiar a tema claro",
@@ -26477,6 +26483,60 @@ document.addEventListener("keydown", (e) => {
     abrirPaleta();
   }
 });
+
+// ------------------------------------------------------- barra de abajo (móvil)
+// En el móvil, lo que más se usa queda al alcance del pulgar: Inicio, Buscar
+// (la paleta), Apuntar, Chat y Avisos, con sus contadores. Sustituye al botón
+// redondo de «Apunta algo». En escritorio no se pinta (CSS).
+
+function pintarNavMovil() {
+  const nav = document.getElementById("movil-nav");
+  if (!nav) return;
+  const enInicio = !state.current || state.current.kind === "home";
+  const chatAbierto = !miembrosOcultos() && document.getElementById("members-aside")?.classList.contains("is-chat");
+  nav.querySelector('[data-nav="inicio"]')?.setAttribute("aria-current", enInicio && !chatAbierto ? "page" : "false");
+  nav.querySelector('[data-nav="chat"]')?.setAttribute("aria-current", chatAbierto ? "page" : "false");
+}
+
+function copiarContador(origenId, destino) {
+  const origen = document.getElementById(origenId);
+  if (!origen || !destino) return;
+  const copiar = () => {
+    destino.hidden = origen.hidden || !origen.textContent.trim();
+    destino.textContent = origen.textContent;
+  };
+  copiar();
+  new MutationObserver(copiar).observe(origen, { attributes: true, childList: true, characterData: true, subtree: true });
+}
+
+function initNavMovil() {
+  const nav = document.getElementById("movil-nav");
+  if (!nav) return;
+  nav.querySelector('[data-nav="inicio"]').addEventListener("click", () => {
+    if (!miembrosOcultos() && esMovil()) setMiembrosOcultos(true, { recordar: false });
+    goHome();
+  });
+  nav.querySelector('[data-nav="buscar"]').addEventListener("click", () => abrirPaleta());
+  nav.querySelector('[data-nav="apunta"]').addEventListener("click", (e) => abrirApunta(e.currentTarget));
+  nav.querySelector('[data-nav="chat"]').addEventListener("click", () => {
+    const aside = document.getElementById("members-aside");
+    if (!miembrosOcultos() && aside?.classList.contains("is-chat")) setMiembrosOcultos(true, { animar: true, recordar: false });
+    else abrirPanelDeChat();
+    pintarNavMovil();
+  });
+  nav.querySelector('[data-nav="avisos"]').addEventListener("click", (e) => alternarAvisos(e.currentTarget));
+  copiarContador("chat-badge", nav.querySelector('[data-nav="chat"] .movil-nav-badge'));
+  copiarContador("avisos-badge", nav.querySelector('[data-nav="avisos"] .movil-nav-badge'));
+  // El panel de la derecha (Miembros/Chat) se abre y se cierra por muchos
+  // caminos: se mira su clase en vez de enganchar cada uno.
+  const layout = document.querySelector(".layout");
+  const aside = document.getElementById("members-aside");
+  const observar = new MutationObserver(pintarNavMovil);
+  if (layout) observar.observe(layout, { attributes: true, attributeFilter: ["class"] });
+  if (aside) observar.observe(aside, { attributes: true, attributeFilter: ["class"] });
+  pintarNavMovil();
+}
+initNavMovil();
 
 // -------------------------------------------------------------------- arranque
 
