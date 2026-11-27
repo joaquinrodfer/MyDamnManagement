@@ -7935,7 +7935,85 @@ function renderNote(page, backlinks) {
   const saveLabel = document.createElement("span");
   saveStatus.append(saveIcon, saveLabel);
 
+  // El indicador no acompaña cada tecla: mientras escribes no dice nada (salía
+  // «Guardando…» y «Guardado» varias veces por segundo). Se enseña:
+  //  - al terminar una racha larga (mucho texto o mucho rato seguido): ahí sí,
+  //    en vivo, «Guardando…» y luego «Guardado», que se apaga a los segundos;
+  //  - si un guardado tarda en llegar, aunque la racha fuera corta;
+  //  - siempre: el error, la reconexión y el «Solo lectura».
+  const RACHA_PAUSA_MS = 1500; // sin escribir este rato, la racha ha acabado
+  const RACHA_GRANDE_CARACTERES = 200;
+  const RACHA_GRANDE_MS = 15000;
+  const GUARDADO_LENTO_MS = 4000;
+  const GUARDADO_VISIBLE_MS = 2500;
+  let estadoDeGuardado = "saved";
+  let racha = null; // { inicio, caracteres }
+  let finDeRachaT = 0;
+  let lentoT = 0;
+  let apagarT = 0;
+  const mostrarGuardado = (visible) => {
+    clearTimeout(apagarT);
+    saveStatus.classList.toggle("is-quiet", !visible);
+  };
+  const apagarEnUnRato = () => {
+    clearTimeout(apagarT);
+    apagarT = setTimeout(() => saveStatus.classList.add("is-quiet"), GUARDADO_VISIBLE_MS);
+  };
+  const pendiente = () => estadoDeGuardado === "saving" || estadoDeGuardado === "dirty";
+  const vigilarLentitud = () => {
+    clearTimeout(lentoT);
+    lentoT = setTimeout(() => {
+      if (!racha && pendiente()) mostrarGuardado(true);
+    }, GUARDADO_LENTO_MS);
+  };
+  function anotarEscritura(caracteres) {
+    const ahora = Date.now();
+    if (!racha) racha = { inicio: ahora, caracteres: 0 };
+    racha.caracteres += Math.max(1, caracteres);
+    // Vuelves a escribir: lo que estuviera enseñando se calla.
+    if (!["error", "offline", "readonly"].includes(estadoDeGuardado)) mostrarGuardado(false);
+    clearTimeout(finDeRachaT);
+    finDeRachaT = setTimeout(() => {
+      const grande = racha.caracteres >= RACHA_GRANDE_CARACTERES || Date.now() - racha.inicio >= RACHA_GRANDE_MS;
+      racha = null;
+      if (grande && pendiente()) {
+        mostrarGuardado(true);
+      } else if (grande) {
+        // Ya estaba guardado al parar: se dice una vez y se apaga.
+        mostrarGuardado(true);
+        apagarEnUnRato();
+      } else if (pendiente()) {
+        vigilarLentitud();
+      }
+    }, RACHA_PAUSA_MS);
+  }
+  const contarEscritura = (event) => {
+    if (event.type === "paste") {
+      anotarEscritura(event.clipboardData?.getData("text/plain")?.length || 1);
+    } else if (event.type === "drop") {
+      anotarEscritura(event.dataTransfer?.getData("text/plain")?.length || 1);
+    } else {
+      anotarEscritura(typeof event.data === "string" ? event.data.length : 1);
+    }
+  };
+
   function setSaveState(s) {
+    estadoDeGuardado = s;
+    pintarEstadoDeGuardado(s);
+    if (s === "error" || s === "offline" || s === "readonly") {
+      clearTimeout(lentoT);
+      mostrarGuardado(true);
+    } else if (s === "saving" || s === "dirty") {
+      // Durante la racha, callado; fuera de ella (un cambio de propiedad, el
+      // título…), solo si tarda.
+      if (!racha && saveStatus.classList.contains("is-quiet")) vigilarLentitud();
+    } else {
+      clearTimeout(lentoT);
+      if (!saveStatus.classList.contains("is-quiet") && !racha) apagarEnUnRato();
+    }
+  }
+
+  function pintarEstadoDeGuardado(s) {
     saveIcon.innerHTML = "";
     saveStatus.classList.toggle("is-error", s === "error");
     if (s === "saving") {
@@ -7965,6 +8043,8 @@ function renderNote(page, backlinks) {
     // título); lo que sí sale es cuando NO está guardado.
     saveStatus.classList.toggle("is-saved", !["saving", "dirty", "error", "readonly", "offline"].includes(s));
   }
+  saveStatus.setAttribute("role", "status");
+  saveStatus.classList.add("is-quiet");
   setSaveState("saved");
 
   // Los backlinks viven ahora dentro del menú «⋯» de la cabecera (junto a
@@ -8863,6 +8943,9 @@ function renderNote(page, backlinks) {
   pintarIconoDeNota();
   renderHeaderImage();
 
+  for (const zona of [head, bodyMount]) {
+    for (const tipo of ["beforeinput", "paste", "drop"]) zona.addEventListener(tipo, contarEscritura, true);
+  }
   main.append(
     topbar, headerWrap, fileInput, head,
     ...(panelFilaEl ? [panelFilaEl] : []),
