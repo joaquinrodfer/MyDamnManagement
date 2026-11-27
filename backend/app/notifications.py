@@ -37,7 +37,7 @@ from app.events import bus
 
 log = logging.getLogger("app.notifications")
 
-TYPES = ("mention", "task_assigned", "deadline_soon", "deadline_overdue", "page_update", "chat_mention")
+TYPES = ("mention", "task_assigned", "deadline_soon", "deadline_overdue", "page_update", "chat_mention", "chat_added")
 MODES = ("all", "mentions_only", "muted")
 DEFAULT_MODE = "mentions_only"
 

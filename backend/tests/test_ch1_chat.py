@@ -100,11 +100,10 @@ def test_mensajes_directos(client, gente):
     # Ni Carla ni el administrador lo ven.
     assert carla.get(f"/chat/conversations/{d['id']}/messages").status_code == 404
     assert client.get(f"/chat/conversations/{d['id']}/messages").status_code == 404
-    # Se añade a Carla y luego Beto se va.
-    _ok(ana.post(f"/chat/conversations/{d['id']}/members", json={"user_ids": [ids["carla"]]}))
-    assert len(_ok(carla.get(f"/chat/conversations/{d['id']}/messages"))["messages"]) == 1
-    _ok(beto.delete(f"/chat/conversations/{d['id']}/members/me"))
-    assert beto.get(f"/chat/conversations/{d['id']}/messages").status_code == 404
+    # Un chat privado es de dos: ni se añade a nadie ni se sale.
+    assert ana.post(f"/chat/conversations/{d['id']}/members", json={"user_ids": [ids["carla"]]}).status_code == 400
+    assert beto.delete(f"/chat/conversations/{d['id']}/members/me").status_code == 400
+    assert ana.post("/chat/direct", json={"user_ids": [ids["beto"], ids["carla"]]}).status_code == 400
     assert ana.post("/chat/direct", json={"user_ids": []}).status_code == 400
     assert ana.post("/chat/direct", json={"user_ids": ["no-existe"]}).status_code == 404
 
@@ -149,3 +148,63 @@ def test_adjuntos(client, gente):
     assert ana.get(subido["url"]).status_code == 200
     mal = ana.post(f"/chat/conversations/{canal['id']}/messages", json={"body": "x", "attachments": [{"url": "https://malo"}]})
     assert mal.status_code == 400
+
+
+def test_grupos_con_mensajes_del_sistema_y_avisos(client, gente):
+    ana, beto, carla, ids = gente["ana"], gente["beto"], gente["carla"], gente["ids"]
+    assert ana.post("/chat/groups", json={"title": " ", "user_ids": [ids["beto"]]}).status_code == 400
+    g = _ok(ana.post("/chat/groups", json={"title": "Comida  del viernes", "user_ids": [ids["beto"]]}))
+    assert g["kind"] == "group" and g["title"] == "Comida del viernes" and len(g["members"]) == 2
+    # Otro grupo con la misma gente es otro grupo; el privado sigue siendo aparte.
+    g2 = _ok(ana.post("/chat/groups", json={"title": "Otro", "user_ids": [ids["beto"]]}))
+    assert g2["id"] != g["id"]
+    assert _ok(ana.post("/chat/direct", json={"user_ids": [ids["beto"]]}))["id"] not in (g["id"], g2["id"])
+    # Beto recibe el aviso de que le han añadido, que lleva al grupo.
+    aviso = next(a for a in _ok(beto.get("/notifications"))["items"] if a["type"] == "chat_added" and a["conversation_id"] == g["id"])
+    assert aviso["conversation_id"] == g["id"] and "Ana te ha añadido al grupo «Comida del viernes»" in aviso["message"]
+    # Añadir a Carla: mensaje del sistema para los de dentro y aviso para ella.
+    _ok(beto.post(f"/chat/conversations/{g['id']}/members", json={"user_ids": [ids["carla"]]}))
+    assert [a for a in _ok(carla.get("/notifications"))["items"] if a["type"] == "chat_added"]
+    msgs = _ok(ana.get(f"/chat/conversations/{g['id']}/messages"))["messages"]
+    assert [m["event"]["type"] for m in msgs] == ["created", "added"]
+    assert msgs[1]["user_id"] == ids["beto"] and msgs[1]["event"]["users"] == [{"id": ids["carla"], "name": "Carla"}]
+    # Para Ana cuentan como no leídos (los ha hecho otro).
+    assert next(c for c in _ok(ana.get("/chat/conversations")) if c["id"] == g["id"])["unread"] == 1
+    # Un mensaje del sistema no se edita, ni se borra, ni se convierte en tarea.
+    assert beto.patch(f"/chat/messages/{msgs[1]['id']}", json={"body": "x"}).status_code == 403
+    assert beto.delete(f"/chat/messages/{msgs[1]['id']}").status_code == 403
+    # Renombrar y salir también quedan en el grupo.
+    _ok(carla.patch(f"/chat/conversations/{g['id']}", json={"title": "Cena"}))
+    _ok(beto.delete(f"/chat/conversations/{g['id']}/members/me"))
+    assert beto.get(f"/chat/conversations/{g['id']}/messages").status_code == 404
+    msgs = _ok(carla.get(f"/chat/conversations/{g['id']}/messages"))["messages"]
+    assert [m["event"]["type"] for m in msgs][-2:] == ["renamed", "left"]
+    assert msgs[-1]["user_id"] == ids["beto"]
+    lista = next(c for c in _ok(ana.get("/chat/conversations")) if c["id"] == g["id"])
+    assert lista["title"] == "Cena" and lista["last"]["event"]["type"] == "left"
+    # Al canal de un espacio no se añade gente a mano.
+    canal = _canal(ana, "Desarrollo")
+    assert ana.post(f"/chat/conversations/{canal['id']}/members", json={"user_ids": [ids["carla"]]}).status_code == 400
+
+
+def test_la_migracion_29_convierte_en_grupo_los_directos_de_mas_de_dos(tmp_path):
+    import sqlite3
+
+    from app import index as index_mod
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(index_mod.CHAT_SQL)
+    conn.execute("CREATE TABLE notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT,"
+                 " page_id TEXT, type TEXT NOT NULL CHECK (type IN ('mention', 'chat_mention')), message TEXT NOT NULL,"
+                 " is_read INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, dedupe_key TEXT, conversation_id TEXT)")
+    conn.execute("INSERT INTO notifications VALUES ('n1', 'u1', NULL, NULL, 'chat_mention', 'hola', 0, 'x', NULL, 'c2')")
+    for cid, gente in (("c2", ["a", "b"]), ("c3", ["a", "b", "c"])):
+        conn.execute("INSERT INTO chat_conversations (id, kind, created_at) VALUES (?, 'direct', 'x')", (cid,))
+        for u in gente:
+            conn.execute("INSERT INTO chat_members VALUES (?, ?, 'x')", (cid, u))
+    for paso in index_mod.MIGRATIONS[29]:
+        paso(conn) if callable(paso) else conn.execute(paso)
+    assert dict(conn.execute("SELECT id, is_group FROM chat_conversations").fetchall()) == {"c2": 0, "c3": 1}
+    assert conn.execute("SELECT conversation_id FROM notifications").fetchone()[0] == "c2"
+    conn.execute("INSERT INTO notifications (id, user_id, type, message, created_at) VALUES ('n2', 'u', 'chat_added', 'm', 'x')")

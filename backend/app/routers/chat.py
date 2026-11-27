@@ -6,8 +6,9 @@
 - `POST /chat/conversations/{id}/messages` `{body, attachments}`.
 - `PATCH /chat/messages/{id}` `{body}` y `DELETE /chat/messages/{id}`: solo su autor.
 - `POST /chat/conversations/{id}/read` `{last_id}`.
-- `POST /chat/direct` `{user_ids}`: abre (o reutiliza) un directo.
-- `POST /chat/conversations/{id}/members` `{user_ids}`, `DELETE /chat/conversations/{id}/members/me`.
+- `POST /chat/direct` `{user_ids}`: abre (o reutiliza) el chat privado con una persona.
+- `POST /chat/groups` `{title, user_ids}`: un grupo nuevo; `PATCH /chat/conversations/{id}` `{title}` lo renombra.
+- `POST /chat/conversations/{id}/members` `{user_ids}`, `DELETE /chat/conversations/{id}/members/me`: solo grupos.
 """
 
 from __future__ import annotations
@@ -47,6 +48,20 @@ class ReadIn(BaseModel):
 
 class PeopleIn(BaseModel):
     user_ids: list[str]
+
+
+class GroupIn(BaseModel):
+    title: str = Field(default="", max_length=chat.MAX_TITLE + 20)
+    user_ids: list[str]
+
+
+class RenameIn(BaseModel):
+    title: str = Field(default="", max_length=chat.MAX_TITLE + 20)
+
+
+def _publish_event(repo: Repository, conv: dict, msg: Optional[dict]) -> None:
+    if msg is not None:
+        chat.publish(repo.conn, conv, "message", message=msg)
 
 
 def _conv(repo: Repository, user: auth.User, conversation_id: str) -> dict:
@@ -151,16 +166,42 @@ def open_direct(payload: PeopleIn, repo: Repository = Depends(get_repo), user: a
     return next(c for c in chat.listing(repo.conn, user) if c["id"] == conv["id"])
 
 
+@router.post("/groups", status_code=201)
+def create_group(payload: GroupIn, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)):
+    try:
+        conv, evento = chat.create_group(repo.conn, user, payload.title, payload.user_ids)
+    except chat.ChatError as exc:
+        _err(exc)
+    chat.publish(repo.conn, conv, "members")
+    _publish_event(repo, conv, evento)
+    return next(c for c in chat.listing(repo.conn, user) if c["id"] == conv["id"])
+
+
+@router.patch("/conversations/{conversation_id}")
+def rename_group(
+    conversation_id: str, payload: RenameIn, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)
+):
+    conv = _conv(repo, user, conversation_id)
+    try:
+        evento = chat.rename_group(repo.conn, user, conv, payload.title)
+    except chat.ChatError as exc:
+        _err(exc)
+    chat.publish(repo.conn, conv, "members")
+    _publish_event(repo, conv, evento)
+    return next(c for c in chat.listing(repo.conn, user) if c["id"] == conv["id"])
+
+
 @router.post("/conversations/{conversation_id}/members")
 def add_members(
     conversation_id: str, payload: PeopleIn, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)
 ):
     conv = _conv(repo, user, conversation_id)
     try:
-        chat.add_members(repo.conn, user, conv, payload.user_ids)
+        evento = chat.add_members(repo.conn, user, conv, payload.user_ids)
     except chat.ChatError as exc:
         _err(exc)
     chat.publish(repo.conn, conv, "members")
+    _publish_event(repo, conv, evento)
     return next(c for c in chat.listing(repo.conn, user) if c["id"] == conv["id"])
 
 
@@ -168,10 +209,11 @@ def add_members(
 def leave(conversation_id: str, repo: Repository = Depends(get_repo), user: auth.User = Depends(get_current_user)):
     conv = _conv(repo, user, conversation_id)
     try:
-        chat.leave(repo.conn, user, conv)
+        evento = chat.leave(repo.conn, user, conv)
     except chat.ChatError as exc:
         _err(exc)
     chat.publish(repo.conn, conv, "members")
+    _publish_event(repo, conv, evento)
     return Response(status_code=204)
 
 
@@ -244,7 +286,7 @@ def message_to_task(
     from app.routers.databases import create_row
 
     msg = chat.get_message(repo.conn, message_id)
-    if msg is None or msg["deleted"]:
+    if msg is None or msg["deleted"] or msg.get("event"):
         raise HTTPException(404, "no existe ese mensaje")
     conv = _conv(repo, user, msg["conversation_id"])
     try:
@@ -275,7 +317,11 @@ def message_to_task(
         propiedades[roles["end"]] = payload.due
     texto = msg["body"] or ""
     titulo = (payload.title or texto.split("\n")[0] or "Tarea del chat").strip()[:200]
-    donde = f"«{conv_title(repo, conv)}»" if conv["kind"] == "workspace" else "un mensaje directo"
+    donde = (
+        f"«{conv_title(repo, conv)}»" if conv["kind"] == "workspace"
+        else f"el grupo «{conv.get('title') or 'sin nombre'}»" if conv["kind"] == "group"
+        else "un chat privado"
+    )
     autor = (msg.get("author") or {}).get("display_name") or "alguien"
     cuerpo = "\n".join(f"> {linea}" for linea in texto.split("\n")) + f"\n\nDesde el chat ({donde}), de {autor}."
     fila = create_row(

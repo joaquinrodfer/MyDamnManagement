@@ -5483,6 +5483,7 @@ const ICONOS_DE_AVISO = {
   deadline_overdue: "i-alert",
   page_update: "i-pencil",
   chat_mention: "i-message",
+  chat_added: "i-user-plus",
 };
 
 function pintarPanelDeAvisos() {
@@ -9983,13 +9984,21 @@ function pintarListaDeChat() {
   if (!panel) return;
   const cab = crearEl("div", "chat-list-head");
   cab.append(crearEl("span", "home-task-group-head", "Conversaciones"));
-  const nuevo = crearEl("button", "icon-btn");
-  nuevo.type = "button";
-  nuevo.innerHTML = svgIcon("i-plus");
-  nuevo.title = "Mensaje directo nuevo";
-  nuevo.setAttribute("aria-label", "Mensaje directo nuevo");
-  nuevo.addEventListener("click", () => pintarSelectorDeGente());
-  cab.append(nuevo);
+  const privado = crearEl("button", "icon-btn");
+  privado.type = "button";
+  privado.innerHTML = svgIcon("i-message");
+  privado.title = "Chat privado nuevo";
+  privado.setAttribute("aria-label", "Chat privado nuevo");
+  privado.addEventListener("click", () => pintarSelectorDeGente({ modo: "privado" }));
+  const grupo = crearEl("button", "icon-btn");
+  grupo.type = "button";
+  grupo.innerHTML = svgIcon("i-users");
+  grupo.title = "Grupo nuevo";
+  grupo.setAttribute("aria-label", "Grupo nuevo");
+  grupo.addEventListener("click", () => pintarSelectorDeGente({ modo: "grupo" }));
+  const botones = crearEl("span", "chat-list-btns");
+  botones.append(privado, grupo);
+  cab.append(botones);
   // Buscar en el chat (CH4): en las conversaciones que veo.
   const campo = crearEl("label", "chat-search");
   campo.innerHTML = svgIcon("i-search");
@@ -10005,14 +10014,16 @@ function pintarListaDeChat() {
   });
   const lista = crearEl("div", "chat-list");
   const canales = chatUI.convs.filter((c) => c.kind === "workspace");
-  const directos = chatUI.convs.filter((c) => c.kind === "direct");
+  const grupos = chatUI.convs.filter((c) => c.kind === "group");
+  const privados = chatUI.convs.filter((c) => c.kind === "direct");
   if (!chatUI.convs.length) {
-    lista.append(crearEl("p", "chat-empty", "Aquí saldrán los canales de tus espacios y tus mensajes directos. Empieza uno con «+»."));
+    lista.append(crearEl("p", "chat-empty", "Aquí saldrán los canales de tus espacios, tus grupos y tus chats privados."));
   }
-  if (canales.length) lista.append(crearEl("div", "chat-section-label", "Espacios"));
-  for (const c of canales) lista.append(itemDeChat(c));
-  if (directos.length) lista.append(crearEl("div", "chat-section-label", "Directos"));
-  for (const c of directos) lista.append(itemDeChat(c));
+  for (const [nombre, convs] of [["Espacios", canales], ["Grupos", grupos], ["Privados", privados]]) {
+    if (!convs.length) continue;
+    lista.append(crearEl("div", "chat-section-label", nombre));
+    for (const c of convs) lista.append(itemDeChat(c));
+  }
   panel.replaceChildren(cab, campo, lista);
 }
 
@@ -10073,11 +10084,15 @@ function itemDeChat(c) {
   b.type = "button";
   if (c.kind === "workspace") {
     b.append(iconoDeEspacio({ name: c.title }));
+  } else if (c.kind === "group") {
+    const ic = crearEl("span", "chat-group-ic");
+    ic.innerHTML = svgIcon("i-users");
+    b.append(ic);
   } else {
     const yo = sessionUser.me?.id;
     const otros = (c.members || []).filter((p) => p.id !== yo);
-    const avs = crearEl("span", `chat-item-avs${otros.length > 1 ? " is-group" : ""}`);
-    for (const p of (otros.length ? otros : c.members || []).slice(0, 2)) avs.append(avatarDeChat(p));
+    const avs = crearEl("span", "chat-item-avs");
+    for (const p of (otros.length ? otros : c.members || []).slice(0, 1)) avs.append(avatarDeChat(p));
     b.append(avs);
   }
   const texto = crearEl("span", "chat-item-text");
@@ -10089,7 +10104,9 @@ function itemDeChat(c) {
       .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, t, a) => a || t)
       .replace(/[*`>]/g, "")
       .trim();
-    ultimo = c.last.deleted ? `${quien}: mensaje borrado` : `${quien}: ${limpio || "adjunto"}`;
+    ultimo = c.last.event
+      ? textoDeEventoDeChat(c.last.event, c.last.user_id, c.last.author_name)
+      : c.last.deleted ? `${quien}: mensaje borrado` : `${quien}: ${limpio || "adjunto"}`;
   }
   texto.append(crearEl("span", "chat-item-last", ultimo));
   const lado = crearEl("span", "chat-item-side");
@@ -10100,19 +10117,32 @@ function itemDeChat(c) {
   return b;
 }
 
-/** «Mensaje directo nuevo»: elegir personas y abrir (o reutilizar) el directo. */
-async function pintarSelectorDeGente(alElegir = null, titulo = "Mensaje directo nuevo") {
+/** Elegir gente para el chat:
+ * - `privado`: una persona; al tocarla se abre (o se reutiliza) el chat privado.
+ * - `grupo`: nombre y personas; crea un grupo.
+ * - `anadir`: personas que aún no están en el grupo (`excluir`); `alElegir(ids)`. */
+async function pintarSelectorDeGente({ modo = "privado", alElegir = null, excluir = [] } = {}) {
   chatUI.vista = "nuevo";
   const panel = document.getElementById("chat-pane");
   if (!panel) return;
+  const titulo = { privado: "Chat privado nuevo", grupo: "Grupo nuevo", anadir: "Añadir al grupo" }[modo];
   const cab = crearEl("div", "chat-conv-head");
   const volver = crearEl("button", "icon-btn");
   volver.type = "button";
   volver.innerHTML = svgIcon("i-arrow-left");
   volver.setAttribute("aria-label", "Volver");
-  volver.addEventListener("click", () => (chatUI.actual && alElegir ? abrirConversacion(chatUI.actual.id) : pintarListaDeChat()));
+  volver.addEventListener("click", () => (chatUI.actual && modo === "anadir" ? abrirConversacion(chatUI.actual.id) : pintarListaDeChat()));
   cab.append(volver, crearEl("span", "chat-conv-title", titulo));
   const caja = crearEl("div", "chat-picker");
+  let nombre = null;
+  if (modo === "grupo") {
+    nombre = crearEl("input", "chat-group-name");
+    nombre.type = "text";
+    nombre.maxLength = 80;
+    nombre.placeholder = "Nombre del grupo";
+    nombre.setAttribute("aria-label", "Nombre del grupo");
+    caja.append(nombre);
+  }
   // El mismo campo que «Buscar en el chat»: relleno y con la lupa.
   const campo = crearEl("label", "chat-search");
   campo.innerHTML = svgIcon("i-search");
@@ -10122,21 +10152,47 @@ async function pintarSelectorDeGente(alElegir = null, titulo = "Mensaje directo 
   buscar.placeholder = "Buscar persona…";
   buscar.setAttribute("aria-label", "Buscar persona");
   const lista = crearEl("div", "chat-picker-list");
-  const abrir = crearEl("button", "btn btn-primary", "Abrir conversación");
-  abrir.type = "button";
-  abrir.disabled = true;
+  const boton = crearEl("button", "btn btn-primary", modo === "grupo" ? "Crear grupo" : "Añadir");
+  boton.type = "button";
   const elegidas = new Set();
+  const fuera = new Set([String(sessionUser.me?.id), ...excluir.map(String)]);
+  const actualizar = () => {
+    boton.disabled = !elegidas.size || (nombre && !nombre.value.trim());
+    boton.textContent = modo === "grupo"
+      ? "Crear grupo"
+      : elegidas.size > 1 ? `Añadir a ${elegidas.size} personas` : "Añadir";
+  };
+  nombre?.addEventListener("input", actualizar);
   let gente = [];
   try {
-    gente = (await cargarPersonas()).filter((p) => String(p.id) !== String(sessionUser.me?.id));
+    gente = (await cargarPersonas()).filter((p) => !fuera.has(String(p.id)));
   } catch (e) {
     lista.append(crearEl("p", "chat-empty", describeError(e)));
   }
+  const abrirPrivado = async (p) => {
+    try {
+      const conv = await api("/chat/direct", { method: "POST", body: JSON.stringify({ user_ids: [p.id] }) });
+      await cargarChat();
+      await abrirConversacion(conv.id);
+    } catch (e) {
+      reportError("No se pudo abrir la conversación", e);
+    }
+  };
   const pintar = () => {
     const q = plegarTexto(buscar.value.trim());
     lista.replaceChildren();
+    let hay = false;
     for (const p of gente) {
       if (q && !plegarTexto(`${p.display_name} ${p.username}`).includes(q)) continue;
+      hay = true;
+      if (modo === "privado") {
+        const fila = crearEl("button", "chat-picker-opt");
+        fila.type = "button";
+        fila.append(avatarDeChat(p), crearEl("span", "", p.display_name || p.username));
+        fila.addEventListener("click", () => abrirPrivado(p));
+        lista.append(fila);
+        continue;
+      }
       const fila = crearEl("label", "chat-picker-opt");
       const caja2 = crearEl("input");
       caja2.type = "checkbox";
@@ -10144,33 +10200,40 @@ async function pintarSelectorDeGente(alElegir = null, titulo = "Mensaje directo 
       caja2.addEventListener("change", () => {
         if (caja2.checked) elegidas.add(String(p.id));
         else elegidas.delete(String(p.id));
-        abrir.disabled = !elegidas.size;
+        actualizar();
       });
       fila.append(caja2, avatarDeChat(p), crearEl("span", "", p.display_name || p.username));
       lista.append(fila);
     }
+    if (!hay && gente.length) lista.append(crearEl("p", "chat-empty", "Nadie coincide."));
+    if (!gente.length && modo === "anadir") lista.append(crearEl("p", "chat-empty", "Ya están todos en el grupo."));
   };
   buscar.addEventListener("input", pintar);
   pintar();
-  abrir.addEventListener("click", async () => {
-    abrir.disabled = true;
+  actualizar();
+  boton.addEventListener("click", async () => {
+    boton.disabled = true;
     try {
-      if (alElegir) await alElegir([...elegidas]);
-      else {
-        const conv = await api("/chat/direct", { method: "POST", body: JSON.stringify({ user_ids: [...elegidas] }) });
+      if (modo === "grupo") {
+        const conv = await api("/chat/groups", {
+          method: "POST",
+          body: JSON.stringify({ title: nombre.value.trim(), user_ids: [...elegidas] }),
+        });
+        await cargarChat();
         await abrirConversacion(conv.id);
-      }
+      } else await alElegir([...elegidas]);
     } catch (e) {
-      reportError("No se pudo abrir la conversación", e);
-      abrir.disabled = false;
+      reportError(modo === "grupo" ? "No se pudo crear el grupo" : "No se pudo añadir", e);
+      actualizar();
     }
   });
-  caja.append(campo, lista, abrir);
+  if (modo === "privado") caja.append(campo, lista);
+  else caja.append(campo, lista, boton);
   panel.replaceChildren(cab, caja);
-  buscar.focus();
+  (nombre || buscar).focus();
 }
 
-/** Abrir (o crear) el directo con una persona, desde «Miembros». */
+/** Abrir (o crear) el chat privado con una persona, desde «Miembros». */
 async function escribirA(personaId) {
   try {
     const conv = await api("/chat/direct", { method: "POST", body: JSON.stringify({ user_ids: [personaId] }) });
@@ -10240,30 +10303,55 @@ function pintarConversacion({ alFinal = false } = {}) {
   if (c.kind === "workspace") {
     const quien = { viewer: "Todos los miembros del espacio", editor: "Editores y administradores del espacio", admin: "Administradores del espacio" }[c.min_role] || "";
     titulo.append(crearEl("span", "chat-conv-sub", quien));
+  } else if (c.kind === "group") {
+    const nombres = (c.members || []).map((p) => (p.id === sessionUser.me?.id ? "Tú" : p.display_name));
+    const sub = crearEl("span", "chat-conv-sub", `${nombres.length} personas · ${nombres.join(", ")}`);
+    sub.title = nombres.join(", ");
+    titulo.append(sub);
   } else {
-    titulo.append(crearEl("span", "chat-conv-sub", `${(c.members || []).length} personas`));
+    titulo.append(crearEl("span", "chat-conv-sub", "Chat privado"));
   }
   cab.append(volver, titulo);
-  if (c.kind === "direct") {
+  if (c.kind === "group") {
+    const renombrar = crearEl("button", "icon-btn");
+    renombrar.type = "button";
+    renombrar.innerHTML = svgIcon("i-pencil");
+    renombrar.title = "Cambiar el nombre del grupo";
+    renombrar.setAttribute("aria-label", "Cambiar el nombre del grupo");
+    renombrar.addEventListener("click", async () => {
+      const nuevo = await pedirTexto("Nombre del grupo", { valor: c.title, max: 80 });
+      if (!nuevo || !nuevo.trim() || nuevo.trim() === c.title) return;
+      try {
+        await api(`/chat/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ title: nuevo.trim() }) });
+        await cargarChat();
+        await abrirConversacion(c.id);
+      } catch (e) {
+        reportError("No se pudo cambiar el nombre", e);
+      }
+    });
     const anadir = crearEl("button", "icon-btn");
     anadir.type = "button";
     anadir.innerHTML = svgIcon("i-user-plus");
-    anadir.title = "Añadir personas";
-    anadir.setAttribute("aria-label", "Añadir personas");
+    anadir.title = "Añadir al grupo";
+    anadir.setAttribute("aria-label", "Añadir al grupo");
     anadir.addEventListener("click", () =>
-      pintarSelectorDeGente(async (ids) => {
-        await api(`/chat/conversations/${c.id}/members`, { method: "POST", body: JSON.stringify({ user_ids: ids }) });
-        await cargarChat();
-        await abrirConversacion(c.id);
-      }, "Añadir personas"),
+      pintarSelectorDeGente({
+        modo: "anadir",
+        excluir: (c.members || []).map((p) => p.id),
+        alElegir: async (ids) => {
+          await api(`/chat/conversations/${c.id}/members`, { method: "POST", body: JSON.stringify({ user_ids: ids }) });
+          await cargarChat();
+          await abrirConversacion(c.id);
+        },
+      }),
     );
     const salir = crearEl("button", "icon-btn");
     salir.type = "button";
     salir.innerHTML = svgIcon("i-logout");
-    salir.title = "Salir de la conversación";
-    salir.setAttribute("aria-label", "Salir de la conversación");
+    salir.title = "Salir del grupo";
+    salir.setAttribute("aria-label", "Salir del grupo");
     salir.addEventListener("click", async () => {
-      if (!await confirmar("¿Salir de esta conversación? Dejarás de verla.")) return;
+      if (!await confirmar(`¿Salir de «${c.title}»? Dejarás de verlo y los demás verán que has salido.`)) return;
       try {
         await api(`/chat/conversations/${c.id}/members/me`, { method: "DELETE" });
         chatUI.actual = null;
@@ -10273,7 +10361,7 @@ function pintarConversacion({ alFinal = false } = {}) {
         reportError("No se pudo salir", e);
       }
     });
-    cab.append(anadir, salir);
+    cab.append(renombrar, anadir, salir);
   }
   const caja = crearEl("div", "chat-msgs");
   caja.setAttribute("role", "log");
@@ -10318,7 +10406,8 @@ function pintarMensajes(caja) {
       anterior = null;
     }
     const seguido =
-      anterior && anterior.user_id === m.user_id && new Date(m.created_at) - new Date(anterior.created_at) < 5 * 60 * 1000;
+      anterior && !anterior.event && !m.event && anterior.user_id === m.user_id &&
+      new Date(m.created_at) - new Date(anterior.created_at) < 5 * 60 * 1000;
     caja.append(mensajeDeChat(m, !seguido));
     anterior = m;
   }
@@ -10355,7 +10444,37 @@ function htmlDeChat(texto) {
   return partes.join("\n").replace(/<\/blockquote>\n/g, "</blockquote>");
 }
 
+/** «Ana ha añadido a Luis y Carla», «Luis ha salido del grupo»… */
+function textoDeEventoDeChat(ev, autorId, autorNombre) {
+  const yo = sessionUser.me?.id;
+  const soyYo = autorId === yo;
+  const quien = soyYo ? "Has" : `${autorNombre || "Alguien"} ha`;
+  const nombres = (ev.users || []).map((u) => (u.id === yo ? "ti" : u.name));
+  const lista = nombres.length > 1 ? `${nombres.slice(0, -1).join(", ")} y ${nombres.at(-1)}` : nombres[0] || "alguien";
+  switch (ev.type) {
+    case "created":
+      return `${quien} creado el grupo «${ev.title}»`;
+    case "added":
+      return `${quien} añadido a ${lista}`;
+    case "left":
+      return soyYo ? "Has salido del grupo" : `${autorNombre || "Alguien"} ha salido del grupo`;
+    case "renamed":
+      return `${quien} cambiado el nombre a «${ev.title}»`;
+    default:
+      return "";
+  }
+}
+
 function mensajeDeChat(m, primero) {
+  if (m.event) {
+    const fila = crearEl("div", "chat-msg chat-event");
+    fila.dataset.id = String(m.id);
+    const texto = crearEl("span", "", textoDeEventoDeChat(m.event, m.user_id, m.author?.display_name));
+    const hora = crearEl("span", "chat-event-time", horaDeChat(m.created_at));
+    hora.title = new Date(m.created_at).toLocaleString("es-ES");
+    fila.append(texto, hora);
+    return fila;
+  }
   const fila = crearEl("div", `chat-msg${primero ? " is-first" : ""}${m.deleted ? " is-deleted" : ""}`);
   fila.dataset.id = String(m.id);
   const av = avatarDeChat(m.author);
@@ -10828,7 +10947,7 @@ function prepararCompositor(t, caja) {
       disparo = { tipo: "@", desde: hasta - arroba[2].length - 1 };
       const q = plegarTexto(arroba[2]);
       const c = chatUI.actual;
-      let gente = c?.kind === "direct" ? c.members || [] : [...personasCache.values()];
+      let gente = c && c.kind !== "workspace" ? c.members || [] : [...personasCache.values()];
       if (!gente.length) gente = await cargarPersonas().catch(() => []);
       opciones = gente
         .filter((p) => p.username && (!q || plegarTexto(`${p.display_name} ${p.username}`).includes(q)))
@@ -10929,7 +11048,8 @@ function recibirMensaje(msg) {
   caja.querySelector(".chat-empty")?.remove();
   const anterior = chatUI.mensajes[chatUI.mensajes.length - 2];
   const seguido =
-    anterior && anterior.user_id === msg.user_id && new Date(msg.created_at) - new Date(anterior.created_at) < 5 * 60 * 1000;
+    anterior && !anterior.event && !msg.event && anterior.user_id === msg.user_id &&
+    new Date(msg.created_at) - new Date(anterior.created_at) < 5 * 60 * 1000;
   caja.append(mensajeDeChat(msg, !seguido));
   if (abajo || msg.user_id === sessionUser.me?.id) caja.scrollTop = caja.scrollHeight;
   return true;
