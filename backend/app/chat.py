@@ -5,8 +5,12 @@
   miembros con al menos el rol del ajuste del espacio `chat_min_role`
   (`editor` por defecto; `viewer` = todos los miembros, `admin` = solo sus
   administradores). Un lector, por defecto, no lo ve.
-- **Mensaje directo** (`kind = direct`): sus participantes (`chat_members`),
-  hasta `MAX_DIRECT` personas.
+- **Chat privado** (`kind = direct`): dos personas y nada más; no se añade a
+  nadie ni se sale de él.
+- **Grupo** (`kind = group`; en el índice, `direct` con `is_group = 1`): con
+  nombre, de 2 a `MAX_GROUP` personas (`chat_members`). Cualquiera de dentro
+  añade gente o sale; cada entrada y salida queda como un mensaje del sistema
+  (`event_json`) y quien entra recibe un aviso (`chat_added`).
 - Nadie más, tampoco el administrador de la instalación (plan de roles, R1).
 
 Los mensajes viven en el índice (no en el vault: no son notas) y se guardan
@@ -25,7 +29,8 @@ from typing import Any, Iterable, Optional
 
 from app import workspaces as ws_mod
 
-MAX_DIRECT = 8
+MAX_GROUP = 50
+MAX_TITLE = 80
 MAX_BODY = 4000
 PAGE_SIZE = 50
 CHAT_ROLES = ("viewer", "editor", "admin")
@@ -81,7 +86,7 @@ def _rank(role: Optional[str]) -> int:
 
 def participants(conn: sqlite3.Connection, conv: dict[str, Any]) -> set[str]:
     """Quién puede ver la conversación (y recibe sus eventos)."""
-    if conv["kind"] == "direct":
+    if conv["kind"] in ("direct", "group"):
         return {r[0] for r in conn.execute(
             "SELECT user_id FROM chat_members WHERE conversation_id = ?", (conv["id"],)
         )}
@@ -102,7 +107,10 @@ def can_access(conn: sqlite3.Connection, user: Any, conv: dict[str, Any]) -> boo
 
 
 def _conv(row: sqlite3.Row) -> dict[str, Any]:
-    return {k: row[k] for k in row.keys()}
+    conv = {k: row[k] for k in row.keys()}
+    if conv.get("is_group"):
+        conv["kind"] = "group"
+    return conv
 
 
 def get(conn: sqlite3.Connection, conversation_id: str) -> Optional[dict[str, Any]]:
@@ -192,12 +200,15 @@ def listing(conn: sqlite3.Connection, user: Any) -> list[dict[str, Any]]:
             miembros = _people(conn, participants(conn, conv))
             otros = [p for uid, p in miembros.items() if uid != yo]
             item["members"] = list(miembros.values())
-            item["title"] = conv["title"] or ", ".join(p["display_name"] for p in otros) or "Solo tú"
+            nombres = ", ".join(p["display_name"] for p in otros)
+            if conv["kind"] == "group":
+                item["title"] = conv["title"] or nombres or "Grupo"
+            else:
+                item["title"] = nombres or "(ya no está)"
         salida.append(item)
-    salida.sort(key=lambda c: (c["kind"] != "workspace", c["title"].casefold() if c["kind"] == "workspace" else ""))
-    canales = [c for c in salida if c["kind"] == "workspace"]
-    directos = sorted((c for c in salida if c["kind"] == "direct"), key=lambda c: c["updated_at"], reverse=True)
-    return canales + directos
+    canales = sorted((c for c in salida if c["kind"] == "workspace"), key=lambda c: c["title"].casefold())
+    resto = sorted((c for c in salida if c["kind"] != "workspace"), key=lambda c: c["updated_at"], reverse=True)
+    return canales + resto
 
 
 def unread_total(conn: sqlite3.Connection, user: Any) -> int:
@@ -210,26 +221,27 @@ def unread_total(conn: sqlite3.Connection, user: Any) -> int:
 
 
 def open_direct(conn: sqlite3.Connection, user: Any, user_ids: Iterable[str]) -> dict[str, Any]:
-    """El directo con esas personas (y quien pide): el que ya había con
-    exactamente las mismas, o uno nuevo."""
+    """El chat privado con otra persona: el que ya había o uno nuevo. Es de
+    dos; para más gente, un grupo (`create_group`)."""
     yo = _uid(user)
-    gente = {str(u) for u in user_ids if str(u).strip()} | {yo}
-    if len(gente) < 2:
-        raise ChatError("Elige al menos a una persona.")
-    if len(gente) > MAX_DIRECT:
-        raise ChatError(f"Un mensaje directo es para {MAX_DIRECT} personas como mucho.")
-    if len(_people(conn, gente)) != len(gente):
-        raise ChatError("Alguna de esas personas no existe.", 404)
+    otros = {str(u) for u in user_ids if str(u).strip()} - {yo}
+    if not otros:
+        raise ChatError("Elige a una persona.")
+    if len(otros) > 1:
+        raise ChatError("Un chat privado es entre dos personas: para hablar con varias, crea un grupo.")
+    if len(_people(conn, otros)) != 1:
+        raise ChatError("Esa persona no existe.", 404)
+    gente = otros | {yo}
     for (cid,) in conn.execute(
         "SELECT c.id FROM chat_conversations c JOIN chat_members m ON m.conversation_id = c.id"
-        " WHERE c.kind = 'direct' AND m.user_id = ?",
+        " WHERE c.kind = 'direct' AND c.is_group = 0 AND m.user_id = ?",
         (yo,),
     ).fetchall():
         if participants(conn, {"id": cid, "kind": "direct"}) == gente:
             return get(conn, cid)  # type: ignore[return-value]
     cid = str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO chat_conversations (id, kind, created_at, created_by) VALUES (?, 'direct', ?, ?)",
+        "INSERT INTO chat_conversations (id, kind, is_group, created_at, created_by) VALUES (?, 'direct', 0, ?, ?)",
         (cid, _now(), yo),
     )
     for uid in gente:
@@ -237,24 +249,114 @@ def open_direct(conn: sqlite3.Connection, user: Any, user_ids: Iterable[str]) ->
     return get(conn, cid)  # type: ignore[return-value]
 
 
-def add_members(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], user_ids: Iterable[str]) -> None:
-    if conv["kind"] != "direct":
-        raise ChatError("Al canal de un espacio se entra siendo miembro del espacio.")
-    actuales = participants(conn, conv)
-    nuevos = {str(u) for u in user_ids} - actuales
-    if len(actuales) + len(nuevos) > MAX_DIRECT:
-        raise ChatError(f"Un mensaje directo es para {MAX_DIRECT} personas como mucho.")
+def _clean_title(title: Optional[str]) -> Optional[str]:
+    texto = re.sub(r"\s+", " ", title or "").strip()
+    if len(texto) > MAX_TITLE:
+        raise ChatError(f"El nombre de un grupo es de {MAX_TITLE} caracteres como mucho.")
+    return texto or None
+
+
+def _new_people(conn: sqlite3.Connection, conv_people: set[str], user_ids: Iterable[str]) -> set[str]:
+    nuevos = {str(u) for u in user_ids if str(u).strip()} - conv_people
+    if len(conv_people) + len(nuevos) > MAX_GROUP:
+        raise ChatError(f"Un grupo es de {MAX_GROUP} personas como mucho.")
     if len(_people(conn, nuevos)) != len(nuevos):
         raise ChatError("Alguna de esas personas no existe.", 404)
+    return nuevos
+
+
+def _event(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], tipo: str,
+           people: Iterable[str] = (), **extra: Any) -> dict[str, Any]:
+    """Un mensaje del sistema («Ana ha añadido a Luis», «Luis ha salido…»).
+    Guarda los nombres de ese momento, por si luego cambian o la persona se va."""
+    gente = _people(conn, people)
+    datos = {"type": tipo, "users": [{"id": u, "name": p["display_name"]} for u, p in sorted(gente.items())], **extra}
+    cur = conn.execute(
+        "INSERT INTO chat_messages (conversation_id, user_id, body, created_at, event_json) VALUES (?, ?, '', ?, ?)",
+        (conv["id"], _uid(user), _now(), json.dumps(datos, ensure_ascii=False)),
+    )
+    if tipo != "left":
+        mark_read(conn, user, conv, cur.lastrowid)
+    return get_message(conn, cur.lastrowid)  # type: ignore[return-value]
+
+
+def _notify_added(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], people: Iterable[str]) -> None:
+    from app import notifications
+
+    autor = getattr(user, "display_name", None) or "Alguien"
+    titulo = conv.get("title") or "un grupo"
+    for uid in people:
+        notifications.notify(
+            conn, uid, "chat_added", f"{autor} te ha añadido al grupo «{titulo}»",
+            dedupe_key=f"chat-added:{conv['id']}:{_now()}", conversation_id=conv["id"],
+        )
+
+
+def create_group(conn: sqlite3.Connection, user: Any, title: Optional[str],
+                 user_ids: Iterable[str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Un grupo nuevo (siempre nuevo: puede haber varios con la misma gente).
+    Devuelve la conversación y su primer mensaje del sistema."""
+    yo = _uid(user)
+    nombre = _clean_title(title)
+    if not nombre:
+        raise ChatError("Ponle un nombre al grupo.")
+    otros = _new_people(conn, {yo}, user_ids)
+    if not otros:
+        raise ChatError("Elige al menos a una persona.")
+    cid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO chat_conversations (id, kind, is_group, title, created_at, created_by) VALUES (?, 'direct', 1, ?, ?, ?)",
+        (cid, nombre, _now(), yo),
+    )
+    for uid in otros | {yo}:
+        conn.execute("INSERT INTO chat_members (conversation_id, user_id, joined_at) VALUES (?, ?, ?)", (cid, uid, _now()))
+    conv = get(conn, cid)
+    evento = _event(conn, user, conv, "created", otros, title=nombre)  # type: ignore[arg-type]
+    _notify_added(conn, user, conv, otros)  # type: ignore[arg-type]
+    return conv, evento  # type: ignore[return-value]
+
+
+def add_members(conn: sqlite3.Connection, user: Any, conv: dict[str, Any],
+                user_ids: Iterable[str]) -> Optional[dict[str, Any]]:
+    """Añade gente a un grupo; devuelve el mensaje del sistema (o None si no
+    había nadie nuevo)."""
+    if conv["kind"] == "workspace":
+        raise ChatError("Al canal de un espacio se entra siendo miembro del espacio.")
+    if conv["kind"] == "direct":
+        raise ChatError("A un chat privado no se añade a nadie: crea un grupo.")
+    nuevos = _new_people(conn, participants(conn, conv), user_ids)
+    if not nuevos:
+        return None
     for uid in nuevos:
         conn.execute("INSERT OR IGNORE INTO chat_members (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
                      (conv["id"], uid, _now()))
+    evento = _event(conn, user, conv, "added", nuevos)
+    _notify_added(conn, user, conv, nuevos)
+    return evento
 
 
-def leave(conn: sqlite3.Connection, user: Any, conv: dict[str, Any]) -> None:
-    if conv["kind"] != "direct":
+def rename_group(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], title: Optional[str]) -> Optional[dict[str, Any]]:
+    if conv["kind"] != "group":
+        raise ChatError("Solo los grupos tienen nombre.")
+    nombre = _clean_title(title)
+    if not nombre:
+        raise ChatError("Ponle un nombre al grupo.")
+    if nombre == conv.get("title"):
+        return None
+    conn.execute("UPDATE chat_conversations SET title = ? WHERE id = ?", (nombre, conv["id"]))
+    conv["title"] = nombre
+    return _event(conn, user, conv, "renamed", title=nombre)
+
+
+def leave(conn: sqlite3.Connection, user: Any, conv: dict[str, Any]) -> dict[str, Any]:
+    """Sale de un grupo; devuelve el mensaje del sistema que lo cuenta."""
+    if conv["kind"] == "workspace":
         raise ChatError("Del canal de un espacio se sale dejando el espacio.")
+    if conv["kind"] == "direct":
+        raise ChatError("De un chat privado no se sale.")
+    evento = _event(conn, user, conv, "left")
     conn.execute("DELETE FROM chat_members WHERE conversation_id = ? AND user_id = ?", (conv["id"], _uid(user)))
+    return evento
 
 
 # --------------------------------------------------------------------------
@@ -265,7 +367,15 @@ def leave(conn: sqlite3.Connection, user: Any, conv: dict[str, Any]) -> None:
 def _preview(row: sqlite3.Row) -> dict[str, Any]:
     texto = "" if row["deleted"] else re.sub(r"\s+", " ", row["body"] or "")[:120]
     return {"id": row["id"], "user_id": row["user_id"], "author_name": row["author_name"],
-            "body": texto, "deleted": bool(row["deleted"]), "created_at": row["created_at"]}
+            "body": texto, "deleted": bool(row["deleted"]), "created_at": row["created_at"],
+            "event": _event_of(row)}
+
+
+def _event_of(row: sqlite3.Row) -> Optional[dict[str, Any]]:
+    try:
+        return json.loads(row["event_json"]) if row["event_json"] else None
+    except ValueError:
+        return None
 
 
 # Editar y borrar un mensaje solo vale durante este rato desde que se envió;
@@ -306,6 +416,7 @@ def _message(row: sqlite3.Row, people: dict[str, dict[str, Any]], edits: int = 0
         "edits": 0 if borrado else edits,
         "changeable_until": _until(row["created_at"]),
         "task_id": row["task_id"],
+        "event": _event_of(row),
     }
 
 
@@ -388,7 +499,7 @@ def _own(conn: sqlite3.Connection, user: Any, message_id: int) -> dict[str, Any]
     msg = get_message(conn, message_id)
     if msg is None or msg["deleted"]:
         raise ChatError("no existe ese mensaje", 404)
-    if msg["user_id"] != _uid(user):
+    if msg["user_id"] != _uid(user) or msg.get("event"):
         raise ChatError("solo quien escribió el mensaje puede cambiarlo", 403)
     if not changeable(msg):
         minutos = int(CHANGE_WINDOW.total_seconds() // 60)
@@ -459,8 +570,10 @@ def after_post(conn: sqlite3.Connection, user: Any, conv: dict[str, Any], msg: d
     if conv["kind"] == "workspace":
         fila = conn.execute("SELECT name FROM workspaces WHERE id = ?", (conv["workspace_id"],)).fetchone()
         donde = f"en # {fila['name']}" if fila else "en un canal"
+    elif conv["kind"] == "group":
+        donde = f"en el grupo «{conv.get('title') or 'sin nombre'}»"
     else:
-        donde = "en un mensaje directo"
+        donde = "en un chat privado"
     autor = getattr(user, "display_name", None) or "Alguien"
     resumen = re.sub(r"\s+", " ", msg.get("body") or "")[:120]
     creados = 0
@@ -515,7 +628,7 @@ def search(conn: sqlite3.Connection, user: Any, q: str, limit: int = 30) -> list
     marks = ",".join("?" * len(ids))
     filas = conn.execute(
         "SELECT m.* FROM chat_fts f JOIN chat_messages m ON m.id = f.rowid"
-        f" WHERE chat_fts MATCH ? AND m.deleted = 0 AND m.conversation_id IN ({marks})"
+        f" WHERE chat_fts MATCH ? AND m.deleted = 0 AND m.event_json IS NULL AND m.conversation_id IN ({marks})"
         " ORDER BY m.id DESC LIMIT ?",
         (index_mod.fts_query(texto), *ids, max(1, min(limit, 100))),
     ).fetchall()

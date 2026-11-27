@@ -6705,6 +6705,15 @@
   .chat-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .chat-item .workspace-icon { width: 28px; height: 28px; font-size: 12px; border-radius: 8px; flex: none; }
   .chat-item-avs { position: relative; width: 28px; height: 28px; flex: none; }
+  .chat-list-btns { display: inline-flex; gap: 2px; margin-left: auto; }
+  .chat-group-ic { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--menu-hover); color: var(--ink-muted); }
+  .chat-group-ic svg { width: 15px; height: 15px; }
+  .chat-msg.chat-event { display: flex; justify-content: center; align-items: baseline; flex-wrap: wrap; gap: 6px; margin: 6px 0; padding: 2px 12px; font-size: 12px; color: var(--ink-muted); text-align: center; }
+  .chat-msg.chat-event:hover { background: none; }
+  .chat-event-time { font-size: 11px; opacity: .75; }
+  .chat-picker .chat-group-name { width: 100%; height: 34px; padding: 0 10px; border-radius: var(--radius-md); font-size: 13.5px; }
+  button.chat-picker-opt { width: 100%; border: 0; background: none; color: inherit; text-align: left; font: inherit; font-size: 13.5px; }
+  .chat-conv-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-item-avs img, .chat-item-avs .chat-av-ini { width: 28px; height: 28px; border-radius: 50%; display: block; }
   .chat-item-avs.is-group img:nth-child(2), .chat-item-avs.is-group .chat-av-ini:nth-child(2) { position: absolute; right: -4px; bottom: -4px; width: 18px; height: 18px; border: 2px solid var(--bg); }
   .chat-av-ini { display: inline-flex !important; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-weight: 600; }
