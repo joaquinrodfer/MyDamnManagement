@@ -826,7 +826,23 @@ function capturaDeInicio() {
 
 /** «Apunta algo» desde cualquier sitio: el botón de abajo del panel o, con el
  * panel cerrado, el «+» flotante. Abre la misma captura que el inicio. */
+/** «Apunta algo» desde fuera de sus botones (la paleta, los primeros pasos):
+ * se ancla al que se vea, el de la barra lateral o el redondo flotante. */
+function abrirApuntaDondeSeVea() {
+  // El redondo es position: fixed (sin offsetParent): se mira si ocupa sitio.
+  const visible = (el) => el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+  const ancla = [document.getElementById("btn-apunta"), document.getElementById("btn-apunta-fab")].find(visible);
+  if (ancla) return abrirApunta(ancla);
+  // Sin ninguno a la vista (el Inicio del móvil trae su propio campo): el
+  // campo «Apunta algo» del Inicio.
+  marcarPrimerPaso("apunta");
+  const enfocar = () => document.querySelector(".home-capture input, .home-capture textarea")?.focus();
+  if (document.querySelector(".home-capture")) enfocar();
+  else Promise.resolve(goHome()).then(enfocar);
+}
+
 function abrirApunta(ancla) {
+  marcarPrimerPaso("apunta");
   if (ancla.getAttribute("aria-expanded") === "true") {
     cerrarPanelDeColumna();
     return;
@@ -1045,12 +1061,118 @@ function seccionDeActividad(actividad) {
   return seccion;
 }
 
+/** Un vacío que dice qué hacer y deja hacerlo: crear una página, apuntar algo
+ * o buscar (Ctrl+K). */
+function vacioConAcciones(titulo, nota) {
+  const caja = crearEl("div", "empty-state empty-state--acciones");
+  caja.append(crearEl("p", "empty-hint-title", titulo));
+  if (nota) caja.append(crearEl("p", "empty-hint-note", nota));
+  const botones = crearEl("div", "empty-state-actions");
+  const nueva = crearEl("button", "btn btn-primary", "Nueva página");
+  nueva.type = "button";
+  nueva.addEventListener("click", () => createNote(null, "shared", state.workspaceId));
+  const buscar = crearEl("button", "btn", "Buscar (Ctrl + K)");
+  buscar.type = "button";
+  buscar.addEventListener("click", () => abrirPaleta());
+  botones.append(nueva, buscar);
+  caja.append(botones);
+  return caja;
+}
+
+// ------------------------------------------------------------ primeros pasos
+// Una tarjeta en el Inicio para quien acaba de llegar: cinco cosas que enseñan
+// la app. Cada una se marca sola al hacerla (no hay que tachar nada) y la
+// tarjeta se va cuando están todas o al pulsar «Ocultar». Lo que no se puede
+// saber por los datos (abrir el chat, la paleta, apuntar) se recuerda en este
+// navegador: es una ayuda, no un registro.
+
+function clavePrimerosPasos() {
+  return `np_primeros_pasos_${sessionUser.me?.id ?? "anon"}`;
+}
+
+function leerPrimerosPasos() {
+  try {
+    return JSON.parse(localStorage.getItem(clavePrimerosPasos()) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function marcarPrimerPaso(paso) {
+  if (!sessionUser.me) return;
+  const hechos = leerPrimerosPasos();
+  if (hechos[paso]) return;
+  hechos[paso] = true;
+  try {
+    localStorage.setItem(clavePrimerosPasos(), JSON.stringify(hechos));
+  } catch {
+    /* sin almacenamiento: la tarjeta seguirá ofreciéndolo, nada más */
+  }
+}
+
+function seccionDePrimerosPasos(data) {
+  const yo = sessionUser.me;
+  if (!yo) return null;
+  const hechos = leerPrimerosPasos();
+  if (hechos.oculto) return null;
+  // El árbol no dice quién creó cada página: si «Seguir donde lo dejaste» ya
+  // tiene páginas, ese paso no hace falta (o lo marca crear una).
+  const tengoPaginas = Boolean(data?.recent_pages?.length);
+  const pasos = [
+    { id: "pagina", titulo: "Crea tu primera página", hecho: tengoPaginas || hechos.pagina, hacer: () => createNote(null, "shared", state.workspaceId) },
+    { id: "perfil", titulo: "Ponte una foto o un avatar", hecho: Boolean(yo.avatar), hacer: () => openSettings("perfil") },
+    { id: "apunta", titulo: "Apunta una idea rápida", hecho: hechos.apunta, hacer: () => abrirApuntaDondeSeVea() },
+    { id: "chat", titulo: "Escribe a alguien por el chat", hecho: hechos.chat, hacer: () => abrirPanelDeChat() },
+    { id: "paleta", titulo: esMovil() ? "Busca una página, una persona o una acción" : "Busca lo que sea con Ctrl + K", hecho: hechos.paleta, hacer: () => abrirPaleta() },
+  ];
+  const hechosN = pasos.filter((p) => p.hecho).length;
+  if (hechosN === pasos.length) return null;
+
+  const seccion = crearEl("section", "home-card home-pasos");
+  const cabeza = crearEl("div", "home-card-head");
+  const titulo = crearEl("div", "home-pasos-titulo");
+  titulo.append(
+    crearEl("h2", "home-card-title", "Primeros pasos"),
+    crearEl("span", "home-pasos-cuenta", `${hechosN} de ${pasos.length}`),
+  );
+  const ocultar = crearEl("button", "home-link", "Ocultar");
+  ocultar.type = "button";
+  ocultar.addEventListener("click", () => {
+    marcarPrimerPaso("oculto");
+    seccion.remove();
+  });
+  cabeza.append(titulo, ocultar);
+  const barra = crearEl("div", "home-pasos-barra");
+  const relleno = crearEl("span");
+  relleno.style.width = `${Math.round((hechosN / pasos.length) * 100)}%`;
+  barra.append(relleno);
+  const lista = crearEl("ol", "home-pasos-lista");
+  for (const p of pasos) {
+    const li = crearEl("li", p.hecho ? "home-paso is-hecho" : "home-paso");
+    const boton = crearEl("button", "home-paso-btn");
+    boton.type = "button";
+    const marca = crearEl("span", "home-paso-marca");
+    if (p.hecho) marca.innerHTML = svgIcon("i-check");
+    boton.append(marca, crearEl("span", "home-paso-texto", p.titulo));
+    if (p.hecho) {
+      boton.disabled = true;
+      boton.setAttribute("aria-label", `${p.titulo}: hecho`);
+    } else {
+      boton.addEventListener("click", () => p.hacer());
+    }
+    li.append(boton);
+    lista.append(li);
+  }
+  seccion.append(cabeza, barra, lista);
+  return seccion;
+}
+
 async function renderDashboard(main) {
   let data;
   try {
     data = await api("/dashboard");
   } catch (e) {
-    main.innerHTML = '<div class="empty-state">Elige una página o crea una nueva.</div>';
+    main.replaceChildren(vacioConAcciones("No se ha podido cargar el inicio.", "Puedes abrir una página de la barra lateral o empezar una nueva."));
     return;
   }
   // Si mientras cargaba el usuario ya navegó a otra página, no pisarla.
@@ -1078,6 +1200,8 @@ async function renderDashboard(main) {
   titulos.append(h, resumenDeInicio(data));
   cabecera.append(titulos, capturaDeInicio());
   wrap.append(cabecera);
+  const pasos = seccionDePrimerosPasos(data);
+  if (pasos) wrap.append(pasos);
 
   const columnas = crearEl("div", "home-columns");
   const principal = crearEl("div", "home-col");
@@ -6917,7 +7041,11 @@ async function loadTree() {
       vacio.className = "empty-hint empty-hint--side";
       vacio.innerHTML =
         '<p class="empty-hint-title">Todavía no hay páginas.</p>' +
-        '<p class="empty-hint-note">Pulsa «+» en un espacio para escribir la primera nota.</p>';
+        '<p class="empty-hint-note">Empieza por una nota: luego podrás moverla, compartirla o convertirla en base.</p>';
+      const primera = crearEl("button", "btn btn-primary empty-hint-btn", "Escribir la primera");
+      primera.type = "button";
+      primera.addEventListener("click", () => createNote(null, "shared", state.workspaceId));
+      vacio.append(primera);
       document.getElementById("workspaces-panel")?.appendChild(vacio);
     }
 
@@ -10081,6 +10209,7 @@ function chatVisible() {
 
 function mostrarPestanaLateral(nombre, { guardar = true, cargar = true } = {}) {
   const esChat = nombre === "chat";
+  if (esChat && guardar) marcarPrimerPaso("chat");
   document.getElementById("side-tab-members")?.setAttribute("aria-selected", String(!esChat));
   document.getElementById("side-tab-chat")?.setAttribute("aria-selected", String(esChat));
   const lista = document.getElementById("members-list");
@@ -25581,6 +25710,7 @@ async function createNote(parent_id, section = null, workspaceId = undefined) {
     reportError("No se pudo crear la nota", e);
     return;
   }
+  marcarPrimerPaso("pagina");
   await loadTree();
   await goTo("note", page.id);
   const titleEl = document.querySelector(".note-title");
@@ -26032,7 +26162,7 @@ function accionesDePaleta() {
     { titulo: "Mis tareas", icono: "i-check", claves: "pendientes vencidas", hacer: () => goTo("mytasks") },
     { titulo: "Carga del equipo", icono: "i-users", claves: "carga trabajo horas", hacer: () => goTo("workload") },
     { titulo: "Nueva página", icono: "i-plus", claves: "crear nota documento", hacer: () => createNote(null, "shared", state.workspaceId) },
-    { titulo: "Apunta algo", icono: "i-inbox", claves: "bandeja idea rapida", hacer: () => abrirApunta() },
+    { titulo: "Apunta algo", icono: "i-inbox", claves: "bandeja idea rapida", hacer: () => abrirApuntaDondeSeVea() },
     { titulo: "Abrir el chat", icono: "i-message", claves: "mensajes conversacion", hacer: () => abrirPanelDeChat() },
     { titulo: "Ver avisos", icono: "i-bell", claves: "notificaciones", hacer: () => document.getElementById("btn-avisos")?.click() },
     { titulo: "Abrir el grafo", icono: "i-graph", claves: "enlaces nodos", hacer: () => openGraphView() },
@@ -26251,6 +26381,7 @@ function montarPaleta() {
 
 function abrirPaleta() {
   if (!sessionUser.me) return;
+  marcarPrimerPaso("paleta");
   if (!paleta.dialog) montarPaleta();
   if (paleta.dialog.open) {
     paleta.dialog.close();
